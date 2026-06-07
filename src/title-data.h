@@ -130,11 +130,21 @@ enum class LayerEffectType {
     Outline = 1,
     DropShadow = 2,
     LongShadow = 3,
+    BrightnessContrast = 4,
+    Saturation = 5,
+    Tint = 6,
 };
 
 struct LayerEffect {
     LayerEffectType type = LayerEffectType::BackgroundColor;
     bool enabled = true;
+
+    /* OBS color-correction compatible values for stackable layer color effects. */
+    float brightness = 0.0f;     /* -1.0 .. 1.0 additive RGB offset */
+    float contrast = 1.0f;       /* 0.0 .. 4.0 multiplier around 0.5 */
+    float saturation = 1.0f;     /* 0.0 .. 4.0 luma/chroma mix */
+    uint32_t tint_color = 0xFFFFFFFF;
+    float tint_amount = 1.0f;    /* 0.0 .. 1.0 color multiply amount */
 };
 
 /* ══════════════════════════════════════════════════════════════════

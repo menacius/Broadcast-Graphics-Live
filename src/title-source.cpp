@@ -2004,17 +2004,153 @@ static void render_layer_unmasked(cairo_t *cr, const Title &title, const Layer &
     }
 }
 
+
+static bool layer_has_stackable_color_effects(const Layer &layer)
+{
+    for (const auto &effect : layer.effects) {
+        if (!effect.enabled) continue;
+        switch (effect.type) {
+        case LayerEffectType::BrightnessContrast:
+            if (std::abs(effect.brightness) > 0.0001f || std::abs(effect.contrast - 1.0f) > 0.0001f)
+                return true;
+            break;
+        case LayerEffectType::Saturation:
+            if (std::abs(effect.saturation - 1.0f) > 0.0001f)
+                return true;
+            break;
+        case LayerEffectType::Tint: {
+            const float amount = std::clamp(effect.tint_amount, 0.0f, 1.0f) * (((effect.tint_color >> 24) & 0xFF) / 255.0f);
+            const bool white = ((effect.tint_color >> 16) & 0xFF) == 0xFF &&
+                               ((effect.tint_color >> 8) & 0xFF) == 0xFF &&
+                               (effect.tint_color & 0xFF) == 0xFF;
+            if (amount > 0.0001f && !white)
+                return true;
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
+static void apply_layer_color_effects_to_surface(cairo_surface_t *surface, const Layer &layer)
+{
+    if (!surface || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
+        return;
+
+    cairo_surface_flush(surface);
+    uint8_t *data = cairo_image_surface_get_data(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    if (!data || width <= 0 || height <= 0 || stride <= 0)
+        return;
+
+    /*
+     * OBS layer rendering is Cairo/CPU based today, so OBS source filters cannot be
+     * attached directly to individual layers without moving this path to per-layer
+     * GPU textures. Reuse the native OBS color-correction shader math here instead:
+     * contrast pivots around 0.5, brightness is additive, and saturation uses the
+     * same BT.709 luma coefficients.
+     */
+    auto clamp01 = [](double value) { return std::clamp(value, 0.0, 1.0); };
+    constexpr double luma_r = 0.2126;
+    constexpr double luma_g = 0.7090;
+    constexpr double luma_b = 0.0784;
+
+    for (int y = 0; y < height; ++y) {
+        uint8_t *row = data + y * stride;
+        for (int x = 0; x < width; ++x) {
+            uint8_t *px = row + x * 4;
+            const double alpha = px[3] / 255.0;
+            if (alpha <= 0.0)
+                continue;
+
+            double b = (px[0] / 255.0) / alpha;
+            double g = (px[1] / 255.0) / alpha;
+            double r = (px[2] / 255.0) / alpha;
+
+            for (const auto &effect : layer.effects) {
+                if (!effect.enabled) continue;
+                switch (effect.type) {
+                case LayerEffectType::BrightnessContrast: {
+                    const double brightness = std::clamp((double)effect.brightness, -1.0, 1.0);
+                    const double contrast = std::clamp((double)effect.contrast, 0.0, 4.0);
+                    r = (r - 0.5) * contrast + 0.5 + brightness;
+                    g = (g - 0.5) * contrast + 0.5 + brightness;
+                    b = (b - 0.5) * contrast + 0.5 + brightness;
+                    break;
+                }
+                case LayerEffectType::Saturation: {
+                    const double saturation = std::clamp((double)effect.saturation, 0.0, 4.0);
+                    const double luma = r * luma_r + g * luma_g + b * luma_b;
+                    r = luma + (r - luma) * saturation;
+                    g = luma + (g - luma) * saturation;
+                    b = luma + (b - luma) * saturation;
+                    break;
+                }
+                case LayerEffectType::Tint: {
+                    const double amount = std::clamp((double)effect.tint_amount, 0.0, 1.0) * (((effect.tint_color >> 24) & 0xFF) / 255.0);
+                    if (amount > 0.0) {
+                        const double tr = ((effect.tint_color >> 16) & 0xFF) / 255.0;
+                        const double tg = ((effect.tint_color >> 8) & 0xFF) / 255.0;
+                        const double tb = (effect.tint_color & 0xFF) / 255.0;
+                        r *= (1.0 - amount) + tr * amount;
+                        g *= (1.0 - amount) + tg * amount;
+                        b *= (1.0 - amount) + tb * amount;
+                    }
+                    break;
+                }
+                default:
+                    break;
+                }
+                r = clamp01(r);
+                g = clamp01(g);
+                b = clamp01(b);
+            }
+
+            px[0] = (uint8_t)std::lround(clamp01(b) * alpha * 255.0);
+            px[1] = (uint8_t)std::lround(clamp01(g) * alpha * 255.0);
+            px[2] = (uint8_t)std::lround(clamp01(r) * alpha * 255.0);
+        }
+    }
+    cairo_surface_mark_dirty(surface);
+}
+
+static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, const Title &title, const Layer &layer,
+                                                         double title_time, int canvas_w, int canvas_h)
+{
+    if (!layer_has_stackable_color_effects(layer)) {
+        render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
+        return;
+    }
+
+    cairo_surface_t *layer_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
+    cairo_t *layer_cr = cairo_create(layer_surface);
+    cairo_set_operator(layer_cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(layer_cr);
+    cairo_set_operator(layer_cr, CAIRO_OPERATOR_OVER);
+    render_layer_unmasked(layer_cr, title, layer, title_time, canvas_w, canvas_h);
+    cairo_destroy(layer_cr);
+
+    apply_layer_color_effects_to_surface(layer_surface, layer);
+    cairo_set_source_surface(cr, layer_surface, 0, 0);
+    cairo_paint(cr);
+    cairo_surface_destroy(layer_surface);
+}
+
 static void render_layer_with_mask(cairo_t *cr, const Title &title, const Layer &layer,
                                    double title_time, int canvas_w, int canvas_h)
 {
     if (layer.mask_mode == MaskMode::None || layer.mask_source_id.empty()) {
-        render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
+        render_layer_unmasked_with_stackable_effects(cr, title, layer, title_time, canvas_w, canvas_h);
         return;
     }
     const Layer *mask = find_layer_by_id(title, layer.mask_source_id);
     if (!mask || !layer_chain_visible(title, *mask, title_time)) {
         if (layer.mask_mode == MaskMode::InvertedAlpha)
-            render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
+            render_layer_unmasked_with_stackable_effects(cr, title, layer, title_time, canvas_w, canvas_h);
         return;
     }
 
@@ -2022,7 +2158,7 @@ static void render_layer_with_mask(cairo_t *cr, const Title &title, const Layer 
     cairo_surface_t *mask_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
     cairo_t *layer_cr = cairo_create(layer_surface);
     cairo_t *mask_cr = cairo_create(mask_surface);
-    render_layer_unmasked(layer_cr, title, layer, title_time, canvas_w, canvas_h);
+    render_layer_unmasked_with_stackable_effects(layer_cr, title, layer, title_time, canvas_w, canvas_h);
     render_layer_unmasked(mask_cr, title, *mask, title_time, canvas_w, canvas_h);
     cairo_destroy(layer_cr);
     cairo_destroy(mask_cr);
