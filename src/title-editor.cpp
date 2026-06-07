@@ -38,6 +38,8 @@
 #include <QToolBar>
 #include <QAction>
 #include <QActionGroup>
+#include <QButtonGroup>
+#include <QAbstractButton>
 #include <QIcon>
 #include <QPixmap>
 #include <QStringList>
@@ -6814,6 +6816,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             "QToolButton:checked{background:#4b6ea8;color:white;border-color:#6f8fc4;}");
         return button;
     };
+    auto mk_paragraph_alignment_button = [&](const char *icon_name, const QString &tip) {
+        auto *button = new QToolButton(inner);
+        button->setIcon(obs_icon(icon_name));
+        button->setIconSize(QSize(14, 14));
+        button->setToolTip(tip);
+        button->setAccessibleName(tip);
+        button->setCheckable(true);
+        button->setFixedSize(30, 24);
+        button->setAutoRaise(false);
+        button->setStyleSheet(
+            "QToolButton{color:#d8d8d8;background:#242424;border:1px solid #373737;border-radius:2px;padding:2px;}"
+            "QToolButton:hover{background:#303030;border-color:#4a4a4a;}"
+            "QToolButton:checked{background:#4b6ea8;color:white;border-color:#6f8fc4;}");
+        return button;
+    };
 
     /* ── Character ── */
     text_box_ = new QGroupBox("Character", inner);
@@ -6918,30 +6935,46 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     paragraph_box_->setStyleSheet(section_style);
     auto *paragraph_layout = new QVBoxLayout(paragraph_box_);
     paragraph_layout->setContentsMargins(6, 5, 6, 6);
-    paragraph_layout->setSpacing(5);
-    auto *align_row = new QWidget(inner);
-    auto *align_layout = new QHBoxLayout(align_row);
-    align_layout->setContentsMargins(0, 0, 0, 0);
-    align_layout->setSpacing(4);
-    cmb_text_align_ = new QComboBox(inner);
-    cmb_text_align_->addItem(obsgs_tr("OBSTitles.AlignLeft"), 0);
-    cmb_text_align_->addItem(obsgs_tr("OBSTitles.AlignCenter"), 1);
-    cmb_text_align_->addItem(obsgs_tr("OBSTitles.AlignRight"), 2);
-    cmb_text_align_->addItem("Justify Left", 0);
-    cmb_text_align_->addItem("Justify Center", 1);
-    cmb_text_align_->addItem("Justify Right", 2);
-    cmb_text_align_->addItem("Full Justify", 1);
-    cmb_text_align_->setFixedHeight(22);
-    cmb_text_align_->setStyleSheet(control_style);
-    align_layout->addWidget(cmb_text_align_, 1);
-    cmb_text_valign_ = new QComboBox(inner);
-    cmb_text_valign_->addItem(obsgs_tr("OBSTitles.AlignTop"), 0);
-    cmb_text_valign_->addItem(obsgs_tr("OBSTitles.AlignMiddle"), 1);
-    cmb_text_valign_->addItem(obsgs_tr("OBSTitles.AlignBottom"), 2);
-    cmb_text_valign_->setFixedHeight(22);
-    cmb_text_valign_->setStyleSheet(control_style);
-    align_layout->addWidget(cmb_text_valign_, 1);
-    paragraph_layout->addWidget(align_row);
+    paragraph_layout->setSpacing(6);
+
+    auto add_paragraph_alignment_section = [&](const QString &label_text,
+                                               QButtonGroup *&group,
+                                               std::initializer_list<std::tuple<const char *, QString, int>> options) {
+        auto *section = new QWidget(paragraph_box_);
+        auto *section_layout = new QVBoxLayout(section);
+        section_layout->setContentsMargins(0, 0, 0, 0);
+        section_layout->setSpacing(3);
+
+        auto *label = new QLabel(label_text, section);
+        label->setStyleSheet("color:#9f9f9f;font-size:10px;");
+        section_layout->addWidget(label);
+
+        auto *row = new QWidget(section);
+        auto *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(0, 0, 0, 0);
+        row_layout->setSpacing(4);
+        group = new QButtonGroup(section);
+        group->setExclusive(true);
+        for (const auto &option : options) {
+            auto *button = mk_paragraph_alignment_button(std::get<0>(option), std::get<1>(option));
+            group->addButton(button, std::get<2>(option));
+            row_layout->addWidget(button);
+        }
+        row_layout->addStretch(1);
+        section_layout->addWidget(row);
+        paragraph_layout->addWidget(section);
+    };
+
+    add_paragraph_alignment_section(
+        obsgs_tr("OBSTitles.ParagraphHorizontalAlignment"), grp_text_align_,
+        {{"align-left.svg", obsgs_tr("OBSTitles.AlignLeft"), 0},
+         {"align-center.svg", obsgs_tr("OBSTitles.AlignCenter"), 1},
+         {"align-right.svg", obsgs_tr("OBSTitles.AlignRight"), 2}});
+    add_paragraph_alignment_section(
+        obsgs_tr("OBSTitles.ParagraphVerticalAlignment"), grp_text_valign_,
+        {{"align-top.svg", obsgs_tr("OBSTitles.AlignTop"), 0},
+         {"align-vertical-center.svg", obsgs_tr("OBSTitles.AlignMiddle"), 1},
+         {"align-bottom.svg", obsgs_tr("OBSTitles.AlignBottom"), 2}});
     vl->addWidget(paragraph_box_);
     make_collapsible(paragraph_box_);
 
@@ -7670,14 +7703,22 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->expose_text = v; emit_change(); }
             });
-    connect(cmb_text_align_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->align_h = cmb_text_align_->itemData(idx).toInt(); emit_change(); }
+    auto connect_alignment_group = [this, can_edit, emit_change](QButtonGroup *group, bool horizontal) {
+        if (!group) return;
+        for (auto *button : group->buttons()) {
+            connect(button, &QAbstractButton::clicked, this, [this, can_edit, emit_change, group, horizontal, button]() {
+                if (!can_edit()) return;
+                int value = group->id(button);
+                if (horizontal)
+                    layer_->align_h = value;
+                else
+                    layer_->align_v = value;
+                emit_change();
             });
-    connect(cmb_text_valign_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->align_v = cmb_text_valign_->itemData(idx).toInt(); emit_change(); }
-            });
+        }
+    };
+    connect_alignment_group(grp_text_align_, true);
+    connect_alignment_group(grp_text_valign_, false);
     connect(btn_text_color_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
@@ -8389,8 +8430,8 @@ void PropertiesPanel::load_values()
         if (chk_text_box_height_to_text_) chk_text_box_height_to_text_->setChecked(false);
         if (spn_max_text_box_width_) { spn_max_text_box_width_->setValue(1920.0); spn_max_text_box_width_->setEnabled(false); }
         if (spn_max_text_box_height_) { spn_max_text_box_height_->setValue(1080.0); spn_max_text_box_height_->setEnabled(false); }
-        if (cmb_text_align_) cmb_text_align_->setCurrentIndex(1);
-        if (cmb_text_valign_) cmb_text_valign_->setCurrentIndex(1);
+        if (grp_text_align_ && grp_text_align_->button(1)) grp_text_align_->button(1)->setChecked(true);
+        if (grp_text_valign_ && grp_text_valign_->button(1)) grp_text_valign_->button(1)->setChecked(true);
         if (cmb_anchor_) cmb_anchor_->setCurrentIndex(4);
         if (chk_shadow_enabled_) chk_shadow_enabled_->setChecked(false);
         if (cmb_shadow_preset_) cmb_shadow_preset_->setCurrentIndex(0);
@@ -8783,10 +8824,20 @@ void PropertiesPanel::load_values()
         lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat").arg((int)std::round(scale * 100.0)));
     }
     chk_expose_text_->setChecked(layer_->expose_text);
-    int ai = cmb_text_align_->findData(layer_->align_h);
-    cmb_text_align_->setCurrentIndex(ai >= 0 ? ai : 1);
-    int vai = cmb_text_valign_->findData(layer_->align_v);
-    cmb_text_valign_->setCurrentIndex(vai >= 0 ? vai : 1);
+    if (grp_text_align_) {
+        QSignalBlocker block(grp_text_align_);
+        if (auto *button = grp_text_align_->button(layer_->align_h))
+            button->setChecked(true);
+        else if (auto *fallback = grp_text_align_->button(1))
+            fallback->setChecked(true);
+    }
+    if (grp_text_valign_) {
+        QSignalBlocker block(grp_text_valign_);
+        if (auto *button = grp_text_valign_->button(layer_->align_v))
+            button->setChecked(true);
+        else if (auto *fallback = grp_text_valign_->button(1))
+            fallback->setChecked(true);
+    }
 
     chk_shadow_enabled_->setChecked(eval_shadow_enabled(*layer_, lt));
     cmb_shadow_preset_->setCurrentIndex(0);
