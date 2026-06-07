@@ -486,9 +486,227 @@ static QIcon obs_icon(const char *file_name)
     return obsgs_icon(file_name);
 }
 
+constexpr double kToolIconPi = 3.14159265358979323846;
+
+static QString shape_display_name(ShapeType shape_type)
+{
+    switch (shape_type) {
+    case ShapeType::RoundedRectangle: return QStringLiteral("Rounded Rectangle");
+    case ShapeType::Ellipse: return QStringLiteral("Ellipse");
+    case ShapeType::Triangle: return QStringLiteral("Triangle");
+    case ShapeType::Star: return QStringLiteral("Star");
+    case ShapeType::Polygon: return QStringLiteral("Polygon");
+    case ShapeType::Diamond: return QStringLiteral("Diamond");
+    case ShapeType::Line: return QStringLiteral("Line");
+    case ShapeType::Rectangle:
+    default: return QStringLiteral("Rectangle");
+    }
+}
+
+static QPainterPath tool_shape_path(ShapeType shape_type, const QRectF &rect)
+{
+    QPainterPath path;
+    switch (shape_type) {
+    case ShapeType::RoundedRectangle:
+        path.addRoundedRect(rect, 3.0, 3.0);
+        break;
+    case ShapeType::Ellipse:
+        path.addEllipse(rect);
+        break;
+    case ShapeType::Triangle: {
+        path.moveTo(rect.center().x(), rect.top());
+        path.lineTo(rect.right(), rect.bottom());
+        path.lineTo(rect.left(), rect.bottom());
+        path.closeSubpath();
+        break;
+    }
+    case ShapeType::Star: {
+        const QPointF c = rect.center();
+        const double rx = rect.width() / 2.0;
+        const double ry = rect.height() / 2.0;
+        for (int i = 0; i < 10; ++i) {
+            const double r = (i % 2 == 0) ? 1.0 : 0.45;
+            const double a = -kToolIconPi / 2.0 + kToolIconPi * i / 5.0;
+            const QPointF pt(c.x() + std::cos(a) * rx * r, c.y() + std::sin(a) * ry * r);
+            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+        }
+        path.closeSubpath();
+        break;
+    }
+    case ShapeType::Polygon: {
+        const QPointF c = rect.center();
+        const double rx = rect.width() / 2.0;
+        const double ry = rect.height() / 2.0;
+        for (int i = 0; i < 6; ++i) {
+            const double a = -kToolIconPi / 2.0 + 2.0 * kToolIconPi * i / 6.0;
+            const QPointF pt(c.x() + std::cos(a) * rx, c.y() + std::sin(a) * ry);
+            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+        }
+        path.closeSubpath();
+        break;
+    }
+    case ShapeType::Diamond:
+        path.moveTo(rect.center().x(), rect.top());
+        path.lineTo(rect.right(), rect.center().y());
+        path.lineTo(rect.center().x(), rect.bottom());
+        path.lineTo(rect.left(), rect.center().y());
+        path.closeSubpath();
+        break;
+    case ShapeType::Line:
+        path.moveTo(rect.left(), rect.center().y());
+        path.lineTo(rect.right(), rect.center().y());
+        break;
+    case ShapeType::Rectangle:
+    default:
+        path.addRect(rect);
+        break;
+    }
+    return path;
+}
+
+static QIcon shape_tool_icon(ShapeType shape_type)
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(QColor(220, 220, 220), shape_type == ShapeType::Line ? 2.4 : 1.8));
+    painter.setBrush(shape_type == ShapeType::Line ? Qt::NoBrush : QBrush(QColor(120, 120, 120, 60)));
+    painter.drawPath(tool_shape_path(shape_type, QRectF(5, 5, 14, 14)));
+    return QIcon(pixmap);
+}
+
+static QIcon cursor_tool_icon()
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath path;
+    path.moveTo(6, 4);
+    path.lineTo(6, 19);
+    path.lineTo(10, 15);
+    path.lineTo(13, 21);
+    path.lineTo(16, 19);
+    path.lineTo(13, 13);
+    path.lineTo(18, 13);
+    path.closeSubpath();
+    painter.setPen(QPen(QColor(230, 230, 230), 1.4));
+    painter.setBrush(QColor(65, 65, 65));
+    painter.drawPath(path);
+    return QIcon(pixmap);
+}
+
 static std::string editor_text_std(const char *key)
 {
     return obsgs_tr(key).toStdString();
+}
+
+ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
+{
+    setObjectName(QStringLiteral("OBSGraphicsStudioProToolsSidebarPanel"));
+    setMinimumWidth(42);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    setStyleSheet(QStringLiteral(
+        "QWidget#OBSGraphicsStudioProToolsSidebarPanel{background:#1a1a1a;}"
+        "QToolButton{color:#ddd;background:#222;border:1px solid transparent;border-radius:3px;padding:5px;}"
+        "QToolButton:hover{background:#303030;border-color:#444;}"
+        "QToolButton:checked{background:#3b4f64;border-color:#6b8fb5;}"
+        "QToolButton::menu-indicator{image:none;width:0px;}"
+        "QMenu{color:#ddd;background:#252525;border:1px solid #3a3a3a;}"
+        "QMenu::item{padding:5px 22px;}"
+        "QMenu::item:selected{background:#3b4f64;}"));
+
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(4, 6, 4, 6);
+    layout->setSpacing(4);
+
+    tool_group_ = new QActionGroup(this);
+    tool_group_->setExclusive(true);
+
+    auto make_tool_button = [this, layout](const QString &text, const QIcon &icon, const QString &tip) {
+        auto *button = new QToolButton(this);
+        button->setText(text);
+        button->setAccessibleName(text);
+        button->setToolTip(tip);
+        button->setIcon(icon);
+        button->setIconSize(QSize(22, 22));
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setCheckable(true);
+        button->setAutoRaise(false);
+        button->setFocusPolicy(Qt::StrongFocus);
+        button->setFixedSize(34, 34);
+        layout->addWidget(button, 0, Qt::AlignHCenter);
+        return button;
+    };
+
+    selection_button_ = make_tool_button(QStringLiteral("Selection Tool"), cursor_tool_icon(),
+                                         QStringLiteral("Selection/Cursor Tool: normal object selection mode"));
+    shape_button_ = make_tool_button(QStringLiteral("Shape Tool"), shape_tool_icon(selected_shape_),
+                                     QStringLiteral("Shape Tool: choose a shape, then click and drag on the canvas"));
+    shape_button_->setPopupMode(QToolButton::MenuButtonPopup);
+
+    auto *selection_action = new QAction(cursor_tool_icon(), QStringLiteral("Selection Tool"), this);
+    selection_action->setCheckable(true);
+    selection_action->setChecked(true);
+    auto *shape_action = new QAction(shape_tool_icon(selected_shape_), QStringLiteral("Shape Tool"), this);
+    shape_action->setCheckable(true);
+    tool_group_->addAction(selection_action);
+    tool_group_->addAction(shape_action);
+    selection_button_->setDefaultAction(selection_action);
+    shape_button_->setDefaultAction(shape_action);
+
+    shape_menu_ = new QMenu(shape_button_);
+    shape_button_->setMenu(shape_menu_);
+    rebuild_shape_menu();
+
+    connect(selection_action, &QAction::triggered, this, [this]() {
+        emit selection_tool_requested();
+    });
+    connect(shape_action, &QAction::triggered, this, [this]() {
+        emit shape_tool_requested(selected_shape_);
+    });
+
+    layout->addStretch(1);
+}
+
+void ToolsSidebar::set_selected_shape(ShapeType shape_type)
+{
+    selected_shape_ = shape_type;
+    const QIcon icon = shape_tool_icon(shape_type);
+    if (shape_button_) {
+        shape_button_->setIcon(icon);
+        if (auto *action = shape_button_->defaultAction()) {
+            action->setIcon(icon);
+            action->setText(shape_display_name(shape_type));
+            action->setChecked(true);
+        }
+        shape_button_->setToolTip(QStringLiteral("Shape Tool: %1. Click and drag on the canvas to draw.").arg(shape_display_name(shape_type)));
+        shape_button_->setChecked(true);
+    }
+}
+
+void ToolsSidebar::rebuild_shape_menu()
+{
+    if (!shape_menu_) return;
+    shape_menu_->clear();
+    const std::vector<ShapeType> shapes = {
+        ShapeType::Rectangle,
+        ShapeType::RoundedRectangle,
+        ShapeType::Ellipse,
+        ShapeType::Triangle,
+        ShapeType::Star,
+        ShapeType::Polygon,
+        ShapeType::Diamond,
+        ShapeType::Line,
+    };
+    for (ShapeType shape : shapes) {
+        QAction *action = shape_menu_->addAction(shape_tool_icon(shape), shape_display_name(shape));
+        connect(action, &QAction::triggered, this, [this, shape]() {
+            set_selected_shape(shape);
+            emit shape_tool_requested(shape);
+        });
+    }
 }
 
 static QLocale locale_for_text_transform(const QString &text)
@@ -2365,6 +2583,13 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
     connect(reset_layout_action, &QAction::triggered, this, &TitleEditor::reset_default_layout);
 
     windows_menu->addSeparator();
+    act_tools_visible_ = windows_menu->addAction(QStringLiteral("Tools"));
+    act_tools_visible_->setCheckable(true);
+    act_tools_visible_->setChecked(true);
+    connect(act_tools_visible_, &QAction::triggered, this, [this](bool visible) {
+        if (tools_dock_) tools_dock_->setVisible(visible);
+    });
+
     act_graphic_props_visible_ = windows_menu->addAction(QStringLiteral("Graphic Properties"));
     act_graphic_props_visible_->setCheckable(true);
     act_graphic_props_visible_->setChecked(true);
@@ -2423,6 +2648,8 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
         visibility_action = act_styles_visible_;
     else if (object_name == QString::fromUtf8(kColorSwatchesDockObjectName))
         visibility_action = act_color_swatches_visible_;
+    else if (object_name == QStringLiteral("OBSGraphicsStudioProToolsDock"))
+        visibility_action = act_tools_visible_;
 
     if (visibility_action) {
         connect(dock, &QDockWidget::visibilityChanged, this, [visibility_action](bool visible) {
@@ -2460,6 +2687,10 @@ void TitleEditor::load_editor_layout()
 
     settings.endGroup();
 
+    if (act_tools_visible_ && tools_dock_) {
+        QSignalBlocker blocker(act_tools_visible_);
+        act_tools_visible_->setChecked(!tools_dock_->isHidden());
+    }
     if (act_graphic_props_visible_ && graphic_props_dock_) {
         QSignalBlocker blocker(act_graphic_props_visible_);
         act_graphic_props_visible_->setChecked(!graphic_props_dock_->isHidden());
@@ -2507,14 +2738,19 @@ void TitleEditor::reset_default_layout()
         QDockWidget::DockWidgetClosable |
         QDockWidget::DockWidgetMovable |
         QDockWidget::DockWidgetFloatable;
-    for (auto *dock : {graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
+    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
         if (!dock) continue;
-        dock->setMaximumWidth(QWIDGETSIZE_MAX);
-        dock->setMinimumWidth(dock->widget() ? dock->widget()->minimumWidth() : 220);
+        dock->setMaximumWidth(dock == tools_dock_ ? 64 : QWIDGETSIZE_MAX);
+        dock->setMinimumWidth(dock == tools_dock_ ? 46 : (dock->widget() ? dock->widget()->minimumWidth() : 220));
         dock->setFeatures(reset_features);
         dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     }
 
+    if (tools_dock_) {
+        tools_dock_->setFloating(false);
+        tools_dock_->show();
+        addDockWidget(Qt::RightDockWidgetArea, tools_dock_);
+    }
     if (graphic_props_dock_) {
         graphic_props_dock_->setFloating(false);
         graphic_props_dock_->show();
@@ -2524,6 +2760,7 @@ void TitleEditor::reset_default_layout()
         layer_props_dock_->setFloating(false);
         layer_props_dock_->show();
         addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
+        if (tools_dock_) splitDockWidget(tools_dock_, layer_props_dock_, Qt::Horizontal);
     }
     if (styles_dock_) {
         styles_dock_->setFloating(false);
@@ -2544,10 +2781,15 @@ void TitleEditor::reset_default_layout()
         addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
         if (layer_props_dock_) splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
     }
+    if (tools_dock_) tools_dock_->raise();
     if (graphic_props_dock_) graphic_props_dock_->raise();
     if (layer_props_dock_) layer_props_dock_->raise();
     if (styles_dock_) styles_dock_->raise();
 
+    if (act_tools_visible_) {
+        QSignalBlocker blocker(act_tools_visible_);
+        act_tools_visible_->setChecked(true);
+    }
     if (act_graphic_props_visible_) {
         QSignalBlocker blocker(act_graphic_props_visible_);
         act_graphic_props_visible_->setChecked(true);
@@ -2590,7 +2832,7 @@ void TitleEditor::update_panel_lock_state()
         QDockWidget::DockWidgetFloatable;
     const QDockWidget::DockWidgetFeatures locked_features = QDockWidget::DockWidgetClosable;
 
-    for (auto *dock : {graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
+    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
         if (!dock) continue;
         dock->setFeatures(panels_locked_ ? locked_features : unlocked_features);
         dock->setAllowedAreas(panels_locked_ ? Qt::NoDockWidgetArea
@@ -2600,10 +2842,117 @@ void TitleEditor::update_panel_lock_state()
             dock->setMinimumWidth(locked_width);
             dock->setMaximumWidth(locked_width);
         } else {
-            dock->setMinimumWidth(dock->widget() ? dock->widget()->minimumWidth() : 220);
-            dock->setMaximumWidth(QWIDGETSIZE_MAX);
+            dock->setMinimumWidth(dock == tools_dock_ ? 46 : (dock->widget() ? dock->widget()->minimumWidth() : 220));
+            dock->setMaximumWidth(dock == tools_dock_ ? 64 : QWIDGETSIZE_MAX);
         }
     }
+}
+
+std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QString &name_override)
+{
+    if (!title_) return nullptr;
+
+    auto l = std::make_shared<Layer>();
+    l->id = TitleDataStore::make_uuid();
+    if (!name_override.isEmpty()) {
+        l->name = name_override.toStdString();
+    } else {
+        l->name = (type == LayerType::Text) ? editor_text_std("OBSTitles.Text") :
+                  (type == LayerType::Clock) ? editor_text_std("OBSTitles.Clock") :
+                  (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
+                  (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") : editor_text_std("OBSTitles.Shape");
+    }
+    l->type = type;
+    l->text_content = (type == LayerType::Text) ? editor_text_std("OBSTitles.NewText") :
+                      (type == LayerType::Ticker) ? editor_text_std("OBSTitles.NewTickerText") : "";
+    l->clock_format = (type == LayerType::Clock) ? "H:i:s" : l->clock_format;
+    l->pos_x.static_value = title_->width / 2.0;
+    l->pos_y.static_value = title_->height / 2.0;
+    l->rect_width = title_->width * 0.5f;
+    l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
+    l->box_width.static_value = l->rect_width;
+    l->box_height.static_value = l->rect_height;
+    l->origin_x_prop.static_value = l->origin_x;
+    l->origin_y_prop.static_value = l->origin_y;
+    set_channel_statics(*l, true, l->text_color);
+    set_channel_statics(*l, false, l->fill_color);
+    l->out_time = title_->duration;
+    return l;
+}
+
+void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt)
+{
+    if (!title_) return;
+
+    auto layer = create_basic_layer(LayerType::Shape, shape_display_name(shape_type));
+    if (!layer) return;
+    layer->shape_type = shape_type;
+    layer->pos_x.static_value = canvas_pt.x();
+    layer->pos_y.static_value = canvas_pt.y();
+    layer->rect_width = 1.0f;
+    layer->rect_height = 1.0f;
+    layer->box_width.static_value = layer->rect_width;
+    layer->box_height.static_value = layer->rect_height;
+    if (shape_type == ShapeType::RoundedRectangle)
+        layer->corner_radius = 18.0f;
+
+    canvas_created_shape_layer_id_ = layer->id;
+    title_->add_layer(layer);
+    layers_->refresh();
+    on_layer_selected(layer->id);
+    if (canvas_) canvas_->refresh_preview();
+}
+
+void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
+{
+    if (!title_ || canvas_created_shape_layer_id_.empty()) return;
+    auto layer = title_->find_layer(canvas_created_shape_layer_id_);
+    if (!layer) return;
+
+    QRectF rect = canvas_rect.normalized();
+    const double width = std::max(1.0, rect.width());
+    const double height = std::max(1.0, rect.height());
+    if (rect.width() < 1.0) rect.setWidth(width);
+    if (rect.height() < 1.0) rect.setHeight(height);
+
+    layer->pos_x.static_value = rect.center().x();
+    layer->pos_y.static_value = rect.center().y();
+    layer->rect_width = (float)width;
+    layer->rect_height = (float)height;
+    layer->box_width.static_value = layer->rect_width;
+    layer->box_height.static_value = layer->rect_height;
+    if (layer->shape_type == ShapeType::RoundedRectangle)
+        layer->corner_radius = (float)std::min(width, height) * 0.12f;
+
+    if (canvas_) canvas_->refresh_preview();
+    update_layer_panels(layer, playhead_);
+}
+
+void TitleEditor::finish_canvas_created_shape(bool keep_layer)
+{
+    if (!title_ || canvas_created_shape_layer_id_.empty()) return;
+    const std::string layer_id = canvas_created_shape_layer_id_;
+    canvas_created_shape_layer_id_.clear();
+
+    auto layer = title_->find_layer(layer_id);
+    if (!layer) return;
+    const bool too_small = layer->shape_type == ShapeType::Line
+        ? layer->rect_width < 2.0f
+        : (layer->rect_width < 2.0f || layer->rect_height < 2.0f);
+    if (!keep_layer || too_small) {
+        title_->remove_layer(layer_id);
+        layers_->refresh();
+        timeline_->set_title(title_);
+        sel_layer_id_.clear();
+        if (canvas_) canvas_->set_selected_layers({});
+        update_layer_panels(nullptr, playhead_);
+        return;
+    }
+
+    layers_->refresh();
+    timeline_->set_title(title_);
+    on_layer_selected(layer_id);
+    on_title_modified();
 }
 
 void TitleEditor::build_ui()
@@ -2888,14 +3237,23 @@ void TitleEditor::build_ui()
     color_swatches_dock_ = create_editor_dock(QString::fromUtf8(kColorSwatchesDockObjectName),
                                               QStringLiteral("Color Swatches"),
                                               create_color_swatches_panel());
+    tools_sidebar_ = new ToolsSidebar(this);
+    tools_dock_ = create_editor_dock(QStringLiteral("OBSGraphicsStudioProToolsDock"),
+                                     QStringLiteral("Tools"),
+                                     tools_sidebar_);
+    tools_dock_->setMinimumWidth(46);
+    tools_dock_->setMaximumWidth(64);
     addDockWidget(Qt::LeftDockWidgetArea, graphic_props_dock_);
+    addDockWidget(Qt::RightDockWidgetArea, tools_dock_);
     addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
+    splitDockWidget(tools_dock_, layer_props_dock_, Qt::Horizontal);
     addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
     splitDockWidget(graphic_props_dock_, styles_dock_, Qt::Horizontal);
     addDockWidget(Qt::LeftDockWidgetArea, color_swatches_dock_);
     tabifyDockWidget(styles_dock_, color_swatches_dock_);
     addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
     splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
+    tools_dock_->raise();
     graphic_props_dock_->raise();
     layer_props_dock_->raise();
     styles_dock_->raise();
@@ -3039,26 +3397,8 @@ void TitleEditor::build_ui()
     connect(layers_, &LayerStack::add_layer_requested,
             this, [this](LayerType type) {
                 if (!title_) return;
-                auto l = std::make_shared<Layer>();
-                l->id   = TitleDataStore::make_uuid();
-                l->name = (type == LayerType::Text) ? editor_text_std("OBSTitles.Text") :
-                          (type == LayerType::Clock) ? editor_text_std("OBSTitles.Clock") :
-                          (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
-                          (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") : editor_text_std("OBSTitles.Shape");
-                l->type = type;
-                l->text_content = (type == LayerType::Text) ? editor_text_std("OBSTitles.NewText") :
-                                  (type == LayerType::Ticker) ? editor_text_std("OBSTitles.NewTickerText") : "";
-                l->clock_format = (type == LayerType::Clock) ? "H:i:s" : l->clock_format;
-                l->pos_x.static_value = title_->width  / 2.0;
-                l->pos_y.static_value = title_->height / 2.0;
-                l->rect_width = title_->width * 0.5f;
-                l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
-                l->box_width.static_value = l->rect_width;
-                l->box_height.static_value = l->rect_height;
-                l->origin_x_prop.static_value = l->origin_x;
-                l->origin_y_prop.static_value = l->origin_y;
-                set_channel_statics(*l, true, l->text_color);
-                set_channel_statics(*l, false, l->fill_color);
+                auto l = create_basic_layer(type);
+                if (!l) return;
                 if (type == LayerType::Image) {
                     l->lock_aspect_ratio = true;
                     QString path = QFileDialog::getOpenFileName(
@@ -3074,7 +3414,6 @@ void TitleEditor::build_ui()
                         l->box_height.static_value = l->rect_height;
                     }
                 }
-                l->out_time = title_->duration;
                 title_->add_layer(l);
                 layers_->refresh();
                 on_layer_selected(l->id);
@@ -3223,6 +3562,21 @@ void TitleEditor::build_ui()
                 layers_->refresh();
                 timeline_->set_title(title_);
             });
+    connect(canvas_, &CanvasPreview::shape_drawing_started,
+            this, &TitleEditor::create_shape_layer_from_canvas);
+    connect(canvas_, &CanvasPreview::shape_drawing_changed,
+            this, &TitleEditor::update_canvas_created_shape);
+    connect(canvas_, &CanvasPreview::shape_drawing_finished,
+            this, &TitleEditor::finish_canvas_created_shape);
+    if (tools_sidebar_) {
+        connect(tools_sidebar_, &ToolsSidebar::selection_tool_requested, this, [this]() {
+            if (canvas_) canvas_->set_selection_tool_active();
+        });
+        connect(tools_sidebar_, &ToolsSidebar::shape_tool_requested, this, [this](ShapeType shape_type) {
+            if (tools_sidebar_) tools_sidebar_->set_selected_shape(shape_type);
+            if (canvas_) canvas_->set_shape_tool_active(shape_type);
+        });
+    }
 }
 
 void TitleEditor::align_selected_to_canvas(int x_mode, int y_mode)
@@ -4563,6 +4917,23 @@ void CanvasPreview::set_checkerboard_pattern(int pattern)
     update();
 }
 
+void CanvasPreview::set_selection_tool_active()
+{
+    active_tool_ = CanvasTool::Selection;
+    drawing_shape_ = false;
+    unsetCursor();
+    update();
+}
+
+void CanvasPreview::set_shape_tool_active(ShapeType shape_type)
+{
+    active_tool_ = CanvasTool::Shape;
+    active_shape_type_ = shape_type;
+    drawing_shape_ = false;
+    setCursor(Qt::CrossCursor);
+    update();
+}
+
 void CanvasPreview::fit_canvas(bool up_to_100)
 {
     fit_zoom_active_ = true;
@@ -5513,6 +5884,19 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         p.drawRect(marquee);
     }
 }
+void CanvasPreview::update_shape_drawing(const QPointF &view_pt)
+{
+    if (!drawing_shape_) return;
+    shape_draw_current_canvas_ = view_to_canvas(view_pt);
+    QRectF rect(shape_draw_start_canvas_, shape_draw_current_canvas_);
+    rect = rect.normalized();
+    if (rect.width() < 1.0) rect.setWidth(1.0);
+    if (rect.height() < 1.0) rect.setHeight(1.0);
+    drawing_shape_changed_ = rect.width() >= 2.0 || rect.height() >= 2.0;
+    emit shape_drawing_changed(rect);
+    update();
+}
+
 void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     setFocus(Qt::MouseFocusReason);
@@ -5528,6 +5912,19 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     }
 
     if (ev->button() != Qt::LeftButton) return;
+
+    if (active_tool_ == CanvasTool::Shape) {
+        drawing_shape_ = true;
+        drawing_shape_changed_ = false;
+        drag_mode_ = DragMode::None;
+        shape_draw_start_canvas_ = view_to_canvas(ev->pos());
+        shape_draw_current_canvas_ = shape_draw_start_canvas_;
+        selected_layer_ids_.clear();
+        sel_layer_id_.clear();
+        emit shape_drawing_started(active_shape_type_, shape_draw_start_canvas_);
+        ev->accept();
+        return;
+    }
 
     drag_mode_ = hit_test_selected(ev->pos());
     if (drag_mode_ == DragMode::None) {
@@ -5641,9 +6038,20 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if (drawing_shape_ && (ev->buttons() & Qt::LeftButton)) {
+        update_shape_drawing(ev->pos());
+        ev->accept();
+        return;
+    }
+
     if (drag_mode_ != DragMode::None && (ev->buttons() & Qt::LeftButton)) {
         apply_drag(ev->pos(), ev->modifiers());
         ev->accept();
+        return;
+    }
+
+    if (active_tool_ == CanvasTool::Shape) {
+        setCursor(Qt::CrossCursor);
         return;
     }
 
@@ -5693,6 +6101,17 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
     if (ev->button() == Qt::MiddleButton && panning_) {
         panning_ = false;
         unsetCursor();
+        ev->accept();
+        return;
+    }
+
+    if (ev->button() == Qt::LeftButton && drawing_shape_) {
+        update_shape_drawing(ev->pos());
+        const bool keep_layer = drawing_shape_changed_;
+        drawing_shape_ = false;
+        drawing_shape_changed_ = false;
+        emit shape_drawing_finished(keep_layer);
+        setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor : Qt::ArrowCursor);
         ev->accept();
         return;
     }

@@ -57,6 +57,7 @@ class LayerStack;
 class TimelineWidget;
 class PropertiesPanel;
 class EffectsPanel;
+class ToolsSidebar;
 class TitlePropertiesPanel;
 class QEvent;
 class QKeyEvent;
@@ -67,6 +68,8 @@ class QAction;
 class QToolButton;
 class QScrollBar;
 class QMenuBar;
+class QMenu;
+class QActionGroup;
 class QVBoxLayout;
 
 /* ══════════════════════════════════════════════════════════════════
@@ -136,6 +139,10 @@ private:
     void cut_selected_layer();
     void paste_layer_from_clipboard();
     void delete_selected_layer();
+    std::shared_ptr<Layer> create_basic_layer(LayerType type, const QString &name_override = QString());
+    void create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt);
+    void update_canvas_created_shape(const QRectF &canvas_rect);
+    void finish_canvas_created_shape(bool keep_layer);
     void push_undo_snapshot();
     void restore_undo_snapshot(int index);
     void update_undo_redo_actions();
@@ -176,6 +183,8 @@ private:
     QDockWidget     *effects_dock_ = nullptr;
     QDockWidget     *styles_dock_ = nullptr;
     QDockWidget     *color_swatches_dock_ = nullptr;
+    QDockWidget     *tools_dock_ = nullptr;
+    ToolsSidebar    *tools_sidebar_ = nullptr;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
@@ -196,6 +205,8 @@ private:
     QAction         *act_effects_visible_ = nullptr;
     QAction         *act_styles_visible_ = nullptr;
     QAction         *act_color_swatches_visible_ = nullptr;
+    QAction         *act_tools_visible_ = nullptr;
+    std::string      canvas_created_shape_layer_id_;
     int              alignment_target_ = 3; /* 0=selection, 1=title safe guides, 2=action safe guides, 3=artboard/canvas */
     std::vector<std::shared_ptr<Title>> undo_stack_;
     int              undo_index_ = -1;
@@ -205,6 +216,31 @@ private:
     bool             restoring_editor_layout_ = false;
     bool             editor_layout_save_suppressed_ = false;
     std::shared_ptr<Layer> layer_clipboard_;
+};
+
+
+/* ══════════════════════════════════════════════════════════════════
+ *  ToolsSidebar – Photoshop-style icon-only tool palette
+ * ══════════════════════════════════════════════════════════════════ */
+class ToolsSidebar : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit ToolsSidebar(QWidget *parent = nullptr);
+    void set_selected_shape(ShapeType shape_type);
+    ShapeType selected_shape() const { return selected_shape_; }
+
+signals:
+    void selection_tool_requested();
+    void shape_tool_requested(ShapeType shape_type);
+
+private:
+    void rebuild_shape_menu();
+    QToolButton *selection_button_ = nullptr;
+    QToolButton *shape_button_ = nullptr;
+    QActionGroup *tool_group_ = nullptr;
+    QMenu *shape_menu_ = nullptr;
+    ShapeType selected_shape_ = ShapeType::Rectangle;
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -233,6 +269,8 @@ public:
     int zoom_percent() const;
     void fit_canvas(bool up_to_100 = false);
     void set_checkerboard_pattern(int pattern);
+    void set_selection_tool_active();
+    void set_shape_tool_active(ShapeType shape_type);
 
 signals:
     void layer_clicked(const std::string &layer_id);
@@ -240,6 +278,9 @@ signals:
     void layer_geometry_changed();
     void layer_structure_changed();
     void zoom_percent_changed(int percent);
+    void shape_drawing_started(ShapeType shape_type, const QPointF &canvas_pt);
+    void shape_drawing_changed(const QRectF &canvas_rect);
+    void shape_drawing_finished(bool keep_layer);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
@@ -252,6 +293,7 @@ protected:
 
 private:
     enum class DragMode { None, Marquee, Move, ResizeNW, ResizeN, ResizeNE, ResizeE, ResizeSE, ResizeS, ResizeSW, ResizeW, Origin, Rotate };
+    enum class CanvasTool { Selection, Shape };
 
     void render_to_pixmap();
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
@@ -280,6 +322,7 @@ private:
     void clear_snap_feedback();
     void add_snap_feedback(bool x_axis, double value, const QString &label);
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    void update_shape_drawing(const QPointF &view_pt);
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -296,6 +339,12 @@ private:
     bool dirty_ = true;
     bool safe_guides_visible_ = false;
     int checkerboard_pattern_ = 1;
+    CanvasTool active_tool_ = CanvasTool::Selection;
+    ShapeType active_shape_type_ = ShapeType::Rectangle;
+    bool drawing_shape_ = false;
+    bool drawing_shape_changed_ = false;
+    QPointF shape_draw_start_canvas_;
+    QPointF shape_draw_current_canvas_;
 
     struct SnapSettings {
         bool enabled = true;
