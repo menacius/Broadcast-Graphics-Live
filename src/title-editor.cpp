@@ -2206,13 +2206,25 @@ static void populate_font_style_combo(QComboBox *combo, const QString &family, c
 
 static void style_color_button(QPushButton *button, uint32_t argb)
 {
+    if (!button) return;
     QColor c = color_from_argb(argb);
     button->setText(c.name(QColor::HexArgb));
+    button->setToolTip(QString());
     button->setStyleSheet(QString(
         "QPushButton{color:%1;background:%2;border:1px solid #555;"
         "border-radius:3px;padding:3px 8px;}")
         .arg(c.lightness() < 128 ? "#fff" : "#000")
         .arg(c.name(QColor::HexArgb)));
+}
+
+static void style_color_button_mixed(QPushButton *button)
+{
+    if (!button) return;
+    button->setText(QString());
+    button->setToolTip(QStringLiteral("Mixed values"));
+    button->setStyleSheet(
+        "QPushButton{color:#d8d8d8;background:#252525;border:1px dashed #777;"
+        "border-radius:3px;padding:3px 8px;}");
 }
 
 static void set_spin_mixed(QAbstractSpinBox *spin, bool mixed)
@@ -2234,7 +2246,17 @@ static void set_combo_mixed(QComboBox *combo, bool mixed)
 static void set_button_mixed(QAbstractButton *button, bool mixed)
 {
     if (!button) return;
+    if (mixed)
+        button->setChecked(false);
     button->setToolTip(mixed ? QStringLiteral("Mixed values") : QString());
+    button->setStyleSheet(mixed
+        ? QStringLiteral("QToolButton{color:#d8d8d8;background:#252525;border:1px dashed #777;"
+                         "border-radius:2px;font-size:10px;font-weight:bold;padding:0;}"
+                         "QToolButton:hover{background:#303030;border-color:#888;}")
+        : QStringLiteral("QToolButton{color:#d8d8d8;background:#242424;border:1px solid #373737;border-radius:2px;"
+                         "font-size:10px;font-weight:bold;padding:0;}"
+                         "QToolButton:hover{background:#303030;border-color:#4a4a4a;}"
+                         "QToolButton:checked{background:#4b6ea8;color:white;border-color:#6f8fc4;}"));
 }
 
 static QColor keyframe_color(EasingType)
@@ -11830,9 +11852,13 @@ void PropertiesPanel::load_values()
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(fmt.baseline_shift);
         if (btn_underline_) btn_underline_->setChecked(fmt.underline);
         if (btn_strikethrough_) btn_strikethrough_->setChecked(fmt.strikethrough);
-        style_color_button(btn_text_color_, fmt.fill.color);
+        if (summary.mixed & RichTextCharFillColor)
+            style_color_button_mixed(btn_text_color_);
+        else
+            style_color_button(btn_text_color_, fmt.fill.color);
 
         set_combo_mixed(cmb_font_, summary.mixed & RichTextCharFontFamily);
+        set_combo_mixed(cmb_font_style_, summary.mixed & (RichTextCharFontFamily | RichTextCharBold | RichTextCharItalic));
         set_spin_mixed(spn_size_, summary.mixed & RichTextCharFontSize);
         set_button_mixed(chk_bold_, summary.mixed & RichTextCharBold);
         set_button_mixed(chk_italic_, summary.mixed & RichTextCharItalic);
@@ -11842,12 +11868,6 @@ void PropertiesPanel::load_values()
         set_spin_mixed(spn_baseline_shift_, summary.mixed & RichTextCharBaselineShift);
         set_button_mixed(btn_underline_, summary.mixed & RichTextCharUnderline);
         set_button_mixed(btn_strikethrough_, summary.mixed & RichTextCharStrikethrough);
-        if (summary.mixed & RichTextCharFillColor) {
-            btn_text_color_->setText(QString());
-            btn_text_color_->setToolTip(QStringLiteral("Mixed values"));
-        } else {
-            btn_text_color_->setToolTip(QString());
-        }
     }
     if (btn_ligatures_) btn_ligatures_->setChecked(layer_->text_ligatures);
     if (btn_stylistic_alternates_) btn_stylistic_alternates_->setChecked(layer_->text_stylistic_alternates);
