@@ -72,6 +72,7 @@ class QMenu;
 class QActionGroup;
 class QVBoxLayout;
 class QTextEdit;
+struct RichTextCharFormat;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -293,6 +294,7 @@ public:
     void set_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
     void set_text_tool_active(LayerType type);
+    void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
 
 signals:
     void layer_clicked(const std::string &layer_id);
@@ -305,6 +307,7 @@ signals:
     void shape_drawing_changed(const QRectF &canvas_rect);
     void shape_drawing_finished(bool keep_layer);
     void text_edit_changed(const std::string &layer_id);
+    void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
 
 protected:
@@ -688,9 +691,11 @@ public:
 
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
     void set_title(std::shared_ptr<Title> t);
+    void set_active_text_edit_layer(const std::string &layer_id);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
+    void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
 
 private:
     void build_text_section(QWidget *w, QFormLayout *fl);
@@ -704,6 +709,7 @@ private:
     double playhead_ = 0.0;
     bool loading_values_ = false;
     bool numeric_label_dragging_ = false;
+    std::string active_text_edit_layer_id_;
 
     QGroupBox       *text_box_     = nullptr;
     QGroupBox       *type_options_box_ = nullptr;
