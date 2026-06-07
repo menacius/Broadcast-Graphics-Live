@@ -205,8 +205,14 @@ struct Layer {
     bool        outline_on_front = true;
     bool        outline_antialias = true;
 
-    int         align_h       = 1;  /* 0=left 1=center 2=right */
+    int         align_h       = 1;  /* 0=left 1=center 2=right 3=justify last left 4=justify last center 5=justify last right 6=justify all */
     int         align_v       = 1;  /* 0=top  1=middle 2=bottom */
+    float       paragraph_indent_left = 0.0f;
+    float       paragraph_indent_right = 0.0f;
+    float       paragraph_indent_first_line = 0.0f;
+    float       paragraph_space_before = 0.0f;
+    float       paragraph_space_after = 0.0f;
+    bool        paragraph_hyphenate = false;
 
     /* ----- Solid / shape ----- */
     uint32_t    fill_color    = 0xFF222222;

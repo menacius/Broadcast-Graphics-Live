@@ -20,7 +20,7 @@ static inline QColor obsgs_icon_color()
     return window.lightness() < 128 ? QColor(0xf2, 0xf2, 0xf2) : QColor(0x20, 0x20, 0x20);
 }
 
-static inline QIcon obsgs_icon(const char *file_name)
+static inline QIcon obsgs_icon(const char *file_name, const QColor &color)
 {
     QString rel = QStringLiteral("icons/") + QString::fromUtf8(file_name);
     char *path = obs_module_file(rel.toUtf8().constData());
@@ -35,7 +35,7 @@ static inline QIcon obsgs_icon(const char *file_name)
         return QIcon(icon_path);
 
     QByteArray svg = file.readAll();
-    svg.replace("currentColor", obsgs_icon_color().name(QColor::HexRgb).toUtf8());
+    svg.replace("currentColor", color.name(QColor::HexRgb).toUtf8());
 
     QSvgRenderer renderer(svg);
     if (!renderer.isValid())
@@ -51,4 +51,9 @@ static inline QIcon obsgs_icon(const char *file_name)
         icon.addPixmap(pixmap);
     }
     return icon;
+}
+
+static inline QIcon obsgs_icon(const char *file_name)
+{
+    return obsgs_icon(file_name, obsgs_icon_color());
 }

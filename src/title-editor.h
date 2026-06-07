@@ -31,6 +31,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QComboBox>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QFormLayout>
@@ -590,8 +591,14 @@ private:
     QDoubleSpinBox  *spn_max_text_box_width_ = nullptr;
     QDoubleSpinBox  *spn_max_text_box_height_ = nullptr;
     QCheckBox       *chk_expose_text_ = nullptr;
-    QComboBox       *cmb_text_align_ = nullptr;
-    QComboBox       *cmb_text_valign_ = nullptr;
+    QButtonGroup    *grp_text_align_ = nullptr;
+    QButtonGroup    *grp_text_valign_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_indent_left_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_indent_right_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_indent_first_line_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_space_before_ = nullptr;
+    QDoubleSpinBox  *spn_paragraph_space_after_ = nullptr;
+    QCheckBox       *chk_paragraph_hyphenate_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
 
     /* Text/shape outline controls */

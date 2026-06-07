@@ -38,6 +38,8 @@
 #include <QToolBar>
 #include <QAction>
 #include <QActionGroup>
+#include <QButtonGroup>
+#include <QAbstractButton>
 #include <QIcon>
 #include <QPixmap>
 #include <QStringList>
@@ -384,19 +386,9 @@ static QIcon keyframe_diamond_icon(bool active, bool outlined = false)
 {
     if (active)
         return obsgs_icon("keyframe-active.svg");
-    if (!outlined)
-        return obsgs_icon("keyframe-inactive.svg");
-
-    QPixmap pixmap(24, 24);
-    pixmap.fill(Qt::transparent);
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(QColor(0xff, 0xd2, 0x3f), 2));
-    QPolygon diamond;
-    diamond << QPoint(12, 5) << QPoint(19, 12) << QPoint(12, 19) << QPoint(5, 12);
-    painter.drawPolygon(diamond);
-    return QIcon(pixmap);
+    if (outlined)
+        return obsgs_icon("keyframe-outline.svg", C_KF_DOT);
+    return obsgs_icon("keyframe-inactive.svg");
 }
 
 
@@ -646,15 +638,33 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
 {
     QPainterPath path;
     QFontMetricsF metrics(font);
+    const double indent_left = std::clamp((double)layer.paragraph_indent_left, -10000.0, 10000.0);
+    const double indent_right = std::clamp((double)layer.paragraph_indent_right, -10000.0, 10000.0);
+    const double first_indent = std::clamp((double)layer.paragraph_indent_first_line, -10000.0, 10000.0);
+    const double space_before = std::clamp((double)layer.paragraph_space_before, -10000.0, 10000.0);
+    const double space_after = std::clamp((double)layer.paragraph_space_after, -10000.0, 10000.0);
+    const double paragraph_left = rect.left() + indent_left;
+    const double paragraph_right = rect.right() - indent_right;
+    const double paragraph_width = std::max(1.0, paragraph_right - paragraph_left);
+    const int align_h = std::clamp(layer.align_h, 0, 6);
+
+    auto aligned_x = [&](double line_left, double line_width, double text_width, int mode) {
+        if (mode == 1 || mode == 4)
+            return line_left + (line_width - text_width) / 2.0;
+        if (mode == 2 || mode == 5)
+            return line_left + line_width - text_width;
+        return line_left;
+    };
+
     if (layer.text_overflow_mode == 2) {
         QString single = overflow_layout_text(text, layer);
         QRectF bounds = metrics.boundingRect(single);
-        double scale = horizontal_fit_scale(font, rect, text, layer);
+        QRectF fit_rect(paragraph_left + first_indent, rect.top(),
+                        std::max(1.0, paragraph_width - first_indent), rect.height());
+        double scale = horizontal_fit_scale(font, fit_rect, text, layer);
         if (fit_scale) *fit_scale = scale;
         double visual_width = bounds.width() * scale;
-        double x = rect.left();
-        if (alignment & Qt::AlignHCenter) x = rect.left() + (rect.width() - visual_width) / 2.0;
-        else if (alignment & Qt::AlignRight) x = rect.right() - visual_width;
+        double x = aligned_x(fit_rect.left(), fit_rect.width(), visual_width, align_h);
         double y = rect.top() - bounds.top();
         if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - bounds.height()) / 2.0 - bounds.top();
         else if (alignment & Qt::AlignBottom) y = rect.bottom() - bounds.height() - bounds.top();
@@ -666,48 +676,97 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
     }
     if (fit_scale) *fit_scale = 1.0;
 
-    struct Line { QString text; double width = 0.0; double ascent = 0.0; double height = 0.0; };
+    struct Line {
+        QString text;
+        double width = 0.0;
+        double ascent = 0.0;
+        double height = 0.0;
+        int paragraph = 0;
+        bool first_in_paragraph = false;
+        bool last_in_paragraph = false;
+    };
     std::vector<Line> lines;
     const QStringList paragraphs = text.split('\n');
     QTextOption option;
     option.setWrapMode(layer.text_overflow_mode == 0
-                           ? QTextOption::WrapAtWordBoundaryOrAnywhere
+                           ? (layer.paragraph_hyphenate ? QTextOption::WrapAnywhere : QTextOption::WrapAtWordBoundaryOrAnywhere)
                            : QTextOption::NoWrap);
-    for (const QString &paragraph : paragraphs) {
+    for (int paragraph_index = 0; paragraph_index < paragraphs.size(); ++paragraph_index) {
+        const QString &paragraph = paragraphs[paragraph_index];
+        const size_t first_line_index = lines.size();
         if (paragraph.isEmpty()) {
-            lines.push_back({QString(), 0.0, metrics.ascent(), metrics.lineSpacing()});
+            lines.push_back({QString(), 0.0, metrics.ascent(), metrics.lineSpacing(), paragraph_index, true, true});
             continue;
         }
         QTextLayout layout(paragraph, font);
         layout.setTextOption(option);
         layout.beginLayout();
+        int line_index = 0;
         while (true) {
             QTextLine line = layout.createLine();
             if (!line.isValid()) break;
-            line.setLineWidth(layer.text_overflow_mode == 0 ? rect.width() : 1000000.0);
+            const double line_indent = line_index == 0 ? first_indent : 0.0;
+            const double line_width = std::max(1.0, paragraph_width - line_indent);
+            line.setLineWidth(layer.text_overflow_mode == 0 ? line_width : 1000000.0);
             int start = line.textStart();
             int len = line.textLength();
-            lines.push_back({paragraph.mid(start, len), line.naturalTextWidth(), line.ascent(), line.height()});
+            lines.push_back({paragraph.mid(start, len), line.naturalTextWidth(), line.ascent(), line.height(),
+                             paragraph_index, line_index == 0, false});
+            ++line_index;
             if (layer.text_overflow_mode != 0) break;
         }
         layout.endLayout();
+        if (lines.size() > first_line_index)
+            lines.back().last_in_paragraph = true;
     }
     double total_height = 0.0;
     const double leading = std::clamp((double)layer.text_leading, -200.0, 500.0);
     for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].first_in_paragraph) total_height += space_before;
         total_height += lines[i].height;
-        if (i + 1 < lines.size())
+        if (lines[i].last_in_paragraph)
+            total_height += space_after;
+        else if (i + 1 < lines.size())
             total_height += leading;
     }
     double y = rect.top();
     if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - total_height) / 2.0;
     else if (alignment & Qt::AlignBottom) y = rect.bottom() - total_height;
+
+    auto add_justified_line = [&](const Line &line, double line_left, double line_width, double baseline_y) {
+        QStringList words = line.text.simplified().split(' ', Qt::SkipEmptyParts);
+        if (words.size() < 2 || line.width >= line_width) {
+            path.addText(QPointF(line_left, baseline_y), font, line.text);
+            return;
+        }
+        double words_width = 0.0;
+        for (const QString &word : words)
+            words_width += metrics.horizontalAdvance(word);
+        const double extra_space = std::max(0.0, (line_width - words_width) / (words.size() - 1));
+        double word_x = line_left;
+        for (int i = 0; i < words.size(); ++i) {
+            path.addText(QPointF(word_x, baseline_y), font, words[i]);
+            word_x += metrics.horizontalAdvance(words[i]) + extra_space;
+        }
+    };
+
     for (const auto &line : lines) {
-        double x = rect.left();
-        if (alignment & Qt::AlignHCenter) x = rect.left() + (rect.width() - line.width) / 2.0;
-        else if (alignment & Qt::AlignRight) x = rect.right() - line.width;
-        path.addText(QPointF(x, y + line.ascent), font, line.text);
-        y += line.height + leading;
+        if (line.first_in_paragraph) y += space_before;
+        const double line_indent = line.first_in_paragraph ? first_indent : 0.0;
+        const double line_left = paragraph_left + line_indent;
+        const double line_width = std::max(1.0, paragraph_width - line_indent);
+        const bool justify_line = align_h == 6 || (align_h >= 3 && align_h <= 5 && !line.last_in_paragraph);
+        if (justify_line) {
+            add_justified_line(line, line_left, line_width, y + line.ascent);
+        } else {
+            double x = aligned_x(line_left, line_width, line.width, align_h);
+            path.addText(QPointF(x, y + line.ascent), font, line.text);
+        }
+        y += line.height;
+        if (line.last_in_paragraph)
+            y += space_after;
+        else
+            y += leading;
     }
     return path;
 }
@@ -6824,6 +6883,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             "QToolButton:checked{background:#4b6ea8;color:white;border-color:#6f8fc4;}");
         return button;
     };
+    auto mk_paragraph_alignment_button = [&](const char *icon_name, const QString &tip) {
+        auto *button = new QToolButton(inner);
+        button->setIcon(obs_icon(icon_name));
+        button->setIconSize(QSize(14, 14));
+        button->setToolTip(tip);
+        button->setAccessibleName(tip);
+        button->setCheckable(true);
+        button->setFixedSize(30, 24);
+        button->setAutoRaise(false);
+        button->setStyleSheet(
+            "QToolButton{color:#d8d8d8;background:#242424;border:1px solid #373737;border-radius:2px;padding:2px;}"
+            "QToolButton:hover{background:#303030;border-color:#4a4a4a;}"
+            "QToolButton:checked{background:#4b6ea8;color:white;border-color:#6f8fc4;}");
+        return button;
+    };
 
     /* ── Character ── */
     text_box_ = new QGroupBox("Character", inner);
@@ -6928,30 +7002,99 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     paragraph_box_->setStyleSheet(section_style);
     auto *paragraph_layout = new QVBoxLayout(paragraph_box_);
     paragraph_layout->setContentsMargins(6, 5, 6, 6);
-    paragraph_layout->setSpacing(5);
-    auto *align_row = new QWidget(inner);
-    auto *align_layout = new QHBoxLayout(align_row);
-    align_layout->setContentsMargins(0, 0, 0, 0);
-    align_layout->setSpacing(4);
-    cmb_text_align_ = new QComboBox(inner);
-    cmb_text_align_->addItem(obsgs_tr("OBSTitles.AlignLeft"), 0);
-    cmb_text_align_->addItem(obsgs_tr("OBSTitles.AlignCenter"), 1);
-    cmb_text_align_->addItem(obsgs_tr("OBSTitles.AlignRight"), 2);
-    cmb_text_align_->addItem("Justify Left", 0);
-    cmb_text_align_->addItem("Justify Center", 1);
-    cmb_text_align_->addItem("Justify Right", 2);
-    cmb_text_align_->addItem("Full Justify", 1);
-    cmb_text_align_->setFixedHeight(22);
-    cmb_text_align_->setStyleSheet(control_style);
-    align_layout->addWidget(cmb_text_align_, 1);
-    cmb_text_valign_ = new QComboBox(inner);
-    cmb_text_valign_->addItem(obsgs_tr("OBSTitles.AlignTop"), 0);
-    cmb_text_valign_->addItem(obsgs_tr("OBSTitles.AlignMiddle"), 1);
-    cmb_text_valign_->addItem(obsgs_tr("OBSTitles.AlignBottom"), 2);
-    cmb_text_valign_->setFixedHeight(22);
-    cmb_text_valign_->setStyleSheet(control_style);
-    align_layout->addWidget(cmb_text_valign_, 1);
-    paragraph_layout->addWidget(align_row);
+    paragraph_layout->setSpacing(7);
+
+    auto add_paragraph_section_label = [&](QVBoxLayout *layout, const QString &text) {
+        auto *label = new QLabel(text, paragraph_box_);
+        label->setStyleSheet("color:#9f9f9f;font-size:10px;");
+        layout->addWidget(label);
+    };
+    auto add_paragraph_button = [&](QHBoxLayout *layout, QButtonGroup *group,
+                                    const char *icon_name, const QString &tip, int id) {
+        auto *button = mk_paragraph_alignment_button(icon_name, tip);
+        group->addButton(button, id);
+        layout->addWidget(button);
+        return button;
+    };
+    auto add_paragraph_gap = [](QHBoxLayout *layout) {
+        auto *gap = new QWidget();
+        gap->setFixedWidth(12);
+        layout->addWidget(gap);
+    };
+    auto mk_paragraph_spin = [&]() {
+        auto *spin = mk_dspin(-10000.0, 10000.0, 1.0);
+        spin->setSuffix(QStringLiteral(" pt"));
+        spin->setDecimals(0);
+        spin->setFixedWidth(94);
+        return spin;
+    };
+    auto add_metric_control = [&](QGridLayout *grid, int row, int column,
+                                  const char *icon_name, const QString &tip, QDoubleSpinBox *spin) {
+        auto *icon = new QLabel(paragraph_box_);
+        icon->setPixmap(obs_icon(icon_name).pixmap(16, 16));
+        icon->setToolTip(tip);
+        icon->setAccessibleName(tip);
+        icon->setFixedWidth(20);
+        icon->setAlignment(Qt::AlignCenter);
+        spin->setToolTip(tip);
+        grid->addWidget(icon, row, column * 2, Qt::AlignRight | Qt::AlignVCenter);
+        grid->addWidget(spin, row, column * 2 + 1);
+    };
+
+    add_paragraph_section_label(paragraph_layout, obsgs_tr("OBSTitles.HorizontalParagraph"));
+    auto *horizontal_buttons = new QWidget(paragraph_box_);
+    auto *horizontal_button_layout = new QHBoxLayout(horizontal_buttons);
+    horizontal_button_layout->setContentsMargins(0, 0, 0, 0);
+    horizontal_button_layout->setSpacing(4);
+    grp_text_align_ = new QButtonGroup(horizontal_buttons);
+    grp_text_align_->setExclusive(true);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-left.svg", obsgs_tr("OBSTitles.AlignLeft"), 0);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-center.svg", obsgs_tr("OBSTitles.AlignCenter"), 1);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-right.svg", obsgs_tr("OBSTitles.AlignRight"), 2);
+    add_paragraph_gap(horizontal_button_layout);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify-left.svg", obsgs_tr("OBSTitles.JustifyLastLeft"), 3);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify-center.svg", obsgs_tr("OBSTitles.JustifyLastCenter"), 4);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify-right.svg", obsgs_tr("OBSTitles.JustifyLastRight"), 5);
+    add_paragraph_gap(horizontal_button_layout);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify.svg", obsgs_tr("OBSTitles.JustifyAll"), 6);
+    horizontal_button_layout->addStretch(1);
+    paragraph_layout->addWidget(horizontal_buttons);
+
+    spn_paragraph_indent_left_ = mk_paragraph_spin();
+    spn_paragraph_indent_right_ = mk_paragraph_spin();
+    spn_paragraph_indent_first_line_ = mk_paragraph_spin();
+    spn_paragraph_space_before_ = mk_paragraph_spin();
+    spn_paragraph_space_after_ = mk_paragraph_spin();
+    auto *metric_grid = new QGridLayout();
+    metric_grid->setContentsMargins(0, 0, 0, 0);
+    metric_grid->setHorizontalSpacing(8);
+    metric_grid->setVerticalSpacing(4);
+    metric_grid->setColumnStretch(1, 1);
+    metric_grid->setColumnStretch(3, 1);
+    add_metric_control(metric_grid, 0, 0, "paragraph-indent-left.svg", obsgs_tr("OBSTitles.ParagraphIndentLeft"), spn_paragraph_indent_left_);
+    add_metric_control(metric_grid, 0, 1, "paragraph-indent-right.svg", obsgs_tr("OBSTitles.ParagraphIndentRight"), spn_paragraph_indent_right_);
+    add_metric_control(metric_grid, 1, 0, "paragraph-indent-first-line.svg", obsgs_tr("OBSTitles.ParagraphIndentFirstLine"), spn_paragraph_indent_first_line_);
+    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", obsgs_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_);
+    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", obsgs_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_);
+    paragraph_layout->addLayout(metric_grid);
+
+    chk_paragraph_hyphenate_ = new QCheckBox(obsgs_tr("OBSTitles.Hyphenate"), paragraph_box_);
+    style_checkbox(chk_paragraph_hyphenate_);
+    paragraph_layout->addWidget(chk_paragraph_hyphenate_);
+
+    add_paragraph_section_label(paragraph_layout, obsgs_tr("OBSTitles.VerticalParagraph"));
+    auto *vertical_buttons = new QWidget(paragraph_box_);
+    auto *vertical_button_layout = new QHBoxLayout(vertical_buttons);
+    vertical_button_layout->setContentsMargins(0, 0, 0, 0);
+    vertical_button_layout->setSpacing(4);
+    grp_text_valign_ = new QButtonGroup(vertical_buttons);
+    grp_text_valign_->setExclusive(true);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-top.svg", obsgs_tr("OBSTitles.AlignTop"), 0);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-vertical-center.svg", obsgs_tr("OBSTitles.AlignMiddle"), 1);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-bottom.svg", obsgs_tr("OBSTitles.AlignBottom"), 2);
+    vertical_button_layout->addStretch(1);
+    paragraph_layout->addWidget(vertical_buttons);
+
     vl->addWidget(paragraph_box_);
     make_collapsible(paragraph_box_);
 
@@ -7680,13 +7823,37 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->expose_text = v; emit_change(); }
             });
-    connect(cmb_text_align_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->align_h = cmb_text_align_->itemData(idx).toInt(); emit_change(); }
+    auto connect_alignment_group = [this, can_edit, emit_change](QButtonGroup *group, bool horizontal) {
+        if (!group) return;
+        for (auto *button : group->buttons()) {
+            connect(button, &QAbstractButton::clicked, this, [this, can_edit, emit_change, group, horizontal, button]() {
+                if (!can_edit()) return;
+                int value = group->id(button);
+                if (horizontal)
+                    layer_->align_h = value;
+                else
+                    layer_->align_v = value;
+                emit_change();
             });
-    connect(cmb_text_valign_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->align_v = cmb_text_valign_->itemData(idx).toInt(); emit_change(); }
+        }
+    };
+    connect_alignment_group(grp_text_align_, true);
+    connect_alignment_group(grp_text_valign_, false);
+    auto connect_paragraph_spin = [this, can_edit, emit_change](QDoubleSpinBox *spin, float Layer::*field) {
+        if (!spin) return;
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this, can_edit, emit_change, field](double value) {
+                    if (can_edit()) { layer_.get()->*field = (float)value; emit_change(); }
+                });
+    };
+    connect_paragraph_spin(spn_paragraph_indent_left_, &Layer::paragraph_indent_left);
+    connect_paragraph_spin(spn_paragraph_indent_right_, &Layer::paragraph_indent_right);
+    connect_paragraph_spin(spn_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line);
+    connect_paragraph_spin(spn_paragraph_space_before_, &Layer::paragraph_space_before);
+    connect_paragraph_spin(spn_paragraph_space_after_, &Layer::paragraph_space_after);
+    connect(chk_paragraph_hyphenate_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v) {
+                if (can_edit()) { layer_->paragraph_hyphenate = v; emit_change(); }
             });
     connect(btn_text_color_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
@@ -8399,8 +8566,14 @@ void PropertiesPanel::load_values()
         if (chk_text_box_height_to_text_) chk_text_box_height_to_text_->setChecked(false);
         if (spn_max_text_box_width_) { spn_max_text_box_width_->setValue(1920.0); spn_max_text_box_width_->setEnabled(false); }
         if (spn_max_text_box_height_) { spn_max_text_box_height_->setValue(1080.0); spn_max_text_box_height_->setEnabled(false); }
-        if (cmb_text_align_) cmb_text_align_->setCurrentIndex(1);
-        if (cmb_text_valign_) cmb_text_valign_->setCurrentIndex(1);
+        if (grp_text_align_ && grp_text_align_->button(1)) grp_text_align_->button(1)->setChecked(true);
+        if (grp_text_valign_ && grp_text_valign_->button(1)) grp_text_valign_->button(1)->setChecked(true);
+        if (spn_paragraph_indent_left_) spn_paragraph_indent_left_->setValue(0.0);
+        if (spn_paragraph_indent_right_) spn_paragraph_indent_right_->setValue(0.0);
+        if (spn_paragraph_indent_first_line_) spn_paragraph_indent_first_line_->setValue(0.0);
+        if (spn_paragraph_space_before_) spn_paragraph_space_before_->setValue(0.0);
+        if (spn_paragraph_space_after_) spn_paragraph_space_after_->setValue(0.0);
+        if (chk_paragraph_hyphenate_) chk_paragraph_hyphenate_->setChecked(false);
         if (cmb_anchor_) cmb_anchor_->setCurrentIndex(4);
         if (chk_shadow_enabled_) chk_shadow_enabled_->setChecked(false);
         if (cmb_shadow_preset_) cmb_shadow_preset_->setCurrentIndex(0);
@@ -8793,10 +8966,26 @@ void PropertiesPanel::load_values()
         lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat").arg((int)std::round(scale * 100.0)));
     }
     chk_expose_text_->setChecked(layer_->expose_text);
-    int ai = cmb_text_align_->findData(layer_->align_h);
-    cmb_text_align_->setCurrentIndex(ai >= 0 ? ai : 1);
-    int vai = cmb_text_valign_->findData(layer_->align_v);
-    cmb_text_valign_->setCurrentIndex(vai >= 0 ? vai : 1);
+    if (grp_text_align_) {
+        QSignalBlocker block(grp_text_align_);
+        if (auto *button = grp_text_align_->button(layer_->align_h))
+            button->setChecked(true);
+        else if (auto *fallback = grp_text_align_->button(1))
+            fallback->setChecked(true);
+    }
+    if (grp_text_valign_) {
+        QSignalBlocker block(grp_text_valign_);
+        if (auto *button = grp_text_valign_->button(layer_->align_v))
+            button->setChecked(true);
+        else if (auto *fallback = grp_text_valign_->button(1))
+            fallback->setChecked(true);
+    }
+    if (spn_paragraph_indent_left_) spn_paragraph_indent_left_->setValue(layer_->paragraph_indent_left);
+    if (spn_paragraph_indent_right_) spn_paragraph_indent_right_->setValue(layer_->paragraph_indent_right);
+    if (spn_paragraph_indent_first_line_) spn_paragraph_indent_first_line_->setValue(layer_->paragraph_indent_first_line);
+    if (spn_paragraph_space_before_) spn_paragraph_space_before_->setValue(layer_->paragraph_space_before);
+    if (spn_paragraph_space_after_) spn_paragraph_space_after_->setValue(layer_->paragraph_space_after);
+    if (chk_paragraph_hyphenate_) chk_paragraph_hyphenate_->setChecked(layer_->paragraph_hyphenate);
 
     chk_shadow_enabled_->setChecked(eval_shadow_enabled(*layer_, lt));
     cmb_shadow_preset_->setCurrentIndex(0);

@@ -1378,15 +1378,33 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
 {
     QPainterPath path;
     QFontMetricsF metrics(font);
+    const double indent_left = std::clamp((double)layer.paragraph_indent_left, -10000.0, 10000.0);
+    const double indent_right = std::clamp((double)layer.paragraph_indent_right, -10000.0, 10000.0);
+    const double first_indent = std::clamp((double)layer.paragraph_indent_first_line, -10000.0, 10000.0);
+    const double space_before = std::clamp((double)layer.paragraph_space_before, -10000.0, 10000.0);
+    const double space_after = std::clamp((double)layer.paragraph_space_after, -10000.0, 10000.0);
+    const double paragraph_left = rect.left() + indent_left;
+    const double paragraph_right = rect.right() - indent_right;
+    const double paragraph_width = std::max(1.0, paragraph_right - paragraph_left);
+    const int align_h = std::clamp(layer.align_h, 0, 6);
+
+    auto aligned_x = [&](double line_left, double line_width, double text_width, int mode) {
+        if (mode == 1 || mode == 4)
+            return line_left + (line_width - text_width) / 2.0;
+        if (mode == 2 || mode == 5)
+            return line_left + line_width - text_width;
+        return line_left;
+    };
+
     if (layer.text_overflow_mode == 2) {
         QString single = overflow_layout_text(text, layer);
         QRectF bounds = metrics.boundingRect(single);
-        double scale = horizontal_fit_scale(font, rect, text, layer);
+        QRectF fit_rect(paragraph_left + first_indent, rect.top(),
+                        std::max(1.0, paragraph_width - first_indent), rect.height());
+        double scale = horizontal_fit_scale(font, fit_rect, text, layer);
         if (fit_scale) *fit_scale = scale;
         double visual_width = bounds.width() * scale;
-        double x = rect.left();
-        if (alignment & Qt::AlignHCenter) x = rect.left() + (rect.width() - visual_width) / 2.0;
-        else if (alignment & Qt::AlignRight) x = rect.right() - visual_width;
+        double x = aligned_x(fit_rect.left(), fit_rect.width(), visual_width, align_h);
         double y = rect.top() - bounds.top();
         if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - bounds.height()) / 2.0 - bounds.top();
         else if (alignment & Qt::AlignBottom) y = rect.bottom() - bounds.height() - bounds.top();
@@ -1398,48 +1416,97 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
     }
     if (fit_scale) *fit_scale = 1.0;
 
-    struct Line { QString text; double width = 0.0; double ascent = 0.0; double height = 0.0; };
+    struct Line {
+        QString text;
+        double width = 0.0;
+        double ascent = 0.0;
+        double height = 0.0;
+        int paragraph = 0;
+        bool first_in_paragraph = false;
+        bool last_in_paragraph = false;
+    };
     std::vector<Line> lines;
     const QStringList paragraphs = text.split('\n');
     QTextOption option;
     option.setWrapMode(layer.text_overflow_mode == 0
-                           ? QTextOption::WrapAtWordBoundaryOrAnywhere
+                           ? (layer.paragraph_hyphenate ? QTextOption::WrapAnywhere : QTextOption::WrapAtWordBoundaryOrAnywhere)
                            : QTextOption::NoWrap);
-    for (const QString &paragraph : paragraphs) {
+    for (int paragraph_index = 0; paragraph_index < paragraphs.size(); ++paragraph_index) {
+        const QString &paragraph = paragraphs[paragraph_index];
+        const size_t first_line_index = lines.size();
         if (paragraph.isEmpty()) {
-            lines.push_back({QString(), 0.0, metrics.ascent(), metrics.lineSpacing()});
+            lines.push_back({QString(), 0.0, metrics.ascent(), metrics.lineSpacing(), paragraph_index, true, true});
             continue;
         }
         QTextLayout layout(paragraph, font);
         layout.setTextOption(option);
         layout.beginLayout();
+        int line_index = 0;
         while (true) {
             QTextLine line = layout.createLine();
             if (!line.isValid()) break;
-            line.setLineWidth(layer.text_overflow_mode == 0 ? rect.width() : 1000000.0);
+            const double line_indent = line_index == 0 ? first_indent : 0.0;
+            const double line_width = std::max(1.0, paragraph_width - line_indent);
+            line.setLineWidth(layer.text_overflow_mode == 0 ? line_width : 1000000.0);
             int start = line.textStart();
             int len = line.textLength();
-            lines.push_back({paragraph.mid(start, len), line.naturalTextWidth(), line.ascent(), line.height()});
+            lines.push_back({paragraph.mid(start, len), line.naturalTextWidth(), line.ascent(), line.height(),
+                             paragraph_index, line_index == 0, false});
+            ++line_index;
             if (layer.text_overflow_mode != 0) break;
         }
         layout.endLayout();
+        if (lines.size() > first_line_index)
+            lines.back().last_in_paragraph = true;
     }
     double total_height = 0.0;
     const double leading = std::clamp((double)layer.text_leading, -200.0, 500.0);
     for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].first_in_paragraph) total_height += space_before;
         total_height += lines[i].height;
-        if (i + 1 < lines.size())
+        if (lines[i].last_in_paragraph)
+            total_height += space_after;
+        else if (i + 1 < lines.size())
             total_height += leading;
     }
     double y = rect.top();
     if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - total_height) / 2.0;
     else if (alignment & Qt::AlignBottom) y = rect.bottom() - total_height;
+
+    auto add_justified_line = [&](const Line &line, double line_left, double line_width, double baseline_y) {
+        QStringList words = line.text.simplified().split(' ', Qt::SkipEmptyParts);
+        if (words.size() < 2 || line.width >= line_width) {
+            path.addText(QPointF(line_left, baseline_y), font, line.text);
+            return;
+        }
+        double words_width = 0.0;
+        for (const QString &word : words)
+            words_width += metrics.horizontalAdvance(word);
+        const double extra_space = std::max(0.0, (line_width - words_width) / (words.size() - 1));
+        double word_x = line_left;
+        for (int i = 0; i < words.size(); ++i) {
+            path.addText(QPointF(word_x, baseline_y), font, words[i]);
+            word_x += metrics.horizontalAdvance(words[i]) + extra_space;
+        }
+    };
+
     for (const auto &line : lines) {
-        double x = rect.left();
-        if (alignment & Qt::AlignHCenter) x = rect.left() + (rect.width() - line.width) / 2.0;
-        else if (alignment & Qt::AlignRight) x = rect.right() - line.width;
-        path.addText(QPointF(x, y + line.ascent), font, line.text);
-        y += line.height + leading;
+        if (line.first_in_paragraph) y += space_before;
+        const double line_indent = line.first_in_paragraph ? first_indent : 0.0;
+        const double line_left = paragraph_left + line_indent;
+        const double line_width = std::max(1.0, paragraph_width - line_indent);
+        const bool justify_line = align_h == 6 || (align_h >= 3 && align_h <= 5 && !line.last_in_paragraph);
+        if (justify_line) {
+            add_justified_line(line, line_left, line_width, y + line.ascent);
+        } else {
+            double x = aligned_x(line_left, line_width, line.width, align_h);
+            path.addText(QPointF(x, y + line.ascent), font, line.text);
+        }
+        y += line.height;
+        if (line.last_in_paragraph)
+            y += space_after;
+        else
+            y += leading;
     }
     return path;
 }

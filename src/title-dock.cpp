@@ -61,7 +61,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
-#include <QPen>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTabWidget>
@@ -201,6 +200,11 @@ static QIcon obs_icon(const char *file_name)
     return obsgs_icon(file_name);
 }
 
+static QIcon obs_icon(const char *file_name, const QColor &color)
+{
+    return obsgs_icon(file_name, color);
+}
+
 static std::string obs_text_std(const char *key)
 {
     return obsgs_tr(key).toStdString();
@@ -254,26 +258,10 @@ static QWidget *toolbar_spacer(QWidget *parent)
     return spacer;
 }
 
-static QIcon globe_status_icon(bool enabled, QWidget *widget)
+static QIcon globe_status_icon(bool enabled)
 {
-    const int extent = obs_toolbar_icon_extent(widget);
-    QPixmap pixmap(extent, extent);
-    pixmap.fill(Qt::transparent);
-
-    QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing, true);
     const QColor color = enabled ? QColor(38, 184, 79) : QColor(145, 145, 145);
-    QPen pen(color, std::max(1, extent / 10));
-    painter.setPen(pen);
-    painter.setBrush(Qt::NoBrush);
-    const QRectF globe_rect(pen.widthF() / 2.0, pen.widthF() / 2.0,
-                            extent - pen.widthF(), extent - pen.widthF());
-    painter.drawEllipse(globe_rect);
-    painter.drawLine(QPointF(extent / 2.0, globe_rect.top()), QPointF(extent / 2.0, globe_rect.bottom()));
-    painter.drawArc(globe_rect.adjusted(extent * 0.22, 0, -extent * 0.22, 0), 90 * 16, 180 * 16);
-    painter.drawArc(globe_rect.adjusted(extent * 0.22, 0, -extent * 0.22, 0), -90 * 16, 180 * 16);
-    painter.drawLine(QPointF(globe_rect.left(), extent / 2.0), QPointF(globe_rect.right(), extent / 2.0));
-    return QIcon(pixmap);
+    return obs_icon("globe.svg", color);
 }
 
 static QJsonArray live_text_rows_to_json(const std::vector<std::vector<std::string>> &rows)
@@ -1383,7 +1371,7 @@ void TitleDock::build_ui()
     btn_data_sources_->setPopupMode(QToolButton::InstantPopup);
     btn_data_sources_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
     btn_external_refresh_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.RefreshExternalData"),
-                                                      globe_status_icon(false, live_toolbar),
+                                                      globe_status_icon(false),
                                                       obsgs_tr("OBSTitles.RefreshExternalDataTooltip"));
     btn_external_refresh_->setCheckable(true);
     btn_external_refresh_->setMinimumWidth(obs_toolbar_icon_extent(live_toolbar) + 10);
@@ -1400,10 +1388,9 @@ void TitleDock::build_ui()
     playlist_countdown_lbl_->setToolTip(obsgs_tr("OBSTitles.PlaylistNextCueTooltip"));
     playlist_countdown_lbl_->setMinimumWidth(44);
     playlist_countdown_lbl_->setAlignment(Qt::AlignCenter);
-    btn_playlist_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.PlaylistSettings"), QIcon(),
+    btn_playlist_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.PlaylistSettings"),
+                                                       obs_icon("settings.svg"),
                                                        obsgs_tr("OBSTitles.PlaylistSettingsTooltip"));
-    btn_playlist_settings_->setText(QStringLiteral("⚙"));
-    btn_playlist_settings_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     btn_persistence_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.Persistence"),
                                                           obs_icon("persistence.svg"),
                                                           obsgs_tr("OBSTitles.PersistenceTooltip"));
@@ -1898,7 +1885,7 @@ void TitleDock::update_external_data_controls()
         btn_data_sources_->setEnabled(has_title && has_exposed);
     if (btn_external_refresh_) {
         btn_external_refresh_->setEnabled(has_title && has_exposed);
-        btn_external_refresh_->setIcon(globe_status_icon(external_enabled, btn_external_refresh_));
+        btn_external_refresh_->setIcon(globe_status_icon(external_enabled));
         QSignalBlocker block(btn_external_refresh_);
         btn_external_refresh_->setChecked(external_enabled);
         btn_external_refresh_->setToolTip(external_enabled

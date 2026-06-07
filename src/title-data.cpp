@@ -878,6 +878,12 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["outline_antialias"] = l.outline_antialias;
     j["align_h"]       = l.align_h;
     j["align_v"]       = l.align_v;
+    j["paragraph_indent_left"] = l.paragraph_indent_left;
+    j["paragraph_indent_right"] = l.paragraph_indent_right;
+    j["paragraph_indent_first_line"] = l.paragraph_indent_first_line;
+    j["paragraph_space_before"] = l.paragraph_space_before;
+    j["paragraph_space_after"] = l.paragraph_space_after;
+    j["paragraph_hyphenate"] = l.paragraph_hyphenate;
 
     j["fill_color"]    = l.fill_color;
     j["fill_type"]     = l.fill_type;
@@ -1058,8 +1064,14 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->outline_join_style = std::clamp(json_int(j, "outline_join_style", 1), 0, 2);
     l->outline_on_front = json_bool(j, "outline_on_front", true);
     l->outline_antialias = json_bool(j, "outline_antialias", true);
-    l->align_h       = std::clamp(json_int(j, "align_h", 1), 0, 2);
+    l->align_h       = std::clamp(json_int(j, "align_h", 1), 0, 6);
     l->align_v       = std::clamp(json_int(j, "align_v", 1), 0, 2);
+    l->paragraph_indent_left = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_left", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_indent_right = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_right", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_indent_first_line = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_first_line", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_space_before = (float)std::clamp(finite_or(json_double(j, "paragraph_space_before", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_space_after = (float)std::clamp(finite_or(json_double(j, "paragraph_space_after", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_hyphenate = json_bool(j, "paragraph_hyphenate", false);
 
     l->fill_color    = json_color(j, "fill_color", (uint32_t)0xFF222222);
     l->fill_type     = std::clamp(json_int(j, "fill_type", 0), 0, 1);
