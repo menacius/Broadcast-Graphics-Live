@@ -5645,7 +5645,8 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     cursor.mergeCharFormat(qfmt);
     inline_text_editor_->mergeCurrentCharFormat(qfmt);
     inline_text_editor_->setTextCursor(cursor);
-    sync_inline_text_layer(true);
+    if (auto *doc = inline_text_editor_->document())
+        doc->setModified(false);
     dirty_ = true;
     update();
     emit text_edit_changed(layer_id);
@@ -7075,20 +7076,41 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     auto layer = title_->find_layer(inline_text_layer_id_);
     if (!layer) return false;
 
+    QTextDocument *editor_doc = inline_text_editor_->document();
     const std::string plain = inline_text_editor_->toPlainText().toStdString();
+    if (plain == layer->text_content && editor_doc && !editor_doc->isModified()) {
+        const QTextCursor cursor = inline_text_editor_->textCursor();
+        RichTextSelection selection{(size_t)std::max(0, cursor.anchor()),
+                                    (size_t)std::max(0, cursor.position())};
+        const size_t text_len = layer->rich_text.plain_text.size();
+        selection.anchor = std::min(selection.anchor, text_len);
+        selection.head = std::min(selection.head, text_len);
+        const bool selection_changed = layer->rich_text.selection.anchor != selection.anchor ||
+                                       layer->rich_text.selection.head != selection.head;
+        if (selection_changed)
+            layer->rich_text.selection = selection;
+        return false;
+    }
+
     const double visual_scale = inline_text_visual_scale(*layer);
-    RichTextDocument next_model = rich_text_document_from_qtext_document(inline_text_editor_->document(), *layer, visual_scale, inline_text_editor_->textCursor());
+    RichTextDocument next_model = rich_text_document_from_qtext_document(editor_doc, *layer, visual_scale, inline_text_editor_->textCursor());
     const bool selection_changed = layer->rich_text.selection.anchor != next_model.selection.anchor ||
                                    layer->rich_text.selection.head != next_model.selection.head;
     const bool changed = layer->text_content != plain || layer->rich_text.plain_text != next_model.plain_text ||
                          !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
-    if (!changed && !selection_changed) return false;
+    if (!changed) {
+        if (selection_changed)
+            layer->rich_text.selection = next_model.selection;
+        return false;
+    }
 
     layer->text_content = plain;
     layer->rich_text = std::move(next_model);
     layer->rich_text_html.clear();
-    if (mark_dirty && changed) dirty_ = true;
-    return changed;
+    if (editor_doc)
+        editor_doc->setModified(false);
+    if (mark_dirty) dirty_ = true;
+    return true;
 }
 
 QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
@@ -7169,11 +7191,16 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
     QTextCursor cursor = inline_text_editor_->textCursor();
     cursor.select(QTextCursor::Document);
     inline_text_editor_->setTextCursor(cursor);
+    if (!layer->rich_text.empty()) {
+        layer->rich_text.selection.anchor = 0;
+        layer->rich_text.selection.head = layer->rich_text.plain_text.size();
+    }
     position_text_editor();
     inline_text_editor_->show();
     inline_text_editor_->raise();
     inline_text_editor_->setFocus(Qt::MouseFocusReason);
-    sync_inline_text_layer(false);
+    if (auto *doc = inline_text_editor_->document())
+        doc->setModified(false);
     emit text_edit_cursor_changed(layer->id);
     dirty_ = true;
     update();
@@ -7185,16 +7212,21 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
     committing_inline_text_ = true;
     const std::string layer_id = inline_text_layer_id_;
 
-    bool changed = false;
     if (accept_changes)
-        changed = sync_inline_text_layer(true);
+        sync_inline_text_layer(true);
 
     inline_text_layer_id_.clear();
     inline_text_editor_->hide();
+    {
+        QSignalBlocker blocker(inline_text_editor_);
+        inline_text_editor_->clear();
+        inline_text_editor_->setCurrentCharFormat(QTextCharFormat());
+        inline_text_editor_->mergeCurrentCharFormat(QTextCharFormat());
+    }
     committing_inline_text_ = false;
     dirty_ = true;
     update();
-    if (changed) emit text_edit_committed(layer_id);
+    emit text_edit_committed(layer_id);
 }
 
 bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
