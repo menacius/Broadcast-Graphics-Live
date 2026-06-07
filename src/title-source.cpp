@@ -67,6 +67,31 @@ static bool image_path_is_svg(const QString &path)
            path.endsWith(QStringLiteral(".svgz"), Qt::CaseInsensitive);
 }
 
+static void unpremultiply_bgra_for_obs(uint8_t *pixels, size_t pixel_count)
+{
+    if (!pixels) return;
+
+    for (size_t i = 0; i < pixel_count; ++i) {
+        uint8_t *px = pixels + i * 4;
+        const uint8_t alpha = px[3];
+        if (alpha == 0) {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
+        if (alpha == 255) continue;
+
+        const uint32_t half_alpha = alpha / 2u;
+        px[0] = static_cast<uint8_t>(std::min(255u,
+            (static_cast<uint32_t>(px[0]) * 255u + half_alpha) / alpha));
+        px[1] = static_cast<uint8_t>(std::min(255u,
+            (static_cast<uint32_t>(px[1]) * 255u + half_alpha) / alpha));
+        px[2] = static_cast<uint8_t>(std::min(255u,
+            (static_cast<uint32_t>(px[2]) * 255u + half_alpha) / alpha));
+    }
+}
+
 static QImage load_layer_image(const QString &path, const QSize &fallback_size = QSize())
 {
     if (image_path_is_svg(path)) {
@@ -1440,6 +1465,18 @@ static void render_title_frame(TitleSourceData *data,
     cairo_destroy(cr);
     cairo_surface_flush(surface);
     cairo_surface_destroy(surface);
+
+    /*
+     * Cairo renders CAIRO_FORMAT_ARGB32 as premultiplied BGRA on little-endian
+     * platforms. OBS' default source effect samples straight-alpha textures, so
+     * uploading Cairo's premultiplied color channels directly causes OBS to
+     * multiply edge pixels a second time during scene compositing. Convert the
+     * finished frame to straight-alpha BGRA before the texture upload to keep
+     * antialiased transparent and semi-transparent edges from developing dark
+     * fringes or halos over other sources.
+     */
+    unpremultiply_bgra_for_obs(data->pixel_buf.data(),
+                               static_cast<size_t>(w) * static_cast<size_t>(h));
 
     /* Upload to GPU */
     {
