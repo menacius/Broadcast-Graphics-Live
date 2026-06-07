@@ -6229,6 +6229,17 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
 
+    if (!inline_text_layer_id_.empty()) {
+        auto editing_layer = title_->find_layer(inline_text_layer_id_);
+        if (editing_layer && editing_layer->fill_type == 1) {
+            Title editing_preview = *title_;
+            editing_preview.bg_color = 0x00000000;
+            editing_preview.layers.clear();
+            editing_preview.layers.push_back(std::make_shared<Layer>(*editing_layer));
+            p.drawImage(QRectF(ox, oy, dw, dh), render_title_to_image(editing_preview, playhead_));
+        }
+    }
+
     if (safe_guides_visible_) {
         auto draw_guide = [&](double inset, const QColor &color) {
             QRectF r(ox + dw * inset, oy + dh * inset, dw * (1.0 - 2.0 * inset), dh * (1.0 - 2.0 * inset));
@@ -6554,6 +6565,8 @@ static bool inline_document_has_style_overrides(const QTextDocument *doc, const 
                 std::abs(fmt.fontPointSize() - expected_font.pointSizeF()) > 0.5) return true;
             if (fmt.foreground().style() != Qt::NoBrush) {
                 const QColor color = fmt.foreground().color();
+                if (layer.fill_type == 1 && color.isValid() && color.alpha() == 0)
+                    continue;
                 if (color.isValid() && color != expected_color) return true;
             }
         }
@@ -6614,9 +6627,13 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
     block_format.setTopMargin(std::max(0.0f, layer.paragraph_space_before) * visual_scale);
     block_format.setBottomMargin(std::max(0.0f, layer.paragraph_space_after) * visual_scale);
 
+    const bool render_backed_text = layer.fill_type == 1;
     QTextCharFormat char_format;
     char_format.setFont(font);
-    char_format.setForeground(color_from_argb(eval_text_color(layer, local_time)));
+    QColor editor_text_color = color_from_argb(eval_text_color(layer, local_time));
+    if (render_backed_text)
+        editor_text_color.setAlpha(0);
+    char_format.setForeground(editor_text_color);
     char_format.setFontUnderline(layer.text_underline);
     char_format.setFontStrikeOut(layer.text_strikethrough);
 
@@ -6624,6 +6641,12 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
         QTextCursor format_cursor(doc);
         format_cursor.select(QTextCursor::Document);
         format_cursor.mergeBlockFormat(block_format);
+        if (render_backed_text)
+            format_cursor.mergeCharFormat(char_format);
+    } else if (render_backed_text) {
+        QTextCursor format_cursor(doc);
+        format_cursor.select(QTextCursor::Document);
+        format_cursor.mergeCharFormat(char_format);
     }
     inline_text_editor_->mergeCurrentCharFormat(char_format);
     inline_text_editor_->setTextCursor(saved_cursor);
@@ -6640,9 +6663,11 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     const double local_time = std::max(0.0, playhead_ - layer->in_time);
     const bool needs_rich_text = !layer->rich_text_html.empty() ||
         inline_document_has_style_overrides(inline_text_editor_->document(), *layer, local_time, visual_scale);
-    const QString normalized_html = needs_rich_text
-        ? scale_rich_text_font_sizes(inline_text_editor_->toHtml(), 1.0 / std::max(0.0001, visual_scale))
-        : QString();
+    const QString normalized_html = !layer->rich_text_html.empty()
+        ? rich_text_html_with_replaced_plain_text(layer->rich_text_html, QString::fromStdString(plain))
+        : (needs_rich_text
+               ? scale_rich_text_font_sizes(inline_text_editor_->toHtml(), 1.0 / std::max(0.0001, visual_scale))
+               : QString());
     const std::string html = normalized_html.toStdString();
     const bool changed = layer->text_content != plain || layer->rich_text_html != html;
     if (!changed) return false;
