@@ -360,6 +360,7 @@ private:
     void configure_inline_text_editor(const Layer &layer);
     bool sync_inline_text_layer(bool mark_dirty);
     double inline_text_visual_scale(const Layer &layer) const;
+    QRectF inline_text_document_local_rect(const Layer &layer) const;
     std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
 
     std::shared_ptr<Title> title_;

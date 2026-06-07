@@ -5152,13 +5152,13 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     inline_text_editor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     inline_text_editor_->setLineWrapMode(QTextEdit::WidgetWidth);
+    inline_text_editor_->setCursorWidth(2);
     inline_text_editor_->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->setStyleSheet(
-        "QTextEdit{background:transparent;border:1px dashed rgba(0,140,255,210);"
+        "QTextEdit{background:transparent;border:0px;padding:0px;"
         "color:rgba(255,255,255,1);selection-background-color:rgba(0,120,215,110);"
-        "selection-color:rgba(255,255,255,1);}"
-        "QTextEdit:focus{border:1px solid rgba(0,160,255,235);}");
+        "selection-color:rgba(255,255,255,1);}");
     inline_text_editor_->installEventFilter(this);
     connect(inline_text_editor_, &QTextEdit::textChanged, this, [this]() {
         if (committing_inline_text_ || inline_text_layer_id_.empty()) return;
@@ -5313,6 +5313,7 @@ void CanvasPreview::set_checkerboard_pattern(int pattern)
 
 void CanvasPreview::set_selection_tool_active()
 {
+    commit_text_edit(true);
     active_tool_ = CanvasTool::Selection;
     drawing_shape_ = false;
     unsetCursor();
@@ -6423,15 +6424,21 @@ static QString scale_rich_text_font_sizes(const QString &html, double scale)
         return html;
 
     QString scaled = html;
-    QRegularExpression re(QStringLiteral("font-size\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)(px|pt)"),
-                          QRegularExpression::CaseInsensitiveOption);
+    QRegularExpression re(
+        QStringLiteral("((?:font-size|margin-left|margin-right|margin-top|margin-bottom|text-indent)\\s*:\\s*)(-?[0-9]+(?:\\.[0-9]+)?)(px|pt)"),
+        QRegularExpression::CaseInsensitiveOption);
     qsizetype offset = 0;
     QRegularExpressionMatch match;
     while ((match = re.match(scaled, offset)).hasMatch()) {
-        const double value = match.captured(1).toDouble();
-        const QString unit = match.captured(2);
-        const QString replacement = QStringLiteral("font-size:%1%2")
-                                        .arg(std::max(1.0, value * scale), 0, 'f', 3)
+        const QString property = match.captured(1);
+        const double value = match.captured(2).toDouble();
+        const QString unit = match.captured(3);
+        const double scaled_value = property.trimmed().startsWith(QStringLiteral("font-size"), Qt::CaseInsensitive)
+                                      ? std::max(1.0, value * scale)
+                                      : value * scale;
+        const QString replacement = QStringLiteral("%1%2%3")
+                                        .arg(property)
+                                        .arg(scaled_value, 0, 'f', 3)
                                         .arg(unit);
         scaled.replace(match.capturedStart(0), match.capturedLength(0), replacement);
         offset = match.capturedStart(0) + replacement.size();
@@ -6450,6 +6457,9 @@ double CanvasPreview::inline_text_visual_scale(const Layer &layer) const
 void CanvasPreview::configure_inline_text_editor(const Layer &layer)
 {
     if (!inline_text_editor_) return;
+
+    QSignalBlocker blocker(inline_text_editor_);
+    QTextCursor saved_cursor = inline_text_editor_->textCursor();
 
     const double local_time = std::max(0.0, playhead_ - layer.in_time);
     const double visual_scale = inline_text_visual_scale(layer);
@@ -6481,12 +6491,25 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
     doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width() * visual_scale));
     inline_text_editor_->setLineWrapMode(layer.text_overflow_mode == 0 ? QTextEdit::WidgetWidth : QTextEdit::NoWrap);
 
+    QTextBlockFormat block_format;
+    block_format.setAlignment(align);
+    block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
+    block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
+    block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
+    block_format.setTopMargin(std::max(0.0f, layer.paragraph_space_before) * visual_scale);
+    block_format.setBottomMargin(std::max(0.0f, layer.paragraph_space_after) * visual_scale);
+
     QTextCharFormat char_format;
     char_format.setFont(font);
     char_format.setForeground(color_from_argb(eval_text_color(layer, local_time)));
     char_format.setFontUnderline(layer.text_underline);
     char_format.setFontStrikeOut(layer.text_strikethrough);
+
+    QTextCursor format_cursor(doc);
+    format_cursor.select(QTextCursor::Document);
+    format_cursor.mergeBlockFormat(block_format);
     inline_text_editor_->mergeCurrentCharFormat(char_format);
+    inline_text_editor_->setTextCursor(saved_cursor);
 }
 
 bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
@@ -6508,6 +6531,41 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     return true;
 }
 
+QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
+{
+    const QRectF local = layer_local_rect(layer);
+    const QRectF text_rect = text_rect_for_style(local, layer);
+    if (!inline_text_editor_)
+        return text_rect;
+
+    const double visual_scale = inline_text_visual_scale(layer);
+    QTextDocument *doc = inline_text_editor_->document();
+    const QSizeF doc_size = doc ? doc->size() : QSizeF();
+    const double doc_width = layer.text_overflow_mode == 2 && doc_size.width() > 0.0
+                                 ? doc_size.width() / std::max(0.0001, visual_scale)
+                                 : text_rect.width();
+    const double doc_height = doc_size.height() > 0.0
+                                  ? doc_size.height() / std::max(0.0001, visual_scale)
+                                  : text_rect.height();
+
+    double y = text_rect.top();
+    if (layer.align_v == 1)
+        y = text_rect.top() + (text_rect.height() - doc_height) / 2.0;
+    else if (layer.align_v == 2)
+        y = text_rect.bottom() - doc_height;
+    y -= layer.baseline_shift;
+
+    double x = text_rect.left();
+    if (layer.text_overflow_mode == 2 && doc_width < text_rect.width()) {
+        if (layer.align_h == 1 || layer.align_h == 4)
+            x = text_rect.left() + (text_rect.width() - doc_width) / 2.0;
+        else if (layer.align_h == 2 || layer.align_h == 5)
+            x = text_rect.right() - doc_width;
+    }
+
+    return QRectF(x, y, std::max(1.0, doc_width), std::max(1.0, doc_height));
+}
+
 void CanvasPreview::position_text_editor()
 {
     if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_) return;
@@ -6519,14 +6577,13 @@ void CanvasPreview::position_text_editor()
 
     configure_inline_text_editor(*layer);
 
-    const QRectF local = layer_local_rect(*layer);
-    const QRectF text_rect = text_rect_for_style(local, *layer);
+    const QRectF document_rect = inline_text_document_local_rect(*layer);
     QPolygonF poly;
-    poly << canvas_to_view(layer_to_canvas(*layer, text_rect.topLeft()))
-         << canvas_to_view(layer_to_canvas(*layer, text_rect.topRight()))
-         << canvas_to_view(layer_to_canvas(*layer, text_rect.bottomRight()))
-         << canvas_to_view(layer_to_canvas(*layer, text_rect.bottomLeft()));
-    QRectF bounds = poly.boundingRect().adjusted(-2.0, -2.0, 2.0, 2.0);
+    poly << canvas_to_view(layer_to_canvas(*layer, document_rect.topLeft()))
+         << canvas_to_view(layer_to_canvas(*layer, document_rect.topRight()))
+         << canvas_to_view(layer_to_canvas(*layer, document_rect.bottomRight()))
+         << canvas_to_view(layer_to_canvas(*layer, document_rect.bottomLeft()));
+    QRectF bounds = poly.boundingRect();
     inline_text_editor_->setGeometry(bounds.toAlignedRect().intersected(rect()));
 }
 
@@ -6580,7 +6637,6 @@ bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == inline_text_editor_) {
         if (event->type() == QEvent::FocusOut) {
-            commit_text_edit(true);
             return false;
         }
         if (event->type() == QEvent::KeyPress) {
@@ -6642,9 +6698,24 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
 
 void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
-    if (!inline_text_layer_id_.empty()) commit_text_edit(true);
-    setFocus(Qt::MouseFocusReason);
     if (!title_) return;
+
+    if (!inline_text_layer_id_.empty()) {
+        if (ev->button() == Qt::MiddleButton) {
+            panning_ = true;
+            pan_start_view_ = QPointF(ev->pos());
+            pan_start_offset_ = pan_offset_;
+            setCursor(Qt::ClosedHandCursor);
+            ev->accept();
+            return;
+        }
+        if (inline_text_editor_)
+            inline_text_editor_->setFocus(Qt::MouseFocusReason);
+        ev->accept();
+        return;
+    }
+
+    setFocus(Qt::MouseFocusReason);
 
     if (ev->button() == Qt::MiddleButton) {
         panning_ = true;
@@ -6656,6 +6727,15 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     }
 
     if (ev->button() != Qt::LeftButton) return;
+
+    if (active_tool_ == CanvasTool::Text) {
+        if (auto layer = text_layer_at_view_pos(ev->pos())) {
+            emit layer_clicked(layer->id);
+            begin_text_edit(layer);
+            ev->accept();
+            return;
+        }
+    }
 
     if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) {
         drawing_shape_ = true;
@@ -6818,6 +6898,12 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 
 void CanvasPreview::keyPressEvent(QKeyEvent *ev)
 {
+    if (!inline_text_layer_id_.empty() && ev->key() == Qt::Key_Escape) {
+        commit_text_edit(true);
+        ev->accept();
+        return;
+    }
+
     double dx = 0.0;
     double dy = 0.0;
     const double amount = ev->modifiers().testFlag(Qt::ShiftModifier) ? 10.0 : 1.0;

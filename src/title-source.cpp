@@ -1750,6 +1750,8 @@ static void draw_rich_text_document(QPainter &painter, const Layer &layer, const
         origin.setY(text_rect.top() + (text_rect.height() - doc_size.height()) / 2.0);
     else if (layer.align_v == 2)
         origin.setY(text_rect.bottom() - doc_size.height());
+    if (std::abs(layer.baseline_shift) > 0.0001)
+        origin.setY(origin.y() - layer.baseline_shift);
     if (layer.text_overflow_mode == 2 && doc_size.width() > text_rect.width()) {
         const double scale = std::clamp(text_rect.width() / std::max(1.0, doc_size.width()),
                                         std::clamp((double)layer.text_fit_min_scale, 0.05, 1.0), 1.0);
