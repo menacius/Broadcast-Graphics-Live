@@ -192,6 +192,21 @@ struct Layer {
     float       background_padding_x = 0.0f;
     float       background_padding_y = 0.0f;
     float       background_corner_radius = 0.0f;
+    int         background_fill_type = 0;  /* 0=solid, 1=gradient */
+    int         background_gradient_type = 0;  /* 0=linear, 1=radial */
+    uint32_t    background_gradient_start_color = 0xFF4B6EA8;
+    uint32_t    background_gradient_end_color   = 0xFF1B1B1B;
+    float       background_gradient_start_pos = 0.0f;
+    float       background_gradient_end_pos   = 1.0f;
+    float       background_gradient_start_opacity = 1.0f;
+    float       background_gradient_end_opacity   = 1.0f;
+    float       background_gradient_opacity   = 1.0f;
+    float       background_gradient_angle     = 0.0f;
+    float       background_gradient_center_x  = 0.5f;
+    float       background_gradient_center_y  = 0.5f;
+    float       background_gradient_scale     = 1.0f;
+    float       background_gradient_focal_x   = 0.5f;
+    float       background_gradient_focal_y   = 0.5f;
     AnimatedProperty background_enabled_prop { "background_enabled", 0.0 };
     AnimatedProperty background_opacity_prop { "background_opacity", 0.35 };
     AnimatedProperty background_padding_x_prop { "background_padding_x", 0.0 };

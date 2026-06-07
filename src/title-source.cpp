@@ -546,6 +546,33 @@ static QBrush gradient_fill_brush(const Layer &layer, const QRectF &box, double 
     return QBrush(gradient);
 }
 
+static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
+{
+    const double opacity = std::clamp((double)layer.background_gradient_opacity * layer_opacity, 0.0, 1.0);
+    const double cx = box.left() + std::clamp((double)layer.background_gradient_center_x, 0.0, 1.0) * box.width();
+    const double cy = box.top() + std::clamp((double)layer.background_gradient_center_y, 0.0, 1.0) * box.height();
+    const double scale = std::clamp((double)layer.background_gradient_scale, 0.01, 10.0);
+    const double start_pos = std::clamp((double)layer.background_gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)layer.background_gradient_end_pos, 0.0, 1.0);
+    if (layer.background_gradient_type == 1) {
+        const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
+        QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
+                                 QPointF(box.left() + std::clamp((double)layer.background_gradient_focal_x, 0.0, 1.0) * box.width(),
+                                         box.top() + std::clamp((double)layer.background_gradient_focal_y, 0.0, 1.0) * box.height()));
+        gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.background_gradient_start_color, opacity, layer.background_gradient_start_opacity));
+        gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.background_gradient_end_color, opacity, layer.background_gradient_end_opacity));
+        return QBrush(gradient);
+    }
+    const double length = std::hypot(box.width(), box.height()) * 0.5 * scale;
+    const double angle = layer.background_gradient_angle * kPi / 180.0;
+    const double dx = std::cos(angle) * length;
+    const double dy = std::sin(angle) * length;
+    QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
+    gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.background_gradient_start_color, opacity, layer.background_gradient_start_opacity));
+    gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.background_gradient_end_color, opacity, layer.background_gradient_end_opacity));
+    return QBrush(gradient);
+}
+
 static cairo_pattern_t *create_fill_gradient_pattern(const Layer &layer, double x, double y, double w, double h, double layer_alpha)
 {
     const double opacity = std::clamp((double)layer.gradient_opacity * layer_alpha, 0.0, 1.0);
@@ -573,6 +600,37 @@ static cairo_pattern_t *create_fill_gradient_pattern(const Layer &layer, double 
     };
     add_stop(start_pos, layer.gradient_start_color, layer.gradient_start_opacity);
     add_stop(end_pos, layer.gradient_end_color, layer.gradient_end_opacity);
+    cairo_pattern_set_extend(pattern, CAIRO_EXTEND_PAD);
+    return pattern;
+}
+
+static cairo_pattern_t *create_background_gradient_pattern(const Layer &layer, double x, double y, double w, double h, double layer_alpha)
+{
+    const double opacity = std::clamp((double)layer.background_gradient_opacity * layer_alpha, 0.0, 1.0);
+    const double cx = x + std::clamp((double)layer.background_gradient_center_x, 0.0, 1.0) * w;
+    const double cy = y + std::clamp((double)layer.background_gradient_center_y, 0.0, 1.0) * h;
+    const double scale = std::clamp((double)layer.background_gradient_scale, 0.01, 10.0);
+    const double start_pos = std::clamp((double)layer.background_gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)layer.background_gradient_end_pos, 0.0, 1.0);
+    cairo_pattern_t *pattern = nullptr;
+    if (layer.background_gradient_type == 1) {
+        const double radius = std::max(w, h) * 0.5 * scale;
+        const double fx = x + std::clamp((double)layer.background_gradient_focal_x, 0.0, 1.0) * w;
+        const double fy = y + std::clamp((double)layer.background_gradient_focal_y, 0.0, 1.0) * h;
+        pattern = cairo_pattern_create_radial(fx, fy, 0.0, cx, cy, std::max(1.0, radius));
+    } else {
+        const double length = std::hypot(w, h) * 0.5 * scale;
+        const double angle = layer.background_gradient_angle * kPi / 180.0;
+        const double dx = std::cos(angle) * length;
+        const double dy = std::sin(angle) * length;
+        pattern = cairo_pattern_create_linear(cx - dx, cy - dy, cx + dx, cy + dy);
+    }
+    auto add_stop = [&](double pos, uint32_t argb, double stop_opacity) {
+        QColor color = gradient_color_with_opacity(argb, opacity, stop_opacity);
+        cairo_pattern_add_color_stop_rgba(pattern, pos, color.redF(), color.greenF(), color.blueF(), color.alphaF());
+    };
+    add_stop(start_pos, layer.background_gradient_start_color, layer.background_gradient_start_opacity);
+    add_stop(end_pos, layer.background_gradient_end_color, layer.background_gradient_end_opacity);
     cairo_pattern_set_extend(pattern, CAIRO_EXTEND_PAD);
     return pattern;
 }
@@ -1101,9 +1159,9 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
         const double bg_corner = eval_background_corner_radius(layer, t);
         QRectF bg_rect = base_rect.adjusted(-bg_pad_x, -bg_pad_y, bg_pad_x, bg_pad_y);
         QColor bg = evaluated_background_color(layer, t);
-        if (bg.alpha() > 0 || layer.fill_type == 1) {
+        if (bg.alpha() > 0 || layer.background_fill_type == 1) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(layer.fill_type == 1 ? gradient_fill_brush(layer, bg_rect, eval_background_opacity(layer, t)) : QBrush(bg));
+            painter.setBrush(layer.background_fill_type == 1 ? background_gradient_fill_brush(layer, bg_rect, eval_background_opacity(layer, t)) : QBrush(bg));
             painter.drawRoundedRect(bg_rect, bg_corner, bg_corner);
         }
     }
@@ -1324,7 +1382,7 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
         QColor bg = evaluated_background_color(layer, t);
         double br, bgc, bb, ba;
         br = bg.redF(); bgc = bg.greenF(); bb = bg.blueF(); ba = bg.alphaF();
-        if (ba > 0.0 || layer.fill_type == 1) {
+        if (ba > 0.0 || layer.background_fill_type == 1) {
             const double x = -origin_x * w - bg_pad_x;
             const double y = -origin_y * h - bg_pad_y;
             const double bw = w + bg_pad_x * 2.0;
@@ -1341,8 +1399,8 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
                 cairo_rectangle(cr, x, y, bw, bh);
             }
             cairo_pattern_t *gradient_pattern = nullptr;
-            if (layer.fill_type == 1) {
-                gradient_pattern = create_fill_gradient_pattern(layer, x, y, bw, bh, alpha * eval_background_opacity(layer, t));
+            if (layer.background_fill_type == 1) {
+                gradient_pattern = create_background_gradient_pattern(layer, x, y, bw, bh, alpha * eval_background_opacity(layer, t));
                 cairo_set_source(cr, gradient_pattern);
             } else {
                 cairo_set_source_rgba(cr, br, bgc, bb, ba * alpha);
