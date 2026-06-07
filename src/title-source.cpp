@@ -35,6 +35,7 @@
 #include <QFontMetrics>
 #include <QFontDatabase>
 #include <QTextLayout>
+#include <QTextDocument>
 #include <QTextOption>
 #include <QDateTime>
 #include <QFileInfo>
@@ -438,8 +439,10 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
     auto exposed = exposed_text_layers(title);
-    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col)
+    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
         exposed[col]->text_content = title->live_text_rows[row][col];
+        exposed[col]->rich_text_html.clear();
+    }
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1708,6 +1711,61 @@ static QColor evaluated_background_color(const Layer &layer, double t)
     return color;
 }
 
+
+static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &layer, const QFont &font,
+                                                  const QRectF &text_rect, double t)
+{
+    auto doc = std::make_unique<QTextDocument>();
+    doc->setDocumentMargin(0.0);
+    doc->setDefaultFont(font);
+    const QColor default_color = color_from_argb(eval_text_color(layer, t));
+    doc->setDefaultStyleSheet(QStringLiteral("body{color:%1;}").arg(default_color.name(QColor::HexRgb)));
+    QTextOption option = doc->defaultTextOption();
+    option.setUseDesignMetrics(true);
+    option.setWrapMode(layer.text_overflow_mode == 0
+                           ? (layer.paragraph_hyphenate ? QTextOption::WrapAnywhere : QTextOption::WrapAtWordBoundaryOrAnywhere)
+                           : QTextOption::NoWrap);
+    Qt::Alignment align = Qt::AlignLeft;
+    if (layer.align_h == 1 || layer.align_h == 4) align = Qt::AlignHCenter;
+    else if (layer.align_h == 2 || layer.align_h == 5) align = Qt::AlignRight;
+    else if (layer.align_h >= 3) align = Qt::AlignJustify;
+    option.setAlignment(align);
+    doc->setDefaultTextOption(option);
+    doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width()));
+    if (!layer.rich_text_html.empty())
+        doc->setHtml(QString::fromStdString(layer.rich_text_html));
+    else
+        doc->setPlainText(display_text_for_style(layer));
+
+    return doc;
+}
+
+static void draw_rich_text_document(QPainter &painter, const Layer &layer, const QFont &font,
+                                    const QRectF &text_rect, double t)
+{
+    auto doc = rich_text_document_for_layer(layer, font, text_rect, t);
+    QSizeF doc_size = doc->size();
+    QPointF origin = text_rect.topLeft();
+    if (layer.align_v == 1)
+        origin.setY(text_rect.top() + (text_rect.height() - doc_size.height()) / 2.0);
+    else if (layer.align_v == 2)
+        origin.setY(text_rect.bottom() - doc_size.height());
+    if (layer.text_overflow_mode == 2 && doc_size.width() > text_rect.width()) {
+        const double scale = std::clamp(text_rect.width() / std::max(1.0, doc_size.width()),
+                                        std::clamp((double)layer.text_fit_min_scale, 0.05, 1.0), 1.0);
+        painter.save();
+        painter.translate(origin);
+        painter.scale(scale, 1.0);
+        doc->drawContents(&painter, QRectF(QPointF(0, 0), doc_size));
+        painter.restore();
+        return;
+    }
+    painter.save();
+    painter.translate(origin);
+    doc->drawContents(&painter, QRectF(QPointF(0, 0), doc_size));
+    painter.restore();
+}
+
 static void render_layer_text(cairo_t *cr, const Title &title, const Layer &layer, double title_time,
                                int canvas_w, int canvas_h)
 {
@@ -1764,12 +1822,16 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
     if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
-    QPainterPath text_path = layer.type == LayerType::Ticker
-        ? ticker_text_path(font, text_rect, align, text, layer)
-        : text_overflow_path(font, text_rect, align, text, layer, t);
-    text_path = apply_vertical_character_scale(text_path, text_rect, align, layer);
-    if (std::abs(layer.baseline_shift) > 0.0001)
-        text_path.translate(0.0, -layer.baseline_shift);
+    const bool has_rich_text = !layer.rich_text_html.empty() && layer.type != LayerType::Ticker;
+    QPainterPath text_path;
+    if (!has_rich_text) {
+        text_path = layer.type == LayerType::Ticker
+            ? ticker_text_path(font, text_rect, align, text, layer)
+            : text_overflow_path(font, text_rect, align, text, layer, t);
+        text_path = apply_vertical_character_scale(text_path, text_rect, align, layer);
+        if (std::abs(layer.baseline_shift) > 0.0001)
+            text_path.translate(0.0, -layer.baseline_shift);
+    }
 
     if (render_shadow) {
         QImage shadow_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
@@ -1778,7 +1840,10 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         mask_painter.setRenderHint(QPainter::Antialiasing, true);
         mask_painter.setPen(Qt::NoPen);
         mask_painter.setBrush(Qt::white);
-        mask_painter.drawPath(text_path);
+        if (has_rich_text)
+            draw_rich_text_document(mask_painter, layer, font, text_rect, t);
+        else
+            mask_painter.drawPath(text_path);
         mask_painter.end();
         const QString shape_key = QStringLiteral("text|%1x%2|%3")
             .arg(img_w).arg(img_h).arg(image_content_hash(shadow_mask));
@@ -1795,11 +1860,19 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     QColor fill = color_from_argb(eval_text_color(layer, t));
     fill.setAlphaF(std::clamp((double)fill.alphaF(), 0.0, 1.0));
     auto draw_text_fill = [&]() {
+        if (has_rich_text) {
+            painter.save();
+            painter.setOpacity(fill.alphaF());
+            draw_rich_text_document(painter, layer, font, text_rect, t);
+            painter.restore();
+            return;
+        }
         painter.setPen(Qt::NoPen);
         painter.setBrush(layer.fill_type == 1 ? gradient_fill_brush(layer, text_rect) : QBrush(fill));
         painter.drawPath(text_path);
     };
     auto draw_text_outline = [&]() {
+        if (has_rich_text) return;
         if (outline_width <= 0.0 || outline.alpha() <= 0) return;
         bool previous_aa = painter.testRenderHint(QPainter::Antialiasing);
         painter.setRenderHint(QPainter::Antialiasing, eval_outline_antialias(layer, t));

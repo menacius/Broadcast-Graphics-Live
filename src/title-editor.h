@@ -71,6 +71,7 @@ class QMenuBar;
 class QMenu;
 class QActionGroup;
 class QVBoxLayout;
+class QTextEdit;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -281,13 +282,16 @@ signals:
     void shape_drawing_started(ShapeType shape_type, const QPointF &canvas_pt);
     void shape_drawing_changed(const QRectF &canvas_rect);
     void shape_drawing_finished(bool keep_layer);
+    void text_edit_committed(const std::string &layer_id);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void mouseDoubleClickEvent(QMouseEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void wheelEvent(QWheelEvent *ev) override;
     void resizeEvent(QResizeEvent *ev) override;
 
@@ -323,6 +327,10 @@ private:
     void add_snap_feedback(bool x_axis, double value, const QString &label);
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void update_shape_drawing(const QPointF &view_pt);
+    void begin_text_edit(const std::shared_ptr<Layer> &layer);
+    void commit_text_edit(bool accept_changes = true);
+    void position_text_editor();
+    std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -343,6 +351,9 @@ private:
     ShapeType active_shape_type_ = ShapeType::Rectangle;
     bool drawing_shape_ = false;
     bool drawing_shape_changed_ = false;
+    QTextEdit *inline_text_editor_ = nullptr;
+    std::string inline_text_layer_id_;
+    bool committing_inline_text_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
 

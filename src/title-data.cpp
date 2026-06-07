@@ -853,6 +853,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["opacity"]  = aprop_to_json(l.opacity);
 
     j["text_content"]  = l.text_content;
+    j["rich_text_html"] = l.rich_text_html;
     j["clock_format"]  = l.clock_format;
     j["expose_text"]   = l.expose_text;
     j["font_family"]   = l.font_family;
@@ -1090,6 +1091,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->opacity.static_value = std::clamp(l->opacity.static_value, 0.0, 1.0);
 
     l->text_content  = bounded_string(j, "text_content", "Title", kMaxTextLength);
+    l->rich_text_html = bounded_string(j, "rich_text_html", "", kMaxTextLength * 16);
     l->clock_format  = bounded_string(j, "clock_format", "H:i:s", kMaxNameLength);
     l->expose_text   = json_bool(j, "expose_text", false);
     l->font_family   = bounded_string(j, "font_family", "Helvetica Neue", kMaxNameLength);

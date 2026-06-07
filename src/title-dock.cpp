@@ -1960,8 +1960,10 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     } else if (needs_outro_before_cue) {
         title->pending_cue_row = row;
     } else if (!is_active_cue || title->pending_cue_row >= 0) {
-        for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col)
+        for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col) {
             exposed_now[col]->text_content = title->live_text_rows[row][col];
+            exposed_now[col]->rich_text_html.clear();
+        }
         title->current_cue_row = row;
         title->pending_cue_row = -1;
     }
@@ -2702,6 +2704,7 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
         layer->name = layer_name;
         layer->type = LayerType::Text;
         layer->text_content = text;
+        layer->rich_text_html.clear();
         layer->expose_text = true;
         layer->font_family = "Arial";
         layer->font_size = size;
