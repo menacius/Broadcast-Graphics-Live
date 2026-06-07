@@ -7855,6 +7855,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](bool v) {
                 if (can_edit()) { layer_->paragraph_hyphenate = v; emit_change(); }
             });
+        }
+    };
+    connect_alignment_group(grp_text_align_, true);
+    connect_alignment_group(grp_text_valign_, false);
     connect(btn_text_color_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
