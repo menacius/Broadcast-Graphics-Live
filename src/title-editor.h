@@ -574,6 +574,7 @@ private:
     std::shared_ptr<Layer> layer_;
     double playhead_ = 0.0;
     bool loading_values_ = false;
+    bool numeric_label_dragging_ = false;
     int selected_index_ = -1;
 
     QListWidget *effect_list_ = nullptr;

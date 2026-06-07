@@ -1142,6 +1142,7 @@ static QString effect_type_name(LayerEffectType type)
     case LayerEffectType::BackgroundColor: return obsgs_tr("OBSTitles.BackgroundColor");
     case LayerEffectType::Outline: return obsgs_tr("OBSTitles.Outline");
     case LayerEffectType::DropShadow: return obsgs_tr("OBSTitles.DropShadow");
+    case LayerEffectType::LongShadow: return obsgs_tr("OBSTitles.LongShadow");
     }
     return QStringLiteral("Effect");
 }
@@ -1818,6 +1819,7 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         add_action(obsgs_tr("OBSTitles.BackgroundColor"), LayerEffectType::BackgroundColor);
         add_action(obsgs_tr("OBSTitles.Outline"), LayerEffectType::Outline);
         add_action(obsgs_tr("OBSTitles.DropShadow"), LayerEffectType::DropShadow);
+        add_action(obsgs_tr("OBSTitles.LongShadow"), LayerEffectType::LongShadow);
         QAction *chosen = menu.exec(btn_add->mapToGlobal(QPoint(0, btn_add->height())));
         if (!chosen) return;
         LayerEffect effect;
@@ -1827,6 +1829,7 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         if (effect.type == LayerEffectType::BackgroundColor) { layer_->background_enabled = true; layer_->background_enabled_prop.static_value = 1.0; }
         if (effect.type == LayerEffectType::Outline) { layer_->outline_enabled = true; if (layer_->stroke_width <= 0.0f) layer_->stroke_width = 4.0f; }
         if (effect.type == LayerEffectType::DropShadow) { layer_->shadow_enabled = true; layer_->shadow_enabled_prop.static_value = 1.0; }
+        if (effect.type == LayerEffectType::LongShadow) { layer_->long_shadow_enabled = true; if (layer_->long_shadow_length <= 0.0f) layer_->long_shadow_length = 120.0f; if (layer_->long_shadow_opacity <= 0.0f) layer_->long_shadow_opacity = 0.45f; }
         selected_index_ = (int)layer_->effects.size() - 1;
         rebuild_stack();
         emit_effect_changed();
@@ -1895,6 +1898,7 @@ void EffectsPanel::sync_legacy_enabled_flags()
     layer_->background_enabled = layer_effect_enabled(*layer_, LayerEffectType::BackgroundColor, false);
     layer_->outline_enabled = layer_effect_enabled(*layer_, LayerEffectType::Outline, false);
     layer_->shadow_enabled = layer_effect_enabled(*layer_, LayerEffectType::DropShadow, false);
+    layer_->long_shadow_enabled = layer_effect_enabled(*layer_, LayerEffectType::LongShadow, false);
     layer_->background_enabled_prop.static_value = layer_->background_enabled ? 1.0 : 0.0;
     layer_->shadow_enabled_prop.static_value = layer_->shadow_enabled ? 1.0 : 0.0;
 }
@@ -1902,7 +1906,7 @@ void EffectsPanel::sync_legacy_enabled_flags()
 void EffectsPanel::emit_effect_changed()
 {
     sync_legacy_enabled_flags();
-    emit property_changed(true);
+    emit property_changed(!numeric_label_dragging_);
 }
 
 void EffectsPanel::rebuild_stack()
@@ -1982,6 +1986,26 @@ void EffectsPanel::load_settings()
         return button;
     };
 
+    auto add_effect_row = [this, box, form](const QString &label_text, QWidget *field) {
+        if (label_text.isEmpty()) {
+            form->addRow(label_text, field);
+            return;
+        }
+        auto *label = new NumericDragLabel(label_text, field, box,
+                                           [this]() {
+                                               if (loading_values_) return;
+                                               numeric_label_dragging_ = true;
+                                               emit property_changed(true);
+                                           },
+                                           [this]() {
+                                               if (loading_values_) return;
+                                               numeric_label_dragging_ = false;
+                                               emit property_changed(true);
+                                           });
+        label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        form->addRow(label, field);
+    };
+
     if (selected_effect()->type == LayerEffectType::BackgroundColor) {
         auto *fill = combo(); fill->addItem(obsgs_tr("OBSTitles.Solid"), 0); fill->addItem(obsgs_tr("OBSTitles.Gradient"), 1); fill->setCurrentIndex(fill->findData(layer_->background_fill_type));
         auto *color = color_button(eval_background_color(*layer_, lt), [this, lt](uint32_t argb){ layer_->background_color = argb; set_background_color_channels_at(*layer_, lt, argb); });
@@ -2003,26 +2027,26 @@ void EffectsPanel::load_settings()
         auto *grad_scale = spin(0.01, 10.0, 0.05); grad_scale->setDecimals(2); grad_scale->setValue(layer_->background_gradient_scale);
         auto *grad_fx = spin(0.0, 1.0, 0.01); grad_fx->setDecimals(2); grad_fx->setValue(layer_->background_gradient_focal_x);
         auto *grad_fy = spin(0.0, 1.0, 0.01); grad_fy->setDecimals(2); grad_fy->setValue(layer_->background_gradient_focal_y);
-        form->addRow(obsgs_tr("OBSTitles.BackgroundFillTypeLabel"), fill);
-        form->addRow(obsgs_tr("OBSTitles.BackgroundColorLabel"), color);
-        form->addRow(obsgs_tr("OBSTitles.BackgroundOpacityLabel"), opacity);
-        form->addRow(obsgs_tr("OBSTitles.BackgroundHorizontalPaddingLabel"), pad_x);
-        form->addRow(obsgs_tr("OBSTitles.BackgroundVerticalPaddingLabel"), pad_y);
-        form->addRow(obsgs_tr("OBSTitles.BackgroundCornerLabel"), corner);
-        form->addRow(obsgs_tr("OBSTitles.GradientTypeLabel"), grad_type);
-        form->addRow(obsgs_tr("OBSTitles.StartColorLabel"), grad_start);
-        form->addRow(obsgs_tr("OBSTitles.EndColorLabel"), grad_end);
-        form->addRow(obsgs_tr("OBSTitles.StartStopLabel"), grad_start_pos);
-        form->addRow(obsgs_tr("OBSTitles.EndStopLabel"), grad_end_pos);
-        form->addRow(obsgs_tr("OBSTitles.StartOpacityLabel"), grad_start_op);
-        form->addRow(obsgs_tr("OBSTitles.EndOpacityLabel"), grad_end_op);
-        form->addRow(obsgs_tr("OBSTitles.OpacityLabel"), grad_op);
-        form->addRow(obsgs_tr("OBSTitles.AngleLabel"), grad_angle);
-        form->addRow(obsgs_tr("OBSTitles.CenterXLabel"), grad_cx);
-        form->addRow(obsgs_tr("OBSTitles.CenterYLabel"), grad_cy);
-        form->addRow(obsgs_tr("OBSTitles.ScaleLabel"), grad_scale);
-        form->addRow(obsgs_tr("OBSTitles.FocalXLabel"), grad_fx);
-        form->addRow(obsgs_tr("OBSTitles.FocalYLabel"), grad_fy);
+        add_effect_row(obsgs_tr("OBSTitles.BackgroundFillTypeLabel"), fill);
+        add_effect_row(obsgs_tr("OBSTitles.BackgroundColorLabel"), color);
+        add_effect_row(obsgs_tr("OBSTitles.BackgroundOpacityLabel"), opacity);
+        add_effect_row(obsgs_tr("OBSTitles.BackgroundHorizontalPaddingLabel"), pad_x);
+        add_effect_row(obsgs_tr("OBSTitles.BackgroundVerticalPaddingLabel"), pad_y);
+        add_effect_row(obsgs_tr("OBSTitles.BackgroundCornerLabel"), corner);
+        add_effect_row(obsgs_tr("OBSTitles.GradientTypeLabel"), grad_type);
+        add_effect_row(obsgs_tr("OBSTitles.StartColorLabel"), grad_start);
+        add_effect_row(obsgs_tr("OBSTitles.EndColorLabel"), grad_end);
+        add_effect_row(obsgs_tr("OBSTitles.StartStopLabel"), grad_start_pos);
+        add_effect_row(obsgs_tr("OBSTitles.EndStopLabel"), grad_end_pos);
+        add_effect_row(obsgs_tr("OBSTitles.StartOpacityLabel"), grad_start_op);
+        add_effect_row(obsgs_tr("OBSTitles.EndOpacityLabel"), grad_end_op);
+        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), grad_op);
+        add_effect_row(obsgs_tr("OBSTitles.AngleLabel"), grad_angle);
+        add_effect_row(obsgs_tr("OBSTitles.CenterXLabel"), grad_cx);
+        add_effect_row(obsgs_tr("OBSTitles.CenterYLabel"), grad_cy);
+        add_effect_row(obsgs_tr("OBSTitles.ScaleLabel"), grad_scale);
+        add_effect_row(obsgs_tr("OBSTitles.FocalXLabel"), grad_fx);
+        add_effect_row(obsgs_tr("OBSTitles.FocalYLabel"), grad_fy);
         connect(fill, QOverload<int>::of(&QComboBox::activated), this, [this, fill](int){ layer_->background_fill_type = fill->currentData().toInt(); emit_effect_changed(); });
         connect(grad_type, QOverload<int>::of(&QComboBox::activated), this, [this, grad_type](int){ layer_->background_gradient_type = grad_type->currentData().toInt(); emit_effect_changed(); });
         connect(grad_start_pos, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_start_pos = v; emit_effect_changed(); }});
@@ -2047,12 +2071,12 @@ void EffectsPanel::load_settings()
         auto *join = combo(); join->addItem(obsgs_tr("OBSTitles.Miter"), 0); join->addItem(obsgs_tr("OBSTitles.Round"), 1); join->addItem(obsgs_tr("OBSTitles.Bevel"), 2); join->setCurrentIndex(join->findData(layer_->outline_join_style));
         auto *position = combo(); position->addItem(obsgs_tr("OBSTitles.Back"), 0); position->addItem(obsgs_tr("OBSTitles.Front"), 1); position->setCurrentIndex(layer_->outline_on_front ? 1 : 0);
         auto *aa = new QCheckBox(obsgs_tr("OBSTitles.AntialiasOutline"), box); aa->setChecked(layer_->outline_antialias);
-        form->addRow(obsgs_tr("OBSTitles.ColorLabel"), color);
-        form->addRow(obsgs_tr("OBSTitles.ThicknessLabel"), width);
-        form->addRow(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
-        form->addRow(obsgs_tr("OBSTitles.JoinLabel"), join);
-        form->addRow(obsgs_tr("OBSTitles.PositionLabelIndented"), position);
-        form->addRow(QString(), aa);
+        add_effect_row(obsgs_tr("OBSTitles.ColorLabel"), color);
+        add_effect_row(obsgs_tr("OBSTitles.ThicknessLabel"), width);
+        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
+        add_effect_row(obsgs_tr("OBSTitles.JoinLabel"), join);
+        add_effect_row(obsgs_tr("OBSTitles.PositionLabelIndented"), position);
+        add_effect_row(QString(), aa);
         connect(width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->stroke_width = v; emit_effect_changed(); }});
         connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->outline_opacity = v; emit_effect_changed(); }});
         connect(join, QOverload<int>::of(&QComboBox::activated), this, [this, join](int){ layer_->outline_join_style = join->currentData().toInt(); emit_effect_changed(); });
@@ -2067,43 +2091,20 @@ void EffectsPanel::load_settings()
         auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(eval_shadow_angle(*layer_, lt));
         auto *blur = spin(0.0, 100.0, 1.0); blur->setValue(eval_shadow_blur(*layer_, lt));
         auto *spread = spin(0.0, 100.0, 1.0); spread->setValue(eval_shadow_spread(*layer_, lt));
-        auto *long_enabled = new QCheckBox(obsgs_tr("OBSTitles.EnableLongShadow"), box); long_enabled->setChecked(layer_->long_shadow_enabled);
-        auto *long_color = color_button(layer_->long_shadow_color, [this](uint32_t argb){ layer_->long_shadow_color = argb; });
-        auto *long_opacity = spin(0.0, 1.0, 0.05); long_opacity->setDecimals(2); long_opacity->setValue(layer_->long_shadow_opacity);
-        auto *long_length = spin(0.0, 1000.0, 5.0); long_length->setValue(layer_->long_shadow_length);
-        auto *long_angle = spin(-360.0, 360.0, 5.0); long_angle->setValue(layer_->long_shadow_angle);
-        auto *falloff = spin(0.0, 4.0, 0.1); falloff->setDecimals(2); falloff->setValue(layer_->long_shadow_falloff);
-        auto *long_blur_type = combo(); long_blur_type->addItem(obsgs_tr("OBSTitles.NoBlur"), (int)LongShadowBlurType::None); long_blur_type->addItem(obsgs_tr("OBSTitles.BoxBlur"), (int)LongShadowBlurType::Box); long_blur_type->addItem(obsgs_tr("OBSTitles.GaussianBlur"), (int)LongShadowBlurType::Gaussian); long_blur_type->addItem(obsgs_tr("OBSTitles.StackFastBlur"), (int)LongShadowBlurType::StackFast); long_blur_type->setCurrentIndex(long_blur_type->findData((int)layer_->long_shadow_blur_type));
-        auto *long_blur = spin(0.0, 100.0, 1.0); long_blur->setValue(layer_->long_shadow_blur);
-        form->addRow(obsgs_tr("OBSTitles.PresetLabel"), preset);
-        form->addRow(obsgs_tr("OBSTitles.ColorLabel"), color);
-        form->addRow(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
-        form->addRow(obsgs_tr("OBSTitles.DistanceLabel"), dist);
-        form->addRow(obsgs_tr("OBSTitles.AngleLabel"), angle);
-        form->addRow(obsgs_tr("OBSTitles.BlurTypeLabel"), blur_type);
-        form->addRow(obsgs_tr("OBSTitles.BlurLabel"), blur);
-        form->addRow(obsgs_tr("OBSTitles.SpreadLabel"), spread);
-        form->addRow(QString(), long_enabled);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowColor"), long_color);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowOpacity"), long_opacity);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowLength"), long_length);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowAngle"), long_angle);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowFalloff"), falloff);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowBlurType"), long_blur_type);
-        form->addRow(obsgs_tr("OBSTitles.LongShadowBlur"), long_blur);
+        add_effect_row(obsgs_tr("OBSTitles.PresetLabel"), preset);
+        add_effect_row(obsgs_tr("OBSTitles.ColorLabel"), color);
+        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
+        add_effect_row(obsgs_tr("OBSTitles.DistanceLabel"), dist);
+        add_effect_row(obsgs_tr("OBSTitles.AngleLabel"), angle);
+        add_effect_row(obsgs_tr("OBSTitles.BlurTypeLabel"), blur_type);
+        add_effect_row(obsgs_tr("OBSTitles.BlurLabel"), blur);
+        add_effect_row(obsgs_tr("OBSTitles.SpreadLabel"), spread);
         connect(blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, blur_type](int){ layer_->shadow_blur_type = (ShadowBlurType)blur_type->currentData().toInt(); emit_effect_changed(); });
         connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->shadow_opacity = v; set_animated_value(layer_->shadow_opacity_prop, lt, v); emit_effect_changed(); }});
         connect(dist, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->shadow_distance = v; set_animated_value(layer_->shadow_distance_prop, lt, v); emit_effect_changed(); }});
         connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->shadow_angle = v; set_animated_value(layer_->shadow_angle_prop, lt, v); emit_effect_changed(); }});
         connect(blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->shadow_blur = v; set_animated_value(layer_->shadow_blur_prop, lt, v); emit_effect_changed(); }});
         connect(spread, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->shadow_spread = v; set_animated_value(layer_->shadow_spread_prop, lt, v); emit_effect_changed(); }});
-        connect(long_enabled, &QCheckBox::toggled, this, [this](bool v){ if (!loading_values_) { layer_->long_shadow_enabled = v; emit_effect_changed(); }});
-        connect(long_opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_opacity = v; emit_effect_changed(); }});
-        connect(long_length, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_length = v; emit_effect_changed(); }});
-        connect(long_angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_angle = v; emit_effect_changed(); }});
-        connect(falloff, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_falloff = v; emit_effect_changed(); }});
-        connect(long_blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, long_blur_type](int){ layer_->long_shadow_blur_type = (LongShadowBlurType)long_blur_type->currentData().toInt(); emit_effect_changed(); });
-        connect(long_blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_blur = v; emit_effect_changed(); }});
         connect(preset, QOverload<int>::of(&QComboBox::activated), this, [this, preset]() {
             switch (preset->currentIndex()) {
             case 1: layer_->shadow_opacity = 0.35f; layer_->shadow_distance = 4.0f; layer_->shadow_blur = 10.0f; break;
@@ -2119,6 +2120,27 @@ void EffectsPanel::load_settings()
             emit_effect_changed();
             load_settings();
         });
+    } else if (selected_effect()->type == LayerEffectType::LongShadow) {
+        auto *color = color_button(layer_->long_shadow_color, [this](uint32_t argb){ layer_->long_shadow_color = argb; });
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(layer_->long_shadow_opacity);
+        auto *length = spin(0.0, 1000.0, 5.0); length->setValue(layer_->long_shadow_length);
+        auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(layer_->long_shadow_angle);
+        auto *falloff = spin(0.0, 4.0, 0.1); falloff->setDecimals(2); falloff->setValue(layer_->long_shadow_falloff);
+        auto *blur_type = combo(); blur_type->addItem(obsgs_tr("OBSTitles.NoBlur"), (int)LongShadowBlurType::None); blur_type->addItem(obsgs_tr("OBSTitles.BoxBlur"), (int)LongShadowBlurType::Box); blur_type->addItem(obsgs_tr("OBSTitles.GaussianBlur"), (int)LongShadowBlurType::Gaussian); blur_type->addItem(obsgs_tr("OBSTitles.StackFastBlur"), (int)LongShadowBlurType::StackFast); blur_type->setCurrentIndex(blur_type->findData((int)layer_->long_shadow_blur_type));
+        auto *blur = spin(0.0, 100.0, 1.0); blur->setValue(layer_->long_shadow_blur);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowColor"), color);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowOpacity"), opacity);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowLength"), length);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowAngle"), angle);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowFalloff"), falloff);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowBlurType"), blur_type);
+        add_effect_row(obsgs_tr("OBSTitles.LongShadowBlur"), blur);
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_opacity = v; emit_effect_changed(); }});
+        connect(length, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_length = v; emit_effect_changed(); }});
+        connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_angle = v; emit_effect_changed(); }});
+        connect(falloff, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_falloff = v; emit_effect_changed(); }});
+        connect(blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, blur_type](int){ layer_->long_shadow_blur_type = (LongShadowBlurType)blur_type->currentData().toInt(); emit_effect_changed(); });
+        connect(blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->long_shadow_blur = v; emit_effect_changed(); }});
     }
     settings_layout_->addWidget(box);
     settings_layout_->addStretch(1);

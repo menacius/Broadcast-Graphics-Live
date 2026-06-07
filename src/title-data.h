@@ -129,6 +129,7 @@ enum class LayerEffectType {
     BackgroundColor = 0,
     Outline = 1,
     DropShadow = 2,
+    LongShadow = 3,
 };
 
 struct LayerEffect {

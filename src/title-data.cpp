@@ -1022,7 +1022,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             LayerEffect effect;
-            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 2);
+            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 3);
             effect.enabled = json_bool(effect_json, "enabled", true);
             l->effects.push_back(effect);
         }
@@ -1217,6 +1217,17 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
         if (l->background_enabled) l->effects.push_back({LayerEffectType::BackgroundColor, true});
         if (l->outline_enabled) l->effects.push_back({LayerEffectType::Outline, true});
         if (l->shadow_enabled) l->effects.push_back({LayerEffectType::DropShadow, true});
+        if (l->long_shadow_enabled) l->effects.push_back({LayerEffectType::LongShadow, true});
+    } else if (l->long_shadow_enabled) {
+        bool has_long_shadow_effect = false;
+        for (const auto &effect : l->effects) {
+            if (effect.type == LayerEffectType::LongShadow) {
+                has_long_shadow_effect = true;
+                break;
+            }
+        }
+        if (!has_long_shadow_effect)
+            l->effects.push_back({LayerEffectType::LongShadow, true});
     }
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);
