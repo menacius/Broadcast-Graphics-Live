@@ -22,6 +22,7 @@
 
 #include "title-data.h"
 #include <QMainWindow>
+#include <QWidget>
 #include <QDockWidget>
 #include <QSplitter>
 #include <QListWidget>
@@ -55,6 +56,7 @@ class CanvasPreview;
 class LayerStack;
 class TimelineWidget;
 class PropertiesPanel;
+class EffectsPanel;
 class TitlePropertiesPanel;
 class QEvent;
 class QKeyEvent;
@@ -65,6 +67,7 @@ class QAction;
 class QToolButton;
 class QScrollBar;
 class QMenuBar;
+class QVBoxLayout;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -141,6 +144,7 @@ private:
     QWidget *create_effects_panel();
     QWidget *create_styles_panel();
     QWidget *create_color_swatches_panel();
+    void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     void load_editor_layout();
     void save_editor_layout() const;
     void reset_default_layout();
@@ -165,6 +169,7 @@ private:
     LayerStack      *layers_    = nullptr;
     TimelineWidget  *timeline_  = nullptr;
     PropertiesPanel *props_     = nullptr;
+    EffectsPanel    *effects_panel_ = nullptr;
     TitlePropertiesPanel *title_props_ = nullptr;
     QDockWidget     *layer_props_dock_ = nullptr;
     QDockWidget     *graphic_props_dock_ = nullptr;
@@ -545,6 +550,41 @@ private:
 /* ══════════════════════════════════════════════════════════════════
  *  PropertiesPanel  – right-side inspector
  * ══════════════════════════════════════════════════════════════════ */
+
+class EffectsPanel : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit EffectsPanel(QWidget *parent = nullptr);
+    void set_layer(std::shared_ptr<Layer> layer, double playhead);
+
+signals:
+    void property_changed(bool push_undo_snapshot = true);
+
+private:
+    void rebuild_stack();
+    void load_settings();
+    void build_settings();
+    LayerEffect *selected_effect();
+    const LayerEffect *selected_effect() const;
+    void sync_legacy_enabled_flags();
+    void emit_effect_changed();
+
+    std::shared_ptr<Layer> layer_;
+    double playhead_ = 0.0;
+    bool loading_values_ = false;
+    bool numeric_label_dragging_ = false;
+    int selected_index_ = -1;
+
+    QListWidget *effect_list_ = nullptr;
+    QWidget *settings_container_ = nullptr;
+    QVBoxLayout *settings_layout_ = nullptr;
+    QToolButton *btn_remove_ = nullptr;
+    QToolButton *btn_duplicate_ = nullptr;
+    QToolButton *btn_move_up_ = nullptr;
+    QToolButton *btn_move_down_ = nullptr;
+};
+
 class PropertiesPanel : public QScrollArea {
     Q_OBJECT
 

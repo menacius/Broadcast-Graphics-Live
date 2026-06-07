@@ -858,9 +858,20 @@ static cairo_pattern_t *create_background_gradient_pattern(const Layer &layer, d
     return pattern;
 }
 
+static bool layer_effect_enabled(const Layer &layer, LayerEffectType type, bool legacy_enabled)
+{
+    if (layer.effects.empty())
+        return legacy_enabled;
+    for (const auto &effect : layer.effects) {
+        if (effect.type == type && effect.enabled)
+            return true;
+    }
+    return false;
+}
+
 static bool eval_outline_enabled(const Layer &layer, double)
 {
-    return layer.outline_enabled;
+    return layer_effect_enabled(layer, LayerEffectType::Outline, layer.outline_enabled);
 }
 
 static uint32_t eval_outline_color(const Layer &layer, double)
@@ -915,9 +926,15 @@ static Qt::PenJoinStyle outline_pen_join_style(const Layer &layer)
 
 static bool eval_shadow_enabled(const Layer &layer, double t)
 {
-    return layer.shadow_enabled_prop.is_animated()
+    const bool legacy = layer.shadow_enabled_prop.is_animated()
         ? layer.shadow_enabled_prop.evaluate(t) >= 0.5
         : layer.shadow_enabled;
+    return layer_effect_enabled(layer, LayerEffectType::DropShadow, legacy);
+}
+
+static bool eval_long_shadow_enabled(const Layer &layer, double)
+{
+    return layer_effect_enabled(layer, LayerEffectType::LongShadow, layer.long_shadow_enabled);
 }
 
 static double eval_shadow_opacity(const Layer &layer, double t)
@@ -1020,7 +1037,7 @@ static ShadowRenderParams evaluated_shadow_params(const Layer &layer, double t)
         p.color = eval_shadow_color(layer, t);
         p.opacity = eval_shadow_opacity(layer, t) * (((p.color >> 24) & 0xFF) / 255.0);
     }
-    p.long_enabled = layer.long_shadow_enabled && layer.long_shadow_length > 0.0f && layer.long_shadow_opacity > 0.0f;
+    p.long_enabled = eval_long_shadow_enabled(layer, t) && layer.long_shadow_length > 0.0f && layer.long_shadow_opacity > 0.0f;
     if (p.long_enabled) {
         p.long_color = layer.long_shadow_color;
         p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0) * (((p.long_color >> 24) & 0xFF) / 255.0);
@@ -1633,9 +1650,10 @@ static QColor color_from_argb(uint32_t argb)
 
 static bool eval_background_enabled(const Layer &layer, double t)
 {
-    return layer.background_enabled_prop.is_animated()
+    const bool legacy = layer.background_enabled_prop.is_animated()
         ? layer.background_enabled_prop.evaluate(t) >= 0.5
         : layer.background_enabled;
+    return layer_effect_enabled(layer, LayerEffectType::BackgroundColor, legacy);
 }
 
 static double eval_background_opacity(const Layer &layer, double t)

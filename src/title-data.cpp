@@ -823,6 +823,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["parent_id"] = l.parent_id;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
+    json effects = json::array();
+    for (const auto &effect : l.effects)
+        effects.push_back({{"type", (int)effect.type}, {"enabled", effect.enabled}});
+    j["effects"] = effects;
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
 
@@ -1011,6 +1015,18 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedAlpha);
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
+    if (j.contains("effects") && j["effects"].is_array()) {
+        const size_t count = std::min(j["effects"].size(), (size_t)64);
+        l->effects.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &effect_json = j["effects"][i];
+            if (!effect_json.is_object()) continue;
+            LayerEffect effect;
+            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 3);
+            effect.enabled = json_bool(effect_json, "enabled", true);
+            l->effects.push_back(effect);
+        }
+    }
     l->in_time  = std::clamp(finite_or(json_double(j, "in_time", 0.0), 0.0), 0.0, kMaxDuration);
     l->out_time = std::clamp(finite_or(json_double(j, "out_time", 5.0), 5.0), l->in_time, kMaxDuration);
 
@@ -1197,6 +1213,22 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("shadow_color_r")) l->shadow_color_r = aprop_from_json(j["shadow_color_r"], "shadow_color_r");
     if (j.contains("shadow_color_g")) l->shadow_color_g = aprop_from_json(j["shadow_color_g"], "shadow_color_g");
     if (j.contains("shadow_color_b")) l->shadow_color_b = aprop_from_json(j["shadow_color_b"], "shadow_color_b");
+    if (!j.contains("effects")) {
+        if (l->background_enabled) l->effects.push_back({LayerEffectType::BackgroundColor, true});
+        if (l->outline_enabled) l->effects.push_back({LayerEffectType::Outline, true});
+        if (l->shadow_enabled) l->effects.push_back({LayerEffectType::DropShadow, true});
+        if (l->long_shadow_enabled) l->effects.push_back({LayerEffectType::LongShadow, true});
+    } else if (l->long_shadow_enabled) {
+        bool has_long_shadow_effect = false;
+        for (const auto &effect : l->effects) {
+            if (effect.type == LayerEffectType::LongShadow) {
+                has_long_shadow_effect = true;
+                break;
+            }
+        }
+        if (!has_long_shadow_effect)
+            l->effects.push_back({LayerEffectType::LongShadow, true});
+    }
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);
     if (j.contains("text_color_a")) l->text_color_a = aprop_from_json(j["text_color_a"], "text_color_a");
