@@ -723,6 +723,9 @@ private:
     QPushButton     *btn_kf_opacity_ = nullptr;
     QPushButton     *btn_kf_origin_x_ = nullptr;
     QPushButton     *btn_kf_origin_y_ = nullptr;
+    QPushButton     *btn_kf_paragraph_indent_left_ = nullptr;
+    QPushButton     *btn_kf_paragraph_indent_right_ = nullptr;
+    QPushButton     *btn_kf_paragraph_indent_first_line_ = nullptr;
     QPushButton     *btn_kf_width_ = nullptr;
     QPushButton     *btn_kf_height_ = nullptr;
     QPushButton     *btn_kf_text_color_ = nullptr;

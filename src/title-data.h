@@ -210,6 +210,9 @@ struct Layer {
     float       paragraph_indent_left = 0.0f;
     float       paragraph_indent_right = 0.0f;
     float       paragraph_indent_first_line = 0.0f;
+    AnimatedProperty paragraph_indent_left_prop { "paragraph_indent_left", 0.0 };
+    AnimatedProperty paragraph_indent_right_prop { "paragraph_indent_right", 0.0 };
+    AnimatedProperty paragraph_indent_first_line_prop { "paragraph_indent_first_line", 0.0 };
     float       paragraph_space_before = 0.0f;
     float       paragraph_space_after = 0.0f;
     bool        paragraph_hyphenate = false;

@@ -619,8 +619,32 @@ static QString overflow_layout_text(const QString &text, const Layer &layer)
     return text;
 }
 
+static double eval_paragraph_indent_left(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_indent_left_prop.is_animated()
+                          ? layer.paragraph_indent_left_prop.evaluate(t)
+                          : (double)layer.paragraph_indent_left,
+                      -10000.0, 10000.0);
+}
+
+static double eval_paragraph_indent_right(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_indent_right_prop.is_animated()
+                          ? layer.paragraph_indent_right_prop.evaluate(t)
+                          : (double)layer.paragraph_indent_right,
+                      -10000.0, 10000.0);
+}
+
+static double eval_paragraph_indent_first_line(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_indent_first_line_prop.is_animated()
+                          ? layer.paragraph_indent_first_line_prop.evaluate(t)
+                          : (double)layer.paragraph_indent_first_line,
+                      -10000.0, 10000.0);
+}
+
 static double horizontal_fit_scale(const QFont &font, const QRectF &rect,
-                                   const QString &text, const Layer &layer)
+                                   const QString &text, const Layer &layer, double)
 {
     if (layer.text_overflow_mode != 2) return 1.0;
     QFontMetricsF metrics(font);
@@ -634,13 +658,13 @@ static double horizontal_fit_scale(const QFont &font, const QRectF &rect,
 
 static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
                                        Qt::Alignment alignment, const QString &text,
-                                       const Layer &layer, double *fit_scale = nullptr)
+                                       const Layer &layer, double t, double *fit_scale = nullptr)
 {
     QPainterPath path;
     QFontMetricsF metrics(font);
-    const double indent_left = std::clamp((double)layer.paragraph_indent_left, -10000.0, 10000.0);
-    const double indent_right = std::clamp((double)layer.paragraph_indent_right, -10000.0, 10000.0);
-    const double first_indent = std::clamp((double)layer.paragraph_indent_first_line, -10000.0, 10000.0);
+    const double indent_left = eval_paragraph_indent_left(layer, t);
+    const double indent_right = eval_paragraph_indent_right(layer, t);
+    const double first_indent = eval_paragraph_indent_first_line(layer, t);
     const double space_before = std::clamp((double)layer.paragraph_space_before, -10000.0, 10000.0);
     const double space_after = std::clamp((double)layer.paragraph_space_after, -10000.0, 10000.0);
     const double paragraph_left = rect.left() + indent_left;
@@ -661,7 +685,7 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
         QRectF bounds = metrics.boundingRect(single);
         QRectF fit_rect(paragraph_left + first_indent, rect.top(),
                         std::max(1.0, paragraph_width - first_indent), rect.height());
-        double scale = horizontal_fit_scale(font, fit_rect, text, layer);
+        double scale = horizontal_fit_scale(font, fit_rect, text, layer, t);
         if (fit_scale) *fit_scale = scale;
         double visual_width = bounds.width() * scale;
         double x = aligned_x(fit_rect.left(), fit_rect.width(), visual_width, align_h);
@@ -1516,6 +1540,8 @@ static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
             &layer.rotation, &layer.opacity,
             &layer.box_width, &layer.box_height,
             &layer.origin_x_prop, &layer.origin_y_prop,
+            &layer.paragraph_indent_left_prop, &layer.paragraph_indent_right_prop,
+            &layer.paragraph_indent_first_line_prop,
             &layer.text_color_a, &layer.text_color_r,
             &layer.text_color_g, &layer.text_color_b,
             &layer.fill_color_a, &layer.fill_color_r,
@@ -1538,6 +1564,9 @@ static QString property_label(const std::string &name)
     if (name == "scale_x" || name == "scale_y") return obsgs_tr("OBSTitles.Scale");
     if (name == "box_width" || name == "box_height") return obsgs_tr("OBSTitles.Size");
     if (name == "origin_x" || name == "origin_y") return obsgs_tr("OBSTitles.Origin");
+    if (name == "paragraph_indent_left") return obsgs_tr("OBSTitles.ParagraphIndentLeft");
+    if (name == "paragraph_indent_right") return obsgs_tr("OBSTitles.ParagraphIndentRight");
+    if (name == "paragraph_indent_first_line") return obsgs_tr("OBSTitles.ParagraphIndentFirstLine");
     if (name == "text_color_a" || name == "text_color_r" ||
         name == "text_color_g" || name == "text_color_b") return obsgs_tr("OBSTitles.TextColor");
     if (name == "fill_color_a" || name == "fill_color_r" ||
@@ -7004,11 +7033,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     paragraph_layout->setContentsMargins(6, 5, 6, 6);
     paragraph_layout->setSpacing(7);
 
-    auto add_paragraph_section_label = [&](QVBoxLayout *layout, const QString &text) {
-        auto *label = new QLabel(text, paragraph_box_);
-        label->setStyleSheet("color:#9f9f9f;font-size:10px;");
-        layout->addWidget(label);
-    };
     auto add_paragraph_button = [&](QHBoxLayout *layout, QButtonGroup *group,
                                     const char *icon_name, const QString &tip, int id) {
         auto *button = mk_paragraph_alignment_button(icon_name, tip);
@@ -7029,19 +7053,28 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return spin;
     };
     auto add_metric_control = [&](QGridLayout *grid, int row, int column,
-                                  const char *icon_name, const QString &tip, QDoubleSpinBox *spin) {
-        auto *icon = new QLabel(paragraph_box_);
+                                  const char *icon_name, const QString &tip, QDoubleSpinBox *spin, QWidget *field) {
+        auto *icon = new NumericDragLabel(QString(), field, paragraph_box_,
+                                          [this]() {
+                                              if (loading_values_) return;
+                                              numeric_label_dragging_ = true;
+                                              emit property_changed(true);
+                                          },
+                                          [this]() {
+                                              if (loading_values_) return;
+                                              numeric_label_dragging_ = false;
+                                              emit property_changed(true);
+                                          });
         icon->setPixmap(obs_icon(icon_name).pixmap(16, 16));
-        icon->setToolTip(tip);
+        icon->setToolTip(QStringLiteral("%1\n%2").arg(tip, obsgs_tr("OBSTitles.DragNumericLabelTooltip")));
         icon->setAccessibleName(tip);
         icon->setFixedWidth(20);
         icon->setAlignment(Qt::AlignCenter);
         spin->setToolTip(tip);
         grid->addWidget(icon, row, column * 2, Qt::AlignRight | Qt::AlignVCenter);
-        grid->addWidget(spin, row, column * 2 + 1);
+        grid->addWidget(field, row, column * 2 + 1);
     };
 
-    add_paragraph_section_label(paragraph_layout, obsgs_tr("OBSTitles.HorizontalParagraph"));
     auto *horizontal_buttons = new QWidget(paragraph_box_);
     auto *horizontal_button_layout = new QHBoxLayout(horizontal_buttons);
     horizontal_button_layout->setContentsMargins(0, 0, 0, 0);
@@ -7060,29 +7093,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     horizontal_button_layout->addStretch(1);
     paragraph_layout->addWidget(horizontal_buttons);
 
-    spn_paragraph_indent_left_ = mk_paragraph_spin();
-    spn_paragraph_indent_right_ = mk_paragraph_spin();
-    spn_paragraph_indent_first_line_ = mk_paragraph_spin();
-    spn_paragraph_space_before_ = mk_paragraph_spin();
-    spn_paragraph_space_after_ = mk_paragraph_spin();
-    auto *metric_grid = new QGridLayout();
-    metric_grid->setContentsMargins(0, 0, 0, 0);
-    metric_grid->setHorizontalSpacing(8);
-    metric_grid->setVerticalSpacing(4);
-    metric_grid->setColumnStretch(1, 1);
-    metric_grid->setColumnStretch(3, 1);
-    add_metric_control(metric_grid, 0, 0, "paragraph-indent-left.svg", obsgs_tr("OBSTitles.ParagraphIndentLeft"), spn_paragraph_indent_left_);
-    add_metric_control(metric_grid, 0, 1, "paragraph-indent-right.svg", obsgs_tr("OBSTitles.ParagraphIndentRight"), spn_paragraph_indent_right_);
-    add_metric_control(metric_grid, 1, 0, "paragraph-indent-first-line.svg", obsgs_tr("OBSTitles.ParagraphIndentFirstLine"), spn_paragraph_indent_first_line_);
-    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", obsgs_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_);
-    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", obsgs_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_);
-    paragraph_layout->addLayout(metric_grid);
-
-    chk_paragraph_hyphenate_ = new QCheckBox(obsgs_tr("OBSTitles.Hyphenate"), paragraph_box_);
-    style_checkbox(chk_paragraph_hyphenate_);
-    paragraph_layout->addWidget(chk_paragraph_hyphenate_);
-
-    add_paragraph_section_label(paragraph_layout, obsgs_tr("OBSTitles.VerticalParagraph"));
     auto *vertical_buttons = new QWidget(paragraph_box_);
     auto *vertical_button_layout = new QHBoxLayout(vertical_buttons);
     vertical_button_layout->setContentsMargins(0, 0, 0, 0);
@@ -7094,6 +7104,34 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-bottom.svg", obsgs_tr("OBSTitles.AlignBottom"), 2);
     vertical_button_layout->addStretch(1);
     paragraph_layout->addWidget(vertical_buttons);
+
+    spn_paragraph_indent_left_ = mk_paragraph_spin();
+    spn_paragraph_indent_right_ = mk_paragraph_spin();
+    spn_paragraph_indent_first_line_ = mk_paragraph_spin();
+    btn_kf_paragraph_indent_left_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleParagraphIndentLeftKeyframe"));
+    btn_kf_paragraph_indent_right_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleParagraphIndentRightKeyframe"));
+    btn_kf_paragraph_indent_first_line_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleParagraphIndentFirstLineKeyframe"));
+    auto *paragraph_indent_left_field = with_kf(spn_paragraph_indent_left_, btn_kf_paragraph_indent_left_);
+    auto *paragraph_indent_right_field = with_kf(spn_paragraph_indent_right_, btn_kf_paragraph_indent_right_);
+    auto *paragraph_indent_first_line_field = with_kf(spn_paragraph_indent_first_line_, btn_kf_paragraph_indent_first_line_);
+    spn_paragraph_space_before_ = mk_paragraph_spin();
+    spn_paragraph_space_after_ = mk_paragraph_spin();
+    auto *metric_grid = new QGridLayout();
+    metric_grid->setContentsMargins(0, 0, 0, 0);
+    metric_grid->setHorizontalSpacing(8);
+    metric_grid->setVerticalSpacing(4);
+    metric_grid->setColumnStretch(1, 1);
+    metric_grid->setColumnStretch(3, 1);
+    add_metric_control(metric_grid, 0, 0, "paragraph-indent-left.svg", obsgs_tr("OBSTitles.ParagraphIndentLeft"), spn_paragraph_indent_left_, paragraph_indent_left_field);
+    add_metric_control(metric_grid, 0, 1, "paragraph-indent-right.svg", obsgs_tr("OBSTitles.ParagraphIndentRight"), spn_paragraph_indent_right_, paragraph_indent_right_field);
+    add_metric_control(metric_grid, 1, 0, "paragraph-indent-first-line.svg", obsgs_tr("OBSTitles.ParagraphIndentFirstLine"), spn_paragraph_indent_first_line_, paragraph_indent_first_line_field);
+    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", obsgs_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_, spn_paragraph_space_before_);
+    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", obsgs_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_, spn_paragraph_space_after_);
+    paragraph_layout->addLayout(metric_grid);
+
+    chk_paragraph_hyphenate_ = new QCheckBox(obsgs_tr("OBSTitles.Hyphenate"), paragraph_box_);
+    style_checkbox(chk_paragraph_hyphenate_);
+    paragraph_layout->addWidget(chk_paragraph_hyphenate_);
 
     vl->addWidget(paragraph_box_);
     make_collapsible(paragraph_box_);
@@ -7567,6 +7605,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     install_prop_delete_all(btn_kf_opacity_, &Layer::opacity);
     install_prop_delete_all(btn_kf_origin_x_, &Layer::origin_x_prop);
     install_prop_delete_all(btn_kf_origin_y_, &Layer::origin_y_prop);
+    install_prop_delete_all(btn_kf_paragraph_indent_left_, &Layer::paragraph_indent_left_prop);
+    install_prop_delete_all(btn_kf_paragraph_indent_right_, &Layer::paragraph_indent_right_prop);
+    install_prop_delete_all(btn_kf_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line_prop);
     install_prop_delete_all(btn_kf_width_, &Layer::box_width);
     install_prop_delete_all(btn_kf_height_, &Layer::box_height);
     install_group_delete_all(btn_kf_text_color_, {&Layer::text_color_a, &Layer::text_color_r,
@@ -7846,9 +7887,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     if (can_edit()) { layer_.get()->*field = (float)value; emit_change(); }
                 });
     };
-    connect_paragraph_spin(spn_paragraph_indent_left_, &Layer::paragraph_indent_left);
-    connect_paragraph_spin(spn_paragraph_indent_right_, &Layer::paragraph_indent_right);
-    connect_paragraph_spin(spn_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line);
+    auto connect_keyframed_paragraph_spin = [this, can_edit, local_time, emit_change](QDoubleSpinBox *spin, float Layer::*field, AnimatedProperty Layer::*prop) {
+        if (!spin) return;
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this, can_edit, local_time, emit_change, field, prop](double value) {
+                    if (can_edit()) {
+                        layer_.get()->*field = (float)value;
+                        set_animated_value(layer_.get()->*prop, local_time(), value);
+                        emit_change();
+                    }
+                });
+    };
+    connect_keyframed_paragraph_spin(spn_paragraph_indent_left_, &Layer::paragraph_indent_left, &Layer::paragraph_indent_left_prop);
+    connect_keyframed_paragraph_spin(spn_paragraph_indent_right_, &Layer::paragraph_indent_right, &Layer::paragraph_indent_right_prop);
+    connect_keyframed_paragraph_spin(spn_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line, &Layer::paragraph_indent_first_line_prop);
     connect_paragraph_spin(spn_paragraph_space_before_, &Layer::paragraph_space_before);
     connect_paragraph_spin(spn_paragraph_space_after_, &Layer::paragraph_space_after);
     connect(chk_paragraph_hyphenate_, &QCheckBox::toggled,
@@ -8308,6 +8360,24 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
+    connect(btn_kf_paragraph_indent_left_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->paragraph_indent_left_prop, local_time(), spn_paragraph_indent_left_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_paragraph_indent_right_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->paragraph_indent_right_prop, local_time(), spn_paragraph_indent_right_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_paragraph_indent_first_line_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->paragraph_indent_first_line_prop, local_time(), spn_paragraph_indent_first_line_->value());
+        load_values();
+        emit_change();
+    });
     connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
         if (!can_edit()) return;
         toggle_keyframe(layer_->box_width, local_time(), spn_layer_w_->value());
@@ -8594,6 +8664,7 @@ void PropertiesPanel::load_values()
         if (spn_long_shadow_blur_) spn_long_shadow_blur_->setValue(8.0);
         for (auto *b : {btn_kf_pos_x_, btn_kf_pos_y_, btn_kf_scale_x_, btn_kf_scale_y_,
                         btn_kf_rotation_, btn_kf_opacity_, btn_kf_origin_x_, btn_kf_origin_y_,
+                        btn_kf_paragraph_indent_left_, btn_kf_paragraph_indent_right_, btn_kf_paragraph_indent_first_line_,
                         btn_kf_width_, btn_kf_height_,
                         btn_kf_text_color_, btn_kf_fill_color_, btn_kf_background_enabled_,
                         btn_kf_background_color_, btn_kf_background_opacity_, btn_kf_background_padding_x_,
@@ -8876,6 +8947,9 @@ void PropertiesPanel::load_values()
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
     set_prop_kf_icon(btn_kf_origin_x_, layer_->origin_x_prop);
     set_prop_kf_icon(btn_kf_origin_y_, layer_->origin_y_prop);
+    set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
+    set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
+    set_prop_kf_icon(btn_kf_paragraph_indent_first_line_, layer_->paragraph_indent_first_line_prop);
     set_prop_kf_icon(btn_kf_width_, layer_->box_width);
     set_prop_kf_icon(btn_kf_height_, layer_->box_height);
     set_group_kf_icon(btn_kf_text_color_, {&layer_->text_color_a, &layer_->text_color_r,
@@ -8962,7 +9036,7 @@ void PropertiesPanel::load_values()
     if (lbl_text_fit_scale_) {
         QFont preview_font = font_for_layer(*layer_);
         QRectF preview_rect(0, 0, eval_box_width(*layer_, lt), eval_box_height(*layer_, lt));
-        double scale = horizontal_fit_scale(preview_font, preview_rect, display_text_for_style(*layer_), *layer_);
+        double scale = horizontal_fit_scale(preview_font, preview_rect, display_text_for_style(*layer_), *layer_, lt);
         lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat").arg((int)std::round(scale * 100.0)));
     }
     chk_expose_text_->setChecked(layer_->expose_text);
@@ -8980,9 +9054,9 @@ void PropertiesPanel::load_values()
         else if (auto *fallback = grp_text_valign_->button(1))
             fallback->setChecked(true);
     }
-    if (spn_paragraph_indent_left_) spn_paragraph_indent_left_->setValue(layer_->paragraph_indent_left);
-    if (spn_paragraph_indent_right_) spn_paragraph_indent_right_->setValue(layer_->paragraph_indent_right);
-    if (spn_paragraph_indent_first_line_) spn_paragraph_indent_first_line_->setValue(layer_->paragraph_indent_first_line);
+    if (spn_paragraph_indent_left_) spn_paragraph_indent_left_->setValue(eval_paragraph_indent_left(*layer_, lt));
+    if (spn_paragraph_indent_right_) spn_paragraph_indent_right_->setValue(eval_paragraph_indent_right(*layer_, lt));
+    if (spn_paragraph_indent_first_line_) spn_paragraph_indent_first_line_->setValue(eval_paragraph_indent_first_line(*layer_, lt));
     if (spn_paragraph_space_before_) spn_paragraph_space_before_->setValue(layer_->paragraph_space_before);
     if (spn_paragraph_space_after_) spn_paragraph_space_after_->setValue(layer_->paragraph_space_after);
     if (chk_paragraph_hyphenate_) chk_paragraph_hyphenate_->setChecked(layer_->paragraph_hyphenate);

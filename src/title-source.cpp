@@ -231,6 +231,9 @@ static bool layer_has_animation(const Layer &layer)
            layer.box_height.is_animated() ||
            layer.origin_x_prop.is_animated() ||
            layer.origin_y_prop.is_animated() ||
+           layer.paragraph_indent_left_prop.is_animated() ||
+           layer.paragraph_indent_right_prop.is_animated() ||
+           layer.paragraph_indent_first_line_prop.is_animated() ||
            layer.shadow_enabled_prop.is_animated() ||
            layer.shadow_opacity_prop.is_animated() ||
            layer.shadow_distance_prop.is_animated() ||
@@ -282,6 +285,9 @@ static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_ti
     has_bounds |= include_property_bounds(layer, layer.box_height, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.origin_x_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.origin_y_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.paragraph_indent_left_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.paragraph_indent_right_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.paragraph_indent_first_line_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.shadow_enabled_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.shadow_opacity_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.shadow_distance_prop, first_time, last_time);
@@ -1359,8 +1365,32 @@ static QString overflow_layout_text(const QString &text, const Layer &layer)
     return text;
 }
 
+static double eval_paragraph_indent_left(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_indent_left_prop.is_animated()
+                          ? layer.paragraph_indent_left_prop.evaluate(t)
+                          : (double)layer.paragraph_indent_left,
+                      -10000.0, 10000.0);
+}
+
+static double eval_paragraph_indent_right(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_indent_right_prop.is_animated()
+                          ? layer.paragraph_indent_right_prop.evaluate(t)
+                          : (double)layer.paragraph_indent_right,
+                      -10000.0, 10000.0);
+}
+
+static double eval_paragraph_indent_first_line(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_indent_first_line_prop.is_animated()
+                          ? layer.paragraph_indent_first_line_prop.evaluate(t)
+                          : (double)layer.paragraph_indent_first_line,
+                      -10000.0, 10000.0);
+}
+
 static double horizontal_fit_scale(const QFont &font, const QRectF &rect,
-                                   const QString &text, const Layer &layer)
+                                   const QString &text, const Layer &layer, double)
 {
     if (layer.text_overflow_mode != 2) return 1.0;
     QFontMetricsF metrics(font);
@@ -1374,13 +1404,13 @@ static double horizontal_fit_scale(const QFont &font, const QRectF &rect,
 
 static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
                                        Qt::Alignment alignment, const QString &text,
-                                       const Layer &layer, double *fit_scale = nullptr)
+                                       const Layer &layer, double t, double *fit_scale = nullptr)
 {
     QPainterPath path;
     QFontMetricsF metrics(font);
-    const double indent_left = std::clamp((double)layer.paragraph_indent_left, -10000.0, 10000.0);
-    const double indent_right = std::clamp((double)layer.paragraph_indent_right, -10000.0, 10000.0);
-    const double first_indent = std::clamp((double)layer.paragraph_indent_first_line, -10000.0, 10000.0);
+    const double indent_left = eval_paragraph_indent_left(layer, t);
+    const double indent_right = eval_paragraph_indent_right(layer, t);
+    const double first_indent = eval_paragraph_indent_first_line(layer, t);
     const double space_before = std::clamp((double)layer.paragraph_space_before, -10000.0, 10000.0);
     const double space_after = std::clamp((double)layer.paragraph_space_after, -10000.0, 10000.0);
     const double paragraph_left = rect.left() + indent_left;
@@ -1401,7 +1431,7 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
         QRectF bounds = metrics.boundingRect(single);
         QRectF fit_rect(paragraph_left + first_indent, rect.top(),
                         std::max(1.0, paragraph_width - first_indent), rect.height());
-        double scale = horizontal_fit_scale(font, fit_rect, text, layer);
+        double scale = horizontal_fit_scale(font, fit_rect, text, layer, t);
         if (fit_scale) *fit_scale = scale;
         double visual_width = bounds.width() * scale;
         double x = aligned_x(fit_rect.left(), fit_rect.width(), visual_width, align_h);
@@ -1710,7 +1740,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
     QPainterPath text_path = layer.type == LayerType::Ticker
         ? ticker_text_path(font, text_rect, align, text, layer)
-        : text_overflow_path(font, text_rect, align, text, layer);
+        : text_overflow_path(font, text_rect, align, text, layer, t);
     text_path = apply_vertical_character_scale(text_path, text_rect, align, layer);
     if (std::abs(layer.baseline_shift) > 0.0001)
         text_path.translate(0.0, -layer.baseline_shift);
