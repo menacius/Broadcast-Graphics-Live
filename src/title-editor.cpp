@@ -85,6 +85,7 @@
 #include <QTextFragment>
 #include <QTextLayout>
 #include <QTextOption>
+#include <QAbstractTextDocumentLayout>
 #include <QDateTime>
 #include <QTransform>
 #include <QLinearGradient>
@@ -5648,8 +5649,10 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->setFrameShape(QFrame::NoFrame);
     inline_text_editor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     inline_text_editor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    inline_text_editor_->setLineWrapMode(QTextEdit::WidgetWidth);
+    inline_text_editor_->setLineWrapMode(QTextEdit::FixedPixelWidth);
     inline_text_editor_->setCursorWidth(2);
+    inline_text_editor_->setContentsMargins(0, 0, 0, 0);
+    inline_text_editor_->setViewportMargins(0, 0, 0, 0);
     inline_text_editor_->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->setStyleSheet(
@@ -7072,8 +7075,14 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
 
     const QRectF local = layer_local_rect(layer);
     const QRectF text_rect = text_rect_for_style(local, layer);
-    doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width() * visual_scale));
-    inline_text_editor_->setLineWrapMode(layer.text_overflow_mode == 0 ? QTextEdit::WidgetWidth : QTextEdit::NoWrap);
+    const int wrap_width_px = std::max(1, (int)std::ceil(text_rect.width() * visual_scale));
+    doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : (qreal)wrap_width_px);
+    doc->setPageSize(layer.text_overflow_mode == 2
+                         ? QSizeF(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX)
+                         : QSizeF(wrap_width_px, QWIDGETSIZE_MAX));
+    inline_text_editor_->setLineWrapMode(layer.text_overflow_mode == 0 ? QTextEdit::FixedPixelWidth : QTextEdit::NoWrap);
+    inline_text_editor_->setLineWrapColumnOrWidth(wrap_width_px);
+    inline_text_editor_->setWordWrapMode(option.wrapMode());
 
     QTextBlockFormat block_format;
     block_format.setAlignment(align);
@@ -7106,6 +7115,8 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
         format_cursor.mergeCharFormat(char_format);
     }
     inline_text_editor_->mergeCurrentCharFormat(char_format);
+    if (auto *layout = doc->documentLayout())
+        layout->documentSize();
     inline_text_editor_->setTextCursor(saved_cursor);
 }
 
@@ -7161,7 +7172,13 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
 
     const double visual_scale = inline_text_visual_scale(layer);
     QTextDocument *doc = inline_text_editor_->document();
-    const QSizeF doc_size = doc ? doc->size() : QSizeF();
+    QSizeF doc_size;
+    if (doc) {
+        if (auto *layout = doc->documentLayout())
+            doc_size = layout->documentSize();
+        if (!doc_size.isValid() || doc_size.isEmpty())
+            doc_size = doc->size();
+    }
     const double doc_width = layer.text_overflow_mode == 2 && doc_size.width() > 0.0
                                  ? doc_size.width() / std::max(0.0001, visual_scale)
                                  : text_rect.width();
@@ -7196,31 +7213,42 @@ void CanvasPreview::position_text_editor()
         return;
     }
 
+    const double visual_scale = inline_text_visual_scale(*layer);
     configure_inline_text_editor(*layer);
     {
         QSignalBlocker blocker(inline_text_editor_);
         const QTextCursor saved_cursor = inline_text_editor_->textCursor();
         const int anchor = saved_cursor.anchor();
         const int position = saved_cursor.position();
-        const double visual_scale = inline_text_visual_scale(*layer);
-        if (!layer->rich_text.plain_text.empty() || !layer->rich_text.ranges.empty()) {
-            populate_qtext_document_from_rich_text(inline_text_editor_->document(), layer->rich_text, visual_scale);
-        } else if (!layer->rich_text_html.empty()) {
-            inline_text_editor_->setHtml(scale_rich_text_font_sizes(QString::fromStdString(layer->rich_text_html), visual_scale));
-        } else {
-            inline_text_editor_->setPlainText(QString::fromStdString(layer->text_content));
-            QTextCursor all(inline_text_editor_->document());
-            all.select(QTextCursor::Document);
-            RichTextCharFormat layer_format = layer_char_format_for_editor(*layer);
-            all.mergeCharFormat(qtext_format_from_rich_text_format(layer_format, visual_scale));
+        const QString layer_plain = !layer->rich_text.empty()
+                                        ? QString::fromStdString(layer->rich_text.plain_text)
+                                        : QString::fromStdString(layer->text_content);
+        const bool scale_changed = std::abs(inline_text_last_visual_scale_ - visual_scale) > 0.001;
+        const bool text_changed_externally = inline_text_editor_->toPlainText() != layer_plain;
+        if (scale_changed || text_changed_externally) {
+            if (!layer->rich_text.plain_text.empty() || !layer->rich_text.ranges.empty()) {
+                populate_qtext_document_from_rich_text(inline_text_editor_->document(), layer->rich_text, visual_scale);
+            } else if (!layer->rich_text_html.empty()) {
+                inline_text_editor_->setHtml(scale_rich_text_font_sizes(QString::fromStdString(layer->rich_text_html), visual_scale));
+            } else {
+                inline_text_editor_->setPlainText(QString::fromStdString(layer->text_content));
+                QTextCursor all(inline_text_editor_->document());
+                all.select(QTextCursor::Document);
+                RichTextCharFormat layer_format = layer_char_format_for_editor(*layer);
+                all.mergeCharFormat(qtext_format_from_rich_text_format(layer_format, visual_scale));
+            }
+            inline_text_last_visual_scale_ = visual_scale;
+            QTextCursor restored(inline_text_editor_->document());
+            const int text_len = inline_text_editor_->toPlainText().size();
+            restored.setPosition(std::clamp(anchor, 0, text_len));
+            restored.setPosition(std::clamp(position, 0, text_len), QTextCursor::KeepAnchor);
+            inline_text_editor_->setTextCursor(restored);
+            if (auto *doc = inline_text_editor_->document())
+                doc->setModified(false);
         }
-        QTextCursor restored(inline_text_editor_->document());
-        const int text_len = inline_text_editor_->toPlainText().size();
-        restored.setPosition(std::clamp(anchor, 0, text_len));
-        restored.setPosition(std::clamp(position, 0, text_len), QTextCursor::KeepAnchor);
-        inline_text_editor_->setTextCursor(restored);
         if (auto *doc = inline_text_editor_->document())
-            doc->setModified(false);
+            if (auto *layout = doc->documentLayout())
+                layout->documentSize();
     }
 
     const QRectF document_rect = inline_text_document_local_rect(*layer);
@@ -7230,7 +7258,11 @@ void CanvasPreview::position_text_editor()
          << canvas_to_view(layer_to_canvas(*layer, document_rect.bottomRight()))
          << canvas_to_view(layer_to_canvas(*layer, document_rect.bottomLeft()));
     QRectF bounds = poly.boundingRect();
-    inline_text_editor_->setGeometry(bounds.toAlignedRect().intersected(rect()));
+    const int left = (int)std::floor(bounds.left());
+    const int top = (int)std::floor(bounds.top());
+    const int right = (int)std::ceil(bounds.right());
+    const int bottom = (int)std::ceil(bounds.bottom());
+    inline_text_editor_->setGeometry(QRect(left, top, std::max(1, right - left), std::max(1, bottom - top)));
 }
 
 void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
@@ -7250,6 +7282,7 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
     } else {
         inline_text_editor_->setPlainText(QString::fromStdString(layer->text_content));
     }
+    inline_text_last_visual_scale_ = visual_scale;
 
     QTextCursor cursor = inline_text_editor_->textCursor();
     cursor.select(QTextCursor::Document);
@@ -7279,6 +7312,7 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
         sync_inline_text_layer(true);
 
     inline_text_layer_id_.clear();
+    inline_text_last_visual_scale_ = 0.0;
     inline_text_editor_->hide();
     {
         QSignalBlocker blocker(inline_text_editor_);

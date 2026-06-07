@@ -388,6 +388,7 @@ private:
     bool drawing_shape_changed_ = false;
     QTextEdit *inline_text_editor_ = nullptr;
     std::string inline_text_layer_id_;
+    double inline_text_last_visual_scale_ = 0.0;
     bool committing_inline_text_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
