@@ -2091,8 +2091,8 @@ static void blend_color_mode(double br, double bg, double bb, double sr, double 
 {
     QColor base = QColor::fromRgbF(std::clamp(br, 0.0, 1.0), std::clamp(bg, 0.0, 1.0), std::clamp(bb, 0.0, 1.0));
     QColor src = QColor::fromRgbF(std::clamp(sr, 0.0, 1.0), std::clamp(sg, 0.0, 1.0), std::clamp(sb, 0.0, 1.0));
-    qreal bh, bs, bl, ba;
-    qreal sh, ss, sl, sa;
+    float bh, bs, bl, ba;
+    float sh, ss, sl, sa;
     base.getHslF(&bh, &bs, &bl, &ba);
     src.getHslF(&sh, &ss, &sl, &sa);
     QColor out;
