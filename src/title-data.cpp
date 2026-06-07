@@ -824,8 +824,22 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
     json effects = json::array();
-    for (const auto &effect : l.effects)
-        effects.push_back({{"type", (int)effect.type}, {"enabled", effect.enabled}});
+    for (const auto &effect : l.effects) {
+        effects.push_back({{"type", (int)effect.type},
+                           {"enabled", effect.enabled},
+                           {"brightness", effect.brightness},
+                           {"contrast", effect.contrast},
+                           {"saturation", effect.saturation},
+                           {"tint_color", effect.tint_color},
+                           {"tint_amount", effect.tint_amount},
+                           {"effect_color", effect.effect_color},
+                           {"effect_opacity", effect.effect_opacity},
+                           {"effect_size", effect.effect_size},
+                           {"effect_distance", effect.effect_distance},
+                           {"effect_angle", effect.effect_angle},
+                           {"effect_blur_type", effect.effect_blur_type},
+                           {"blend_mode", (int)effect.blend_mode}});
+    }
     j["effects"] = effects;
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
@@ -1022,8 +1036,42 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             LayerEffect effect;
-            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 3);
+            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 9);
             effect.enabled = json_bool(effect_json, "enabled", true);
+            switch (effect.type) {
+            case LayerEffectType::DropShadow:
+            case LayerEffectType::LongShadow:
+            case LayerEffectType::InnerShadow:
+                effect.blend_mode = EffectBlendMode::Multiply;
+                break;
+            case LayerEffectType::ColorOverlay:
+                effect.blend_mode = EffectBlendMode::Color;
+                break;
+            case LayerEffectType::Glow:
+            case LayerEffectType::InnerGlow:
+                effect.blend_mode = EffectBlendMode::Additive;
+                break;
+            default:
+                effect.blend_mode = EffectBlendMode::Normal;
+                break;
+            }
+            effect.brightness = (float)std::clamp(finite_or(json_double(effect_json, "brightness", 0.0), 0.0), -1.0, 1.0);
+            effect.contrast = (float)std::clamp(finite_or(json_double(effect_json, "contrast", 1.0), 1.0), 0.0, 4.0);
+            effect.saturation = (float)std::clamp(finite_or(json_double(effect_json, "saturation", 1.0), 1.0), 0.0, 4.0);
+            effect.tint_color = json_color(effect_json, "tint_color", (uint32_t)0xFFFFFFFF);
+            effect.tint_amount = (float)std::clamp(finite_or(json_double(effect_json, "tint_amount", 1.0), 1.0), 0.0, 1.0);
+            effect.effect_color = json_color(effect_json, "effect_color", effect.tint_color);
+            effect.effect_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_opacity", effect.tint_amount), effect.tint_amount), 0.0, 1.0);
+            effect.effect_size = (float)std::clamp(finite_or(json_double(effect_json, "effect_size", 16.0), 16.0), 0.0, 512.0);
+            effect.effect_distance = (float)std::clamp(finite_or(json_double(effect_json, "effect_distance", 8.0), 8.0), 0.0, 4096.0);
+            effect.effect_angle = (float)finite_or(json_double(effect_json, "effect_angle", 135.0), 135.0);
+            effect.effect_blur_type = std::clamp(json_int(effect_json, "effect_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::AlphaMask);
+            if (effect_json.contains("blend_mode"))
+                effect.blend_mode = (EffectBlendMode)std::clamp(json_int(effect_json, "blend_mode", (int)effect.blend_mode), 0, (int)EffectBlendMode::Color);
+            if (effect.type == LayerEffectType::ColorOverlay) {
+                effect.tint_color = effect.effect_color;
+                effect.tint_amount = effect.effect_opacity;
+            }
             l->effects.push_back(effect);
         }
     }
@@ -1213,11 +1261,23 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("shadow_color_r")) l->shadow_color_r = aprop_from_json(j["shadow_color_r"], "shadow_color_r");
     if (j.contains("shadow_color_g")) l->shadow_color_g = aprop_from_json(j["shadow_color_g"], "shadow_color_g");
     if (j.contains("shadow_color_b")) l->shadow_color_b = aprop_from_json(j["shadow_color_b"], "shadow_color_b");
+    auto make_legacy_effect = [](LayerEffectType type) {
+        LayerEffect effect;
+        effect.type = type;
+        effect.enabled = true;
+        if (type == LayerEffectType::DropShadow || type == LayerEffectType::LongShadow || type == LayerEffectType::InnerShadow)
+            effect.blend_mode = EffectBlendMode::Multiply;
+        else if (type == LayerEffectType::ColorOverlay)
+            effect.blend_mode = EffectBlendMode::Color;
+        else if (type == LayerEffectType::Glow || type == LayerEffectType::InnerGlow)
+            effect.blend_mode = EffectBlendMode::Additive;
+        return effect;
+    };
     if (!j.contains("effects")) {
-        if (l->background_enabled) l->effects.push_back({LayerEffectType::BackgroundColor, true});
-        if (l->outline_enabled) l->effects.push_back({LayerEffectType::Outline, true});
-        if (l->shadow_enabled) l->effects.push_back({LayerEffectType::DropShadow, true});
-        if (l->long_shadow_enabled) l->effects.push_back({LayerEffectType::LongShadow, true});
+        if (l->background_enabled) l->effects.push_back(make_legacy_effect(LayerEffectType::BackgroundColor));
+        if (l->outline_enabled) l->effects.push_back(make_legacy_effect(LayerEffectType::Outline));
+        if (l->shadow_enabled) l->effects.push_back(make_legacy_effect(LayerEffectType::DropShadow));
+        if (l->long_shadow_enabled) l->effects.push_back(make_legacy_effect(LayerEffectType::LongShadow));
     } else if (l->long_shadow_enabled) {
         bool has_long_shadow_effect = false;
         for (const auto &effect : l->effects) {
@@ -1227,7 +1287,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             }
         }
         if (!has_long_shadow_effect)
-            l->effects.push_back({LayerEffectType::LongShadow, true});
+            l->effects.push_back(make_legacy_effect(LayerEffectType::LongShadow));
     }
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);
