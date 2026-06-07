@@ -3019,10 +3019,15 @@ void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPo
     layer->shape_type = shape_type;
     layer->pos_x.static_value = canvas_pt.x();
     layer->pos_y.static_value = canvas_pt.y();
-    layer->rect_width = 1.0f;
-    layer->rect_height = 1.0f;
-    layer->box_width.static_value = layer->rect_width;
-    layer->box_height.static_value = layer->rect_height;
+    if (shape_type == ShapeType::Ellipse || shape_type == ShapeType::Triangle ||
+        shape_type == ShapeType::Star || shape_type == ShapeType::Polygon ||
+        shape_type == ShapeType::Diamond) {
+        const float size = std::min(layer->rect_width, layer->rect_height);
+        layer->rect_width = size;
+        layer->rect_height = size;
+        layer->box_width.static_value = layer->rect_width;
+        layer->box_height.static_value = layer->rect_height;
+    }
     if (shape_type == ShapeType::RoundedRectangle)
         layer->corner_radius = 18.0f;
 
@@ -3044,10 +3049,6 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
     if (!layer) return;
     layer->pos_x.static_value = canvas_pt.x();
     layer->pos_y.static_value = canvas_pt.y();
-    layer->rect_width = 1.0f;
-    layer->rect_height = 1.0f;
-    layer->box_width.static_value = layer->rect_width;
-    layer->box_height.static_value = layer->rect_height;
     layer->rich_text_html.clear();
 
     canvas_created_shape_layer_id_ = layer->id;
@@ -4571,7 +4572,7 @@ void TitleEditor::restore_undo_snapshot(int index)
     if (sel_layer_id_.empty() && !title_->layers.empty())
         sel_layer_id_ = title_->layers.back()->id;
     update_title_bar();
-    canvas_->set_title(title_);
+    canvas_->set_title(title_, true);
     layers_->set_title(title_);
     timeline_->set_title(title_);
     props_->set_title(title_);
@@ -4982,15 +4983,36 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
 }
 
 
-void CanvasPreview::set_title(std::shared_ptr<Title> t)
+void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
 {
     commit_text_edit(true);
     title_ = t;
     dirty_ = true;
-    pan_offset_ = QPointF(0, 0);
-    if (title_) fit_canvas(fit_zoom_up_to_100_);
-    else update();
+    if (!preserve_view) {
+        pan_offset_ = QPointF(0, 0);
+        if (title_) fit_canvas(fit_zoom_up_to_100_);
+        else update();
+    } else {
+        update();
+    }
     position_text_editor();
+}
+
+CanvasPreview::ViewState CanvasPreview::view_state() const
+{
+    return ViewState{zoom_percent_, fit_zoom_active_, fit_zoom_up_to_100_, pan_offset_};
+}
+
+void CanvasPreview::restore_view_state(const ViewState &state)
+{
+    zoom_percent_ = std::clamp(state.zoom_percent, 5, 1600);
+    fit_zoom_active_ = state.fit_zoom_active;
+    fit_zoom_up_to_100_ = state.fit_zoom_up_to_100;
+    pan_offset_ = state.pan_offset;
+    dirty_ = true;
+    emit zoom_percent_changed(zoom_percent_);
+    position_text_editor();
+    update();
 }
 
 void CanvasPreview::set_playhead(double t)
@@ -6078,14 +6100,52 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         p.drawRect(marquee);
     }
 }
-void CanvasPreview::update_shape_drawing(const QPointF &view_pt)
+double CanvasPreview::toolbar_draw_aspect_ratio() const
 {
-    if (!drawing_shape_) return;
-    shape_draw_current_canvas_ = view_to_canvas(view_pt);
-    QRectF rect(shape_draw_start_canvas_, shape_draw_current_canvas_);
+    if (active_tool_ == CanvasTool::Text) {
+        const double default_width = title_ ? std::max(1.0, title_->width * 0.5) : 960.0;
+        return default_width / 160.0;
+    }
+    return 1.0;
+}
+
+QRectF CanvasPreview::toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardModifiers modifiers) const
+{
+    QPointF delta = canvas_pt - shape_draw_start_canvas_;
+    double width = std::abs(delta.x());
+    double height = std::abs(delta.y());
+
+    if (modifiers.testFlag(Qt::ShiftModifier)) {
+        const double aspect = std::max(0.001, toolbar_draw_aspect_ratio());
+        if (width / std::max(1.0, height) > aspect)
+            height = width / aspect;
+        else
+            width = height * aspect;
+    }
+
+    const double sign_x = delta.x() < 0.0 ? -1.0 : 1.0;
+    const double sign_y = delta.y() < 0.0 ? -1.0 : 1.0;
+    QRectF rect;
+    if (modifiers.testFlag(Qt::AltModifier)) {
+        rect = QRectF(shape_draw_start_canvas_.x() - width,
+                      shape_draw_start_canvas_.y() - height,
+                      width * 2.0, height * 2.0);
+    } else {
+        rect = QRectF(shape_draw_start_canvas_,
+                      shape_draw_start_canvas_ + QPointF(sign_x * width, sign_y * height));
+    }
+
     rect = rect.normalized();
     if (rect.width() < 1.0) rect.setWidth(1.0);
     if (rect.height() < 1.0) rect.setHeight(1.0);
+    return rect;
+}
+
+void CanvasPreview::update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    if (!drawing_shape_) return;
+    shape_draw_current_canvas_ = view_to_canvas(view_pt);
+    QRectF rect = toolbar_draw_rect(shape_draw_current_canvas_, modifiers);
     drawing_shape_changed_ = rect.width() >= 2.0 || rect.height() >= 2.0;
     emit shape_drawing_changed(rect);
     update();
@@ -6388,7 +6448,7 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     }
 
     if (drawing_shape_ && (ev->buttons() & Qt::LeftButton)) {
-        update_shape_drawing(ev->pos());
+        update_shape_drawing(ev->pos(), ev->modifiers());
         ev->accept();
         return;
     }
@@ -6459,8 +6519,10 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
     }
 
     if (ev->button() == Qt::LeftButton && drawing_shape_) {
-        update_shape_drawing(ev->pos());
-        const bool keep_layer = drawing_shape_changed_;
+        const QPointF release_canvas = view_to_canvas(ev->pos());
+        if (drawing_shape_changed_ || QLineF(shape_draw_start_canvas_, release_canvas).length() >= 2.0)
+            update_shape_drawing(ev->pos(), ev->modifiers());
+        const bool keep_layer = true;
         drawing_shape_ = false;
         drawing_shape_changed_ = false;
         emit shape_drawing_finished(keep_layer);

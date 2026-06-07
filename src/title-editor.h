@@ -261,7 +261,16 @@ class CanvasPreview : public QWidget {
 public:
     explicit CanvasPreview(QWidget *parent = nullptr);
 
-    void set_title(std::shared_ptr<Title> t);
+    struct ViewState {
+        int zoom_percent = 100;
+        bool fit_zoom_active = true;
+        bool fit_zoom_up_to_100 = false;
+        QPointF pan_offset;
+    };
+
+    void set_title(std::shared_ptr<Title> t, bool preserve_view = false);
+    ViewState view_state() const;
+    void restore_view_state(const ViewState &state);
     void set_playhead(double t);
     void set_selected_layer(const std::string &lid);
     void set_selected_layers(const std::vector<std::string> &ids);
@@ -336,7 +345,9 @@ private:
     void clear_snap_feedback();
     void add_snap_feedback(bool x_axis, double value, const QString &label);
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
-    void update_shape_drawing(const QPointF &view_pt);
+    QRectF toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardModifiers modifiers) const;
+    double toolbar_draw_aspect_ratio() const;
+    void update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void begin_text_edit(const std::shared_ptr<Layer> &layer);
     void commit_text_edit(bool accept_changes = true);
     void position_text_editor();
