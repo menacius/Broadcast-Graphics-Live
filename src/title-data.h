@@ -103,6 +103,14 @@ enum class MaskMode {
     InvertedAlpha,
 };
 
+enum class ImageScaleFilter {
+    Disable,
+    Bilinear,
+    Bicubic,
+    Lanczos,
+    Area,
+};
+
 /* ══════════════════════════════════════════════════════════════════
  *  Layer
  * ══════════════════════════════════════════════════════════════════ */
@@ -293,6 +301,7 @@ struct Layer {
     /* ----- Image ----- */
     std::string image_path;
     bool        lock_aspect_ratio = true;
+    ImageScaleFilter scale_filter = ImageScaleFilter::Bilinear;
 };
 
 /* ══════════════════════════════════════════════════════════════════

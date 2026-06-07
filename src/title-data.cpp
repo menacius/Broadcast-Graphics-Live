@@ -951,6 +951,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["fill_color_g"]  = aprop_to_json(l.fill_color_g);
     j["fill_color_b"]  = aprop_to_json(l.fill_color_b);
     j["image_path"]    = l.image_path;
+    j["scale_filter"]  = (int)l.scale_filter;
     if (include_embedded_assets && !attach_embedded_image_asset(l, j, require_embedded_assets, error)) {
         if (asset_embed_failed)
             *asset_embed_failed = true;
@@ -1153,6 +1154,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
         if (error) *error = "Could not restore an embedded image asset from the template file.";
     }
     l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", true);
+    l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
+                                                   0, (int)ImageScaleFilter::Area);
     return l;
 }
 

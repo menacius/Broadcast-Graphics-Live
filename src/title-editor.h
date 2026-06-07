@@ -669,6 +669,7 @@ private:
     /* Image controls */
     QLineEdit       *edit_image_path_ = nullptr;
     QPushButton     *btn_pick_image_ = nullptr;
+    QComboBox       *cmb_image_scale_filter_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;

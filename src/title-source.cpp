@@ -37,6 +37,7 @@
 #include <QTextLayout>
 #include <QTextOption>
 #include <QDateTime>
+#include <QFileInfo>
 #include <QTransform>
 #include <QColor>
 #include <QLinearGradient>
@@ -51,6 +52,7 @@
 #include <algorithm>
 #include <mutex>
 #include <limits>
+#include <unordered_map>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -92,30 +94,86 @@ static void unpremultiply_bgra_for_obs(uint8_t *pixels, size_t pixel_count)
     }
 }
 
-static QImage load_layer_image(const QString &path, const QSize &fallback_size = QSize())
+struct CachedLayerImage {
+    QImage image;
+    qint64 last_modified_msecs = 0;
+    qint64 file_size = -1;
+};
+
+static cairo_filter_t cairo_filter_for_image_scale_filter(ImageScaleFilter filter)
 {
-    if (image_path_is_svg(path)) {
+    switch (filter) {
+    case ImageScaleFilter::Disable:
+        return CAIRO_FILTER_NEAREST;
+    case ImageScaleFilter::Bilinear:
+        return CAIRO_FILTER_BILINEAR;
+    case ImageScaleFilter::Bicubic:
+    case ImageScaleFilter::Lanczos:
+        return CAIRO_FILTER_BEST;
+    case ImageScaleFilter::Area:
+        return CAIRO_FILTER_GOOD;
+    default:
+        return CAIRO_FILTER_BILINEAR;
+    }
+}
+
+static QImage load_cached_layer_image(const QString &path, const QSize &fallback_size = QSize())
+{
+    QFileInfo info(path);
+    const qint64 modified = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    const qint64 size_on_disk = info.exists() ? info.size() : -1;
+    const bool is_svg = image_path_is_svg(path);
+    const QString cache_key = QStringLiteral("%1|%2x%3").arg(path).arg(fallback_size.width()).arg(fallback_size.height());
+
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, CachedLayerImage> cache;
+
+    const std::string key = cache_key.toStdString();
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto it = cache.find(key);
+        if (it != cache.end() && it->second.last_modified_msecs == modified &&
+            it->second.file_size == size_on_disk) {
+            return it->second.image;
+        }
+    }
+
+    QImage loaded;
+    if (is_svg) {
         QSvgRenderer renderer(path);
         if (!renderer.isValid()) return QImage();
 
-        QSize size = fallback_size.isValid() && !fallback_size.isEmpty()
+        QSize svg_size = fallback_size.isValid() && !fallback_size.isEmpty()
             ? fallback_size
             : renderer.defaultSize();
-        if (!size.isValid() || size.isEmpty())
-            size = renderer.viewBox().size();
-        if (!size.isValid() || size.isEmpty())
-            size = QSize(256, 256);
+        if (!svg_size.isValid() || svg_size.isEmpty())
+            svg_size = renderer.viewBox().size();
+        if (!svg_size.isValid() || svg_size.isEmpty())
+            svg_size = QSize(256, 256);
 
-        QImage image(size, QImage::Format_ARGB32_Premultiplied);
-        image.fill(Qt::transparent);
-        QPainter painter(&image);
+        loaded = QImage(svg_size, QImage::Format_ARGB32_Premultiplied);
+        loaded.fill(Qt::transparent);
+        QPainter painter(&loaded);
         renderer.render(&painter);
-        return image;
+    } else {
+        QImageReader reader(path);
+        reader.setAutoTransform(true);
+        if (fallback_size.isValid() && !fallback_size.isEmpty())
+            reader.setScaledSize(fallback_size);
+        loaded = reader.read();
     }
 
-    QImageReader reader(path);
-    reader.setAutoTransform(true);
-    return reader.read();
+    if (loaded.isNull()) return QImage();
+    if (loaded.format() != QImage::Format_ARGB32_Premultiplied)
+        loaded = loaded.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (cache.size() > 64)
+            cache.clear();
+        cache[key] = CachedLayerImage{loaded, modified, size_on_disk};
+    }
+    return loaded;
 }
 }
 
@@ -1452,17 +1510,14 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     double h = eval_box_height(layer, t);
     if (w <= 0.0 || h <= 0.0) return;
 
-    QImage image = load_layer_image(QString::fromStdString(layer.image_path),
-                                    QSize(std::max(1, (int)std::ceil(w)),
-                                          std::max(1, (int)std::ceil(h))));
-    if (image.isNull()) return;
-
-    QImage argb = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    if (argb.width() <= 0 || argb.height() <= 0) return;
-
+    const int max_sample_dim = std::clamp(std::max(title.width, title.height) * 2, 512, 4096);
+    const QSize sample_size(std::clamp((int)std::ceil(w), 1, max_sample_dim),
+                            std::clamp((int)std::ceil(h), 1, max_sample_dim));
+    QImage argb = load_cached_layer_image(QString::fromStdString(layer.image_path), sample_size);
+    if (argb.isNull() || argb.width() <= 0 || argb.height() <= 0) return;
 
     cairo_surface_t *img_surface = cairo_image_surface_create_for_data(
-        argb.bits(), CAIRO_FORMAT_ARGB32,
+        const_cast<uchar *>(argb.constBits()), CAIRO_FORMAT_ARGB32,
         argb.width(), argb.height(), argb.bytesPerLine());
 
     cairo_save(cr);
@@ -1506,6 +1561,8 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     cairo_set_source_surface(cr, img_surface,
                              -origin_x * argb.width(),
                              -origin_y * argb.height());
+    cairo_pattern_set_filter(cairo_get_source(cr),
+                             cairo_filter_for_image_scale_filter(layer.scale_filter));
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
 

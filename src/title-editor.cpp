@@ -7263,8 +7263,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_layer_h_->setToolTip(obsgs_tr("OBSTitles.ImageHeightTooltip"));
     chk_lock_aspect_ = new QCheckBox(obsgs_tr("OBSTitles.LockAspectRatio"), inner);
     style_checkbox(chk_lock_aspect_);
+    cmb_image_scale_filter_ = new QComboBox(inner);
+    cmb_image_scale_filter_->setFixedHeight(22);
+    cmb_image_scale_filter_->setStyleSheet(control_style);
+    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterDisable"), (int)ImageScaleFilter::Disable);
+    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterBilinear"), (int)ImageScaleFilter::Bilinear);
+    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterBicubic"), (int)ImageScaleFilter::Bicubic);
+    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterLanczos"), (int)ImageScaleFilter::Lanczos);
+    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterArea"), (int)ImageScaleFilter::Area);
     add_form_row(image_form, obsgs_tr("OBSTitles.PathLabel"), edit_image_path_);
     add_form_row(image_form, "", btn_pick_image_);
+    add_form_row(image_form, obsgs_tr("OBSTitles.ScaleFiltering"), cmb_image_scale_filter_);
     add_form_row(image_form, "", chk_lock_aspect_);
     vl->addWidget(image_box_);
     make_collapsible(image_box_);
@@ -7957,6 +7966,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->lock_aspect_ratio = v; emit_change(); }
             });
+    connect(cmb_image_scale_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int idx){
+                if (!can_edit() || idx < 0) return;
+                layer_->scale_filter = (ImageScaleFilter)cmb_image_scale_filter_->itemData(idx).toInt();
+                emit_change();
+            });
     connect(btn_pick_image_, &QPushButton::clicked,
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
@@ -8242,6 +8257,10 @@ void PropertiesPanel::load_values()
         chk_lock_aspect_->setChecked(true);
         txt_content_->clear();
         edit_image_path_->clear();
+        if (cmb_image_scale_filter_) {
+            QSignalBlocker block(cmb_image_scale_filter_);
+            cmb_image_scale_filter_->setCurrentIndex(1);
+        }
         style_color_button(btn_text_color_, 0xFFFFFFFF);
         if (btn_text_color_) btn_text_color_->setEnabled(true);
         if (btn_kf_text_color_) btn_kf_text_color_->setEnabled(true);
@@ -8502,6 +8521,11 @@ void PropertiesPanel::load_values()
     if (spn_shape_outer_radius_) spn_shape_outer_radius_->setValue(layer_->shape_outer_radius);
     if (spn_shape_roundness_) spn_shape_roundness_->setValue(layer_->shape_roundness);
     edit_image_path_->setText(QString::fromStdString(layer_->image_path));
+    if (cmb_image_scale_filter_) {
+        QSignalBlocker block(cmb_image_scale_filter_);
+        int filter_index = cmb_image_scale_filter_->findData((int)layer_->scale_filter);
+        cmb_image_scale_filter_->setCurrentIndex(filter_index >= 0 ? filter_index : 1);
+    }
     chk_lock_aspect_->setChecked(layer_->lock_aspect_ratio);
     style_color_button(btn_text_color_, eval_text_color(*layer_, lt));
     style_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
