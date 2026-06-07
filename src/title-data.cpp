@@ -824,8 +824,15 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
     json effects = json::array();
-    for (const auto &effect : l.effects)
-        effects.push_back({{"type", (int)effect.type}, {"enabled", effect.enabled}});
+    for (const auto &effect : l.effects) {
+        effects.push_back({{"type", (int)effect.type},
+                           {"enabled", effect.enabled},
+                           {"brightness", effect.brightness},
+                           {"contrast", effect.contrast},
+                           {"saturation", effect.saturation},
+                           {"tint_color", effect.tint_color},
+                           {"tint_amount", effect.tint_amount}});
+    }
     j["effects"] = effects;
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
@@ -1022,8 +1029,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             LayerEffect effect;
-            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 3);
+            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 6);
             effect.enabled = json_bool(effect_json, "enabled", true);
+            effect.brightness = (float)std::clamp(finite_or(json_double(effect_json, "brightness", 0.0), 0.0), -1.0, 1.0);
+            effect.contrast = (float)std::clamp(finite_or(json_double(effect_json, "contrast", 1.0), 1.0), 0.0, 4.0);
+            effect.saturation = (float)std::clamp(finite_or(json_double(effect_json, "saturation", 1.0), 1.0), 0.0, 4.0);
+            effect.tint_color = json_color(effect_json, "tint_color", (uint32_t)0xFFFFFFFF);
+            effect.tint_amount = (float)std::clamp(finite_or(json_double(effect_json, "tint_amount", 1.0), 1.0), 0.0, 1.0);
             l->effects.push_back(effect);
         }
     }

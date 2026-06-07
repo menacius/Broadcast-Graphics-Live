@@ -1143,6 +1143,9 @@ static QString effect_type_name(LayerEffectType type)
     case LayerEffectType::Outline: return obsgs_tr("OBSTitles.Outline");
     case LayerEffectType::DropShadow: return obsgs_tr("OBSTitles.DropShadow");
     case LayerEffectType::LongShadow: return obsgs_tr("OBSTitles.LongShadow");
+    case LayerEffectType::BrightnessContrast: return obsgs_tr("OBSTitles.BrightnessContrast");
+    case LayerEffectType::Saturation: return obsgs_tr("OBSTitles.Saturation");
+    case LayerEffectType::Tint: return obsgs_tr("OBSTitles.Tint");
     }
     return QStringLiteral("Effect");
 }
@@ -1820,6 +1823,9 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         add_action(obsgs_tr("OBSTitles.Outline"), LayerEffectType::Outline);
         add_action(obsgs_tr("OBSTitles.DropShadow"), LayerEffectType::DropShadow);
         add_action(obsgs_tr("OBSTitles.LongShadow"), LayerEffectType::LongShadow);
+        add_action(obsgs_tr("OBSTitles.BrightnessContrast"), LayerEffectType::BrightnessContrast);
+        add_action(obsgs_tr("OBSTitles.Saturation"), LayerEffectType::Saturation);
+        add_action(obsgs_tr("OBSTitles.Tint"), LayerEffectType::Tint);
         QAction *chosen = menu.exec(btn_add->mapToGlobal(QPoint(0, btn_add->height())));
         if (!chosen) return;
         LayerEffect effect;
@@ -2120,6 +2126,26 @@ void EffectsPanel::load_settings()
             emit_effect_changed();
             load_settings();
         });
+    } else if (selected_effect()->type == LayerEffectType::BrightnessContrast) {
+        LayerEffect *effect = selected_effect();
+        auto *brightness = spin(-1.0, 1.0, 0.01); brightness->setDecimals(2); brightness->setValue(effect->brightness);
+        auto *contrast = spin(0.0, 4.0, 0.05); contrast->setDecimals(2); contrast->setValue(effect->contrast);
+        add_effect_row(obsgs_tr("OBSTitles.BrightnessLabel"), brightness);
+        add_effect_row(obsgs_tr("OBSTitles.ContrastLabel"), contrast);
+        connect(brightness, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->brightness = (float)v; emit_effect_changed(); }});
+        connect(contrast, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->contrast = (float)v; emit_effect_changed(); }});
+    } else if (selected_effect()->type == LayerEffectType::Saturation) {
+        LayerEffect *effect = selected_effect();
+        auto *saturation = spin(0.0, 4.0, 0.05); saturation->setDecimals(2); saturation->setValue(effect->saturation);
+        add_effect_row(obsgs_tr("OBSTitles.SaturationLabel"), saturation);
+        connect(saturation, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->saturation = (float)v; emit_effect_changed(); }});
+    } else if (selected_effect()->type == LayerEffectType::Tint) {
+        LayerEffect *effect = selected_effect();
+        auto *color = color_button(effect->tint_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->tint_color = argb; });
+        auto *amount = spin(0.0, 1.0, 0.05); amount->setDecimals(2); amount->setValue(effect->tint_amount);
+        add_effect_row(obsgs_tr("OBSTitles.TintColorLabel"), color);
+        add_effect_row(obsgs_tr("OBSTitles.TintAmountLabel"), amount);
+        connect(amount, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->tint_amount = (float)v; emit_effect_changed(); }});
     } else if (selected_effect()->type == LayerEffectType::LongShadow) {
         auto *color = color_button(layer_->long_shadow_color, [this](uint32_t argb){ layer_->long_shadow_color = argb; });
         auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(layer_->long_shadow_opacity);
