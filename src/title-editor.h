@@ -144,6 +144,7 @@ private:
     QWidget *create_effects_panel();
     QWidget *create_styles_panel();
     QWidget *create_color_swatches_panel();
+    void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     void load_editor_layout();
     void save_editor_layout() const;
     void reset_default_layout();
@@ -168,6 +169,7 @@ private:
     LayerStack      *layers_    = nullptr;
     TimelineWidget  *timeline_  = nullptr;
     PropertiesPanel *props_     = nullptr;
+    EffectsPanel    *effects_panel_ = nullptr;
     TitlePropertiesPanel *title_props_ = nullptr;
     QDockWidget     *layer_props_dock_ = nullptr;
     QDockWidget     *graphic_props_dock_ = nullptr;
