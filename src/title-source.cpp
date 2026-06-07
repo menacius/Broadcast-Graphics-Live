@@ -54,6 +54,7 @@
 #include <mutex>
 #include <limits>
 #include <unordered_map>
+#include <sstream>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -216,6 +217,13 @@ struct TitleSourceData {
     /* Dirty flag – avoid re-uploading unchanged frames */
     bool dirty = true;
     uint64_t seen_store_revision = 0;
+
+    struct CachedEffectLayer {
+        std::string key;
+        QImage image;
+        QPointF origin;
+    };
+    std::unordered_map<std::string, CachedEffectLayer> effect_layer_cache;
 };
 
 
@@ -2294,9 +2302,205 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
     }
 }
 
-static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, const Title &title, const Layer &layer,
+
+static bool layer_has_non_transform_animation(const Layer &layer)
+{
+    return layer.opacity.is_animated() ||
+           layer.box_width.is_animated() ||
+           layer.box_height.is_animated() ||
+           layer.origin_x_prop.is_animated() ||
+           layer.origin_y_prop.is_animated() ||
+           layer.paragraph_indent_left_prop.is_animated() ||
+           layer.paragraph_indent_right_prop.is_animated() ||
+           layer.paragraph_indent_first_line_prop.is_animated() ||
+           layer.shadow_enabled_prop.is_animated() ||
+           layer.shadow_opacity_prop.is_animated() ||
+           layer.shadow_distance_prop.is_animated() ||
+           layer.shadow_angle_prop.is_animated() ||
+           layer.shadow_blur_prop.is_animated() ||
+           layer.shadow_spread_prop.is_animated() ||
+           layer.shadow_color_a.is_animated() ||
+           layer.shadow_color_r.is_animated() ||
+           layer.shadow_color_g.is_animated() ||
+           layer.shadow_color_b.is_animated() ||
+           layer.background_enabled_prop.is_animated() ||
+           layer.background_opacity_prop.is_animated() ||
+           layer.background_padding_x_prop.is_animated() ||
+           layer.background_padding_y_prop.is_animated() ||
+           layer.background_corner_radius_prop.is_animated() ||
+           layer.background_color_a.is_animated() ||
+           layer.background_color_r.is_animated() ||
+           layer.background_color_g.is_animated() ||
+           layer.background_color_b.is_animated() ||
+           layer.text_color_a.is_animated() ||
+           layer.text_color_r.is_animated() ||
+           layer.text_color_g.is_animated() ||
+           layer.text_color_b.is_animated() ||
+           layer.fill_color_a.is_animated() ||
+           layer.fill_color_r.is_animated() ||
+           layer.fill_color_g.is_animated() ||
+           layer.fill_color_b.is_animated();
+}
+
+static QRect image_alpha_bounds(const QImage &image)
+{
+    if (image.isNull()) return QRect();
+    int min_x = image.width(), min_y = image.height(), max_x = -1, max_y = -1;
+    for (int y = 0; y < image.height(); ++y) {
+        const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            if (qAlpha(row[x]) == 0) continue;
+            min_x = std::min(min_x, x);
+            min_y = std::min(min_y, y);
+            max_x = std::max(max_x, x);
+            max_y = std::max(max_y, y);
+        }
+    }
+    return max_x >= min_x ? QRect(QPoint(min_x, min_y), QPoint(max_x, max_y)) : QRect();
+}
+
+static void neutralize_layer_transform_for_effect_cache(Layer &layer, double opacity, double anchor_x, double anchor_y)
+{
+    layer.parent_id.clear();
+    layer.pos_x.static_value = anchor_x;
+    layer.pos_x.keyframes.clear();
+    layer.pos_y.static_value = anchor_y;
+    layer.pos_y.keyframes.clear();
+    layer.scale_x.static_value = 1.0;
+    layer.scale_x.keyframes.clear();
+    layer.scale_y.static_value = 1.0;
+    layer.scale_y.keyframes.clear();
+    layer.rotation.static_value = 0.0;
+    layer.rotation.keyframes.clear();
+    layer.opacity.static_value = opacity;
+    layer.opacity.keyframes.clear();
+}
+
+static std::string effect_layer_cache_key(const TitleSourceData *data, const Title &title, const Layer &layer,
+                                          double title_time, int canvas_w, int canvas_h)
+{
+    const double t = std::max(0.0, title_time - layer.in_time);
+    std::ostringstream key;
+    key << layer.id << "|rev=" << (data ? data->seen_store_revision : 0)
+        << "|canvas=" << canvas_w << 'x' << canvas_h
+        << "|type=" << (int)layer.type
+        << "|opacity=" << layer_chain_opacity(title, layer, title_time)
+        << "|box=" << eval_box_width(layer, t) << 'x' << eval_box_height(layer, t)
+        << "|origin=" << eval_origin_x(layer, t) << ',' << eval_origin_y(layer, t)
+        << "|stack=" << layer.effects.size();
+
+    if (layer_has_non_transform_animation(layer) || layer.type == LayerType::Ticker)
+        key << "|time=" << (int64_t)std::llround(t * 1000.0);
+
+    ShadowRenderParams shadow = evaluated_shadow_params(layer, t);
+    key << "|shadow=" << shadow.drop_enabled << ',' << shadow.color << ',' << shadow.opacity << ','
+        << shadow.dx << ',' << shadow.dy << ',' << shadow.blur << ',' << shadow.spread << ',' << shadow.blur_type
+        << "|long=" << shadow.long_enabled << ',' << shadow.long_color << ',' << shadow.long_opacity << ','
+        << shadow.long_length << ',' << shadow.long_angle << ',' << shadow.long_falloff << ','
+        << (int)shadow.long_blur_type << ',' << shadow.long_blur;
+
+    if (layer.type == LayerType::Image && !layer.image_path.empty()) {
+        QFileInfo info(QString::fromStdString(layer.image_path));
+        key << "|image=" << layer.image_path << ','
+            << (info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0) << ','
+            << (info.exists() ? info.size() : -1);
+    }
+
+    for (const auto &effect : layer.effects) {
+        key << "|e=" << (int)effect.type << ',' << effect.enabled << ','
+            << effect.brightness << ',' << effect.contrast << ',' << effect.saturation << ','
+            << effect.tint_color << ',' << effect.tint_amount << ',' << effect.effect_color << ','
+            << effect.effect_opacity << ',' << effect.effect_size << ',' << effect.effect_distance << ','
+            << effect.effect_angle << ',' << effect.effect_blur_type << ',' << (int)effect.blend_mode;
+    }
+    return key.str();
+}
+
+static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
+                                       double title_time, int canvas_w, int canvas_h)
+{
+    if (!data || !layer_has_stackable_pixel_effects(layer) || layer.type == LayerType::Clock)
+        return false;
+
+    const std::string cache_id = layer.id.empty() ? std::string("__anonymous_effect_layer") : layer.id;
+    const std::string key = effect_layer_cache_key(data, title, layer, title_time, canvas_w, canvas_h);
+    auto it = data->effect_layer_cache.find(cache_id);
+    if (it == data->effect_layer_cache.end() || it->second.key != key) {
+        QImage canvas(std::max(1, canvas_w), std::max(1, canvas_h), QImage::Format_ARGB32_Premultiplied);
+        canvas.fill(Qt::transparent);
+        cairo_surface_t *surface = cairo_image_surface_create_for_data(
+            canvas.bits(), CAIRO_FORMAT_ARGB32, canvas.width(), canvas.height(), canvas.bytesPerLine());
+        cairo_t *layer_cr = cairo_create(surface);
+        cairo_set_operator(layer_cr, CAIRO_OPERATOR_CLEAR);
+        cairo_paint(layer_cr);
+        cairo_set_operator(layer_cr, CAIRO_OPERATOR_OVER);
+
+        Layer base_layer = layer;
+        base_layer.effects.erase(std::remove_if(base_layer.effects.begin(), base_layer.effects.end(), [](const LayerEffect &effect) {
+            switch (effect.type) {
+            case LayerEffectType::DropShadow:
+            case LayerEffectType::LongShadow:
+            case LayerEffectType::BrightnessContrast:
+            case LayerEffectType::Saturation:
+            case LayerEffectType::ColorOverlay:
+            case LayerEffectType::Glow:
+            case LayerEffectType::InnerGlow:
+            case LayerEffectType::InnerShadow:
+                return true;
+            default:
+                return false;
+            }
+        }), base_layer.effects.end());
+        const double cache_anchor_x = canvas.width() * 0.5;
+        const double cache_anchor_y = canvas.height() * 0.5;
+        neutralize_layer_transform_for_effect_cache(base_layer, layer_chain_opacity(title, layer, title_time),
+                                                    cache_anchor_x, cache_anchor_y);
+
+        render_layer_unmasked(layer_cr, title, base_layer, title_time, canvas_w, canvas_h);
+        cairo_destroy(layer_cr);
+        cairo_surface_flush(surface);
+
+        const double t = std::max(0.0, title_time - layer.in_time);
+        apply_stackable_pixel_effects_to_surface(surface, layer, t);
+        cairo_surface_flush(surface);
+        cairo_surface_destroy(surface);
+
+        QRect bounds = image_alpha_bounds(canvas);
+        TitleSourceData::CachedEffectLayer cached;
+        cached.key = key;
+        if (!bounds.isValid() || bounds.isEmpty()) {
+            cached.image = QImage();
+            cached.origin = QPointF(0.0, 0.0);
+        } else {
+            cached.image = canvas.copy(bounds);
+            cached.origin = QPointF(bounds.x() - cache_anchor_x, bounds.y() - cache_anchor_y);
+        }
+        if (data->effect_layer_cache.size() > 128)
+            data->effect_layer_cache.clear();
+        it = data->effect_layer_cache.insert_or_assign(cache_id, std::move(cached)).first;
+    }
+
+    if (it->second.image.isNull())
+        return true;
+
+    cairo_surface_t *cached_surface = cairo_image_surface_create_for_data(
+        const_cast<uchar *>(it->second.image.constBits()), CAIRO_FORMAT_ARGB32,
+        it->second.image.width(), it->second.image.height(), it->second.image.bytesPerLine());
+    cairo_save(cr);
+    apply_layer_world_transform(cr, title, layer, title_time);
+    cairo_set_source_surface(cr, cached_surface, it->second.origin.x(), it->second.origin.y());
+    cairo_paint(cr);
+    cairo_restore(cr);
+    cairo_surface_destroy(cached_surface);
+    return true;
+}
+
+static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                                          double title_time, int canvas_w, int canvas_h)
 {
+    if (render_cached_effect_layer(cr, data, title, layer, title_time, canvas_w, canvas_h))
+        return;
+
     if (!layer_has_stackable_pixel_effects(layer)) {
         render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
         return;
@@ -2334,17 +2538,17 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, const Titl
     cairo_surface_destroy(layer_surface);
 }
 
-static void render_layer_with_mask(cairo_t *cr, const Title &title, const Layer &layer,
+static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                    double title_time, int canvas_w, int canvas_h)
 {
     if (layer.mask_mode == MaskMode::None || layer.mask_source_id.empty()) {
-        render_layer_unmasked_with_stackable_effects(cr, title, layer, title_time, canvas_w, canvas_h);
+        render_layer_unmasked_with_stackable_effects(cr, data, title, layer, title_time, canvas_w, canvas_h);
         return;
     }
     const Layer *mask = find_layer_by_id(title, layer.mask_source_id);
     if (!mask || !layer_chain_visible(title, *mask, title_time)) {
         if (layer.mask_mode == MaskMode::InvertedAlpha)
-            render_layer_unmasked_with_stackable_effects(cr, title, layer, title_time, canvas_w, canvas_h);
+            render_layer_unmasked_with_stackable_effects(cr, data, title, layer, title_time, canvas_w, canvas_h);
         return;
     }
 
@@ -2352,7 +2556,13 @@ static void render_layer_with_mask(cairo_t *cr, const Title &title, const Layer 
     cairo_surface_t *mask_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
     cairo_t *layer_cr = cairo_create(layer_surface);
     cairo_t *mask_cr = cairo_create(mask_surface);
-    render_layer_unmasked_with_stackable_effects(layer_cr, title, layer, title_time, canvas_w, canvas_h);
+    cairo_set_operator(layer_cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(layer_cr);
+    cairo_set_operator(layer_cr, CAIRO_OPERATOR_OVER);
+    cairo_set_operator(mask_cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(mask_cr);
+    cairo_set_operator(mask_cr, CAIRO_OPERATOR_OVER);
+    render_layer_unmasked_with_stackable_effects(layer_cr, data, title, layer, title_time, canvas_w, canvas_h);
     render_layer_unmasked(mask_cr, title, *mask, title_time, canvas_w, canvas_h);
     cairo_destroy(layer_cr);
     cairo_destroy(mask_cr);
@@ -2403,6 +2613,7 @@ static void render_title_frame(TitleSourceData *data,
         data->tex_w = w;
         data->tex_h = h;
         data->pixel_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
+        data->effect_layer_cache.clear();
     }
 
     /* Cairo surface over our buffer */
@@ -2455,7 +2666,7 @@ static void render_title_frame(TitleSourceData *data,
 
         if (!layer_chain_visible(title, *layer, layer_time)) continue;
 
-        render_layer_with_mask(cr, title, *layer, layer_time, (int)w, (int)h);
+        render_layer_with_mask(cr, data, title, *layer, layer_time, (int)w, (int)h);
     }
 
     cairo_destroy(cr);
@@ -2510,7 +2721,7 @@ QImage render_title_to_image(const Title &title, double t)
     for (auto &layer : title.layers) {
         if (!layer || !layer_chain_visible(title, *layer, clamped_time)) continue;
 
-        render_layer_with_mask(cr, title, *layer, clamped_time, w, h);
+        render_layer_with_mask(cr, nullptr, title, *layer, clamped_time, w, h);
     }
 
     cairo_destroy(cr);
@@ -2538,6 +2749,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     data->last_clock_refresh = data->last_tick;
     if (auto title = TitleDataStore::instance().get_title(data->title_id))
         data->seen_cue_revision = title->cue_revision;
+    data->seen_store_revision = TitleDataStore::instance().revision();
     data->playing = false;
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
@@ -2577,6 +2789,8 @@ static void source_update(void *priv, obs_data_t *settings)
     else
         data->seen_cue_revision = 0;
     data->last_clock_refresh = std::chrono::steady_clock::now();
+    data->seen_store_revision = TitleDataStore::instance().revision();
+    data->effect_layer_cache.clear();
     data->dirty    = true;
 }
 
@@ -2772,6 +2986,7 @@ static void source_video_tick(void *priv, float seconds)
     uint64_t revision = TitleDataStore::instance().revision();
     if (revision != data->seen_store_revision) {
         data->seen_store_revision = revision;
+        data->effect_layer_cache.clear();
         data->dirty = true;
     }
 
