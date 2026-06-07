@@ -247,8 +247,21 @@ private:
 
 
 
-static QColor color_from_argb(uint32_t argb);
-static uint32_t argb_from_color(const QColor &color);
+static QColor rich_text_color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xFF,
+                  (argb >> 8) & 0xFF,
+                  argb & 0xFF,
+                  (argb >> 24) & 0xFF);
+}
+
+static uint32_t rich_text_argb_from_color(const QColor &color)
+{
+    return ((uint32_t)color.alpha() << 24) |
+           ((uint32_t)color.red() << 16) |
+           ((uint32_t)color.green() << 8) |
+           (uint32_t)color.blue();
+}
 
 static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharFormat &fmt,
                                                              const RichTextCharFormat &fallback,
@@ -267,7 +280,7 @@ static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharForm
     if (fmt.foreground().style() != Qt::NoBrush) {
         const QColor c = fmt.foreground().color();
         if (c.isValid() && c.alpha() > 0)
-            out.fill.color = argb_from_color(c);
+            out.fill.color = rich_text_argb_from_color(c);
     }
     return out;
 }
@@ -284,7 +297,7 @@ static QTextCharFormat qtext_format_from_rich_text_format(const RichTextCharForm
     out.setFont(font);
     out.setFontUnderline(format.underline);
     out.setFontStrikeOut(format.strikethrough);
-    QColor color = color_from_argb(format.fill.color);
+    QColor color = rich_text_color_from_argb(format.fill.color);
     if (format.fill.type == 1) color.setAlpha(0);
     out.setForeground(color);
     return out;
