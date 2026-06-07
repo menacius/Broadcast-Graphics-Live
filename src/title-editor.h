@@ -74,7 +74,7 @@ class TitleEditor : public QMainWindow {
 
 public:
     explicit TitleEditor(QWidget *parent = nullptr);
-    ~TitleEditor() override = default;
+    ~TitleEditor() override;
 
     void open_title(const std::string &title_id);
 

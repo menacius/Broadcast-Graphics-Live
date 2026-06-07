@@ -1673,6 +1673,11 @@ TitleEditor::TitleEditor(QWidget *parent)
     pal.setColor(QPalette::Highlight,  C_ACCENT);
     setPalette(pal);
     setAutoFillBackground(true);
+    setDockNestingEnabled(true);
+    setDockOptions(QMainWindow::AllowNestedDocks |
+                   QMainWindow::AllowTabbedDocks |
+                   QMainWindow::AnimatedDocks |
+                   QMainWindow::GroupedDragging);
 
     build_ui();
 
@@ -1688,6 +1693,13 @@ TitleEditor::TitleEditor(QWidget *parent)
     clock_timer_->start();
 
     qApp->installEventFilter(this);
+}
+
+TitleEditor::~TitleEditor()
+{
+    save_editor_layout();
+    if (qApp)
+        qApp->removeEventFilter(this);
 }
 
 
@@ -2001,22 +2013,24 @@ void TitleEditor::reset_default_layout()
         styles_dock_->setFloating(false);
         styles_dock_->show();
         addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
-        if (graphic_props_dock_) tabifyDockWidget(graphic_props_dock_, styles_dock_);
+        if (graphic_props_dock_) splitDockWidget(graphic_props_dock_, styles_dock_, Qt::Horizontal);
     }
     if (color_swatches_dock_) {
         color_swatches_dock_->setFloating(false);
         color_swatches_dock_->show();
         addDockWidget(Qt::LeftDockWidgetArea, color_swatches_dock_);
-        if (graphic_props_dock_) tabifyDockWidget(graphic_props_dock_, color_swatches_dock_);
+        if (styles_dock_) tabifyDockWidget(styles_dock_, color_swatches_dock_);
+        else if (graphic_props_dock_) splitDockWidget(graphic_props_dock_, color_swatches_dock_, Qt::Horizontal);
     }
     if (effects_dock_) {
         effects_dock_->setFloating(false);
         effects_dock_->show();
         addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
-        if (layer_props_dock_) tabifyDockWidget(layer_props_dock_, effects_dock_);
+        if (layer_props_dock_) splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
     }
     if (graphic_props_dock_) graphic_props_dock_->raise();
     if (layer_props_dock_) layer_props_dock_->raise();
+    if (styles_dock_) styles_dock_->raise();
 
     if (act_graphic_props_visible_) {
         QSignalBlocker blocker(act_graphic_props_visible_);
@@ -2360,14 +2374,15 @@ void TitleEditor::build_ui()
                                               create_color_swatches_panel());
     addDockWidget(Qt::LeftDockWidgetArea, graphic_props_dock_);
     addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
-    addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
     addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
+    splitDockWidget(graphic_props_dock_, styles_dock_, Qt::Horizontal);
     addDockWidget(Qt::LeftDockWidgetArea, color_swatches_dock_);
-    tabifyDockWidget(layer_props_dock_, effects_dock_);
-    tabifyDockWidget(graphic_props_dock_, styles_dock_);
-    tabifyDockWidget(graphic_props_dock_, color_swatches_dock_);
+    tabifyDockWidget(styles_dock_, color_swatches_dock_);
+    addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
+    splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
     graphic_props_dock_->raise();
     layer_props_dock_->raise();
+    styles_dock_->raise();
 
     /* ── Timeline editor: full-width transport | LayerStack + Timeline | full-width zoom ── */
     auto *timeline_editor = new QWidget(this);
