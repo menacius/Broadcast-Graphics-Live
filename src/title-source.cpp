@@ -1865,7 +1865,23 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         if (has_rich_text) {
             painter.save();
             painter.setOpacity(fill.alphaF());
-            draw_rich_text_document(painter, layer, font, text_rect, t);
+            if (layer.fill_type == 1) {
+                QImage gradient_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
+                gradient_mask.fill(Qt::transparent);
+                QPainter mask_painter(&gradient_mask);
+                mask_painter.setRenderHint(QPainter::Antialiasing, true);
+                mask_painter.setRenderHint(QPainter::TextAntialiasing, true);
+                draw_rich_text_document(mask_painter, layer, font, text_rect, t);
+                mask_painter.end();
+
+                QPainter gradient_painter(&gradient_mask);
+                gradient_painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                gradient_painter.fillRect(QRectF(0.0, 0.0, img_w, img_h), gradient_fill_brush(layer, text_rect));
+                gradient_painter.end();
+                painter.drawImage(QPointF(0.0, 0.0), gradient_mask);
+            } else {
+                draw_rich_text_document(painter, layer, font, text_rect, t);
+            }
             painter.restore();
             return;
         }
