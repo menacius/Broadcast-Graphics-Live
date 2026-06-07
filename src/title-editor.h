@@ -254,6 +254,7 @@ private:
     enum class DragMode { None, Marquee, Move, ResizeNW, ResizeN, ResizeNE, ResizeE, ResizeSE, ResizeS, ResizeSW, ResizeW, Origin, Rotate };
 
     void render_to_pixmap();
+    void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     std::shared_ptr<Layer> selected_layer() const;
     std::vector<std::shared_ptr<Layer>> selected_layers() const;
     QRectF layer_local_rect(const Layer &layer) const;
