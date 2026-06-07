@@ -304,6 +304,7 @@ signals:
     void text_drawing_started(LayerType type, const QPointF &canvas_pt);
     void shape_drawing_changed(const QRectF &canvas_rect);
     void shape_drawing_finished(bool keep_layer);
+    void text_edit_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
 
 protected:
@@ -356,6 +357,10 @@ private:
     void begin_text_edit(const std::shared_ptr<Layer> &layer);
     void commit_text_edit(bool accept_changes = true);
     void position_text_editor();
+    void configure_inline_text_editor(const Layer &layer);
+    bool sync_inline_text_layer(bool mark_dirty);
+    double inline_text_visual_scale(const Layer &layer) const;
+    QRectF inline_text_document_local_rect(const Layer &layer) const;
     std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
 
     std::shared_ptr<Title> title_;
