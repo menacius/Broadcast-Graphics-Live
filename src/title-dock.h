@@ -36,7 +36,7 @@ class TitleDock : public QDockWidget {
 
 public:
     explicit TitleDock(QWidget *parent = nullptr);
-    ~TitleDock() override = default;
+    ~TitleDock() override;
 
     /* Called externally to refresh the list (e.g. after editor saves) */
     void refresh();
@@ -144,6 +144,7 @@ private:
     bool          background_persistence_ = false;
     bool          text_persistence_ = false;
     uint64_t      seen_store_revision_ = 0;
+    uint64_t      change_callback_id_ = 0;
 
     TitleEditor  *editor_     = nullptr;
 };

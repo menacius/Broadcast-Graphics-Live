@@ -629,10 +629,24 @@ std::vector<std::shared_ptr<Title>> TitleDataStore::titles() const
     return titles_;
 }
 
-void TitleDataStore::on_change(ChangeCallback cb)
+uint64_t TitleDataStore::on_change(ChangeCallback cb)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    change_cbs_.push_back(std::move(cb));
+    const uint64_t id = next_change_cb_id_++;
+    change_cbs_.push_back(ChangeObserver {id, std::move(cb)});
+    return id;
+}
+
+void TitleDataStore::remove_change_callback(uint64_t callback_id)
+{
+    if (callback_id == 0) return;
+
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    auto it = std::remove_if(change_cbs_.begin(), change_cbs_.end(),
+                             [callback_id](const ChangeObserver &observer) {
+                                 return observer.id == callback_id;
+                             });
+    change_cbs_.erase(it, change_cbs_.end());
 }
 
 void TitleDataStore::notify_change()
@@ -642,7 +656,9 @@ void TitleDataStore::notify_change()
     std::vector<ChangeCallback> callbacks;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        callbacks = change_cbs_;
+        callbacks.reserve(change_cbs_.size());
+        for (const auto &observer : change_cbs_)
+            callbacks.push_back(observer.callback);
     }
 
     for (auto &cb : callbacks) cb();

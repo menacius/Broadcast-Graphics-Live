@@ -43,6 +43,24 @@ static QMenu *find_docks_menu(QMainWindow *main)
     return nullptr;
 }
 
+static void destroy_dock_ui()
+{
+    if (g_dock_menu_action) {
+        QObject::disconnect(g_dock_menu_action, nullptr, nullptr, nullptr);
+        if (QWidget *owner = qobject_cast<QWidget *>(g_dock_menu_action->parent()))
+            owner->removeAction(g_dock_menu_action);
+        delete g_dock_menu_action;
+        g_dock_menu_action = nullptr;
+    }
+
+    if (g_dock) {
+        QObject::disconnect(g_dock, nullptr, nullptr, nullptr);
+        obs_frontend_remove_dock("obs-graphics-studio-pro-dock");
+        delete g_dock;
+        g_dock = nullptr;
+    }
+}
+
 static void add_docks_menu_entry(QMainWindow *main)
 {
     QMenu *docks_menu = find_docks_menu(main);
@@ -87,12 +105,7 @@ void obs_module_unload(void)
     title_hotkeys_unregister();
     TitleDataStore::instance().save();
     obs_frontend_remove_event_callback(on_frontend_event, nullptr);
-    title_hotkeys_unregister();
-    if (g_dock_menu_action) {
-        delete g_dock_menu_action;
-        g_dock_menu_action = nullptr;
-    }
-    obs_frontend_remove_dock("obs-graphics-studio-pro-dock");
+    destroy_dock_ui();
     blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin unloaded.");
 }
 
@@ -105,7 +118,13 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         QMainWindow *main =
             static_cast<QMainWindow *>(obs_frontend_get_main_window());
 
+        if (g_dock)
+            destroy_dock_ui();
+
         g_dock = new TitleDock(main);
+        QObject::connect(g_dock, &QObject::destroyed, []() {
+            g_dock = nullptr;
+        });
         g_dock->setObjectName("OBSGraphicsStudioProDock");
         g_dock->setWindowTitle(obsgs_tr("OBSTitles.DockName"));
 
@@ -132,5 +151,6 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         g_frontend_ready = false;
         title_hotkeys_unregister();
         TitleDataStore::instance().save();
+        destroy_dock_ui();
     }
 }
