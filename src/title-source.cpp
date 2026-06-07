@@ -972,6 +972,8 @@ struct ShadowRenderParams {
     double long_length = 0.0;
     double long_angle = 0.0;
     double long_falloff = 1.0;
+    int long_blur_type = (int)LongShadowBlurType::None;
+    double long_blur = 0.0;
 };
 
 struct CachedShadowImage {
@@ -988,33 +990,42 @@ static QString image_content_hash(const QImage &image)
 
 static QString shadow_param_key(const Layer &layer, const ShadowRenderParams &p, const QString &shape_key)
 {
-    return QStringLiteral("%1|%2|%3|%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16")
+    return QStringLiteral("%1|%2|%3|%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16,%17,%18")
         .arg(QString::fromStdString(layer.id), shape_key)
         .arg(p.dx, 0, 'f', 2).arg(p.dy, 0, 'f', 2).arg(p.blur, 0, 'f', 2)
         .arg(p.spread, 0, 'f', 2).arg(p.blur_type).arg(p.drop_enabled ? 1 : 0)
         .arg(p.color).arg(p.opacity, 0, 'f', 3)
         .arg(p.long_enabled ? 1 : 0).arg(p.long_color).arg(p.long_opacity, 0, 'f', 3)
-        .arg(p.long_length, 0, 'f', 2).arg(p.long_angle, 0, 'f', 2).arg(p.long_falloff, 0, 'f', 3);
+        .arg(p.long_length, 0, 'f', 2).arg(p.long_angle, 0, 'f', 2).arg(p.long_falloff, 0, 'f', 3)
+        .arg(p.long_blur_type).arg(p.long_blur, 0, 'f', 2);
 }
 
 static ShadowRenderParams evaluated_shadow_params(const Layer &layer, double t)
 {
-    QPointF off = shadow_offset(layer, t);
     ShadowRenderParams p;
-    p.dx = off.x();
-    p.dy = off.y();
-    p.blur = eval_shadow_blur(layer, t);
-    p.spread = eval_shadow_spread(layer, t);
-    p.blur_type = (int)layer.shadow_blur_type;
     p.drop_enabled = eval_shadow_enabled(layer, t);
-    p.color = eval_shadow_color(layer, t);
-    p.opacity = eval_shadow_opacity(layer, t) * (((p.color >> 24) & 0xFF) / 255.0);
+    if (p.drop_enabled) {
+        QPointF off = shadow_offset(layer, t);
+        p.dx = off.x();
+        p.dy = off.y();
+        p.blur = eval_shadow_blur(layer, t);
+        p.spread = eval_shadow_spread(layer, t);
+        p.blur_type = (int)layer.shadow_blur_type;
+        p.color = eval_shadow_color(layer, t);
+        p.opacity = eval_shadow_opacity(layer, t) * (((p.color >> 24) & 0xFF) / 255.0);
+    }
     p.long_enabled = layer.long_shadow_enabled && layer.long_shadow_length > 0.0f && layer.long_shadow_opacity > 0.0f;
-    p.long_color = layer.long_shadow_color;
-    p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0) * (((p.long_color >> 24) & 0xFF) / 255.0);
-    p.long_length = std::max(0.0, (double)layer.long_shadow_length);
-    p.long_angle = layer.long_shadow_angle;
-    p.long_falloff = std::clamp((double)layer.long_shadow_falloff, 0.0, 4.0);
+    if (p.long_enabled) {
+        p.long_color = layer.long_shadow_color;
+        p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0) * (((p.long_color >> 24) & 0xFF) / 255.0);
+        p.long_length = std::max(0.0, (double)layer.long_shadow_length);
+        p.long_angle = layer.long_shadow_angle;
+        p.long_falloff = std::clamp((double)layer.long_shadow_falloff, 0.0, 4.0);
+        p.long_blur_type = (int)layer.long_shadow_blur_type;
+        p.long_blur = p.long_blur_type == (int)LongShadowBlurType::None
+                          ? 0.0
+                          : std::max(0.0, (double)layer.long_shadow_blur);
+    }
     return p;
 }
 
@@ -1068,6 +1079,17 @@ static void blur_alpha_for_type(std::vector<uint8_t> &alpha, int w, int h, doubl
         box_blur_alpha(alpha, w, h, std::max(1, radius / 2));
         box_blur_alpha(alpha, w, h, std::max(1, radius / 3));
         break;
+    }
+}
+
+static int shadow_blur_type_for_long_shadow(int blur_type)
+{
+    switch ((LongShadowBlurType)std::clamp(blur_type, 0, (int)LongShadowBlurType::StackFast)) {
+    case LongShadowBlurType::Box: return (int)ShadowBlurType::Box;
+    case LongShadowBlurType::Gaussian: return (int)ShadowBlurType::Gaussian;
+    case LongShadowBlurType::StackFast: return (int)ShadowBlurType::StackFast;
+    case LongShadowBlurType::None:
+    default: return -1;
     }
 }
 
@@ -1130,13 +1152,19 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
     };
 
     if (p.long_enabled) {
-        const int steps = std::clamp((int)std::ceil(p.long_length / 3.0), 1, 160);
+        /* Sharp long shadows are a cheap directional extrusion by default.
+         * Use a coarse, adaptive number of stamps so editing length/angle remains responsive;
+         * optional long-shadow blur is applied only when explicitly selected.
+         */
+        const int steps = std::clamp((int)std::ceil(p.long_length / 16.0), 1, 32);
         for (int i = steps; i >= 1; --i) {
             const double u = (double)i / steps;
             const double fade = std::pow(1.0 - u, p.long_falloff);
             add_alpha(long_alpha, p.long_opacity * fade, long_dx * u, long_dy * u);
         }
-        blur_alpha_for_type(long_alpha, w, h, std::min(p.blur, 24.0), p.blur_type);
+        const int mapped_long_blur = shadow_blur_type_for_long_shadow(p.long_blur_type);
+        if (mapped_long_blur >= 0 && p.long_blur > 0.0)
+            blur_alpha_for_type(long_alpha, w, h, p.long_blur, mapped_long_blur);
     }
     if (p.drop_enabled && p.opacity > 0.0) {
         add_alpha(drop_alpha, p.opacity, p.dx, p.dy);

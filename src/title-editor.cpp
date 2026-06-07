@@ -7311,6 +7311,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_long_shadow_angle_ = mk_dspin(-360.0, 360.0, 5.0);
     spn_long_shadow_falloff_ = mk_dspin(0.0, 4.0, 0.1);
     spn_long_shadow_falloff_->setDecimals(2);
+    cmb_long_shadow_blur_type_ = new QComboBox(inner);
+    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.NoBlur"), (int)LongShadowBlurType::None);
+    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.BoxBlur"), (int)LongShadowBlurType::Box);
+    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.GaussianBlur"), (int)LongShadowBlurType::Gaussian);
+    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.StackFastBlur"), (int)LongShadowBlurType::StackFast);
+    cmb_long_shadow_blur_type_->setFixedHeight(22);
+    cmb_long_shadow_blur_type_->setStyleSheet(control_style);
+    spn_long_shadow_blur_ = mk_dspin(0.0, 100.0, 1.0);
     btn_kf_shadow_enabled_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowEnabledKeyframe"));
     btn_kf_shadow_color_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowColorKeyframe"));
     btn_kf_shadow_opacity_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowOpacityKeyframe"));
@@ -7333,6 +7341,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowLength"), spn_long_shadow_length_);
     add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowAngle"), spn_long_shadow_angle_);
     add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowFalloff"), spn_long_shadow_falloff_);
+    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowBlurType"), cmb_long_shadow_blur_type_);
+    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowBlur"), spn_long_shadow_blur_);
     vl->addWidget(shadow_box_);
     make_collapsible(shadow_box_);
 
@@ -7800,6 +7810,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_angle = (float)v; emit_change(); } });
     connect(spn_long_shadow_falloff_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_falloff = (float)v; emit_change(); } });
+    connect(cmb_long_shadow_blur_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int idx) {
+                if (!can_edit()) return;
+                layer_->long_shadow_blur_type = (LongShadowBlurType)cmb_long_shadow_blur_type_->itemData(idx).toInt();
+                emit_change();
+            });
+    connect(spn_long_shadow_blur_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_blur = (float)v; emit_change(); } });
 
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
@@ -8399,6 +8417,8 @@ void PropertiesPanel::load_values()
         if (spn_long_shadow_length_) spn_long_shadow_length_->setValue(0.0);
         if (spn_long_shadow_angle_) spn_long_shadow_angle_->setValue(135.0);
         if (spn_long_shadow_falloff_) spn_long_shadow_falloff_->setValue(1.0);
+        if (cmb_long_shadow_blur_type_) cmb_long_shadow_blur_type_->setCurrentIndex(0);
+        if (spn_long_shadow_blur_) spn_long_shadow_blur_->setValue(8.0);
         for (auto *b : {btn_kf_pos_x_, btn_kf_pos_y_, btn_kf_scale_x_, btn_kf_scale_y_,
                         btn_kf_rotation_, btn_kf_opacity_, btn_kf_origin_x_, btn_kf_origin_y_,
                         btn_kf_width_, btn_kf_height_,
@@ -8796,6 +8816,11 @@ void PropertiesPanel::load_values()
     if (spn_long_shadow_length_) spn_long_shadow_length_->setValue(layer_->long_shadow_length);
     if (spn_long_shadow_angle_) spn_long_shadow_angle_->setValue(layer_->long_shadow_angle);
     if (spn_long_shadow_falloff_) spn_long_shadow_falloff_->setValue(layer_->long_shadow_falloff);
+    if (cmb_long_shadow_blur_type_) {
+        int lbi = cmb_long_shadow_blur_type_->findData((int)layer_->long_shadow_blur_type);
+        cmb_long_shadow_blur_type_->setCurrentIndex(lbi >= 0 ? lbi : 0);
+    }
+    if (spn_long_shadow_blur_) spn_long_shadow_blur_->setValue(layer_->long_shadow_blur);
 
     QFontDatabase fdb;
     cmb_font_->setToolTip(fdb.families().contains(QString::fromStdString(layer_->font_family))

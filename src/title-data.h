@@ -118,6 +118,13 @@ enum class ShadowBlurType {
     AlphaMask = 3,
 };
 
+enum class LongShadowBlurType {
+    None = 0,
+    Box = 1,
+    Gaussian = 2,
+    StackFast = 3,
+};
+
 /* ══════════════════════════════════════════════════════════════════
  *  Layer
  * ══════════════════════════════════════════════════════════════════ */
@@ -291,6 +298,8 @@ struct Layer {
     float       long_shadow_length = 0.0f;
     float       long_shadow_angle = 135.0f;
     float       long_shadow_falloff = 1.0f;
+    LongShadowBlurType long_shadow_blur_type = LongShadowBlurType::None;
+    float       long_shadow_blur = 8.0f;
     AnimatedProperty shadow_enabled_prop { "shadow_enabled", 0.0 };
     AnimatedProperty shadow_opacity_prop { "shadow_opacity", 0.6 };
     AnimatedProperty shadow_distance_prop { "shadow_distance", 8.0 };

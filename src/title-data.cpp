@@ -939,6 +939,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["long_shadow_length"] = l.long_shadow_length;
     j["long_shadow_angle"] = l.long_shadow_angle;
     j["long_shadow_falloff"] = l.long_shadow_falloff;
+    j["long_shadow_blur_type"] = (int)l.long_shadow_blur_type;
+    j["long_shadow_blur"] = l.long_shadow_blur;
     j["shadow_enabled_prop"] = aprop_to_json(l.shadow_enabled_prop);
     j["shadow_opacity_prop"] = aprop_to_json(l.shadow_opacity_prop);
     j["shadow_distance_prop"] = aprop_to_json(l.shadow_distance_prop);
@@ -1133,6 +1135,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->long_shadow_length = std::clamp(finite_or(json_double(j, "long_shadow_length", 0.0), 0.0), 0.0, 4096.0);
     l->long_shadow_angle = finite_or(json_double(j, "long_shadow_angle", l->shadow_angle), l->shadow_angle);
     l->long_shadow_falloff = std::clamp(finite_or(json_double(j, "long_shadow_falloff", 1.0), 1.0), 0.0, 4.0);
+    l->long_shadow_blur_type = (LongShadowBlurType)std::clamp(json_int(j, "long_shadow_blur_type", (int)LongShadowBlurType::None), 0, (int)LongShadowBlurType::StackFast);
+    l->long_shadow_blur = std::clamp(finite_or(json_double(j, "long_shadow_blur", 8.0), 8.0), 0.0, 512.0);
     l->shadow_enabled_prop.static_value = l->shadow_enabled ? 1.0 : 0.0;
     l->shadow_opacity_prop.static_value = l->shadow_opacity;
     l->shadow_distance_prop.static_value = l->shadow_distance;
