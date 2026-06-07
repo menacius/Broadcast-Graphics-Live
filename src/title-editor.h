@@ -362,6 +362,7 @@ private:
     void position_text_editor();
     void configure_inline_text_editor(const Layer &layer);
     bool sync_inline_text_layer(bool mark_dirty);
+    void refresh_inline_text_edit(bool mark_dirty, bool emit_changed);
     double inline_text_visual_scale(const Layer &layer) const;
     QRectF inline_text_document_local_rect(const Layer &layer) const;
     std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
@@ -390,6 +391,8 @@ private:
     std::string inline_text_layer_id_;
     double inline_text_last_visual_scale_ = 0.0;
     bool committing_inline_text_ = false;
+    bool updating_inline_text_editor_ = false;
+    bool refreshing_inline_text_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
     Qt::KeyboardModifiers shape_draw_modifiers_ = Qt::NoModifier;

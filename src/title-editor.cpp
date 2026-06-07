@@ -382,6 +382,28 @@ static void populate_qtext_document_from_rich_text(QTextDocument *doc, const Ric
 }
 
 
+static bool rich_text_fills_equal(const RichTextFill &a, const RichTextFill &b)
+{
+    return a.type == b.type && a.color == b.color && a.gradient_type == b.gradient_type &&
+           a.gradient_start_color == b.gradient_start_color &&
+           a.gradient_end_color == b.gradient_end_color &&
+           std::abs(a.gradient_start_pos - b.gradient_start_pos) < 0.0001f &&
+           std::abs(a.gradient_end_pos - b.gradient_end_pos) < 0.0001f &&
+           std::abs(a.gradient_angle - b.gradient_angle) < 0.0001f;
+}
+
+static bool rich_text_char_formats_equal(const RichTextCharFormat &a, const RichTextCharFormat &b)
+{
+    return a.font_family == b.font_family && a.font_size == b.font_size &&
+           a.bold == b.bold && a.italic == b.italic && a.underline == b.underline &&
+           a.strikethrough == b.strikethrough &&
+           std::abs(a.tracking - b.tracking) < 0.0001f &&
+           std::abs(a.scale_x - b.scale_x) < 0.0001f &&
+           std::abs(a.scale_y - b.scale_y) < 0.0001f &&
+           std::abs(a.baseline_shift - b.baseline_shift) < 0.0001f &&
+           rich_text_fills_equal(a.fill, b.fill);
+}
+
 static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const std::vector<RichTextRange> &b)
 {
     if (a.size() != b.size()) return false;
@@ -389,14 +411,7 @@ static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const st
         const RichTextRange &x = a[i];
         const RichTextRange &y = b[i];
         if (x.start != y.start || x.length != y.length) return false;
-        const RichTextCharFormat &xf = x.format;
-        const RichTextCharFormat &yf = y.format;
-        if (xf.font_family != yf.font_family || xf.font_size != yf.font_size ||
-            xf.bold != yf.bold || xf.italic != yf.italic || xf.underline != yf.underline ||
-            xf.strikethrough != yf.strikethrough || xf.fill.type != yf.fill.type ||
-            xf.fill.color != yf.fill.color || xf.fill.gradient_start_color != yf.fill.gradient_start_color ||
-            xf.fill.gradient_end_color != yf.fill.gradient_end_color)
-            return false;
+        if (!rich_text_char_formats_equal(x.format, y.format)) return false;
     }
     return true;
 }
@@ -5660,20 +5675,27 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
         "color:rgba(255,255,255,1);selection-background-color:rgba(0,120,215,110);"
         "selection-color:rgba(255,255,255,1);}");
     inline_text_editor_->installEventFilter(this);
-    connect(inline_text_editor_, &QTextEdit::textChanged, this, [this]() {
-        if (committing_inline_text_ || inline_text_layer_id_.empty()) return;
-        const std::string layer_id = inline_text_layer_id_;
-        if (sync_inline_text_layer(true)) {
-            dirty_ = true;
-            position_text_editor();
-            update();
-            emit text_edit_changed(layer_id);
-        }
+    connect(inline_text_editor_->document(), &QTextDocument::contentsChanged, this, [this]() {
+        if (updating_inline_text_editor_ || refreshing_inline_text_) return;
+        refresh_inline_text_edit(true, true);
     });
+    if (auto *layout = inline_text_editor_->document()->documentLayout()) {
+        connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged, this, [this](const QSizeF &) {
+            if (updating_inline_text_editor_ || refreshing_inline_text_) return;
+            refresh_inline_text_edit(true, true);
+        });
+        connect(layout, &QAbstractTextDocumentLayout::update, this, [this](const QRectF &) {
+            if (committing_inline_text_ || updating_inline_text_editor_ || inline_text_layer_id_.empty()) return;
+            if (inline_text_editor_)
+                inline_text_editor_->viewport()->update();
+        });
+    }
     auto emit_cursor_changed = [this]() {
-        if (committing_inline_text_ || inline_text_layer_id_.empty()) return;
+        if (committing_inline_text_ || updating_inline_text_editor_ || inline_text_layer_id_.empty()) return;
         const std::string layer_id = inline_text_layer_id_;
         sync_inline_text_layer(false);
+        if (inline_text_editor_)
+            inline_text_editor_->viewport()->update();
         emit text_edit_cursor_changed(layer_id);
     };
     connect(inline_text_editor_, &QTextEdit::cursorPositionChanged, this, emit_cursor_changed);
@@ -5711,11 +5733,7 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     cursor.mergeCharFormat(qfmt);
     inline_text_editor_->mergeCurrentCharFormat(qfmt);
     inline_text_editor_->setTextCursor(cursor);
-    if (auto *doc = inline_text_editor_->document())
-        doc->setModified(false);
-    dirty_ = true;
-    update();
-    emit text_edit_changed(layer_id);
+    refresh_inline_text_edit(true, true);
 }
 
 void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
@@ -5782,7 +5800,13 @@ void CanvasPreview::refresh_preview()
 {
     dirty_ = true;
     position_text_editor();
+    if (!inline_text_layer_id_.empty())
+        render_to_pixmap();
     update();
+    if (inline_text_editor_ && inline_text_editor_->isVisible()) {
+        inline_text_editor_->viewport()->update();
+        repaint(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
+    }
 }
 
 
@@ -7147,6 +7171,7 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     const bool selection_changed = layer->rich_text.selection.anchor != next_model.selection.anchor ||
                                    layer->rich_text.selection.head != next_model.selection.head;
     const bool changed = layer->text_content != plain || layer->rich_text.plain_text != next_model.plain_text ||
+                         !rich_text_char_formats_equal(layer->rich_text.default_format, next_model.default_format) ||
                          !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
     if (!changed) {
         if (selection_changed)
@@ -7161,6 +7186,40 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
         editor_doc->setModified(false);
     if (mark_dirty) dirty_ = true;
     return true;
+}
+
+void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
+{
+    if (committing_inline_text_ || updating_inline_text_editor_ || refreshing_inline_text_ ||
+        !inline_text_editor_ || inline_text_layer_id_.empty())
+        return;
+
+    refreshing_inline_text_ = true;
+    const std::string layer_id = inline_text_layer_id_;
+    const bool model_changed = sync_inline_text_layer(mark_dirty);
+
+    if (mark_dirty || model_changed)
+        dirty_ = true;
+
+    position_text_editor();
+
+    if (dirty_)
+        render_to_pixmap();
+
+    if (inline_text_editor_) {
+        const QRect editor_rect = inline_text_editor_->geometry().adjusted(-4, -4, 4, 4);
+        update(editor_rect);
+        inline_text_editor_->update();
+        inline_text_editor_->viewport()->update();
+        repaint(editor_rect);
+    } else {
+        update();
+    }
+
+    refreshing_inline_text_ = false;
+
+    if (emit_changed && (mark_dirty || model_changed))
+        emit text_edit_changed(layer_id);
 }
 
 QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
@@ -7214,6 +7273,8 @@ void CanvasPreview::position_text_editor()
     }
 
     const double visual_scale = inline_text_visual_scale(*layer);
+    const bool was_updating_inline_text_editor = updating_inline_text_editor_;
+    updating_inline_text_editor_ = true;
     configure_inline_text_editor(*layer);
     {
         QSignalBlocker blocker(inline_text_editor_);
@@ -7250,6 +7311,7 @@ void CanvasPreview::position_text_editor()
             if (auto *layout = doc->documentLayout())
                 layout->documentSize();
     }
+    updating_inline_text_editor_ = was_updating_inline_text_editor;
 
     const QRectF document_rect = inline_text_document_local_rect(*layer);
     QPolygonF poly;
@@ -7272,6 +7334,7 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
         commit_text_edit(true);
 
     inline_text_layer_id_ = layer->id;
+    updating_inline_text_editor_ = true;
     QSignalBlocker blocker(inline_text_editor_);
     configure_inline_text_editor(*layer);
     const double visual_scale = inline_text_visual_scale(*layer);
@@ -7292,6 +7355,7 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
         layer->rich_text.selection.head = layer->rich_text.plain_text.size();
     }
     position_text_editor();
+    updating_inline_text_editor_ = false;
     inline_text_editor_->show();
     inline_text_editor_->raise();
     inline_text_editor_->setFocus(Qt::MouseFocusReason);
@@ -7315,10 +7379,12 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
     inline_text_last_visual_scale_ = 0.0;
     inline_text_editor_->hide();
     {
+        updating_inline_text_editor_ = true;
         QSignalBlocker blocker(inline_text_editor_);
         inline_text_editor_->clear();
         inline_text_editor_->setCurrentCharFormat(QTextCharFormat());
         inline_text_editor_->mergeCurrentCharFormat(QTextCharFormat());
+        updating_inline_text_editor_ = false;
     }
     committing_inline_text_ = false;
     dirty_ = true;
@@ -7338,6 +7404,8 @@ bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
                 QTextCursor cursor = inline_text_editor_->textCursor();
                 cursor.mergeCharFormat(format);
                 inline_text_editor_->mergeCurrentCharFormat(format);
+                inline_text_editor_->setTextCursor(cursor);
+                refresh_inline_text_edit(true, true);
             };
             if (key_event->key() == Qt::Key_B && key_event->modifiers().testFlag(Qt::ControlModifier)) {
                 QTextCharFormat format;
