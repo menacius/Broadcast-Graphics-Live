@@ -76,6 +76,7 @@
 #include <QKeySequence>
 #include <QAbstractSpinBox>
 #include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QTextEdit>
 #include <QTextLayout>
 #include <QTextOption>
@@ -86,6 +87,7 @@
 #include <QToolButton>
 #include <QMenu>
 #include <QMenuBar>
+#include <QTabWidget>
 #include <QMessageBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -111,6 +113,9 @@ constexpr const char *kEditorWindowStateKey = "windowState";
 constexpr const char *kEditorPanelsLockedKey = "panelsLocked";
 constexpr const char *kGraphicPropertiesDockObjectName = "OBSGraphicsStudioProGraphicPropertiesDock";
 constexpr const char *kLayerPropertiesDockObjectName = "OBSGraphicsStudioProLayerPropertiesDock";
+constexpr const char *kEffectsDockObjectName = "OBSGraphicsStudioProEffectsDock";
+constexpr const char *kStylesDockObjectName = "OBSGraphicsStudioProStylesDock";
+constexpr const char *kColorSwatchesDockObjectName = "OBSGraphicsStudioProColorSwatchesDock";
 
 class NumericDragLabel : public QLabel {
 public:
@@ -1686,6 +1691,139 @@ TitleEditor::TitleEditor(QWidget *parent)
 }
 
 
+
+QWidget *TitleEditor::create_effects_panel()
+{
+    auto *panel = new QWidget(this);
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto *hint = new QLabel(QStringLiteral("Effect stack"), panel);
+    hint->setStyleSheet(QStringLiteral("color:#b8b8b8;font-weight:bold;"));
+    layout->addWidget(hint);
+
+    auto *effect_list = new QListWidget(panel);
+    effect_list->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsList"));
+    effect_list->setSelectionMode(QAbstractItemView::SingleSelection);
+    effect_list->setAlternatingRowColors(true);
+    effect_list->addItem(QStringLiteral("No effects added"));
+    if (auto *item = effect_list->item(0))
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+    effect_list->setToolTip(QStringLiteral("Future effect stacking and management controls will appear here."));
+    layout->addWidget(effect_list, 1);
+
+    auto *button_bar = new QWidget(panel);
+    button_bar->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsButtonBar"));
+    auto *button_layout = new QHBoxLayout(button_bar);
+    button_layout->setContentsMargins(0, 6, 0, 0);
+    button_layout->setSpacing(4);
+
+    auto add_effect_button = [button_bar, button_layout](const char *icon, const QString &tip) {
+        auto *button = new QToolButton(button_bar);
+        button->setIcon(obs_icon(icon));
+        button->setIconSize(QSize(16, 16));
+        button->setToolTip(tip);
+        button->setAutoRaise(true);
+        button_layout->addWidget(button);
+        return button;
+    };
+
+    add_effect_button("add.svg", QStringLiteral("Add Effect"));
+    add_effect_button("delete.svg", QStringLiteral("Remove Effect"));
+    add_effect_button("duplicate.svg", QStringLiteral("Duplicate Effect"));
+    button_layout->addStretch(1);
+    layout->addWidget(button_bar);
+
+    return panel;
+}
+
+QWidget *TitleEditor::create_styles_panel()
+{
+    auto *tabs = new QTabWidget(this);
+    tabs->setObjectName(QStringLiteral("OBSGraphicsStudioProStylesTabs"));
+    tabs->setDocumentMode(true);
+
+    auto make_tab = [](const QString &title, const QString &description) {
+        auto *tab = new QWidget;
+        auto *layout = new QVBoxLayout(tab);
+        layout->setContentsMargins(10, 10, 10, 10);
+        layout->setSpacing(6);
+        auto *heading = new QLabel(title, tab);
+        heading->setStyleSheet(QStringLiteral("color:#f0f0f0;font-weight:bold;"));
+        auto *body = new QLabel(description, tab);
+        body->setWordWrap(true);
+        body->setStyleSheet(QStringLiteral("color:#b8b8b8;"));
+        layout->addWidget(heading);
+        layout->addWidget(body);
+        layout->addStretch(1);
+        return tab;
+    };
+
+    tabs->addTab(make_tab(QStringLiteral("Text styles"),
+                          QStringLiteral("Reusable typography presets, text treatments, and layer text settings will be managed here.")),
+                 QStringLiteral("Text"));
+    tabs->addTab(make_tab(QStringLiteral("Gradient styles"),
+                          QStringLiteral("Reusable foreground and background gradient presets will be managed here.")),
+                 QStringLiteral("Gradient"));
+    tabs->addTab(make_tab(QStringLiteral("Pattern styles"),
+                          QStringLiteral("Reusable pattern, texture, and fill presets will be managed here.")),
+                 QStringLiteral("Pattern"));
+    tabs->addTab(make_tab(QStringLiteral("Style presets"),
+                          QStringLiteral("Saved style preset libraries and shared style settings will be organized here.")),
+                 QStringLiteral("Presets"));
+
+    return tabs;
+}
+
+QWidget *TitleEditor::create_color_swatches_panel()
+{
+    auto *panel = new QWidget(this);
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
+
+    auto *hint = new QLabel(QStringLiteral("Reusable color palettes"), panel);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color:#b8b8b8;font-weight:bold;"));
+    layout->addWidget(hint);
+
+    auto *grid_widget = new QWidget(panel);
+    auto *grid = new QGridLayout(grid_widget);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setHorizontalSpacing(6);
+    grid->setVerticalSpacing(6);
+
+    const std::array<QColor, 24> colors = {
+        QColor("#ffffff"), QColor("#d9d9d9"), QColor("#a6a6a6"), QColor("#6f6f6f"),
+        QColor("#262626"), QColor("#000000"), QColor("#ff4b4b"), QColor("#ff9f1c"),
+        QColor("#ffd166"), QColor("#2ec4b6"), QColor("#00a8e8"), QColor("#7b61ff"),
+        QColor("#f72585"), QColor("#b5179e"), QColor("#7209b7"), QColor("#3a0ca3"),
+        QColor("#4361ee"), QColor("#4cc9f0"), QColor("#52b788"), QColor("#95d5b2"),
+        QColor("#f4a261"), QColor("#e76f51"), QColor("#8d6e63"), QColor("#3d405b")
+    };
+
+    for (int i = 0; i < (int)colors.size(); ++i) {
+        auto *swatch = new QToolButton(grid_widget);
+        swatch->setObjectName(QStringLiteral("OBSGraphicsStudioProColorSwatch"));
+        swatch->setFixedSize(24, 24);
+        swatch->setAutoRaise(false);
+        swatch->setToolTip(colors[i].name(QColor::HexRgb).toUpper());
+        swatch->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid #555;border-radius:3px;}"
+                                             "QToolButton:hover{border:2px solid #fff;}" ).arg(colors[i].name()));
+        grid->addWidget(swatch, i / 6, i % 6);
+    }
+
+    layout->addWidget(grid_widget, 0, Qt::AlignTop | Qt::AlignLeft);
+    auto *footer = new QLabel(QStringLiteral("Palette saving, palette import/export, and quick color application workflows will build on these swatches."), panel);
+    footer->setWordWrap(true);
+    footer->setStyleSheet(QStringLiteral("color:#9f9f9f;"));
+    layout->addWidget(footer);
+    layout->addStretch(1);
+
+    return panel;
+}
+
 void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
 {
     if (!menu_bar) return;
@@ -1713,6 +1851,27 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
     connect(act_layer_props_visible_, &QAction::triggered, this, [this](bool visible) {
         if (layer_props_dock_) layer_props_dock_->setVisible(visible);
     });
+
+    act_effects_visible_ = windows_menu->addAction(QStringLiteral("Effects"));
+    act_effects_visible_->setCheckable(true);
+    act_effects_visible_->setChecked(true);
+    connect(act_effects_visible_, &QAction::triggered, this, [this](bool visible) {
+        if (effects_dock_) effects_dock_->setVisible(visible);
+    });
+
+    act_styles_visible_ = windows_menu->addAction(QStringLiteral("Styles"));
+    act_styles_visible_->setCheckable(true);
+    act_styles_visible_->setChecked(true);
+    connect(act_styles_visible_, &QAction::triggered, this, [this](bool visible) {
+        if (styles_dock_) styles_dock_->setVisible(visible);
+    });
+
+    act_color_swatches_visible_ = windows_menu->addAction(QStringLiteral("Color Swatches"));
+    act_color_swatches_visible_->setCheckable(true);
+    act_color_swatches_visible_->setChecked(true);
+    connect(act_color_swatches_visible_, &QAction::triggered, this, [this](bool visible) {
+        if (color_swatches_dock_) color_swatches_dock_->setVisible(visible);
+    });
 }
 
 QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const QString &title, QWidget *panel)
@@ -1731,6 +1890,12 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
         visibility_action = act_graphic_props_visible_;
     else if (object_name == QString::fromUtf8(kLayerPropertiesDockObjectName))
         visibility_action = act_layer_props_visible_;
+    else if (object_name == QString::fromUtf8(kEffectsDockObjectName))
+        visibility_action = act_effects_visible_;
+    else if (object_name == QString::fromUtf8(kStylesDockObjectName))
+        visibility_action = act_styles_visible_;
+    else if (object_name == QString::fromUtf8(kColorSwatchesDockObjectName))
+        visibility_action = act_color_swatches_visible_;
 
     if (visibility_action) {
         connect(dock, &QDockWidget::visibilityChanged, this, [visibility_action](bool visible) {
@@ -1776,6 +1941,18 @@ void TitleEditor::load_editor_layout()
         QSignalBlocker blocker(act_layer_props_visible_);
         act_layer_props_visible_->setChecked(!layer_props_dock_->isHidden());
     }
+    if (act_effects_visible_ && effects_dock_) {
+        QSignalBlocker blocker(act_effects_visible_);
+        act_effects_visible_->setChecked(!effects_dock_->isHidden());
+    }
+    if (act_styles_visible_ && styles_dock_) {
+        QSignalBlocker blocker(act_styles_visible_);
+        act_styles_visible_->setChecked(!styles_dock_->isHidden());
+    }
+    if (act_color_swatches_visible_ && color_swatches_dock_) {
+        QSignalBlocker blocker(act_color_swatches_visible_);
+        act_color_swatches_visible_->setChecked(!color_swatches_dock_->isHidden());
+    }
 
     restoring_editor_layout_ = false;
     update_panel_lock_state();
@@ -1798,6 +1975,18 @@ void TitleEditor::reset_default_layout()
 {
     restoring_editor_layout_ = true;
 
+    const QDockWidget::DockWidgetFeatures reset_features =
+        QDockWidget::DockWidgetClosable |
+        QDockWidget::DockWidgetMovable |
+        QDockWidget::DockWidgetFloatable;
+    for (auto *dock : {graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
+        if (!dock) continue;
+        dock->setMaximumWidth(QWIDGETSIZE_MAX);
+        dock->setMinimumWidth(dock->widget() ? dock->widget()->minimumWidth() : 220);
+        dock->setFeatures(reset_features);
+        dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    }
+
     if (graphic_props_dock_) {
         graphic_props_dock_->setFloating(false);
         graphic_props_dock_->show();
@@ -1808,6 +1997,26 @@ void TitleEditor::reset_default_layout()
         layer_props_dock_->show();
         addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
     }
+    if (styles_dock_) {
+        styles_dock_->setFloating(false);
+        styles_dock_->show();
+        addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
+        if (graphic_props_dock_) tabifyDockWidget(graphic_props_dock_, styles_dock_);
+    }
+    if (color_swatches_dock_) {
+        color_swatches_dock_->setFloating(false);
+        color_swatches_dock_->show();
+        addDockWidget(Qt::LeftDockWidgetArea, color_swatches_dock_);
+        if (graphic_props_dock_) tabifyDockWidget(graphic_props_dock_, color_swatches_dock_);
+    }
+    if (effects_dock_) {
+        effects_dock_->setFloating(false);
+        effects_dock_->show();
+        addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
+        if (layer_props_dock_) tabifyDockWidget(layer_props_dock_, effects_dock_);
+    }
+    if (graphic_props_dock_) graphic_props_dock_->raise();
+    if (layer_props_dock_) layer_props_dock_->raise();
 
     if (act_graphic_props_visible_) {
         QSignalBlocker blocker(act_graphic_props_visible_);
@@ -1817,8 +2026,21 @@ void TitleEditor::reset_default_layout()
         QSignalBlocker blocker(act_layer_props_visible_);
         act_layer_props_visible_->setChecked(true);
     }
+    if (act_effects_visible_) {
+        QSignalBlocker blocker(act_effects_visible_);
+        act_effects_visible_->setChecked(true);
+    }
+    if (act_styles_visible_) {
+        QSignalBlocker blocker(act_styles_visible_);
+        act_styles_visible_->setChecked(true);
+    }
+    if (act_color_swatches_visible_) {
+        QSignalBlocker blocker(act_color_swatches_visible_);
+        act_color_swatches_visible_->setChecked(true);
+    }
 
     resize(1280, 760);
+    update_panel_lock_state();
     restoring_editor_layout_ = false;
     save_editor_layout();
 }
@@ -1838,7 +2060,7 @@ void TitleEditor::update_panel_lock_state()
         QDockWidget::DockWidgetFloatable;
     const QDockWidget::DockWidgetFeatures locked_features = QDockWidget::DockWidgetClosable;
 
-    for (auto *dock : {graphic_props_dock_, layer_props_dock_}) {
+    for (auto *dock : {graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_}) {
         if (!dock) continue;
         if (panels_locked_ && dock->isFloating())
             dock->setFloating(false);
@@ -2127,8 +2349,25 @@ void TitleEditor::build_ui()
     layer_props_dock_ = create_editor_dock(QString::fromUtf8(kLayerPropertiesDockObjectName),
                                            QStringLiteral("Layer Properties"),
                                            props_);
+    effects_dock_ = create_editor_dock(QString::fromUtf8(kEffectsDockObjectName),
+                                       QStringLiteral("Effects"),
+                                       create_effects_panel());
+    styles_dock_ = create_editor_dock(QString::fromUtf8(kStylesDockObjectName),
+                                      QStringLiteral("Styles"),
+                                      create_styles_panel());
+    color_swatches_dock_ = create_editor_dock(QString::fromUtf8(kColorSwatchesDockObjectName),
+                                              QStringLiteral("Color Swatches"),
+                                              create_color_swatches_panel());
     addDockWidget(Qt::LeftDockWidgetArea, graphic_props_dock_);
     addDockWidget(Qt::RightDockWidgetArea, layer_props_dock_);
+    addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
+    addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
+    addDockWidget(Qt::LeftDockWidgetArea, color_swatches_dock_);
+    tabifyDockWidget(layer_props_dock_, effects_dock_);
+    tabifyDockWidget(graphic_props_dock_, styles_dock_);
+    tabifyDockWidget(graphic_props_dock_, color_swatches_dock_);
+    graphic_props_dock_->raise();
+    layer_props_dock_->raise();
 
     /* ── Timeline editor: full-width transport | LayerStack + Timeline | full-width zoom ── */
     auto *timeline_editor = new QWidget(this);

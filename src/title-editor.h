@@ -138,6 +138,9 @@ private:
     void update_undo_redo_actions();
     void create_docked_panel_menu(QMenuBar *menu_bar);
     QDockWidget *create_editor_dock(const QString &object_name, const QString &title, QWidget *panel);
+    QWidget *create_effects_panel();
+    QWidget *create_styles_panel();
+    QWidget *create_color_swatches_panel();
     void load_editor_layout();
     void save_editor_layout() const;
     void reset_default_layout();
@@ -165,6 +168,9 @@ private:
     TitlePropertiesPanel *title_props_ = nullptr;
     QDockWidget     *layer_props_dock_ = nullptr;
     QDockWidget     *graphic_props_dock_ = nullptr;
+    QDockWidget     *effects_dock_ = nullptr;
+    QDockWidget     *styles_dock_ = nullptr;
+    QDockWidget     *color_swatches_dock_ = nullptr;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
@@ -182,6 +188,9 @@ private:
     QAction         *act_lock_panels_ = nullptr;
     QAction         *act_layer_props_visible_ = nullptr;
     QAction         *act_graphic_props_visible_ = nullptr;
+    QAction         *act_effects_visible_ = nullptr;
+    QAction         *act_styles_visible_ = nullptr;
+    QAction         *act_color_swatches_visible_ = nullptr;
     int              alignment_target_ = 3; /* 0=selection, 1=title safe guides, 2=action safe guides, 3=artboard/canvas */
     std::vector<std::shared_ptr<Title>> undo_stack_;
     int              undo_index_ = -1;
