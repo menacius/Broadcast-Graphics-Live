@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -47,7 +48,7 @@ std::map<std::string, obs_source_t *> g_section_sources;
 std::string g_hotkey_signature;
 std::map<std::string, std::string> g_persisted_hotkey_bindings;
 bool g_hotkeys_active = false;
-bool g_change_callback_registered = false;
+uint64_t g_change_callback_id = 0;
 bool g_hotkey_section_source_registered = false;
 
 constexpr const char *kHotkeySectionSourceId = "obs_graphics_studio_pro_hotkey_section";
@@ -557,15 +558,15 @@ void title_hotkeys_register()
     load_persisted_hotkey_bindings();
     g_hotkeys_active = true;
     refresh_hotkeys();
-    if (!g_change_callback_registered) {
-        TitleDataStore::instance().on_change([]() { refresh_hotkeys(); });
-        g_change_callback_registered = true;
-    }
+    if (g_change_callback_id == 0)
+        g_change_callback_id = TitleDataStore::instance().on_change([]() { refresh_hotkeys(); });
 }
 
 void title_hotkeys_unregister()
 {
     g_hotkeys_active = false;
+    TitleDataStore::instance().remove_change_callback(g_change_callback_id);
+    g_change_callback_id = 0;
     unregister_all_hotkeys();
     release_hotkey_section_sources();
 }

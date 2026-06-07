@@ -407,7 +407,8 @@ public:
 
     /* Change notifications */
     using ChangeCallback = std::function<void()>;
-    void on_change(ChangeCallback cb);
+    uint64_t on_change(ChangeCallback cb);
+    void remove_change_callback(uint64_t callback_id);
     void notify_change();
     void touch_runtime_change();
     uint64_t revision() const { return revision_.load(); }
@@ -417,7 +418,13 @@ private:
     mutable std::recursive_mutex         mutex_;
     std::vector<std::shared_ptr<Title>>  titles_;
     std::string                          loaded_path_;
-    std::vector<ChangeCallback>          change_cbs_;
+    struct ChangeObserver {
+        uint64_t id = 0;
+        ChangeCallback callback;
+    };
+
+    std::vector<ChangeObserver>          change_cbs_;
+    uint64_t                             next_change_cb_id_ = 1;
     std::atomic<uint64_t>                revision_ { 0 };
 
     static std::string data_path();

@@ -1187,7 +1187,7 @@ TitleDock::TitleDock(QWidget *parent)
     /* React to external data changes.  Always marshal back to the dock's
      * Qt thread so background/source playback changes cannot touch widgets.
      */
-    TitleDataStore::instance().on_change([this]() {
+    change_callback_id_ = TitleDataStore::instance().on_change([this]() {
         QTimer::singleShot(0, this, [this]() {
             if (!updating_exposed_text_)
                 refresh();
@@ -1205,6 +1205,23 @@ TitleDock::TitleDock(QWidget *parent)
         populate_exposed_text();
     });
     live_refresh_timer_->start();
+}
+
+TitleDock::~TitleDock()
+{
+    TitleDataStore::instance().remove_change_callback(change_callback_id_);
+    change_callback_id_ = 0;
+
+    stop_playlist();
+    if (live_refresh_timer_)
+        live_refresh_timer_->stop();
+
+    if (editor_) {
+        TitleEditor *editor = editor_;
+        editor_ = nullptr;
+        disconnect(editor, nullptr, this, nullptr);
+        delete editor;
+    }
 }
 
 
