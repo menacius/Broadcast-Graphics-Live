@@ -338,6 +338,7 @@ signals:
     void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_expand_changed(const std::string &layer_id, bool expanded);
     void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
+    void layer_mask_changed(const std::string &layer_id, const std::string &mask_source_id, MaskMode mask_mode);
     void layer_name_changed(const std::string &layer_id, const std::string &name);
     void layer_order_changed();
     void add_layer_requested(LayerType type);
@@ -608,6 +609,12 @@ private:
     QDoubleSpinBox  *spn_layer_w_   = nullptr;
     QDoubleSpinBox  *spn_layer_h_   = nullptr;
     QDoubleSpinBox  *spn_rect_corner_   = nullptr;
+    QComboBox       *cmb_shape_type_ = nullptr;
+    QSpinBox        *spn_shape_points_ = nullptr;
+    QSpinBox        *spn_shape_sides_ = nullptr;
+    QDoubleSpinBox  *spn_shape_inner_radius_ = nullptr;
+    QDoubleSpinBox  *spn_shape_outer_radius_ = nullptr;
+    QDoubleSpinBox  *spn_shape_roundness_ = nullptr;
     QPushButton     *btn_fill_color_ = nullptr;
     QWidget         *row_fill_color_ = nullptr;
     QComboBox       *cmb_fill_type_ = nullptr;

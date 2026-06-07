@@ -424,10 +424,14 @@ static void ensure_unique_title_id(const std::shared_ptr<Title> &title,
         layer_ids.insert(layer->id);
     }
     for (auto &layer : title->layers) {
-        if (!layer || layer->parent_id.empty())
+        if (!layer)
             continue;
-        if (layer_ids.find(layer->parent_id) == layer_ids.end())
+        if (!layer->parent_id.empty() && layer_ids.find(layer->parent_id) == layer_ids.end())
             layer->parent_id.clear();
+        if (!layer->mask_source_id.empty() && layer_ids.find(layer->mask_source_id) == layer_ids.end()) {
+            layer->mask_source_id.clear();
+            layer->mask_mode = MaskMode::None;
+        }
     }
 }
 } // namespace
@@ -587,6 +591,14 @@ void Title::remove_layer(const std::string &lid)
         std::remove_if(layers.begin(), layers.end(),
                        [&](auto &l){ return !l || l->id == lid; }),
         layers.end());
+    for (auto &layer : layers) {
+        if (!layer) continue;
+        if (layer->parent_id == lid) layer->parent_id.clear();
+        if (layer->mask_source_id == lid) {
+            layer->mask_source_id.clear();
+            layer->mask_mode = MaskMode::None;
+        }
+    }
 }
 
 void Title::move_layer(const std::string &lid, int delta)
@@ -793,6 +805,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["locked"]   = l.locked;
     j["properties_expanded"] = l.properties_expanded;
     j["parent_id"] = l.parent_id;
+    j["mask_source_id"] = l.mask_source_id;
+    j["mask_mode"] = (int)l.mask_mode;
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
 
@@ -899,6 +913,12 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["rect_width"]    = l.rect_width;
     j["rect_height"]   = l.rect_height;
     j["corner_radius"] = l.corner_radius;
+    j["shape_type"] = (int)l.shape_type;
+    j["shape_points"] = l.shape_points;
+    j["shape_sides"] = l.shape_sides;
+    j["shape_inner_radius"] = l.shape_inner_radius;
+    j["shape_outer_radius"] = l.shape_outer_radius;
+    j["shape_roundness"] = l.shape_roundness;
     j["box_width"]     = aprop_to_json(l.box_width);
     j["box_height"]    = aprop_to_json(l.box_height);
     j["origin_x"]      = l.origin_x;
@@ -953,6 +973,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
+    l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
+    l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedAlpha);
+    if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
     l->in_time  = std::clamp(finite_or(json_double(j, "in_time", 0.0), 0.0), 0.0, kMaxDuration);
     l->out_time = std::clamp(finite_or(json_double(j, "out_time", 5.0), 5.0), l->in_time, kMaxDuration);
 
@@ -1068,6 +1091,12 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->rect_width    = std::clamp(finite_or(json_double(j, "rect_width", 1920.0), 1920.0), 0.0, (double)kMaxCanvasDimension);
     l->rect_height   = std::clamp(finite_or(json_double(j, "rect_height", 100.0), 100.0), 0.0, (double)kMaxCanvasDimension);
     l->corner_radius = std::clamp(finite_or(json_double(j, "corner_radius", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
+    l->shape_type = (ShapeType)std::clamp(json_int(j, "shape_type", 0), 0, (int)ShapeType::Line);
+    l->shape_points = std::clamp(json_int(j, "shape_points", 5), 3, 64);
+    l->shape_sides = std::clamp(json_int(j, "shape_sides", 6), 3, 64);
+    l->shape_inner_radius = (float)std::clamp(finite_or(json_double(j, "shape_inner_radius", 0.45), 0.45), 0.0, 1.0);
+    l->shape_outer_radius = (float)std::clamp(finite_or(json_double(j, "shape_outer_radius", 0.5), 0.5), 0.0, 1.0);
+    l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, 1.0);
     l->box_width.static_value = l->rect_width;
     l->box_height.static_value = l->rect_height;
     if (j.contains("box_width"))  l->box_width  = aprop_from_json(j["box_width"],  "box_width");
@@ -1249,6 +1278,13 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
                 layer->parent_id = it->second;
             else if (!layer->parent_id.empty())
                 layer->parent_id.clear();
+            auto mask_it = layer_id_map.find(layer->mask_source_id);
+            if (mask_it != layer_id_map.end())
+                layer->mask_source_id = mask_it->second;
+            else if (!layer->mask_source_id.empty()) {
+                layer->mask_source_id.clear();
+                layer->mask_mode = MaskMode::None;
+            }
         }
         for (auto &layer_id : t->live_text_column_order) {
             auto it = layer_id_map.find(layer_id);
