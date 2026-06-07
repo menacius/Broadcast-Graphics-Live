@@ -15,13 +15,14 @@
  * │  (AE-style layer list)      │  (ruler, clips, keyframe dots)   │
  * └─────────────────────────────┴──────────────────────────────────┘
  *
- * The editor is a QDialog (non-modal so OBS stays usable).
+ * The editor is a QMainWindow (non-modal so OBS stays usable) with Qt/OBS-style dock widgets.
  */
 
 #pragma once
 
 #include "title-data.h"
-#include <QDialog>
+#include <QMainWindow>
+#include <QDockWidget>
 #include <QSplitter>
 #include <QListWidget>
 #include <QToolBar>
@@ -63,16 +64,17 @@ class QCloseEvent;
 class QAction;
 class QToolButton;
 class QScrollBar;
+class QMenuBar;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
  * ══════════════════════════════════════════════════════════════════ */
-class TitleEditor : public QDialog {
+class TitleEditor : public QMainWindow {
     Q_OBJECT
 
 public:
     explicit TitleEditor(QWidget *parent = nullptr);
-    ~TitleEditor() override = default;
+    ~TitleEditor() override;
 
     void open_title(const std::string &title_id);
 
@@ -101,7 +103,7 @@ protected:
 private slots:
     void tick();
     void show_about();
-    void reject() override;
+    void reject();
 
 private:
     void build_ui();
@@ -134,6 +136,16 @@ private:
     void push_undo_snapshot();
     void restore_undo_snapshot(int index);
     void update_undo_redo_actions();
+    void create_docked_panel_menu(QMenuBar *menu_bar);
+    QDockWidget *create_editor_dock(const QString &object_name, const QString &title, QWidget *panel);
+    QWidget *create_effects_panel();
+    QWidget *create_styles_panel();
+    QWidget *create_color_swatches_panel();
+    void load_editor_layout();
+    void save_editor_layout() const;
+    void reset_default_layout();
+    void set_panels_locked(bool locked);
+    void update_panel_lock_state();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -154,6 +166,11 @@ private:
     TimelineWidget  *timeline_  = nullptr;
     PropertiesPanel *props_     = nullptr;
     TitlePropertiesPanel *title_props_ = nullptr;
+    QDockWidget     *layer_props_dock_ = nullptr;
+    QDockWidget     *graphic_props_dock_ = nullptr;
+    QDockWidget     *effects_dock_ = nullptr;
+    QDockWidget     *styles_dock_ = nullptr;
+    QDockWidget     *color_swatches_dock_ = nullptr;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
@@ -168,11 +185,20 @@ private:
     QAction         *act_live_editing_ = nullptr;
     QAction         *act_undo_ = nullptr;
     QAction         *act_redo_ = nullptr;
+    QAction         *act_lock_panels_ = nullptr;
+    QAction         *act_layer_props_visible_ = nullptr;
+    QAction         *act_graphic_props_visible_ = nullptr;
+    QAction         *act_effects_visible_ = nullptr;
+    QAction         *act_styles_visible_ = nullptr;
+    QAction         *act_color_swatches_visible_ = nullptr;
     int              alignment_target_ = 3; /* 0=selection, 1=title safe guides, 2=action safe guides, 3=artboard/canvas */
     std::vector<std::shared_ptr<Title>> undo_stack_;
     int              undo_index_ = -1;
     bool             restoring_undo_ = false;
     bool             live_editing_ = false;
+    bool             panels_locked_ = false;
+    bool             restoring_editor_layout_ = false;
+    bool             editor_layout_save_suppressed_ = false;
     std::shared_ptr<Layer> layer_clipboard_;
 };
 
