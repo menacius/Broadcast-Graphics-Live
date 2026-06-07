@@ -955,6 +955,8 @@ static QPointF shadow_offset(const Layer &layer, double t)
                    std::sin(radians) * distance);
 }
 
+static QColor color_from_argb(uint32_t argb);
+
 struct ShadowRenderParams {
     double dx = 0.0;
     double dy = 0.0;
