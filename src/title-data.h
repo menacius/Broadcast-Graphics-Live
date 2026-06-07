@@ -125,6 +125,17 @@ enum class LongShadowBlurType {
     StackFast = 3,
 };
 
+enum class LayerEffectType {
+    BackgroundColor = 0,
+    Outline = 1,
+    DropShadow = 2,
+};
+
+struct LayerEffect {
+    LayerEffectType type = LayerEffectType::BackgroundColor;
+    bool enabled = true;
+};
+
 /* ══════════════════════════════════════════════════════════════════
  *  Layer
  * ══════════════════════════════════════════════════════════════════ */
@@ -138,6 +149,7 @@ struct Layer {
     std::string parent_id;
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;
+    std::vector<LayerEffect> effects;
 
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;

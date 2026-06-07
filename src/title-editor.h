@@ -22,6 +22,7 @@
 
 #include "title-data.h"
 #include <QMainWindow>
+#include <QWidget>
 #include <QDockWidget>
 #include <QSplitter>
 #include <QListWidget>
@@ -55,6 +56,7 @@ class CanvasPreview;
 class LayerStack;
 class TimelineWidget;
 class PropertiesPanel;
+class EffectsPanel;
 class TitlePropertiesPanel;
 class QEvent;
 class QKeyEvent;
@@ -65,6 +67,7 @@ class QAction;
 class QToolButton;
 class QScrollBar;
 class QMenuBar;
+class QVBoxLayout;
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitleEditor  – main editor window
@@ -249,6 +252,7 @@ private:
     enum class DragMode { None, Marquee, Move, ResizeNW, ResizeN, ResizeNE, ResizeE, ResizeSE, ResizeS, ResizeSW, ResizeW, Origin, Rotate };
 
     void render_to_pixmap();
+    void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     std::shared_ptr<Layer> selected_layer() const;
     std::vector<std::shared_ptr<Layer>> selected_layers() const;
     QRectF layer_local_rect(const Layer &layer) const;
@@ -545,6 +549,40 @@ private:
 /* ══════════════════════════════════════════════════════════════════
  *  PropertiesPanel  – right-side inspector
  * ══════════════════════════════════════════════════════════════════ */
+
+class EffectsPanel : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit EffectsPanel(QWidget *parent = nullptr);
+    void set_layer(std::shared_ptr<Layer> layer, double playhead);
+
+signals:
+    void property_changed(bool push_undo_snapshot = true);
+
+private:
+    void rebuild_stack();
+    void load_settings();
+    void build_settings();
+    LayerEffect *selected_effect();
+    const LayerEffect *selected_effect() const;
+    void sync_legacy_enabled_flags();
+    void emit_effect_changed();
+
+    std::shared_ptr<Layer> layer_;
+    double playhead_ = 0.0;
+    bool loading_values_ = false;
+    int selected_index_ = -1;
+
+    QListWidget *effect_list_ = nullptr;
+    QWidget *settings_container_ = nullptr;
+    QVBoxLayout *settings_layout_ = nullptr;
+    QToolButton *btn_remove_ = nullptr;
+    QToolButton *btn_duplicate_ = nullptr;
+    QToolButton *btn_move_up_ = nullptr;
+    QToolButton *btn_move_down_ = nullptr;
+};
+
 class PropertiesPanel : public QScrollArea {
     Q_OBJECT
 
