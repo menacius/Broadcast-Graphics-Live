@@ -446,7 +446,13 @@ static RichTextCharFormat format_at_offset(const RichTextDocument &doc, size_t o
 static RichTextCharFormatSummary summarize_rich_text_char_format(const Layer &layer, bool active_selection)
 {
     RichTextDocument doc = layer.rich_text.empty() ? rich_text_document_from_layer_defaults(layer) : layer.rich_text;
-    rich_text_document_sync_layer_defaults(doc, layer);
+    /*
+     * The layer scalar text fields can represent the most recently applied
+     * cursor style while editing.  Do not sync them into an existing rich text
+     * document for inspection, or uncovered/default spans would be reported as
+     * that cached style instead of the document's actual stored style.
+     */
+    doc.normalize();
     RichTextCharFormatSummary summary;
     const size_t text_len = doc.plain_text.size();
     size_t start = 0;
