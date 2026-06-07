@@ -81,6 +81,8 @@
 #include <QTextDocument>
 #include <QTextCursor>
 #include <QTextCharFormat>
+#include <QTextBlock>
+#include <QTextFragment>
 #include <QTextLayout>
 #include <QTextOption>
 #include <QDateTime>
@@ -242,6 +244,65 @@ private:
     double drag_start_x_ = 0.0;
     double drag_start_value_ = 0.0;
 };
+
+
+static QString rich_text_plain_text(const std::string &html)
+{
+    if (html.empty()) return QString();
+    QTextDocument doc;
+    doc.setHtml(QString::fromStdString(html));
+    return doc.toPlainText();
+}
+
+static QString rich_text_html_with_replaced_plain_text(const std::string &html, const QString &plain)
+{
+    if (html.empty() || plain.isEmpty())
+        return QString();
+
+    QTextDocument source;
+    source.setHtml(QString::fromStdString(html));
+    QTextDocument replacement;
+    replacement.setDocumentMargin(source.documentMargin());
+    replacement.setDefaultFont(source.defaultFont());
+    replacement.setDefaultStyleSheet(source.defaultStyleSheet());
+    replacement.setDefaultTextOption(source.defaultTextOption());
+    replacement.setTextWidth(source.textWidth());
+
+    QTextCursor out(&replacement);
+    QTextCursor source_cursor(&source);
+    QTextBlock source_block = source.begin();
+    QTextBlockFormat current_block_format = source_block.isValid() ? source_block.blockFormat() : QTextBlockFormat();
+    const int max_source_pos = std::max(0, source.characterCount() - 1);
+    int source_pos = 0;
+    bool at_block_start = true;
+
+    for (const QChar ch : plain) {
+        if (ch == QLatin1Char('\r'))
+            continue;
+        source_cursor.setPosition(std::min(source_pos, max_source_pos));
+        if (ch == QLatin1Char('\n')) {
+            out.insertBlock(current_block_format);
+            if (source_block.isValid()) {
+                source_block = source_block.next();
+                if (source_block.isValid())
+                    current_block_format = source_block.blockFormat();
+            }
+            at_block_start = true;
+            ++source_pos;
+            continue;
+        }
+
+        QTextCharFormat fmt = source_cursor.charFormat();
+        if (at_block_start) {
+            out.setBlockFormat(current_block_format);
+            at_block_start = false;
+        }
+        out.insertText(QString(ch), fmt);
+        ++source_pos;
+    }
+
+    return replacement.toHtml();
+}
 
 static double title_manual_screenshot_time(const Title &title)
 {
@@ -3710,6 +3771,13 @@ void TitleEditor::build_ui()
                         update_layer_panels(layer, playhead_);
                 }
             });
+    connect(canvas_, &CanvasPreview::text_edit_changed,
+            this, [this](const std::string &layer_id) {
+                if (!title_) return;
+                on_title_modified(false);
+                if (auto layer = title_->find_layer(layer_id))
+                    update_layer_panels(layer, playhead_);
+            });
     connect(canvas_, &CanvasPreview::text_edit_committed,
             this, [this](const std::string &layer_id) {
                 if (!title_) return;
@@ -5144,8 +5212,25 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->setFrameShape(QFrame::NoFrame);
     inline_text_editor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     inline_text_editor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    inline_text_editor_->setStyleSheet("QTextEdit{background:rgba(20,20,20,38);border:1px dashed rgba(0,140,255,210);color:white;selection-background-color:rgba(0,120,215,160);}");
+    inline_text_editor_->setLineWrapMode(QTextEdit::WidgetWidth);
+    inline_text_editor_->setCursorWidth(2);
+    inline_text_editor_->setAttribute(Qt::WA_TranslucentBackground, true);
+    inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
+    inline_text_editor_->setStyleSheet(
+        "QTextEdit{background:transparent;border:0px;padding:0px;"
+        "color:rgba(255,255,255,1);selection-background-color:rgba(0,120,215,110);"
+        "selection-color:rgba(255,255,255,1);}");
     inline_text_editor_->installEventFilter(this);
+    connect(inline_text_editor_, &QTextEdit::textChanged, this, [this]() {
+        if (committing_inline_text_ || inline_text_layer_id_.empty()) return;
+        const std::string layer_id = inline_text_layer_id_;
+        if (sync_inline_text_layer(true)) {
+            dirty_ = true;
+            position_text_editor();
+            update();
+            emit text_edit_changed(layer_id);
+        }
+    });
 }
 
 
@@ -5289,6 +5374,7 @@ void CanvasPreview::set_checkerboard_pattern(int pattern)
 
 void CanvasPreview::set_selection_tool_active()
 {
+    commit_text_edit(true);
     active_tool_ = CanvasTool::Selection;
     drawing_shape_ = false;
     unsetCursor();
@@ -6084,7 +6170,25 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
 void CanvasPreview::render_to_pixmap()
 {
     if (!title_) { frame_pixmap_ = QPixmap(); return; }
-    frame_pixmap_ = QPixmap::fromImage(render_title_to_image(*title_, playhead_));
+
+    if (!inline_text_layer_id_.empty()) {
+        Title preview = *title_;
+        preview.layers.clear();
+        preview.layers.reserve(title_->layers.size());
+        for (const auto &layer : title_->layers) {
+            if (!layer) {
+                preview.layers.push_back(nullptr);
+                continue;
+            }
+            auto preview_layer = std::make_shared<Layer>(*layer);
+            if (preview_layer->id == inline_text_layer_id_)
+                preview_layer->visible = false;
+            preview.layers.push_back(std::move(preview_layer));
+        }
+        frame_pixmap_ = QPixmap::fromImage(render_title_to_image(preview, playhead_));
+    } else {
+        frame_pixmap_ = QPixmap::fromImage(render_title_to_image(*title_, playhead_));
+    }
     dirty_ = false;
 }
 
@@ -6392,6 +6496,198 @@ std::shared_ptr<Layer> CanvasPreview::text_layer_at_view_pos(const QPointF &view
     return nullptr;
 }
 
+
+static QString scale_rich_text_font_sizes(const QString &html, double scale)
+{
+    if (html.isEmpty() || std::abs(scale - 1.0) < 0.0001)
+        return html;
+
+    QString scaled = html;
+    QRegularExpression re(
+        QStringLiteral("((?:font-size|margin-left|margin-right|margin-top|margin-bottom|text-indent)\\s*:\\s*)(-?[0-9]+(?:\\.[0-9]+)?)(px|pt)"),
+        QRegularExpression::CaseInsensitiveOption);
+    qsizetype offset = 0;
+    QRegularExpressionMatch match;
+    while ((match = re.match(scaled, offset)).hasMatch()) {
+        const QString property = match.captured(1);
+        const double value = match.captured(2).toDouble();
+        const QString unit = match.captured(3);
+        const double scaled_value = property.trimmed().startsWith(QStringLiteral("font-size"), Qt::CaseInsensitive)
+                                      ? std::max(1.0, value * scale)
+                                      : value * scale;
+        const QString replacement = QStringLiteral("%1%2%3")
+                                        .arg(property)
+                                        .arg(scaled_value, 0, 'f', 3)
+                                        .arg(unit);
+        scaled.replace(match.capturedStart(0), match.capturedLength(0), replacement);
+        offset = match.capturedStart(0) + replacement.size();
+    }
+    return scaled;
+}
+
+
+static bool inline_document_has_style_overrides(const QTextDocument *doc, const Layer &layer, double t, double visual_scale)
+{
+    if (!doc) return false;
+
+    QFont expected_font = font_for_layer(layer);
+    if (expected_font.pixelSize() > 0)
+        expected_font.setPixelSize(std::max(1, (int)std::round(expected_font.pixelSize() * visual_scale)));
+    const QColor expected_color = color_from_argb(eval_text_color(layer, t));
+    const int expected_weight = expected_font.weight();
+    const bool expected_italic = expected_font.italic();
+    const bool expected_underline = layer.text_underline;
+    const bool expected_strike = layer.text_strikethrough;
+
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid() || fragment.text().isEmpty()) continue;
+            const QTextCharFormat fmt = fragment.charFormat();
+            if (fmt.fontWeight() != expected_weight) return true;
+            if (fmt.fontItalic() != expected_italic) return true;
+            if (fmt.fontUnderline() != expected_underline) return true;
+            if (fmt.fontStrikeOut() != expected_strike) return true;
+            if (fmt.hasProperty(QTextFormat::FontFamily) && fmt.fontFamily() != expected_font.family()) return true;
+            if (fmt.hasProperty(QTextFormat::FontPixelSize) && std::abs(fmt.font().pixelSize() - expected_font.pixelSize()) > 1) return true;
+            if (fmt.hasProperty(QTextFormat::FontPointSize) && expected_font.pointSizeF() > 0.0 &&
+                std::abs(fmt.fontPointSize() - expected_font.pointSizeF()) > 0.5) return true;
+            if (fmt.foreground().style() != Qt::NoBrush) {
+                const QColor color = fmt.foreground().color();
+                if (color.isValid() && color != expected_color) return true;
+            }
+        }
+    }
+    return false;
+}
+
+double CanvasPreview::inline_text_visual_scale(const Layer &layer) const
+{
+    const double lt = std::max(0.0, playhead_ - layer.in_time);
+    const double sx = std::abs(layer.scale_x.evaluate(lt));
+    const double sy = std::abs(layer.scale_y.evaluate(lt));
+    return std::clamp(view_scale() * std::sqrt(std::max(0.0001, sx * sy)), 0.05, 16.0);
+}
+
+void CanvasPreview::configure_inline_text_editor(const Layer &layer)
+{
+    if (!inline_text_editor_) return;
+
+    QSignalBlocker blocker(inline_text_editor_);
+    QTextCursor saved_cursor = inline_text_editor_->textCursor();
+
+    const double local_time = std::max(0.0, playhead_ - layer.in_time);
+    const double visual_scale = inline_text_visual_scale(layer);
+    QFont font = font_for_layer(layer);
+    if (font.pixelSize() > 0)
+        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * visual_scale)));
+    inline_text_editor_->setFont(font);
+    inline_text_editor_->setTextColor(color_from_argb(eval_text_color(layer, local_time)));
+
+    QTextDocument *doc = inline_text_editor_->document();
+    doc->setDocumentMargin(0.0);
+    doc->setDefaultFont(font);
+
+    QTextOption option = doc->defaultTextOption();
+    option.setUseDesignMetrics(true);
+    option.setWrapMode(layer.text_overflow_mode == 0
+                           ? (layer.paragraph_hyphenate ? QTextOption::WrapAnywhere
+                                                         : QTextOption::WrapAtWordBoundaryOrAnywhere)
+                           : QTextOption::NoWrap);
+    Qt::Alignment align = Qt::AlignLeft;
+    if (layer.align_h == 1 || layer.align_h == 4) align = Qt::AlignHCenter;
+    else if (layer.align_h == 2 || layer.align_h == 5) align = Qt::AlignRight;
+    else if (layer.align_h >= 3) align = Qt::AlignJustify;
+    option.setAlignment(align);
+    doc->setDefaultTextOption(option);
+
+    const QRectF local = layer_local_rect(layer);
+    const QRectF text_rect = text_rect_for_style(local, layer);
+    doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width() * visual_scale));
+    inline_text_editor_->setLineWrapMode(layer.text_overflow_mode == 0 ? QTextEdit::WidgetWidth : QTextEdit::NoWrap);
+
+    QTextBlockFormat block_format;
+    block_format.setAlignment(align);
+    block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
+    block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
+    block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
+    block_format.setTopMargin(std::max(0.0f, layer.paragraph_space_before) * visual_scale);
+    block_format.setBottomMargin(std::max(0.0f, layer.paragraph_space_after) * visual_scale);
+
+    QTextCharFormat char_format;
+    char_format.setFont(font);
+    char_format.setForeground(color_from_argb(eval_text_color(layer, local_time)));
+    char_format.setFontUnderline(layer.text_underline);
+    char_format.setFontStrikeOut(layer.text_strikethrough);
+
+    if (layer.rich_text_html.empty()) {
+        QTextCursor format_cursor(doc);
+        format_cursor.select(QTextCursor::Document);
+        format_cursor.mergeBlockFormat(block_format);
+    }
+    inline_text_editor_->mergeCurrentCharFormat(char_format);
+    inline_text_editor_->setTextCursor(saved_cursor);
+}
+
+bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
+{
+    if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_) return false;
+    auto layer = title_->find_layer(inline_text_layer_id_);
+    if (!layer) return false;
+
+    const std::string plain = inline_text_editor_->toPlainText().toStdString();
+    const double visual_scale = inline_text_visual_scale(*layer);
+    const double local_time = std::max(0.0, playhead_ - layer->in_time);
+    const bool needs_rich_text = !layer->rich_text_html.empty() ||
+        inline_document_has_style_overrides(inline_text_editor_->document(), *layer, local_time, visual_scale);
+    const QString normalized_html = needs_rich_text
+        ? scale_rich_text_font_sizes(inline_text_editor_->toHtml(), 1.0 / std::max(0.0001, visual_scale))
+        : QString();
+    const std::string html = normalized_html.toStdString();
+    const bool changed = layer->text_content != plain || layer->rich_text_html != html;
+    if (!changed) return false;
+
+    layer->text_content = plain;
+    layer->rich_text_html = html;
+    if (mark_dirty) dirty_ = true;
+    return true;
+}
+
+QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
+{
+    const QRectF local = layer_local_rect(layer);
+    const QRectF text_rect = text_rect_for_style(local, layer);
+    if (!inline_text_editor_)
+        return text_rect;
+
+    const double visual_scale = inline_text_visual_scale(layer);
+    QTextDocument *doc = inline_text_editor_->document();
+    const QSizeF doc_size = doc ? doc->size() : QSizeF();
+    const double doc_width = layer.text_overflow_mode == 2 && doc_size.width() > 0.0
+                                 ? doc_size.width() / std::max(0.0001, visual_scale)
+                                 : text_rect.width();
+    const double doc_height = doc_size.height() > 0.0
+                                  ? doc_size.height() / std::max(0.0001, visual_scale)
+                                  : text_rect.height();
+
+    double y = text_rect.top();
+    if (layer.align_v == 1)
+        y = text_rect.top() + (text_rect.height() - doc_height) / 2.0;
+    else if (layer.align_v == 2)
+        y = text_rect.bottom() - doc_height;
+    y -= layer.baseline_shift;
+
+    double x = text_rect.left();
+    if (layer.text_overflow_mode == 2 && doc_width < text_rect.width()) {
+        if (layer.align_h == 1 || layer.align_h == 4)
+            x = text_rect.left() + (text_rect.width() - doc_width) / 2.0;
+        else if (layer.align_h == 2 || layer.align_h == 5)
+            x = text_rect.right() - doc_width;
+    }
+
+    return QRectF(x, y, std::max(1.0, doc_width), std::max(1.0, doc_height));
+}
+
 void CanvasPreview::position_text_editor()
 {
     if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_) return;
@@ -6401,13 +6697,15 @@ void CanvasPreview::position_text_editor()
         return;
     }
 
-    QRectF local = layer_local_rect(*layer);
+    configure_inline_text_editor(*layer);
+
+    const QRectF document_rect = inline_text_document_local_rect(*layer);
     QPolygonF poly;
-    poly << canvas_to_view(layer_to_canvas(*layer, local.topLeft()))
-         << canvas_to_view(layer_to_canvas(*layer, local.topRight()))
-         << canvas_to_view(layer_to_canvas(*layer, local.bottomRight()))
-         << canvas_to_view(layer_to_canvas(*layer, local.bottomLeft()));
-    QRectF bounds = poly.boundingRect().adjusted(-2.0, -2.0, 2.0, 2.0);
+    poly << canvas_to_view(layer_to_canvas(*layer, document_rect.topLeft()))
+         << canvas_to_view(layer_to_canvas(*layer, document_rect.topRight()))
+         << canvas_to_view(layer_to_canvas(*layer, document_rect.bottomRight()))
+         << canvas_to_view(layer_to_canvas(*layer, document_rect.bottomLeft()));
+    QRectF bounds = poly.boundingRect();
     inline_text_editor_->setGeometry(bounds.toAlignedRect().intersected(rect()));
 }
 
@@ -6419,14 +6717,14 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
 
     inline_text_layer_id_ = layer->id;
     QSignalBlocker blocker(inline_text_editor_);
-    QFont font = font_for_layer(*layer);
-    inline_text_editor_->setFont(font);
-    inline_text_editor_->setTextColor(color_from_argb(eval_text_color(*layer, std::max(0.0, playhead_ - layer->in_time))));
-    inline_text_editor_->document()->setDefaultFont(font);
-    if (!layer->rich_text_html.empty())
-        inline_text_editor_->setHtml(QString::fromStdString(layer->rich_text_html));
-    else
+    configure_inline_text_editor(*layer);
+    if (!layer->rich_text_html.empty()) {
+        const double visual_scale = inline_text_visual_scale(*layer);
+        inline_text_editor_->setHtml(scale_rich_text_font_sizes(QString::fromStdString(layer->rich_text_html), visual_scale));
+    } else {
         inline_text_editor_->setPlainText(QString::fromStdString(layer->text_content));
+    }
+    configure_inline_text_editor(*layer);
 
     QTextCursor cursor = inline_text_editor_->textCursor();
     cursor.select(QTextCursor::Document);
@@ -6435,6 +6733,7 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
     inline_text_editor_->show();
     inline_text_editor_->raise();
     inline_text_editor_->setFocus(Qt::MouseFocusReason);
+    dirty_ = true;
     update();
 }
 
@@ -6443,22 +6742,15 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
     if (committing_inline_text_ || !inline_text_editor_ || inline_text_layer_id_.empty()) return;
     committing_inline_text_ = true;
     const std::string layer_id = inline_text_layer_id_;
-    inline_text_layer_id_.clear();
-    inline_text_editor_->hide();
 
     bool changed = false;
-    if (accept_changes && title_) {
-        auto layer = title_->find_layer(layer_id);
-        if (layer) {
-            const std::string plain = inline_text_editor_->toPlainText().toStdString();
-            const std::string html = inline_text_editor_->toHtml().toStdString();
-            changed = layer->text_content != plain || layer->rich_text_html != html;
-            layer->text_content = plain;
-            layer->rich_text_html = html;
-            dirty_ = true;
-        }
-    }
+    if (accept_changes)
+        changed = sync_inline_text_layer(true);
+
+    inline_text_layer_id_.clear();
+    inline_text_editor_->hide();
     committing_inline_text_ = false;
+    dirty_ = true;
     update();
     if (changed) emit text_edit_committed(layer_id);
 }
@@ -6467,7 +6759,6 @@ bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == inline_text_editor_) {
         if (event->type() == QEvent::FocusOut) {
-            commit_text_edit(true);
             return false;
         }
         if (event->type() == QEvent::KeyPress) {
@@ -6529,9 +6820,24 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
 
 void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
-    if (!inline_text_layer_id_.empty()) commit_text_edit(true);
-    setFocus(Qt::MouseFocusReason);
     if (!title_) return;
+
+    if (!inline_text_layer_id_.empty()) {
+        if (ev->button() == Qt::MiddleButton) {
+            panning_ = true;
+            pan_start_view_ = QPointF(ev->pos());
+            pan_start_offset_ = pan_offset_;
+            setCursor(Qt::ClosedHandCursor);
+            ev->accept();
+            return;
+        }
+        if (inline_text_editor_)
+            inline_text_editor_->setFocus(Qt::MouseFocusReason);
+        ev->accept();
+        return;
+    }
+
+    setFocus(Qt::MouseFocusReason);
 
     if (ev->button() == Qt::MiddleButton) {
         panning_ = true;
@@ -6543,6 +6849,15 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     }
 
     if (ev->button() != Qt::LeftButton) return;
+
+    if (active_tool_ == CanvasTool::Text) {
+        if (auto layer = text_layer_at_view_pos(ev->pos())) {
+            emit layer_clicked(layer->id);
+            begin_text_edit(layer);
+            ev->accept();
+            return;
+        }
+    }
 
     if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) {
         drawing_shape_ = true;
@@ -6705,6 +7020,12 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 
 void CanvasPreview::keyPressEvent(QKeyEvent *ev)
 {
+    if (!inline_text_layer_id_.empty() && ev->key() == Qt::Key_Escape) {
+        commit_text_edit(true);
+        ev->accept();
+        return;
+    }
+
     double dx = 0.0;
     double dy = 0.0;
     const double amount = ev->modifiers().testFlag(Qt::ShiftModifier) ? 10.0 : 1.0;
@@ -9754,10 +10075,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change]() {
                 if (!can_edit()) return;
                 std::string value = txt_content_->toPlainText().toStdString();
-                if (layer_->type == LayerType::Clock)
+                if (layer_->type == LayerType::Clock) {
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
-                else
+                } else {
                     layer_->text_content = value;
+                    if (!layer_->rich_text_html.empty())
+                        layer_->rich_text_html = rich_text_html_with_replaced_plain_text(layer_->rich_text_html,
+                                                                                         QString::fromStdString(value)).toStdString();
+                }
                 emit_change();
             });
     connect(chk_text_box_width_to_text_, &QCheckBox::toggled,
@@ -11008,7 +11333,11 @@ void PropertiesPanel::load_values()
     set_group_kf_icon(btn_kf_shadow_color_, {&layer_->shadow_color_a, &layer_->shadow_color_r,
                                              &layer_->shadow_color_g, &layer_->shadow_color_b});
 
-    txt_content_->setPlainText(QString::fromStdString(is_clock ? layer_->clock_format : layer_->text_content));
+    const QString panel_text = is_clock
+        ? QString::fromStdString(layer_->clock_format)
+        : (!layer_->rich_text_html.empty() ? rich_text_plain_text(layer_->rich_text_html)
+                                           : QString::fromStdString(layer_->text_content));
+    txt_content_->setPlainText(panel_text);
     int ticker_style_idx = cmb_ticker_style_->findData(layer_->ticker_style);
     cmb_ticker_style_->setCurrentIndex(ticker_style_idx >= 0 ? ticker_style_idx : 0);
     spn_ticker_speed_->setValue(layer_->ticker_speed);
