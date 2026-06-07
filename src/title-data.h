@@ -81,9 +81,26 @@ enum class LayerType {
     Text,
     SolidRect,
     Image,
-    Shape,      /* future: polygon / ellipse */
+    Shape,      /* vector primitives */
     Clock,
     Ticker,
+};
+
+enum class ShapeType {
+    Rectangle,
+    RoundedRectangle,
+    Ellipse,
+    Triangle,
+    Star,
+    Polygon,
+    Diamond,
+    Line,
+};
+
+enum class MaskMode {
+    None,
+    Alpha,
+    InvertedAlpha,
 };
 
 /* ══════════════════════════════════════════════════════════════════
@@ -97,6 +114,8 @@ struct Layer {
     bool        locked   = false;
     bool        properties_expanded = false;
     std::string parent_id;
+    std::string mask_source_id;
+    MaskMode    mask_mode = MaskMode::None;
 
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;
@@ -220,6 +239,12 @@ struct Layer {
     float       rect_width    = 1920.0f;
     float       rect_height   = 100.0f;
     float       corner_radius = 0.0f;
+    ShapeType   shape_type = ShapeType::Rectangle;
+    int         shape_points = 5;
+    int         shape_sides = 6;
+    float       shape_inner_radius = 0.45f;
+    float       shape_outer_radius = 0.5f;
+    float       shape_roundness = 0.0f;
 
     /* Keyframable geometry mirrors the static fields above so older saved
      * titles remain readable while new titles can animate size/origin.

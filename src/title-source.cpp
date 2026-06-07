@@ -468,6 +468,127 @@ static double eval_box_height(const Layer &layer, double t)
     return std::max(0.0, height);
 }
 
+
+static const Layer *find_layer_by_id(const Title &title, const std::string &id)
+{
+    if (id.empty()) return nullptr;
+    for (const auto &candidate : title.layers) {
+        if (candidate && candidate->id == id)
+            return candidate.get();
+    }
+    return nullptr;
+}
+
+static bool layer_chain_visible(const Title &title, const Layer &layer, double title_time, int depth = 0)
+{
+    if (depth > 64 || !layer.visible || title_time < layer.in_time || title_time > layer.out_time)
+        return false;
+    if (layer.parent_id.empty())
+        return true;
+    const Layer *parent = find_layer_by_id(title, layer.parent_id);
+    return parent ? layer_chain_visible(title, *parent, title_time, depth + 1) : true;
+}
+
+static void apply_layer_world_transform(cairo_t *cr, const Title &title, const Layer &layer,
+                                        double title_time, int depth = 0)
+{
+    if (depth > 64)
+        return;
+    if (!layer.parent_id.empty()) {
+        if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
+            apply_layer_world_transform(cr, title, *parent, title_time, depth + 1);
+    }
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    cairo_translate(cr, layer.pos_x.evaluate(lt), layer.pos_y.evaluate(lt));
+    cairo_rotate(cr, layer.rotation.evaluate(lt) * kPi / 180.0);
+    cairo_scale(cr, layer.scale_x.evaluate(lt), layer.scale_y.evaluate(lt));
+}
+
+static double layer_chain_opacity(const Title &title, const Layer &layer, double title_time, int depth = 0)
+{
+    if (depth > 64)
+        return 1.0;
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    double opacity = layer.opacity.evaluate(lt);
+    if (!layer.parent_id.empty()) {
+        if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
+            opacity *= layer_chain_opacity(title, *parent, title_time, depth + 1);
+    }
+    return opacity;
+}
+
+static void cairo_add_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r)
+{
+    r = std::clamp(r, 0.0, std::min(w, h) / 2.0);
+    if (r <= 0.0) {
+        cairo_rectangle(cr, x, y, w, h);
+        return;
+    }
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + r,     y + r,     r, kPi,       3*kPi/2);
+    cairo_arc(cr, x + w - r, y + r,     r, 3*kPi/2,   2*kPi);
+    cairo_arc(cr, x + w - r, y + h - r, r, 0,          kPi/2);
+    cairo_arc(cr, x + r,     y + h - r, r, kPi/2,     kPi);
+    cairo_close_path(cr);
+}
+
+static void cairo_add_regular_polygon(cairo_t *cr, double cx, double cy, double rx, double ry,
+                                      int count, double start_angle)
+{
+    count = std::max(3, count);
+    for (int i = 0; i < count; ++i) {
+        const double a = start_angle + 2.0 * kPi * i / count;
+        const double x = cx + std::cos(a) * rx;
+        const double y = cy + std::sin(a) * ry;
+        if (i == 0) cairo_move_to(cr, x, y); else cairo_line_to(cr, x, y);
+    }
+    cairo_close_path(cr);
+}
+
+static void cairo_add_star(cairo_t *cr, double cx, double cy, double rx, double ry,
+                           int points, double inner_radius, double outer_radius)
+{
+    points = std::clamp(points, 3, 64);
+    inner_radius = std::clamp(inner_radius, 0.0, 1.0);
+    outer_radius = std::clamp(outer_radius, 0.0, 1.0);
+    if (outer_radius <= 0.0) outer_radius = 0.5;
+    for (int i = 0; i < points * 2; ++i) {
+        const bool outer = (i % 2) == 0;
+        const double factor = outer ? outer_radius * 2.0 : inner_radius * 2.0;
+        const double a = -kPi / 2.0 + kPi * i / points;
+        const double x = cx + std::cos(a) * rx * factor;
+        const double y = cy + std::sin(a) * ry * factor;
+        if (i == 0) cairo_move_to(cr, x, y); else cairo_line_to(cr, x, y);
+    }
+    cairo_close_path(cr);
+}
+
+static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, double h)
+{
+    switch (layer.type == LayerType::Shape ? layer.shape_type : ShapeType::RoundedRectangle) {
+    case ShapeType::Ellipse:
+        cairo_save(cr); cairo_translate(cr, w / 2.0, h / 2.0); cairo_scale(cr, w / 2.0, h / 2.0);
+        cairo_arc(cr, 0, 0, 1.0, 0, 2 * kPi); cairo_restore(cr); cairo_close_path(cr); break;
+    case ShapeType::Triangle:
+        cairo_add_regular_polygon(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0, 3, -kPi / 2.0); break;
+    case ShapeType::Star:
+        cairo_add_star(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0, layer.shape_points,
+                       layer.shape_inner_radius, layer.shape_outer_radius); break;
+    case ShapeType::Polygon:
+        cairo_add_regular_polygon(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0,
+                                  layer.shape_sides, -kPi / 2.0); break;
+    case ShapeType::Diamond:
+        cairo_add_regular_polygon(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0, 4, -kPi / 2.0); break;
+    case ShapeType::Line:
+        cairo_move_to(cr, 0, h / 2.0); cairo_line_to(cr, w, h / 2.0); break;
+    case ShapeType::RoundedRectangle:
+        cairo_add_rounded_rect(cr, 0, 0, w, h, layer.corner_radius); break;
+    case ShapeType::Rectangle:
+    default:
+        cairo_rectangle(cr, 0, 0, w, h); break;
+    }
+}
+
 static int shadow_pass_count(double blur)
 {
     const int passes = static_cast<int>(std::ceil(blur / 3.0));
@@ -1114,18 +1235,14 @@ static QColor evaluated_background_color(const Layer &layer, double t)
     return color;
 }
 
-static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
+static void render_layer_text(cairo_t *cr, const Title &title, const Layer &layer, double title_time,
                                int canvas_w, int canvas_h)
 {
     (void)canvas_w;
     (void)canvas_h;
 
-    double px = layer.pos_x.evaluate(t);
-    double py = layer.pos_y.evaluate(t);
-    double sx = layer.scale_x.evaluate(t);
-    double sy = layer.scale_y.evaluate(t);
-    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
-    double alpha = layer.opacity.evaluate(t);
+    const double t = std::max(0.0, title_time - layer.in_time);
+    double alpha = layer_chain_opacity(title, layer, title_time);
     double box_w = eval_box_width(layer, t);
     double box_h = eval_box_height(layer, t);
     if (box_w <= 0.0 || box_h <= 0.0) return;
@@ -1230,9 +1347,7 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
         text_image.width(), text_image.height(), text_image.bytesPerLine());
 
     cairo_save(cr);
-    cairo_translate(cr, px, py);
-    cairo_rotate(cr, rot);
-    cairo_scale(cr, sx, sy);
+    apply_layer_world_transform(cr, title, layer, title_time);
     cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
@@ -1240,14 +1355,10 @@ static void render_layer_text(cairo_t *cr, const Layer &layer, double t,
     cairo_surface_destroy(text_surface);
 }
 
-static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
+static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
 {
-    double px = layer.pos_x.evaluate(t);
-    double py = layer.pos_y.evaluate(t);
-    double sx = layer.scale_x.evaluate(t);
-    double sy = layer.scale_y.evaluate(t);
-    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
-    double alpha = layer.opacity.evaluate(t);
+    const double t = std::max(0.0, title_time - layer.in_time);
+    double alpha = layer_chain_opacity(title, layer, title_time);
 
     double w = eval_box_width(layer, t);
     double h = eval_box_height(layer, t);
@@ -1263,9 +1374,7 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
     unpack_color(eval_fill_color(layer, t), fr, fg, fb, fa);
 
     cairo_save(cr);
-    cairo_translate(cr, px, py);
-    cairo_rotate(cr, rot);
-    cairo_scale(cr, sx, sy);
+    apply_layer_world_transform(cr, title, layer, title_time);
     cairo_translate(cr, x, y);
 
     if (eval_shadow_enabled(layer, t)) {
@@ -1298,16 +1407,7 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
         }
     }
 
-    if (r > 0.0) {
-        cairo_new_sub_path(cr);
-        cairo_arc(cr, r,     r,     r,  kPi,       3*kPi/2);
-        cairo_arc(cr, w-r,   r,     r,  3*kPi/2,   2*kPi);
-        cairo_arc(cr, w-r,   h-r,   r,  0,          kPi/2);
-        cairo_arc(cr, r,     h-r,   r,  kPi/2,     kPi);
-        cairo_close_path(cr);
-    } else {
-        cairo_rectangle(cr, 0, 0, w, h);
-    }
+    cairo_add_layer_shape(cr, layer, w, h);
     double outline_width = eval_outline_width(layer, t);
     uint32_t outline_color = eval_outline_color(layer, t);
     bool has_outline = outline_width > 0.0 && ((outline_color >> 24) & 0xFF) > 0;
@@ -1343,16 +1443,11 @@ static void render_layer_rect(cairo_t *cr, const Layer &layer, double t)
 }
 
 
-static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
+static void render_layer_image(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
 {
     if (layer.image_path.empty()) return;
-
-    double px = layer.pos_x.evaluate(t);
-    double py = layer.pos_y.evaluate(t);
-    double sx = layer.scale_x.evaluate(t);
-    double sy = layer.scale_y.evaluate(t);
-    double rot = layer.rotation.evaluate(t) * kPi / 180.0;
-    double alpha = layer.opacity.evaluate(t);
+    const double t = std::max(0.0, title_time - layer.in_time);
+    double alpha = layer_chain_opacity(title, layer, title_time);
     double w = eval_box_width(layer, t);
     double h = eval_box_height(layer, t);
     if (w <= 0.0 || h <= 0.0) return;
@@ -1371,9 +1466,7 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
         argb.width(), argb.height(), argb.bytesPerLine());
 
     cairo_save(cr);
-    cairo_translate(cr, px, py);
-    cairo_rotate(cr, rot);
-    cairo_scale(cr, sx, sy);
+    apply_layer_world_transform(cr, title, layer, title_time);
     const double origin_x = eval_origin_x(layer, t);
     const double origin_y = eval_origin_y(layer, t);
     if (eval_background_enabled(layer, t)) {
@@ -1417,6 +1510,67 @@ static void render_layer_image(cairo_t *cr, const Layer &layer, double t)
     cairo_restore(cr);
 
     cairo_surface_destroy(img_surface);
+}
+
+
+static void render_layer_unmasked(cairo_t *cr, const Title &title, const Layer &layer,
+                                  double title_time, int canvas_w, int canvas_h)
+{
+    switch (layer.type) {
+    case LayerType::Text:
+    case LayerType::Clock:
+    case LayerType::Ticker:
+        render_layer_text(cr, title, layer, title_time, canvas_w, canvas_h);
+        break;
+    case LayerType::SolidRect:
+    case LayerType::Shape:
+        render_layer_rect(cr, title, layer, title_time);
+        break;
+    case LayerType::Image:
+        render_layer_image(cr, title, layer, title_time);
+        break;
+    default:
+        break;
+    }
+}
+
+static void render_layer_with_mask(cairo_t *cr, const Title &title, const Layer &layer,
+                                   double title_time, int canvas_w, int canvas_h)
+{
+    if (layer.mask_mode == MaskMode::None || layer.mask_source_id.empty()) {
+        render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
+        return;
+    }
+    const Layer *mask = find_layer_by_id(title, layer.mask_source_id);
+    if (!mask || !layer_chain_visible(title, *mask, title_time)) {
+        if (layer.mask_mode == MaskMode::InvertedAlpha)
+            render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
+        return;
+    }
+
+    cairo_surface_t *layer_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
+    cairo_surface_t *mask_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
+    cairo_t *layer_cr = cairo_create(layer_surface);
+    cairo_t *mask_cr = cairo_create(mask_surface);
+    render_layer_unmasked(layer_cr, title, layer, title_time, canvas_w, canvas_h);
+    render_layer_unmasked(mask_cr, title, *mask, title_time, canvas_w, canvas_h);
+    cairo_destroy(layer_cr);
+    cairo_destroy(mask_cr);
+
+    if (layer.mask_mode == MaskMode::Alpha) {
+        cairo_set_source_surface(cr, layer_surface, 0, 0);
+        cairo_mask_surface(cr, mask_surface, 0, 0);
+    } else {
+        cairo_t *tmp_cr = cairo_create(layer_surface);
+        cairo_set_operator(tmp_cr, CAIRO_OPERATOR_DEST_OUT);
+        cairo_set_source_rgba(tmp_cr, 0, 0, 0, 1);
+        cairo_mask_surface(tmp_cr, mask_surface, 0, 0);
+        cairo_destroy(tmp_cr);
+        cairo_set_source_surface(cr, layer_surface, 0, 0);
+        cairo_paint(cr);
+    }
+    cairo_surface_destroy(mask_surface);
+    cairo_surface_destroy(layer_surface);
 }
 
 /* Composite a full title frame into pixel_buf */
@@ -1487,7 +1641,7 @@ static void render_title_frame(TitleSourceData *data,
 
     /* Render layers bottom → top */
     for (auto &layer : title.layers) {
-        if (!layer || !layer->visible) continue;
+        if (!layer) continue;
 
         double layer_time = t;
         if (background_persistence) {
@@ -1499,25 +1653,9 @@ static void render_title_frame(TitleSourceData *data,
                 layer_time = persistence_time;
         }
 
-        if (layer_time < layer->in_time || layer_time > layer->out_time) continue;
-        double lt = layer_time - layer->in_time;  /* local layer time */
+        if (!layer_chain_visible(title, *layer, layer_time)) continue;
 
-        switch (layer->type) {
-        case LayerType::Text:
-        case LayerType::Clock:
-        case LayerType::Ticker:
-            render_layer_text(cr, *layer, lt, (int)w, (int)h);
-            break;
-        case LayerType::SolidRect:
-        case LayerType::Shape:
-            render_layer_rect(cr, *layer, lt);
-            break;
-        case LayerType::Image:
-            render_layer_image(cr, *layer, lt);
-            break;
-        default:
-            break;
-        }
+        render_layer_with_mask(cr, title, *layer, layer_time, (int)w, (int)h);
     }
 
     cairo_destroy(cr);
@@ -1570,26 +1708,9 @@ QImage render_title_to_image(const Title &title, double t)
 
     const double clamped_time = std::clamp(t, 0.0, std::max(0.0, title.duration));
     for (auto &layer : title.layers) {
-        if (!layer || !layer->visible) continue;
-        if (clamped_time < layer->in_time || clamped_time > layer->out_time) continue;
-        const double lt = clamped_time - layer->in_time;
+        if (!layer || !layer_chain_visible(title, *layer, clamped_time)) continue;
 
-        switch (layer->type) {
-        case LayerType::Text:
-        case LayerType::Clock:
-        case LayerType::Ticker:
-            render_layer_text(cr, *layer, lt, w, h);
-            break;
-        case LayerType::SolidRect:
-        case LayerType::Shape:
-            render_layer_rect(cr, *layer, lt);
-            break;
-        case LayerType::Image:
-            render_layer_image(cr, *layer, lt);
-            break;
-        default:
-            break;
-        }
+        render_layer_with_mask(cr, title, *layer, clamped_time, w, h);
     }
 
     cairo_destroy(cr);
