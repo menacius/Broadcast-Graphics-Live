@@ -42,6 +42,7 @@
 #include <QColor>
 #include <QLinearGradient>
 #include <QRadialGradient>
+#include <QCryptographicHash>
 
 #include <memory>
 #include <string>
@@ -621,6 +622,49 @@ static void cairo_add_star(cairo_t *cr, double cx, double cy, double rx, double 
     cairo_close_path(cr);
 }
 
+
+static QPainterPath painter_layer_shape_path(const Layer &layer, double w, double h)
+{
+    QPainterPath path;
+    const ShapeType st = layer.type == LayerType::Shape ? layer.shape_type : ShapeType::RoundedRectangle;
+    switch (st) {
+    case ShapeType::Ellipse:
+        path.addEllipse(QRectF(0, 0, w, h)); break;
+    case ShapeType::Triangle:
+    case ShapeType::Polygon:
+    case ShapeType::Diamond: {
+        const int sides = st == ShapeType::Triangle ? 3 : (st == ShapeType::Diamond ? 4 : std::clamp(layer.shape_sides, 3, 64));
+        const double start = -kPi / 2.0;
+        for (int i = 0; i < sides; ++i) {
+            const double a = start + 2.0 * kPi * i / sides;
+            QPointF pt(w / 2.0 + std::cos(a) * w / 2.0, h / 2.0 + std::sin(a) * h / 2.0);
+            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+        }
+        path.closeSubpath(); break;
+    }
+    case ShapeType::Star: {
+        const int points = std::clamp(layer.shape_points, 3, 64);
+        const double inner = std::clamp((double)layer.shape_inner_radius, 0.0, 1.0) * 2.0;
+        const double outer = std::clamp((double)layer.shape_outer_radius, 0.0, 1.0) * 2.0;
+        for (int i = 0; i < points * 2; ++i) {
+            const double factor = (i % 2 == 0) ? outer : inner;
+            const double a = -kPi / 2.0 + kPi * i / points;
+            QPointF pt(w / 2.0 + std::cos(a) * w / 2.0 * factor, h / 2.0 + std::sin(a) * h / 2.0 * factor);
+            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+        }
+        path.closeSubpath(); break;
+    }
+    case ShapeType::Line:
+        path.moveTo(0, h / 2.0); path.lineTo(w, h / 2.0); break;
+    case ShapeType::RoundedRectangle:
+        path.addRoundedRect(QRectF(0, 0, w, h), layer.corner_radius, layer.corner_radius); break;
+    case ShapeType::Rectangle:
+    default:
+        path.addRect(QRectF(0, 0, w, h)); break;
+    }
+    return path;
+}
+
 static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, double h)
 {
     switch (layer.type == LayerType::Shape ? layer.shape_type : ShapeType::RoundedRectangle) {
@@ -645,12 +689,6 @@ static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, dou
     default:
         cairo_rectangle(cr, 0, 0, w, h); break;
     }
-}
-
-static int shadow_pass_count(double blur)
-{
-    const int passes = static_cast<int>(std::ceil(blur / 3.0));
-    return passes < 1 ? 1 : passes;
 }
 
 static double eval_origin_x(const Layer &layer, double t)
@@ -915,6 +953,222 @@ static QPointF shadow_offset(const Layer &layer, double t)
     double distance = eval_shadow_distance(layer, t);
     return QPointF(std::cos(radians) * distance,
                    std::sin(radians) * distance);
+}
+
+struct ShadowRenderParams {
+    double dx = 0.0;
+    double dy = 0.0;
+    double blur = 0.0;
+    double spread = 0.0;
+    int blur_type = (int)ShadowBlurType::StackFast;
+    uint32_t color = 0x99000000;
+    double opacity = 1.0;
+    bool long_enabled = false;
+    uint32_t long_color = 0x99000000;
+    double long_opacity = 0.0;
+    double long_length = 0.0;
+    double long_angle = 0.0;
+    double long_falloff = 1.0;
+};
+
+struct CachedShadowImage {
+    QImage image;
+    QPointF origin;
+};
+
+static QString image_content_hash(const QImage &image)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    hash.addData(reinterpret_cast<const char *>(image.constBits()), image.bytesPerLine() * image.height());
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+static QString shadow_param_key(const Layer &layer, const ShadowRenderParams &p, const QString &shape_key)
+{
+    return QStringLiteral("%1|%2|%3|%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15")
+        .arg(QString::fromStdString(layer.id), shape_key)
+        .arg(p.dx, 0, 'f', 2).arg(p.dy, 0, 'f', 2).arg(p.blur, 0, 'f', 2)
+        .arg(p.spread, 0, 'f', 2).arg(p.blur_type).arg(p.color).arg(p.opacity, 0, 'f', 3)
+        .arg(p.long_enabled ? 1 : 0).arg(p.long_color).arg(p.long_opacity, 0, 'f', 3)
+        .arg(p.long_length, 0, 'f', 2).arg(p.long_angle, 0, 'f', 2).arg(p.long_falloff, 0, 'f', 3);
+}
+
+static ShadowRenderParams evaluated_shadow_params(const Layer &layer, double t)
+{
+    QPointF off = shadow_offset(layer, t);
+    ShadowRenderParams p;
+    p.dx = off.x();
+    p.dy = off.y();
+    p.blur = eval_shadow_blur(layer, t);
+    p.spread = eval_shadow_spread(layer, t);
+    p.blur_type = (int)layer.shadow_blur_type;
+    p.color = eval_shadow_color(layer, t);
+    p.opacity = eval_shadow_opacity(layer, t);
+    p.long_enabled = layer.long_shadow_enabled && layer.long_shadow_length > 0.0f && layer.long_shadow_opacity > 0.0f;
+    p.long_color = layer.long_shadow_color;
+    p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0);
+    p.long_length = std::max(0.0, (double)layer.long_shadow_length);
+    p.long_angle = layer.long_shadow_angle;
+    p.long_falloff = std::clamp((double)layer.long_shadow_falloff, 0.0, 4.0);
+    return p;
+}
+
+static void box_blur_alpha(std::vector<uint8_t> &alpha, int w, int h, int radius)
+{
+    if (radius <= 0 || w <= 0 || h <= 0) return;
+    std::vector<uint8_t> tmp(alpha.size());
+    const int window = radius * 2 + 1;
+    for (int y = 0; y < h; ++y) {
+        int sum = 0;
+        for (int x = -radius; x <= radius; ++x)
+            sum += alpha[y * w + std::clamp(x, 0, w - 1)];
+        for (int x = 0; x < w; ++x) {
+            tmp[y * w + x] = static_cast<uint8_t>(sum / window);
+            sum -= alpha[y * w + std::clamp(x - radius, 0, w - 1)];
+            sum += alpha[y * w + std::clamp(x + radius + 1, 0, w - 1)];
+        }
+    }
+    for (int x = 0; x < w; ++x) {
+        int sum = 0;
+        for (int y = -radius; y <= radius; ++y)
+            sum += tmp[std::clamp(y, 0, h - 1) * w + x];
+        for (int y = 0; y < h; ++y) {
+            alpha[y * w + x] = static_cast<uint8_t>(sum / window);
+            sum -= tmp[std::clamp(y - radius, 0, h - 1) * w + x];
+            sum += tmp[std::clamp(y + radius + 1, 0, h - 1) * w + x];
+        }
+    }
+}
+
+static void blur_alpha_for_type(std::vector<uint8_t> &alpha, int w, int h, double blur, int blur_type)
+{
+    int radius = (int)std::round(std::max(0.0, blur));
+    if (radius <= 0) return;
+    switch ((ShadowBlurType)std::clamp(blur_type, 0, (int)ShadowBlurType::AlphaMask)) {
+    case ShadowBlurType::Box:
+        box_blur_alpha(alpha, w, h, radius);
+        break;
+    case ShadowBlurType::Gaussian: {
+        int r = std::max(1, (int)std::round(radius * 0.58));
+        box_blur_alpha(alpha, w, h, r);
+        box_blur_alpha(alpha, w, h, r);
+        box_blur_alpha(alpha, w, h, r);
+        break;
+    }
+    case ShadowBlurType::AlphaMask:
+        box_blur_alpha(alpha, w, h, std::max(1, radius / 2));
+        break;
+    case ShadowBlurType::StackFast:
+    default:
+        box_blur_alpha(alpha, w, h, std::max(1, radius / 2));
+        box_blur_alpha(alpha, w, h, std::max(1, radius / 3));
+        break;
+    }
+}
+
+static void composite_mask_alpha(std::vector<uint8_t> &dst, int dw, int dh, const QImage &mask,
+                                 int ox, int oy, double opacity)
+{
+    if (opacity <= 0.0) return;
+    const QImage src = mask.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < src.height(); ++y) {
+        int dy = y + oy;
+        if (dy < 0 || dy >= dh) continue;
+        const QRgb *line = reinterpret_cast<const QRgb *>(src.constScanLine(y));
+        for (int x = 0; x < src.width(); ++x) {
+            int dx = x + ox;
+            if (dx < 0 || dx >= dw) continue;
+            int a = (int)std::round(qAlpha(line[x]) * opacity);
+            if (a <= 0) continue;
+            uint8_t &d = dst[dy * dw + dx];
+            d = (uint8_t)std::min(255, (int)d + a - ((int)d * a) / 255);
+        }
+    }
+}
+
+static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRenderParams &p,
+                                            const QString &shape_key, const QImage &mask)
+{
+    static std::mutex cache_mutex;
+    static std::unordered_map<std::string, CachedShadowImage> cache;
+    const QString key = shadow_param_key(layer, p, shape_key);
+    const std::string skey = key.toStdString();
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto it = cache.find(skey);
+        if (it != cache.end()) return it->second;
+    }
+
+    const double long_rad = p.long_angle * kPi / 180.0;
+    const double long_dx = p.long_enabled ? std::cos(long_rad) * p.long_length : 0.0;
+    const double long_dy = p.long_enabled ? std::sin(long_rad) * p.long_length : 0.0;
+    const int blur_pad = (int)std::ceil(std::max(0.0, p.blur) * 3.0 + p.spread + 2.0);
+    const double min_x = std::min({0.0, p.dx, long_dx}) - blur_pad;
+    const double min_y = std::min({0.0, p.dy, long_dy}) - blur_pad;
+    const double max_x = std::max({0.0, p.dx, long_dx}) + mask.width() + blur_pad;
+    const double max_y = std::max({0.0, p.dy, long_dy}) + mask.height() + blur_pad;
+    const int w = std::max(1, (int)std::ceil(max_x - min_x));
+    const int h = std::max(1, (int)std::ceil(max_y - min_y));
+    std::vector<uint8_t> drop_alpha((size_t)w * (size_t)h, 0);
+    std::vector<uint8_t> long_alpha((size_t)w * (size_t)h, 0);
+
+    auto add_alpha = [&](std::vector<uint8_t> &target, double opacity, double x, double y) {
+        composite_mask_alpha(target, w, h, mask,
+                             (int)std::round(x - min_x), (int)std::round(y - min_y), opacity);
+        if (p.spread > 0.0) {
+            const int s = (int)std::ceil(p.spread);
+            for (int oy : {-s, 0, s})
+                for (int ox : {-s, 0, s})
+                    if (ox || oy) composite_mask_alpha(target, w, h, mask,
+                        (int)std::round(x + ox - min_x), (int)std::round(y + oy - min_y), opacity * 0.55);
+        }
+    };
+
+    if (p.long_enabled) {
+        const int steps = std::clamp((int)std::ceil(p.long_length / 3.0), 1, 160);
+        for (int i = steps; i >= 1; --i) {
+            const double u = (double)i / steps;
+            const double fade = std::pow(1.0 - u, p.long_falloff);
+            add_alpha(long_alpha, p.long_opacity * fade, long_dx * u, long_dy * u);
+        }
+        blur_alpha_for_type(long_alpha, w, h, std::min(p.blur, 24.0), p.blur_type);
+    }
+    add_alpha(drop_alpha, p.opacity, p.dx, p.dy);
+    blur_alpha_for_type(drop_alpha, w, h, p.blur, p.blur_type);
+
+    QColor dc = color_from_argb(p.color);
+    QColor lc = color_from_argb(p.long_color);
+    QImage image(w, h, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            int la = long_alpha[y * w + x];
+            int da = drop_alpha[y * w + x];
+            int out_a = la + da - (la * da) / 255;
+            if (out_a <= 0) { line[x] = qRgba(0, 0, 0, 0); continue; }
+            int pr = (lc.red() * la + dc.red() * da * (255 - la) / 255) / 255;
+            int pg = (lc.green() * la + dc.green() * da * (255 - la) / 255) / 255;
+            int pb = (lc.blue() * la + dc.blue() * da * (255 - la) / 255) / 255;
+            line[x] = qRgba(std::clamp(pr, 0, 255), std::clamp(pg, 0, 255), std::clamp(pb, 0, 255), out_a);
+        }
+    }
+    CachedShadowImage out{image, QPointF(min_x, min_y)};
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (cache.size() > 128) cache.clear();
+        cache[skey] = out;
+    }
+    return out;
+}
+
+static void paint_qimage(cairo_t *cr, const QImage &image, double x, double y, double alpha)
+{
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0 || alpha <= 0.0) return;
+    cairo_surface_t *surface = cairo_image_surface_create_for_data(
+        const_cast<uchar *>(image.constBits()), CAIRO_FORMAT_ARGB32, image.width(), image.height(), image.bytesPerLine());
+    cairo_set_source_surface(cr, surface, x, y);
+    cairo_paint_with_alpha(cr, alpha);
+    cairo_surface_destroy(surface);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1305,11 +1559,9 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     double box_h = eval_box_height(layer, t);
     if (box_w <= 0.0 || box_h <= 0.0) return;
 
-    QPointF off = shadow_offset(layer, t);
-    double blur = eval_shadow_blur(layer, t);
-    double spread = eval_shadow_spread(layer, t);
+    ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     int pad = eval_shadow_enabled(layer, t)
-        ? (int)std::ceil(std::max(std::abs(off.x()), std::abs(off.y())) + blur + spread + 4.0)
+        ? (int)std::ceil(std::max({std::abs(shadow_params.dx), std::abs(shadow_params.dy), shadow_params.long_length}) + shadow_params.blur * 3.0 + shadow_params.spread + 4.0)
         : 0;
     if (eval_background_enabled(layer, t))
         pad += (int)std::ceil(std::max(eval_background_padding_x(layer, t), eval_background_padding_y(layer, t)));
@@ -1358,19 +1610,18 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         text_path.translate(0.0, -layer.baseline_shift);
 
     if (eval_shadow_enabled(layer, t)) {
-        QColor shadow = color_from_argb(eval_shadow_color(layer, t));
-        shadow.setAlphaF(std::clamp((double)shadow.alphaF() * eval_shadow_opacity(layer, t), 0.0, 1.0));
-        int passes = shadow_pass_count(blur);
-        for (int pass = passes; pass >= 1; --pass) {
-            QColor pass_color = shadow;
-            pass_color.setAlphaF(shadow.alphaF() / passes);
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(pass_color);
-            double radius = blur * pass / passes;
-            for (double dx : {-spread - radius, 0.0, spread + radius})
-                for (double dy : {-spread - radius, 0.0, spread + radius})
-                    painter.drawPath(text_path.translated(off + QPointF(dx, dy)));
-        }
+        QImage shadow_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
+        shadow_mask.fill(Qt::transparent);
+        QPainter mask_painter(&shadow_mask);
+        mask_painter.setRenderHint(QPainter::Antialiasing, true);
+        mask_painter.setPen(Qt::NoPen);
+        mask_painter.setBrush(Qt::white);
+        mask_painter.drawPath(text_path);
+        mask_painter.end();
+        const QString shape_key = QStringLiteral("text|%1x%2|%3")
+            .arg(img_w).arg(img_h).arg(image_content_hash(shadow_mask));
+        CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, shadow_mask);
+        painter.drawImage(shadow.origin, shadow.image);
     }
 
     double outline_width = eval_outline_width(layer, t);
@@ -1424,9 +1675,6 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     double r = std::min<double>(layer.corner_radius, std::min(w, h) / 2.0);
     double x = -eval_origin_x(layer, t) * w;
     double y = -eval_origin_y(layer, t) * h;
-    QPointF off = shadow_offset(layer, t);
-    double blur = eval_shadow_blur(layer, t);
-    double spread = eval_shadow_spread(layer, t);
 
     double fr, fg, fb, fa;
     unpack_color(eval_fill_color(layer, t), fr, fg, fb, fa);
@@ -1436,33 +1684,28 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     cairo_translate(cr, x, y);
 
     if (eval_shadow_enabled(layer, t)) {
-        double sr, sg, sb, sa;
-        unpack_color(eval_shadow_color(layer, t), sr, sg, sb, sa);
-        int passes = shadow_pass_count(blur);
-        for (int pass = passes; pass >= 1; --pass) {
-            double radius = blur * pass / passes;
-            double grow = spread + radius;
-            double sx0 = -grow;
-            double sy0 = -grow;
-            double sw = w + grow * 2.0;
-            double sh = h + grow * 2.0;
-            double sradius = std::max(0.0, r + grow);
-            cairo_save(cr);
-            cairo_translate(cr, off.x(), off.y());
-            if (sradius > 0.0) {
-                cairo_new_sub_path(cr);
-                cairo_arc(cr, sx0 + sradius,      sy0 + sradius,      sradius, kPi,     3*kPi/2);
-                cairo_arc(cr, sx0 + sw - sradius, sy0 + sradius,      sradius, 3*kPi/2, 2*kPi);
-                cairo_arc(cr, sx0 + sw - sradius, sy0 + sh - sradius, sradius, 0,       kPi/2);
-                cairo_arc(cr, sx0 + sradius,      sy0 + sh - sradius, sradius, kPi/2,   kPi);
-                cairo_close_path(cr);
-            } else {
-                cairo_rectangle(cr, sx0, sy0, sw, sh);
-            }
-            cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_shadow_opacity(layer, t) / passes);
-            cairo_fill(cr);
-            cairo_restore(cr);
+        ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
+        const int mw = std::max(1, (int)std::ceil(w));
+        const int mh = std::max(1, (int)std::ceil(h));
+        QImage mask(mw, mh, QImage::Format_ARGB32_Premultiplied);
+        mask.fill(Qt::transparent);
+        QPainter mp(&mask);
+        mp.setRenderHint(QPainter::Antialiasing, true);
+        mp.setPen(Qt::NoPen);
+        mp.setBrush(Qt::white);
+        QPainterPath shape_path = painter_layer_shape_path(layer, w, h);
+        if (layer.shape_type == ShapeType::Line) {
+            QPen pen(Qt::white, std::max(1.0, eval_outline_width(layer, t)), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            mp.setPen(pen);
+            mp.setBrush(Qt::NoBrush);
         }
+        mp.drawPath(shape_path);
+        mp.end();
+        const QString shape_key = QStringLiteral("rect|%1|%2x%3|%4|%5|%6")
+            .arg((int)layer.shape_type).arg(mw).arg(mh).arg(r, 0, 'f', 2)
+            .arg(layer.shape_points).arg(layer.shape_sides);
+        CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
+        paint_qimage(cr, shadow.image, shadow.origin.x(), shadow.origin.y(), alpha);
     }
 
     cairo_add_layer_shape(cr, layer, w, h);
@@ -1524,6 +1767,19 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     apply_layer_world_transform(cr, title, layer, title_time);
     const double origin_x = eval_origin_x(layer, t);
     const double origin_y = eval_origin_y(layer, t);
+    if (eval_shadow_enabled(layer, t)) {
+        QImage mask = argb.scaled(std::max(1, (int)std::ceil(w)), std::max(1, (int)std::ceil(h)),
+                                  Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                          .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
+        QFileInfo shadow_image_info(QString::fromStdString(layer.image_path));
+        const QString shape_key = QStringLiteral("image|%1|%2x%3|%4|%5")
+            .arg(QString::fromStdString(layer.image_path)).arg(mask.width()).arg(mask.height())
+            .arg(shadow_image_info.exists() ? shadow_image_info.lastModified().toMSecsSinceEpoch() : 0)
+            .arg(shadow_image_info.exists() ? shadow_image_info.size() : -1);
+        CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
+        paint_qimage(cr, shadow.image, -origin_x * w + shadow.origin.x(), -origin_y * h + shadow.origin.y(), alpha);
+    }
     if (eval_background_enabled(layer, t)) {
         const double bg_pad_x = eval_background_padding_x(layer, t);
         const double bg_pad_y = eval_background_padding_y(layer, t);
