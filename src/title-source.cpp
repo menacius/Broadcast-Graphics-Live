@@ -121,6 +121,50 @@ static cairo_filter_t cairo_filter_for_image_scale_filter(ImageScaleFilter filte
     }
 }
 
+
+struct CairoSurfaceDeleter {
+    void operator()(cairo_surface_t *surface) const
+    {
+        if (surface) cairo_surface_destroy(surface);
+    }
+};
+
+struct CairoContextDeleter {
+    void operator()(cairo_t *context) const
+    {
+        if (context) cairo_destroy(context);
+    }
+};
+
+using CairoSurfacePtr = std::unique_ptr<cairo_surface_t, CairoSurfaceDeleter>;
+using CairoContextPtr = std::unique_ptr<cairo_t, CairoContextDeleter>;
+
+static CairoSurfacePtr make_image_surface_for_qimage(QImage &image)
+{
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0)
+        return nullptr;
+    CairoSurfacePtr surface(cairo_image_surface_create_for_data(
+        image.bits(), CAIRO_FORMAT_ARGB32, image.width(), image.height(), image.bytesPerLine()));
+    return cairo_surface_status(surface.get()) == CAIRO_STATUS_SUCCESS ? std::move(surface) : CairoSurfacePtr();
+}
+
+static CairoSurfacePtr make_image_surface_for_const_qimage(const QImage &image)
+{
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0)
+        return nullptr;
+    CairoSurfacePtr surface(cairo_image_surface_create_for_data(
+        const_cast<uchar *>(image.constBits()), CAIRO_FORMAT_ARGB32,
+        image.width(), image.height(), image.bytesPerLine()));
+    return cairo_surface_status(surface.get()) == CAIRO_STATUS_SUCCESS ? std::move(surface) : CairoSurfacePtr();
+}
+
+static CairoContextPtr make_cairo_context(cairo_surface_t *surface)
+{
+    if (!surface) return nullptr;
+    CairoContextPtr cr(cairo_create(surface));
+    return cairo_status(cr.get()) == CAIRO_STATUS_SUCCESS ? std::move(cr) : CairoContextPtr();
+}
+
 static QImage load_cached_layer_image(const QString &path, const QSize &fallback_size = QSize())
 {
     QFileInfo info(path);
@@ -184,6 +228,18 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
  * ══════════════════════════════════════════════════════════════════ */
+static Title snapshot_title_for_render(const Title &title)
+{
+    Title snapshot = title;
+    snapshot.layers.clear();
+    snapshot.layers.reserve(title.layers.size());
+    for (const auto &layer : title.layers) {
+        if (layer)
+            snapshot.layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    return snapshot;
+}
+
 struct TitleSourceData {
     obs_source_t *source  = nullptr;
 
@@ -1237,12 +1293,11 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
 
 static void paint_qimage(cairo_t *cr, const QImage &image, double x, double y, double alpha)
 {
-    if (image.isNull() || image.width() <= 0 || image.height() <= 0 || alpha <= 0.0) return;
-    cairo_surface_t *surface = cairo_image_surface_create_for_data(
-        const_cast<uchar *>(image.constBits()), CAIRO_FORMAT_ARGB32, image.width(), image.height(), image.bytesPerLine());
-    cairo_set_source_surface(cr, surface, x, y);
-    cairo_paint_with_alpha(cr, alpha);
-    cairo_surface_destroy(surface);
+    if (!cr || image.isNull() || image.width() <= 0 || image.height() <= 0 || alpha <= 0.0) return;
+    auto surface = make_image_surface_for_const_qimage(image);
+    if (!surface) return;
+    cairo_set_source_surface(cr, surface.get(), x, y);
+    cairo_paint_with_alpha(cr, std::clamp(alpha, 0.0, 1.0));
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1963,17 +2018,14 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     painter.restore();
     painter.end();
 
-    cairo_surface_t *text_surface = cairo_image_surface_create_for_data(
-        text_image.bits(), CAIRO_FORMAT_ARGB32,
-        text_image.width(), text_image.height(), text_image.bytesPerLine());
+    auto text_surface = make_image_surface_for_qimage(text_image);
+    if (!text_surface) return;
 
     cairo_save(cr);
     apply_layer_world_transform(cr, title, layer, title_time);
-    cairo_set_source_surface(cr, text_surface, -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
+    cairo_set_source_surface(cr, text_surface.get(), -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
-
-    cairo_surface_destroy(text_surface);
 }
 
 static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
@@ -2071,9 +2123,8 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     QImage argb = load_cached_layer_image(QString::fromStdString(layer.image_path), sample_size);
     if (argb.isNull() || argb.width() <= 0 || argb.height() <= 0) return;
 
-    cairo_surface_t *img_surface = cairo_image_surface_create_for_data(
-        const_cast<uchar *>(argb.constBits()), CAIRO_FORMAT_ARGB32,
-        argb.width(), argb.height(), argb.bytesPerLine());
+    auto img_surface = make_image_surface_for_const_qimage(argb);
+    if (!img_surface) return;
 
     cairo_save(cr);
     apply_layer_world_transform(cr, title, layer, title_time);
@@ -2126,15 +2177,13 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
         }
     }
     cairo_scale(cr, w / argb.width(), h / argb.height());
-    cairo_set_source_surface(cr, img_surface,
+    cairo_set_source_surface(cr, img_surface.get(),
                              -origin_x * argb.width(),
                              -origin_y * argb.height());
     cairo_pattern_set_filter(cairo_get_source(cr),
                              cairo_filter_for_image_scale_filter(layer.scale_filter));
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
-
-    cairo_surface_destroy(img_surface);
 }
 
 
@@ -2188,6 +2237,15 @@ static bool layer_has_stackable_pixel_effects(const Layer &layer)
             return true;
     }
     return false;
+}
+
+static Layer layer_without_stackable_pixel_effects(const Layer &layer)
+{
+    Layer base_layer = layer;
+    base_layer.effects.erase(std::remove_if(base_layer.effects.begin(), base_layer.effects.end(),
+                                            layer_effect_requires_stack_surface),
+                             base_layer.effects.end());
+    return base_layer;
 }
 
 static std::vector<uint8_t> surface_alpha(cairo_surface_t *surface)
@@ -2575,42 +2633,28 @@ static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const
     if (it == data->effect_layer_cache.end() || it->second.key != key) {
         QImage canvas(std::max(1, canvas_w), std::max(1, canvas_h), QImage::Format_ARGB32_Premultiplied);
         canvas.fill(Qt::transparent);
-        cairo_surface_t *surface = cairo_image_surface_create_for_data(
-            canvas.bits(), CAIRO_FORMAT_ARGB32, canvas.width(), canvas.height(), canvas.bytesPerLine());
-        cairo_t *layer_cr = cairo_create(surface);
-        cairo_set_operator(layer_cr, CAIRO_OPERATOR_CLEAR);
-        cairo_paint(layer_cr);
-        cairo_set_operator(layer_cr, CAIRO_OPERATOR_OVER);
+        auto surface = make_image_surface_for_qimage(canvas);
+        auto layer_cr = make_cairo_context(surface.get());
+        if (!surface || !layer_cr)
+            return false;
+        cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
+        cairo_paint(layer_cr.get());
+        cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
 
-        Layer base_layer = layer;
-        base_layer.effects.erase(std::remove_if(base_layer.effects.begin(), base_layer.effects.end(), [](const LayerEffect &effect) {
-            switch (effect.type) {
-            case LayerEffectType::DropShadow:
-            case LayerEffectType::LongShadow:
-            case LayerEffectType::BrightnessContrast:
-            case LayerEffectType::Saturation:
-            case LayerEffectType::ColorOverlay:
-            case LayerEffectType::Glow:
-            case LayerEffectType::InnerGlow:
-            case LayerEffectType::InnerShadow:
-                return true;
-            default:
-                return false;
-            }
-        }), base_layer.effects.end());
+        Layer base_layer = layer_without_stackable_pixel_effects(layer);
         const double cache_anchor_x = canvas.width() * 0.5;
         const double cache_anchor_y = canvas.height() * 0.5;
         neutralize_layer_transform_for_effect_cache(base_layer, layer_chain_opacity(title, layer, title_time),
                                                     cache_anchor_x, cache_anchor_y);
 
-        render_layer_unmasked(layer_cr, title, base_layer, title_time, canvas_w, canvas_h);
-        cairo_destroy(layer_cr);
-        cairo_surface_flush(surface);
+        render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
+        layer_cr.reset();
+        cairo_surface_flush(surface.get());
 
         const double t = std::max(0.0, title_time - layer.in_time);
-        apply_stackable_pixel_effects_to_surface(surface, layer, t);
-        cairo_surface_flush(surface);
-        cairo_surface_destroy(surface);
+        apply_stackable_pixel_effects_to_surface(surface.get(), layer, t);
+        cairo_surface_flush(surface.get());
+        surface.reset();
 
         QRect bounds = image_alpha_bounds(canvas);
         TitleSourceData::CachedEffectLayer cached;
@@ -2630,15 +2674,14 @@ static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const
     if (it->second.image.isNull())
         return true;
 
-    cairo_surface_t *cached_surface = cairo_image_surface_create_for_data(
-        const_cast<uchar *>(it->second.image.constBits()), CAIRO_FORMAT_ARGB32,
-        it->second.image.width(), it->second.image.height(), it->second.image.bytesPerLine());
+    auto cached_surface = make_image_surface_for_const_qimage(it->second.image);
+    if (!cached_surface)
+        return false;
     cairo_save(cr);
     apply_layer_world_transform(cr, title, layer, title_time);
-    cairo_set_source_surface(cr, cached_surface, it->second.origin.x(), it->second.origin.y());
+    cairo_set_source_surface(cr, cached_surface.get(), it->second.origin.x(), it->second.origin.y());
     cairo_paint(cr);
     cairo_restore(cr);
-    cairo_surface_destroy(cached_surface);
     return true;
 }
 
@@ -2653,36 +2696,22 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
         return;
     }
 
-    Layer base_layer = layer;
-    base_layer.effects.erase(std::remove_if(base_layer.effects.begin(), base_layer.effects.end(), [](const LayerEffect &effect) {
-        switch (effect.type) {
-        case LayerEffectType::DropShadow:
-        case LayerEffectType::LongShadow:
-        case LayerEffectType::BrightnessContrast:
-        case LayerEffectType::Saturation:
-        case LayerEffectType::ColorOverlay:
-        case LayerEffectType::Glow:
-        case LayerEffectType::InnerGlow:
-        case LayerEffectType::InnerShadow:
-            return true;
-        default:
-            return false;
-        }
-    }), base_layer.effects.end());
+    Layer base_layer = layer_without_stackable_pixel_effects(layer);
 
-    cairo_surface_t *layer_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
-    cairo_t *layer_cr = cairo_create(layer_surface);
-    cairo_set_operator(layer_cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(layer_cr);
-    cairo_set_operator(layer_cr, CAIRO_OPERATOR_OVER);
-    render_layer_unmasked(layer_cr, title, base_layer, title_time, canvas_w, canvas_h);
-    cairo_destroy(layer_cr);
+    CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h));
+    auto layer_cr = make_cairo_context(layer_surface.get());
+    if (!layer_surface || cairo_surface_status(layer_surface.get()) != CAIRO_STATUS_SUCCESS || !layer_cr)
+        return;
+    cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
+    cairo_paint(layer_cr.get());
+    cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+    render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
+    layer_cr.reset();
 
     const double t = std::max(0.0, title_time - layer.in_time);
-    apply_stackable_pixel_effects_to_surface(layer_surface, layer, t);
-    cairo_set_source_surface(cr, layer_surface, 0, 0);
+    apply_stackable_pixel_effects_to_surface(layer_surface.get(), layer, t);
+    cairo_set_source_surface(cr, layer_surface.get(), 0, 0);
     cairo_paint(cr);
-    cairo_surface_destroy(layer_surface);
 }
 
 static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
@@ -2699,35 +2728,41 @@ static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Tit
         return;
     }
 
-    cairo_surface_t *layer_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
-    cairo_surface_t *mask_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h);
-    cairo_t *layer_cr = cairo_create(layer_surface);
-    cairo_t *mask_cr = cairo_create(mask_surface);
-    cairo_set_operator(layer_cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(layer_cr);
-    cairo_set_operator(layer_cr, CAIRO_OPERATOR_OVER);
-    cairo_set_operator(mask_cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(mask_cr);
-    cairo_set_operator(mask_cr, CAIRO_OPERATOR_OVER);
-    render_layer_unmasked_with_stackable_effects(layer_cr, data, title, layer, title_time, canvas_w, canvas_h);
-    render_layer_unmasked(mask_cr, title, *mask, title_time, canvas_w, canvas_h);
-    cairo_destroy(layer_cr);
-    cairo_destroy(mask_cr);
+    CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h));
+    CairoSurfacePtr mask_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h));
+    auto layer_cr = make_cairo_context(layer_surface.get());
+    auto mask_cr = make_cairo_context(mask_surface.get());
+    if (!layer_surface || !mask_surface ||
+        cairo_surface_status(layer_surface.get()) != CAIRO_STATUS_SUCCESS ||
+        cairo_surface_status(mask_surface.get()) != CAIRO_STATUS_SUCCESS ||
+        !layer_cr || !mask_cr) {
+        render_layer_unmasked_with_stackable_effects(cr, data, title, layer, title_time, canvas_w, canvas_h);
+        return;
+    }
+    cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
+    cairo_paint(layer_cr.get());
+    cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+    cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_CLEAR);
+    cairo_paint(mask_cr.get());
+    cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_OVER);
+    render_layer_unmasked_with_stackable_effects(layer_cr.get(), data, title, layer, title_time, canvas_w, canvas_h);
+    render_layer_unmasked(mask_cr.get(), title, *mask, title_time, canvas_w, canvas_h);
+    layer_cr.reset();
+    mask_cr.reset();
 
     if (layer.mask_mode == MaskMode::Alpha) {
-        cairo_set_source_surface(cr, layer_surface, 0, 0);
-        cairo_mask_surface(cr, mask_surface, 0, 0);
+        cairo_set_source_surface(cr, layer_surface.get(), 0, 0);
+        cairo_mask_surface(cr, mask_surface.get(), 0, 0);
     } else {
-        cairo_t *tmp_cr = cairo_create(layer_surface);
-        cairo_set_operator(tmp_cr, CAIRO_OPERATOR_DEST_OUT);
-        cairo_set_source_rgba(tmp_cr, 0, 0, 0, 1);
-        cairo_mask_surface(tmp_cr, mask_surface, 0, 0);
-        cairo_destroy(tmp_cr);
-        cairo_set_source_surface(cr, layer_surface, 0, 0);
+        auto tmp_cr = make_cairo_context(layer_surface.get());
+        if (!tmp_cr) return;
+        cairo_set_operator(tmp_cr.get(), CAIRO_OPERATOR_DEST_OUT);
+        cairo_set_source_rgba(tmp_cr.get(), 0, 0, 0, 1);
+        cairo_mask_surface(tmp_cr.get(), mask_surface.get(), 0, 0);
+        tmp_cr.reset();
+        cairo_set_source_surface(cr, layer_surface.get(), 0, 0);
         cairo_paint(cr);
     }
-    cairo_surface_destroy(mask_surface);
-    cairo_surface_destroy(layer_surface);
 }
 
 /* Composite a full title frame into pixel_buf */
@@ -2764,22 +2799,13 @@ static void render_title_frame(TitleSourceData *data,
     }
 
     /* Cairo surface over our buffer */
-    cairo_surface_t *surface =
-        cairo_image_surface_create_for_data(
-            data->pixel_buf.data(),
-            CAIRO_FORMAT_ARGB32,  /* == BGRA on LE – matches GS_BGRA */
-            (int)w, (int)h,
-            (int)w * 4);
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(surface);
-        data->dirty = false;
-        return;
-    }
-
-    cairo_t *cr = cairo_create(surface);
-    if (cairo_status(cr) != CAIRO_STATUS_SUCCESS) {
-        cairo_destroy(cr);
-        cairo_surface_destroy(surface);
+    CairoSurfacePtr surface(cairo_image_surface_create_for_data(
+        data->pixel_buf.data(),
+        CAIRO_FORMAT_ARGB32,  /* == BGRA on LE – matches GS_BGRA */
+        (int)w, (int)h,
+        (int)w * 4));
+    auto cr = make_cairo_context(surface.get());
+    if (!surface || cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS || !cr) {
         data->dirty = false;
         return;
     }
@@ -2787,10 +2813,10 @@ static void render_title_frame(TitleSourceData *data,
     /* Clear with background */
     double br, bg, bb, ba;
     unpack_color(title.bg_color, br, bg, bb, ba);
-    cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-    cairo_set_source_rgba(cr, br, bg, bb, ba);
-    cairo_paint(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+    cairo_set_operator(cr.get(), CAIRO_OPERATOR_SOURCE);
+    cairo_set_source_rgba(cr.get(), br, bg, bb, ba);
+    cairo_paint(cr.get());
+    cairo_set_operator(cr.get(), CAIRO_OPERATOR_OVER);
 
     const bool background_persistence = title.cue_background_persistence &&
         title.cue_persistence_transition && title.current_cue_row >= 0 && !title.live_text_rows.empty();
@@ -2813,12 +2839,12 @@ static void render_title_frame(TitleSourceData *data,
 
         if (!layer_chain_visible(title, *layer, layer_time)) continue;
 
-        render_layer_with_mask(cr, data, title, *layer, layer_time, (int)w, (int)h);
+        render_layer_with_mask(cr.get(), data, title, *layer, layer_time, (int)w, (int)h);
     }
 
-    cairo_destroy(cr);
-    cairo_surface_flush(surface);
-    cairo_surface_destroy(surface);
+    cr.reset();
+    cairo_surface_flush(surface.get());
+    surface.reset();
 
     /*
      * Cairo renders CAIRO_FORMAT_ARGB32 as premultiplied BGRA on little-endian
@@ -2853,27 +2879,29 @@ QImage render_title_to_image(const Title &title, double t)
     const int h = std::max(1, title.height);
     QImage image(w, h, QImage::Format_ARGB32_Premultiplied);
 
-    cairo_surface_t *surface = cairo_image_surface_create_for_data(
-        image.bits(), CAIRO_FORMAT_ARGB32, w, h, image.bytesPerLine());
-    cairo_t *cr = cairo_create(surface);
+    auto surface = make_image_surface_for_qimage(image);
+    auto cr = make_cairo_context(surface.get());
+    if (!surface || !cr) {
+        image.fill(Qt::transparent);
+        return image;
+    }
 
     double br, bg, bb, ba;
     unpack_color(title.bg_color, br, bg, bb, ba);
-    cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
-    cairo_set_source_rgba(cr, br, bg, bb, ba);
-    cairo_paint(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+    cairo_set_operator(cr.get(), CAIRO_OPERATOR_SOURCE);
+    cairo_set_source_rgba(cr.get(), br, bg, bb, ba);
+    cairo_paint(cr.get());
+    cairo_set_operator(cr.get(), CAIRO_OPERATOR_OVER);
 
     const double clamped_time = std::clamp(t, 0.0, std::max(0.0, title.duration));
     for (auto &layer : title.layers) {
         if (!layer || !layer_chain_visible(title, *layer, clamped_time)) continue;
 
-        render_layer_with_mask(cr, nullptr, title, *layer, clamped_time, w, h);
+        render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
     }
 
-    cairo_destroy(cr);
-    cairo_surface_flush(surface);
-    cairo_surface_destroy(surface);
+    cr.reset();
+    cairo_surface_flush(surface.get());
     return image;
 }
 
@@ -2888,10 +2916,12 @@ static const char *source_get_name(void *)
 static void *source_create(obs_data_t *settings, obs_source_t *source)
 {
     auto *data = new TitleSourceData();
-    data->source    = source;
-    data->title_id  = obs_data_get_string(settings, PROP_TITLE_ID);
-    data->loop      = obs_data_get_bool(settings,   PROP_LOOP);
-    data->speed     = (float)obs_data_get_double(settings, PROP_SPEED);
+    data->source = source;
+    if (settings) {
+        data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
+        data->loop = obs_data_get_bool(settings, PROP_LOOP);
+        data->speed = (float)obs_data_get_double(settings, PROP_SPEED);
+    }
     data->last_tick = std::chrono::steady_clock::now();
     data->last_clock_refresh = data->last_tick;
     if (auto title = TitleDataStore::instance().get_title(data->title_id))
@@ -2907,6 +2937,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
 static void source_destroy(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return;
     {
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         obs_enter_graphics();
@@ -2922,6 +2953,7 @@ static void source_destroy(void *priv)
 static void source_update(void *priv, obs_data_t *settings)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data || !settings) return;
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
     data->loop     = obs_data_get_bool(settings,   PROP_LOOP);
     data->speed    = (float)obs_data_get_double(settings, PROP_SPEED);
@@ -2944,6 +2976,7 @@ static void source_update(void *priv, obs_data_t *settings)
 static uint32_t source_get_width(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return 1920;
     auto title = TitleDataStore::instance().get_title(data->title_id);
     return title ? clamped_source_dimension(title->width) : 1920;
 }
@@ -2951,6 +2984,7 @@ static uint32_t source_get_width(void *priv)
 static uint32_t source_get_height(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return 1080;
     auto title = TitleDataStore::instance().get_title(data->title_id);
     return title ? clamped_source_dimension(title->height) : 1080;
 }
@@ -2958,7 +2992,7 @@ static uint32_t source_get_height(void *priv)
 static void source_video_tick(void *priv, float seconds)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
-    if (data->title_id.empty()) return;
+    if (!data || data->title_id.empty()) return;
 
     auto title = TitleDataStore::instance().get_title(data->title_id);
     if (!title) return;
@@ -3137,13 +3171,16 @@ static void source_video_tick(void *priv, float seconds)
         data->dirty = true;
     }
 
-    if (data->dirty)
-        render_title_frame(data, *title, data->playhead);
+    if (data->dirty) {
+        Title render_snapshot = snapshot_title_for_render(*title);
+        render_title_frame(data, render_snapshot, data->playhead);
+    }
 }
 
 static void source_video_render(void *priv, gs_effect_t * /*effect*/)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
+    if (!data) return;
     std::lock_guard<std::mutex> lock(data->texture_mutex);
     if (!data->texture) return;
 
