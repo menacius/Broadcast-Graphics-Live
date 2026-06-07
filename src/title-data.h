@@ -24,6 +24,7 @@
 #include <mutex>
 #include <obs-module.h>
 #include <util/config-file.h>
+#include "title-rich-text.h"
 
 /* ══════════════════════════════════════════════════════════════════
  *  Easing / interpolation
@@ -201,6 +202,7 @@ struct Layer {
      * while text_content remains the plain-text fallback for live text and
      * older project files. */
     std::string rich_text_html;
+    RichTextDocument rich_text; /* Structured source-of-truth rich text document. */
     std::string clock_format  = "H:i:s";  /* PHP date()-style format for clock layers */
     bool        expose_text    = false;
     std::string font_family   = "Helvetica Neue";

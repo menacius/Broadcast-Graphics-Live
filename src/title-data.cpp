@@ -690,6 +690,7 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     set_color_channels(*layer, true, layer->text_color);
     set_color_channels(*layer, false, layer->fill_color);
     layer->text_content = name;
+    layer->rich_text = rich_text_document_from_layer_defaults(*layer);
     layer->expose_text = true;
     t->layers.push_back(layer);
 
@@ -809,6 +810,151 @@ static AnimatedProperty aprop_from_json(const json &j, const std::string &name)
     return p;
 }
 
+
+static json rich_fill_to_json(const RichTextFill &f)
+{
+    return {{"type", f.type}, {"color", f.color}, {"gradient_type", f.gradient_type},
+            {"gradient_start_color", f.gradient_start_color}, {"gradient_end_color", f.gradient_end_color},
+            {"gradient_start_pos", f.gradient_start_pos}, {"gradient_end_pos", f.gradient_end_pos},
+            {"gradient_angle", f.gradient_angle}};
+}
+
+static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallback = {})
+{
+    RichTextFill f = fallback;
+    if (!j.is_object()) return f;
+    f.type = std::clamp(json_int(j, "type", f.type), 0, 1);
+    f.color = json_color(j, "color", f.color);
+    f.gradient_type = std::clamp(json_int(j, "gradient_type", f.gradient_type), 0, 1);
+    f.gradient_start_color = json_color(j, "gradient_start_color", f.gradient_start_color);
+    f.gradient_end_color = json_color(j, "gradient_end_color", f.gradient_end_color);
+    f.gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "gradient_start_pos", f.gradient_start_pos), f.gradient_start_pos), 0.0, 1.0);
+    f.gradient_end_pos = (float)std::clamp(finite_or(json_double(j, "gradient_end_pos", f.gradient_end_pos), f.gradient_end_pos), 0.0, 1.0);
+    f.gradient_angle = (float)finite_or(json_double(j, "gradient_angle", f.gradient_angle), f.gradient_angle);
+    return f;
+}
+
+static json rich_char_format_to_json(const RichTextCharFormat &f)
+{
+    return {{"font_family", f.font_family}, {"font_size", f.font_size}, {"bold", f.bold},
+            {"italic", f.italic}, {"underline", f.underline}, {"strikethrough", f.strikethrough},
+            {"tracking", f.tracking}, {"scale_x", f.scale_x}, {"scale_y", f.scale_y},
+            {"baseline_shift", f.baseline_shift}, {"fill", rich_fill_to_json(f.fill)}};
+}
+
+static RichTextCharFormat rich_char_format_from_json(const json &j, const RichTextCharFormat &fallback = {})
+{
+    RichTextCharFormat f = fallback;
+    if (!j.is_object()) return f;
+    f.font_family = bounded_string(j, "font_family", f.font_family, kMaxNameLength);
+    f.font_size = std::clamp(json_int(j, "font_size", f.font_size), 1, 512);
+    f.bold = json_bool(j, "bold", f.bold);
+    f.italic = json_bool(j, "italic", f.italic);
+    f.underline = json_bool(j, "underline", f.underline);
+    f.strikethrough = json_bool(j, "strikethrough", f.strikethrough);
+    f.tracking = (float)std::clamp(finite_or(json_double(j, "tracking", f.tracking), f.tracking), -1000.0, 1000.0);
+    f.scale_x = (float)std::clamp(finite_or(json_double(j, "scale_x", f.scale_x), f.scale_x), 0.01, 100.0);
+    f.scale_y = (float)std::clamp(finite_or(json_double(j, "scale_y", f.scale_y), f.scale_y), 0.01, 100.0);
+    f.baseline_shift = (float)std::clamp(finite_or(json_double(j, "baseline_shift", f.baseline_shift), f.baseline_shift), -1000.0, 1000.0);
+    if (j.contains("fill")) f.fill = rich_fill_from_json(j["fill"], f.fill);
+    return f;
+}
+
+static json rich_paragraph_format_to_json(const RichTextParagraphFormat &f)
+{
+    return {{"align_h", f.align_h}, {"align_v", f.align_v}, {"indent_left", f.indent_left},
+            {"indent_right", f.indent_right}, {"indent_first_line", f.indent_first_line},
+            {"space_before", f.space_before}, {"space_after", f.space_after}, {"hyphenate", f.hyphenate}};
+}
+
+static RichTextParagraphFormat rich_paragraph_format_from_json(const json &j, const RichTextParagraphFormat &fallback = {})
+{
+    RichTextParagraphFormat f = fallback;
+    if (!j.is_object()) return f;
+    f.align_h = std::clamp(json_int(j, "align_h", f.align_h), 0, 6);
+    f.align_v = std::clamp(json_int(j, "align_v", f.align_v), 0, 2);
+    f.indent_left = (float)std::clamp(finite_or(json_double(j, "indent_left", f.indent_left), f.indent_left), 0.0, 10000.0);
+    f.indent_right = (float)std::clamp(finite_or(json_double(j, "indent_right", f.indent_right), f.indent_right), 0.0, 10000.0);
+    f.indent_first_line = (float)std::clamp(finite_or(json_double(j, "indent_first_line", f.indent_first_line), f.indent_first_line), -10000.0, 10000.0);
+    f.space_before = (float)std::clamp(finite_or(json_double(j, "space_before", f.space_before), f.space_before), 0.0, 10000.0);
+    f.space_after = (float)std::clamp(finite_or(json_double(j, "space_after", f.space_after), f.space_after), 0.0, 10000.0);
+    f.hyphenate = json_bool(j, "hyphenate", f.hyphenate);
+    return f;
+}
+
+static json rich_doc_to_json(const RichTextDocument &doc)
+{
+    json blocks = json::array();
+    for (const auto &b : doc.blocks)
+        blocks.push_back({{"start", b.start}, {"length", b.length}, {"format", rich_paragraph_format_to_json(b.format)}});
+    json ranges = json::array();
+    for (const auto &r : doc.ranges)
+        ranges.push_back({{"start", r.start}, {"length", r.length}, {"format", rich_char_format_to_json(r.format)}});
+    json transactions = json::array();
+    for (const auto &tr : doc.transactions) {
+        transactions.push_back({{"type", tr.type}, {"position", tr.position}, {"removed_text", tr.removed_text},
+                                {"inserted_text", tr.inserted_text},
+                                {"before_selection", {{"anchor", tr.before_selection.anchor}, {"head", tr.before_selection.head}}},
+                                {"after_selection", {{"anchor", tr.after_selection.anchor}, {"head", tr.after_selection.head}}}});
+    }
+    return {{"version", doc.version}, {"plain_text", doc.plain_text},
+            {"default_format", rich_char_format_to_json(doc.default_format)},
+            {"default_paragraph_format", rich_paragraph_format_to_json(doc.default_paragraph_format)},
+            {"blocks", blocks}, {"ranges", ranges},
+            {"selection", {{"anchor", doc.selection.anchor}, {"head", doc.selection.head}}},
+            {"transactions", transactions}};
+}
+
+static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
+{
+    RichTextDocument doc = rich_text_document_from_layer_defaults(layer);
+    if (!j.is_object()) return doc;
+    doc.version = std::clamp(json_int(j, "version", 1), 1, 1);
+    doc.plain_text = bounded_string(j, "plain_text", doc.plain_text, kMaxTextLength);
+    if (j.contains("default_format")) doc.default_format = rich_char_format_from_json(j["default_format"], doc.default_format);
+    if (j.contains("default_paragraph_format")) doc.default_paragraph_format = rich_paragraph_format_from_json(j["default_paragraph_format"], doc.default_paragraph_format);
+    doc.ranges.clear();
+    if (j.contains("ranges") && j["ranges"].is_array()) {
+        for (size_t i = 0; i < std::min(j["ranges"].size(), kMaxTextLength); ++i) {
+            const auto &rj = j["ranges"][i];
+            if (!rj.is_object()) continue;
+            RichTextRange r;
+            r.start = (size_t)std::clamp(json_int(rj, "start", 0), 0, (int)kMaxTextLength);
+            r.length = (size_t)std::clamp(json_int(rj, "length", 0), 0, (int)kMaxTextLength);
+            r.format = rj.contains("format") ? rich_char_format_from_json(rj["format"], doc.default_format) : doc.default_format;
+            doc.ranges.push_back(r);
+        }
+    }
+    if (j.contains("selection") && j["selection"].is_object()) {
+        doc.selection.anchor = (size_t)std::clamp(json_int(j["selection"], "anchor", 0), 0, (int)kMaxTextLength);
+        doc.selection.head = (size_t)std::clamp(json_int(j["selection"], "head", 0), 0, (int)kMaxTextLength);
+    }
+    doc.transactions.clear();
+    if (j.contains("transactions") && j["transactions"].is_array()) {
+        const size_t start = j["transactions"].size() > 100 ? j["transactions"].size() - 100 : 0;
+        for (size_t i = start; i < j["transactions"].size(); ++i) {
+            const auto &tj = j["transactions"][i];
+            if (!tj.is_object()) continue;
+            RichTextTransaction tr;
+            tr.type = bounded_string(tj, "type", "replace_text", kMaxNameLength);
+            tr.position = (size_t)std::clamp(json_int(tj, "position", 0), 0, (int)kMaxTextLength);
+            tr.removed_text = bounded_string(tj, "removed_text", "", kMaxTextLength);
+            tr.inserted_text = bounded_string(tj, "inserted_text", "", kMaxTextLength);
+            if (tj.contains("before_selection")) {
+                tr.before_selection.anchor = (size_t)std::clamp(json_int(tj["before_selection"], "anchor", 0), 0, (int)kMaxTextLength);
+                tr.before_selection.head = (size_t)std::clamp(json_int(tj["before_selection"], "head", 0), 0, (int)kMaxTextLength);
+            }
+            if (tj.contains("after_selection")) {
+                tr.after_selection.anchor = (size_t)std::clamp(json_int(tj["after_selection"], "anchor", 0), 0, (int)kMaxTextLength);
+                tr.after_selection.head = (size_t)std::clamp(json_int(tj["after_selection"], "head", 0), 0, (int)kMaxTextLength);
+            }
+            doc.transactions.push_back(tr);
+        }
+    }
+    doc.normalize();
+    return doc;
+}
+
 static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                           bool require_embedded_assets = false, std::string *error = nullptr,
                           bool *asset_embed_failed = nullptr)
@@ -854,6 +1000,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
 
     j["text_content"]  = l.text_content;
     j["rich_text_html"] = l.rich_text_html;
+    j["rich_text"] = rich_doc_to_json(l.rich_text);
     j["clock_format"]  = l.clock_format;
     j["expose_text"]   = l.expose_text;
     j["font_family"]   = l.font_family;
@@ -1167,6 +1314,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->gradient_scale = (float)std::clamp(finite_or(json_double(j, "gradient_scale", 1.0), 1.0), 0.01, 10.0);
     l->gradient_focal_x = (float)std::clamp(finite_or(json_double(j, "gradient_focal_x", l->gradient_center_x), l->gradient_center_x), 0.0, 1.0);
     l->gradient_focal_y = (float)std::clamp(finite_or(json_double(j, "gradient_focal_y", l->gradient_center_y), l->gradient_center_y), 0.0, 1.0);
+    l->rich_text = j.contains("rich_text") ? rich_doc_from_json(j["rich_text"], *l) : rich_text_document_from_layer_defaults(*l);
+    if (l->rich_text.plain_text.empty() && !l->text_content.empty())
+        l->rich_text = rich_text_document_from_layer_defaults(*l);
+    l->text_content = l->rich_text.plain_text;
     l->background_enabled = json_bool(j, "background_enabled", false);
     l->background_color = json_color(j, "background_color", (uint32_t)0xFF000000);
     l->background_opacity = (float)std::clamp(finite_or(json_double(j, "background_opacity", 0.35), 0.35), 0.0, 1.0);

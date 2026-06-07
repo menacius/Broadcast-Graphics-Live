@@ -37,6 +37,7 @@
 #include <QTextLayout>
 #include <QTextDocument>
 #include <QTextOption>
+#include <QTextCursor>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QTransform>
@@ -441,6 +442,7 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
     auto exposed = exposed_text_layers(title);
     for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
         exposed[col]->text_content = title->live_text_rows[row][col];
+        exposed[col]->rich_text = rich_text_document_from_layer_defaults(*exposed[col]);
         exposed[col]->rich_text_html.clear();
     }
 }
@@ -1712,6 +1714,55 @@ static QColor evaluated_background_color(const Layer &layer, double t)
 }
 
 
+
+
+static bool rich_text_format_differs_from_default(const RichTextCharFormat &a, const RichTextCharFormat &b)
+{
+    return a.font_family != b.font_family || a.font_size != b.font_size ||
+           a.bold != b.bold || a.italic != b.italic || a.underline != b.underline ||
+           a.strikethrough != b.strikethrough || a.fill.type != b.fill.type ||
+           a.fill.color != b.fill.color || a.fill.gradient_start_color != b.fill.gradient_start_color ||
+           a.fill.gradient_end_color != b.fill.gradient_end_color;
+}
+
+static bool rich_text_model_requires_document_renderer(const RichTextDocument &model)
+{
+    if (model.ranges.size() > 1) return true;
+    return model.ranges.size() == 1 && rich_text_format_differs_from_default(model.ranges.front().format, model.default_format);
+}
+
+static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &format, const QFont &fallback_font)
+{
+    QTextCharFormat out;
+    QFont font = fallback_font;
+    if (!format.font_family.empty()) font.setFamily(QString::fromStdString(format.font_family));
+    font.setPixelSize(std::max(1, format.font_size));
+    font.setBold(format.bold);
+    font.setItalic(format.italic);
+    font.setUnderline(format.underline);
+    font.setStrikeOut(format.strikethrough);
+    out.setFont(font);
+    out.setFontUnderline(format.underline);
+    out.setFontStrikeOut(format.strikethrough);
+    out.setForeground(color_from_argb(format.fill.color));
+    return out;
+}
+
+static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const QFont &font)
+{
+    const RichTextDocument &model = layer.rich_text;
+    QTextCursor all(&doc);
+    all.select(QTextCursor::Document);
+    all.mergeCharFormat(text_format_from_rich_format(model.default_format, font));
+    for (const auto &range : model.ranges) {
+        if (range.length == 0 || range.start >= model.plain_text.size()) continue;
+        QTextCursor cursor(&doc);
+        cursor.setPosition((int)std::min(range.start, model.plain_text.size()));
+        cursor.setPosition((int)std::min(range.start + range.length, model.plain_text.size()), QTextCursor::KeepAnchor);
+        cursor.mergeCharFormat(text_format_from_rich_format(range.format, font));
+    }
+}
+
 static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &layer, const QFont &font,
                                                   const QRectF &text_rect, double t)
 {
@@ -1732,10 +1783,14 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
     option.setAlignment(align);
     doc->setDefaultTextOption(option);
     doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width()));
-    if (!layer.rich_text_html.empty())
+    if (layer.type != LayerType::Ticker && (!layer.rich_text.plain_text.empty() || !layer.rich_text.ranges.empty())) {
+        doc->setPlainText(QString::fromStdString(layer.rich_text.plain_text));
+        apply_rich_text_ranges(*doc, layer, font);
+    } else if (!layer.rich_text_html.empty()) {
         doc->setHtml(QString::fromStdString(layer.rich_text_html));
-    else
+    } else {
         doc->setPlainText(display_text_for_style(layer));
+    }
 
     return doc;
 }
@@ -1824,7 +1879,8 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
     if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
-    const bool has_rich_text = !layer.rich_text_html.empty() && layer.type != LayerType::Ticker;
+    const bool has_rich_text = layer.type != LayerType::Ticker &&
+        (rich_text_model_requires_document_renderer(layer.rich_text) || !layer.rich_text_html.empty());
     QPainterPath text_path;
     if (!has_rich_text) {
         text_path = layer.type == LayerType::Ticker

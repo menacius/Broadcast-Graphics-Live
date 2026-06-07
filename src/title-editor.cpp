@@ -246,6 +246,124 @@ private:
 };
 
 
+
+static QColor rich_text_color_from_argb(uint32_t argb)
+{
+    return QColor((argb >> 16) & 0xFF,
+                  (argb >> 8) & 0xFF,
+                  argb & 0xFF,
+                  (argb >> 24) & 0xFF);
+}
+
+static uint32_t rich_text_argb_from_color(const QColor &color)
+{
+    return ((uint32_t)color.alpha() << 24) |
+           ((uint32_t)color.red() << 16) |
+           ((uint32_t)color.green() << 8) |
+           (uint32_t)color.blue();
+}
+
+static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharFormat &fmt,
+                                                             const RichTextCharFormat &fallback,
+                                                             double visual_scale)
+{
+    RichTextCharFormat out = fallback;
+    QFont font = fmt.font();
+    if (!font.family().isEmpty()) out.font_family = font.family().toStdString();
+    int px = font.pixelSize();
+    if (px <= 0 && font.pointSizeF() > 0.0) px = (int)std::round(font.pointSizeF());
+    if (px > 0) out.font_size = std::max(1, (int)std::round(px / std::max(0.0001, visual_scale)));
+    out.bold = fmt.fontWeight() >= QFont::Bold;
+    out.italic = fmt.fontItalic();
+    out.underline = fmt.fontUnderline();
+    out.strikethrough = fmt.fontStrikeOut();
+    if (fmt.foreground().style() != Qt::NoBrush) {
+        const QColor c = fmt.foreground().color();
+        if (c.isValid() && c.alpha() > 0)
+            out.fill.color = rich_text_argb_from_color(c);
+    }
+    return out;
+}
+
+static QTextCharFormat qtext_format_from_rich_text_format(const RichTextCharFormat &format, double visual_scale)
+{
+    QTextCharFormat out;
+    QFont font(QString::fromStdString(format.font_family));
+    font.setPixelSize(std::max(1, (int)std::round(format.font_size * visual_scale)));
+    font.setBold(format.bold);
+    font.setItalic(format.italic);
+    font.setUnderline(format.underline);
+    font.setStrikeOut(format.strikethrough);
+    out.setFont(font);
+    out.setFontUnderline(format.underline);
+    out.setFontStrikeOut(format.strikethrough);
+    QColor color = rich_text_color_from_argb(format.fill.color);
+    if (format.fill.type == 1) color.setAlpha(0);
+    out.setForeground(color);
+    return out;
+}
+
+static void populate_qtext_document_from_rich_text(QTextDocument *doc, const RichTextDocument &model, double visual_scale)
+{
+    if (!doc) return;
+    QSignalBlocker blocker(doc);
+    doc->setPlainText(QString::fromStdString(model.plain_text));
+    QTextCursor all(doc);
+    all.select(QTextCursor::Document);
+    all.mergeCharFormat(qtext_format_from_rich_text_format(model.default_format, visual_scale));
+    for (const auto &range : model.ranges) {
+        if (range.length == 0 || range.start >= model.plain_text.size()) continue;
+        QTextCursor cursor(doc);
+        cursor.setPosition((int)std::min(range.start, model.plain_text.size()));
+        cursor.setPosition((int)std::min(range.start + range.length, model.plain_text.size()), QTextCursor::KeepAnchor);
+        cursor.mergeCharFormat(qtext_format_from_rich_text_format(range.format, visual_scale));
+    }
+}
+
+
+static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const std::vector<RichTextRange> &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const RichTextRange &x = a[i];
+        const RichTextRange &y = b[i];
+        if (x.start != y.start || x.length != y.length) return false;
+        const RichTextCharFormat &xf = x.format;
+        const RichTextCharFormat &yf = y.format;
+        if (xf.font_family != yf.font_family || xf.font_size != yf.font_size ||
+            xf.bold != yf.bold || xf.italic != yf.italic || xf.underline != yf.underline ||
+            xf.strikethrough != yf.strikethrough || xf.fill.type != yf.fill.type ||
+            xf.fill.color != yf.fill.color || xf.fill.gradient_start_color != yf.fill.gradient_start_color ||
+            xf.fill.gradient_end_color != yf.fill.gradient_end_color)
+            return false;
+    }
+    return true;
+}
+
+static RichTextDocument rich_text_document_from_qtext_document(const QTextDocument *doc, const Layer &layer, double visual_scale)
+{
+    RichTextDocument model = layer.rich_text.empty() ? rich_text_document_from_layer_defaults(layer) : layer.rich_text;
+    if (!doc) return model;
+    model.plain_text = doc->toPlainText().toStdString();
+    rich_text_document_sync_layer_defaults(model, layer);
+    model.ranges.clear();
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid() || fragment.text().isEmpty()) continue;
+            RichTextRange range;
+            range.start = (size_t)std::max(0, fragment.position());
+            range.length = (size_t)fragment.text().size();
+            range.format = rich_text_format_from_qtext_format(fragment.charFormat(), model.default_format, visual_scale);
+            model.ranges.push_back(range);
+        }
+    }
+    model.selection.anchor = (size_t)std::max(0, doc->findBlock(0).position());
+    model.selection.head = model.selection.anchor;
+    model.normalize();
+    return model;
+}
+
 static QString rich_text_plain_text(const std::string &html)
 {
     if (html.empty()) return QString();
@@ -3056,6 +3174,7 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     l->type = type;
     l->text_content = (type == LayerType::Text) ? editor_text_std("OBSTitles.NewText") :
                       (type == LayerType::Ticker) ? editor_text_std("OBSTitles.NewTickerText") : "";
+    l->rich_text = rich_text_document_from_layer_defaults(*l);
     l->clock_format = (type == LayerType::Clock) ? "H:i:s" : l->clock_format;
     l->pos_x.static_value = title_->width / 2.0;
     l->pos_y.static_value = title_->height / 2.0;
@@ -6660,20 +6779,14 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
 
     const std::string plain = inline_text_editor_->toPlainText().toStdString();
     const double visual_scale = inline_text_visual_scale(*layer);
-    const double local_time = std::max(0.0, playhead_ - layer->in_time);
-    const bool needs_rich_text = !layer->rich_text_html.empty() ||
-        inline_document_has_style_overrides(inline_text_editor_->document(), *layer, local_time, visual_scale);
-    const QString normalized_html = !layer->rich_text_html.empty()
-        ? rich_text_html_with_replaced_plain_text(layer->rich_text_html, QString::fromStdString(plain))
-        : (needs_rich_text
-               ? scale_rich_text_font_sizes(inline_text_editor_->toHtml(), 1.0 / std::max(0.0001, visual_scale))
-               : QString());
-    const std::string html = normalized_html.toStdString();
-    const bool changed = layer->text_content != plain || layer->rich_text_html != html;
+    RichTextDocument next_model = rich_text_document_from_qtext_document(inline_text_editor_->document(), *layer, visual_scale);
+    const bool changed = layer->text_content != plain || layer->rich_text.plain_text != next_model.plain_text ||
+                         !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
     if (!changed) return false;
 
     layer->text_content = plain;
-    layer->rich_text_html = html;
+    layer->rich_text = std::move(next_model);
+    layer->rich_text_html.clear();
     if (mark_dirty) dirty_ = true;
     return true;
 }
@@ -6743,8 +6856,10 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
     inline_text_layer_id_ = layer->id;
     QSignalBlocker blocker(inline_text_editor_);
     configure_inline_text_editor(*layer);
-    if (!layer->rich_text_html.empty()) {
-        const double visual_scale = inline_text_visual_scale(*layer);
+    const double visual_scale = inline_text_visual_scale(*layer);
+    if (!layer->rich_text.plain_text.empty() || !layer->rich_text.ranges.empty()) {
+        populate_qtext_document_from_rich_text(inline_text_editor_->document(), layer->rich_text, visual_scale);
+    } else if (!layer->rich_text_html.empty()) {
         inline_text_editor_->setHtml(scale_rich_text_font_sizes(QString::fromStdString(layer->rich_text_html), visual_scale));
     } else {
         inline_text_editor_->setPlainText(QString::fromStdString(layer->text_content));
@@ -10104,9 +10219,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
                 } else {
                     layer_->text_content = value;
-                    if (!layer_->rich_text_html.empty())
-                        layer_->rich_text_html = rich_text_html_with_replaced_plain_text(layer_->rich_text_html,
-                                                                                         QString::fromStdString(value)).toStdString();
+                    rich_text_document_sync_layer_defaults(layer_->rich_text, *layer_);
+                    rich_text_document_replace_text(layer_->rich_text, value);
+                    layer_->rich_text_html.clear();
                 }
                 emit_change();
             });

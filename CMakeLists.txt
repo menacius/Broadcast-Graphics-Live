@@ -254,6 +254,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 set(PLUGIN_SOURCES
     src/plugin-main.cpp
     src/title-data.cpp
+    src/title-rich-text.cpp
     src/title-source.cpp
     src/title-hotkeys.cpp
     src/title-dock.cpp
@@ -263,6 +264,7 @@ set(PLUGIN_SOURCES
 set(PLUGIN_HEADERS
     src/plugin-main.h
     src/title-data.h
+    src/title-rich-text.h
     src/title-source.h
     src/title-hotkeys.h
     src/title-dock.h
@@ -402,3 +404,14 @@ install(DIRECTORY data/icons
 
 # ── Print summary ────────────────────────────────────────────────────
 message(STATUS "OBS Graphics Studio Pro: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
+
+option(OBS_GSP_BUILD_TESTS "Build lightweight OBS Graphics Studio Pro validation tests" OFF)
+if(OBS_GSP_BUILD_TESTS)
+  enable_testing()
+  add_executable(rich_text_model_test
+      tests/rich_text_model_test.cpp
+      src/title-rich-text.cpp)
+  target_include_directories(rich_text_model_test PRIVATE src)
+  target_compile_definitions(rich_text_model_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
+  add_test(NAME rich_text_model_test COMMAND rich_text_model_test)
+endif()
