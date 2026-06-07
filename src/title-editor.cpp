@@ -3575,18 +3575,17 @@ void TitleEditor::build_ui()
     connect(layers_, &LayerStack::clone_layer_requested,
             this, [this](const std::string &lid) {
                 if (!title_) return;
-                auto original = title_->find_layer(lid);
-                if (!original) return;
-                auto clone = clone_layer_for_insert(*original, true);
-                std::string clone_id = clone->id;
-                insert_layer_above(lid, clone);
-                select_after_layer_list_mutation(clone_id);
-                on_title_modified();
+                auto selected = layers_ ? layers_->selected_ids() : std::vector<std::string>{};
+                if (std::find(selected.begin(), selected.end(), lid) == selected.end())
+                    on_layer_selected(lid);
+                duplicate_selected_layers();
             });
 
     connect(layers_, &LayerStack::copy_layer_requested,
             this, [this](const std::string &lid) {
-                on_layer_selected(lid);
+                auto selected = layers_ ? layers_->selected_ids() : std::vector<std::string>{};
+                if (std::find(selected.begin(), selected.end(), lid) == selected.end())
+                    on_layer_selected(lid);
                 copy_selected_layer();
             });
 
@@ -3598,7 +3597,9 @@ void TitleEditor::build_ui()
 
     connect(layers_, &LayerStack::delete_layer_requested,
             this, [this](const std::string &lid) {
-                on_layer_selected(lid);
+                auto selected = layers_ ? layers_->selected_ids() : std::vector<std::string>{};
+                if (std::find(selected.begin(), selected.end(), lid) == selected.end())
+                    on_layer_selected(lid);
                 delete_selected_layer();
             });
 
@@ -4407,7 +4408,7 @@ void TitleEditor::open_title(const std::string &tid)
     update_title_bar();
     canvas_->set_title(title_);
     layers_->set_title(title_);
-    layers_->set_layer_clipboard_available(layer_clipboard_ != nullptr);
+    layers_->set_layer_clipboard_available(!layer_clipboard_.empty());
     timeline_->set_title(title_);
     props_->set_title(title_);
     title_props_->set_title(title_);
@@ -4479,38 +4480,206 @@ void TitleEditor::select_after_layer_list_mutation(const std::string &layer_id)
 }
 
 
+std::vector<std::string> TitleEditor::selected_layer_ids_for_operation() const
+{
+    std::vector<std::string> requested = layers_ ? layers_->selected_ids() : std::vector<std::string>{};
+    if (requested.empty() && !sel_layer_id_.empty())
+        requested.push_back(sel_layer_id_);
+
+    std::set<std::string> requested_set(requested.begin(), requested.end());
+    std::vector<std::string> ordered_ids;
+    if (!title_ || requested_set.empty()) return ordered_ids;
+
+    for (const auto &layer : title_->layers) {
+        if (layer && requested_set.find(layer->id) != requested_set.end())
+            ordered_ids.push_back(layer->id);
+    }
+    return ordered_ids;
+}
+
+std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const std::vector<std::shared_ptr<Layer>> &layers,
+                                                                         bool suffix_name) const
+{
+    std::map<std::string, std::string> cloned_ids_by_original;
+    std::vector<std::shared_ptr<Layer>> clones;
+    clones.reserve(layers.size());
+
+    for (const auto &layer : layers) {
+        if (!layer) continue;
+        auto clone = std::make_shared<Layer>(*layer);
+        clone->id = TitleDataStore::make_uuid();
+        if (suffix_name)
+            clone->name = clone->name.empty() ? editor_text_std("OBSTitles.LayerCopy")
+                                              : clone->name + editor_text_std("OBSTitles.CopySuffix");
+        cloned_ids_by_original[layer->id] = clone->id;
+        clones.push_back(clone);
+    }
+
+    for (auto &clone : clones) {
+        auto parent_clone = cloned_ids_by_original.find(clone->parent_id);
+        if (parent_clone != cloned_ids_by_original.end()) {
+            clone->parent_id = parent_clone->second;
+        } else if (!clone->parent_id.empty() && (!title_ || !title_->find_layer(clone->parent_id))) {
+            clone->parent_id.clear();
+        }
+
+        auto mask_clone = cloned_ids_by_original.find(clone->mask_source_id);
+        if (mask_clone != cloned_ids_by_original.end()) {
+            clone->mask_source_id = mask_clone->second;
+        } else if (!clone->mask_source_id.empty() && (!title_ || !title_->find_layer(clone->mask_source_id))) {
+            clone->mask_source_id.clear();
+            clone->mask_mode = MaskMode::None;
+        }
+    }
+
+    return clones;
+}
+
+void TitleEditor::duplicate_selected_layers()
+{
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
+    if (ids.empty()) return;
+
+    std::set<std::string> selected_ids(ids.begin(), ids.end());
+    std::vector<std::shared_ptr<Layer>> originals;
+    originals.reserve(ids.size());
+    for (const auto &layer : title_->layers) {
+        if (layer && selected_ids.find(layer->id) != selected_ids.end())
+            originals.push_back(layer);
+    }
+
+    auto clones = clone_layers_for_insert(originals, true);
+    if (clones.empty()) return;
+
+    std::map<std::string, std::shared_ptr<Layer>> clones_by_original;
+    for (size_t i = 0; i < originals.size() && i < clones.size(); ++i)
+        clones_by_original[originals[i]->id] = clones[i];
+
+    std::vector<std::shared_ptr<Layer>> next_layers;
+    next_layers.reserve(title_->layers.size() + clones.size());
+    for (const auto &layer : title_->layers) {
+        next_layers.push_back(layer);
+        if (!layer) continue;
+        auto clone = clones_by_original.find(layer->id);
+        if (clone != clones_by_original.end())
+            next_layers.push_back(clone->second);
+    }
+    title_->layers = std::move(next_layers);
+
+    std::vector<std::string> clone_ids;
+    clone_ids.reserve(clones.size());
+    for (const auto &clone : clones)
+        if (clone) clone_ids.push_back(clone->id);
+
+    sel_layer_id_ = clone_ids.empty() ? std::string() : clone_ids.back();
+    layers_->refresh();
+    layers_->set_selected_layers(clone_ids);
+    canvas_->set_selected_layers(clone_ids);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layer(sel_layer_id_);
+    if (!sel_layer_id_.empty()) {
+        if (auto layer = title_->find_layer(sel_layer_id_)) update_layer_panels(layer, playhead_);
+    }
+    on_title_modified();
+}
+
 void TitleEditor::copy_selected_layer()
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    auto layer = title_->find_layer(sel_layer_id_);
-    if (!layer) return;
-    layer_clipboard_ = std::make_shared<Layer>(*layer);
-    if (layers_) layers_->set_layer_clipboard_available(true);
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
+    if (ids.empty()) return;
+
+    layer_clipboard_.clear();
+    layer_clipboard_.reserve(ids.size());
+    for (const auto &id : ids) {
+        auto layer = title_->find_layer(id);
+        if (layer) layer_clipboard_.push_back(std::make_shared<Layer>(*layer));
+    }
+    if (layers_) layers_->set_layer_clipboard_available(!layer_clipboard_.empty());
 }
 
 void TitleEditor::paste_layer_from_clipboard()
 {
-    if (!title_ || !layer_clipboard_) return;
-    std::string anchor_id = sel_layer_id_;
-    auto pasted = clone_layer_for_insert(*layer_clipboard_, true);
-    std::string pasted_id = pasted->id;
-    insert_layer_above(anchor_id, pasted);
-    select_after_layer_list_mutation(pasted_id);
+    if (!title_ || layer_clipboard_.empty()) return;
+
+    std::vector<std::shared_ptr<Layer>> clipboard_layers;
+    clipboard_layers.reserve(layer_clipboard_.size());
+    for (const auto &layer : layer_clipboard_)
+        if (layer) clipboard_layers.push_back(layer);
+
+    auto pasted_layers = clone_layers_for_insert(clipboard_layers, true);
+    if (pasted_layers.empty()) return;
+
+    auto insert_pos = title_->layers.end();
+    if (!sel_layer_id_.empty()) {
+        auto anchor = std::find_if(title_->layers.begin(), title_->layers.end(),
+                                   [this](const auto &layer) { return layer && layer->id == sel_layer_id_; });
+        if (anchor != title_->layers.end()) insert_pos = anchor + 1;
+    }
+    title_->layers.insert(insert_pos, pasted_layers.begin(), pasted_layers.end());
+
+    std::vector<std::string> pasted_ids;
+    pasted_ids.reserve(pasted_layers.size());
+    for (const auto &layer : pasted_layers)
+        if (layer) pasted_ids.push_back(layer->id);
+
+    sel_layer_id_ = pasted_ids.empty() ? std::string() : pasted_ids.back();
+    layers_->refresh();
+    layers_->set_selected_layers(pasted_ids);
+    canvas_->set_selected_layers(pasted_ids);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layer(sel_layer_id_);
+    if (!sel_layer_id_.empty()) {
+        if (auto layer = title_->find_layer(sel_layer_id_)) update_layer_panels(layer, playhead_);
+    }
     on_title_modified();
 }
 
 void TitleEditor::delete_selected_layer()
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    std::string removed_id = sel_layer_id_;
-    title_->remove_layer(removed_id);
+    if (!title_) return;
+    const auto ids = selected_layer_ids_for_operation();
+    if (ids.empty()) return;
+
+    std::set<std::string> removed_ids(ids.begin(), ids.end());
+    int first_removed_index = (int)title_->layers.size();
+    std::vector<std::shared_ptr<Layer>> remaining;
+    remaining.reserve(title_->layers.size());
+    for (int i = 0; i < (int)title_->layers.size(); ++i) {
+        auto &layer = title_->layers[(size_t)i];
+        if (!layer || removed_ids.find(layer->id) != removed_ids.end()) {
+            first_removed_index = std::min(first_removed_index, i);
+            continue;
+        }
+        remaining.push_back(layer);
+    }
+
+    if (remaining.size() == title_->layers.size()) return;
+
+    for (auto &layer : remaining) {
+        if (!layer) continue;
+        if (removed_ids.find(layer->parent_id) != removed_ids.end()) layer->parent_id.clear();
+        if (removed_ids.find(layer->mask_source_id) != removed_ids.end()) {
+            layer->mask_source_id.clear();
+            layer->mask_mode = MaskMode::None;
+        }
+    }
+
+    title_->layers = std::move(remaining);
     sel_layer_id_.clear();
     layers_->refresh();
 
-    if (!title_->layers.empty())
-        on_layer_selected(title_->layers.back()->id);
-    else
+    if (!title_->layers.empty()) {
+        const int select_index = std::clamp(first_removed_index, 0, (int)title_->layers.size() - 1);
+        on_layer_selected(title_->layers[(size_t)select_index]->id);
+    } else {
+        layers_->set_selected_layers({});
+        canvas_->set_selected_layers({});
+        timeline_->set_title(title_);
+        timeline_->set_selected_layer(std::string());
         update_layer_panels(nullptr, playhead_);
+    }
 
     on_title_modified();
 }
@@ -4872,7 +5041,7 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         ev->accept();
         return;
     }
-    if (!editing_value && ev->matches(QKeySequence::Paste) && layer_clipboard_) {
+    if (!editing_value && ev->matches(QKeySequence::Paste) && !layer_clipboard_.empty()) {
         paste_layer_from_clipboard();
         ev->accept();
         return;
@@ -7077,8 +7246,10 @@ std::string LayerStack::selected_id() const
 std::vector<std::string> LayerStack::selected_ids() const
 {
     std::vector<std::string> ids;
-    for (auto *item : list_->selectedItems())
+    for (auto *item : list_->selectedItems()) {
+        if (item->data(Qt::UserRole + 1).toString() != "layer") continue;
         ids.push_back(item->data(Qt::UserRole).toString().toStdString());
+    }
     return ids;
 }
 
@@ -7153,7 +7324,7 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
     std::string id = item ? item->data(Qt::UserRole).toString().toStdString() : selected_id();
     if (id.empty()) return;
 
-    if (item && item->data(Qt::UserRole + 1).toString() == "layer")
+    if (item && item->data(Qt::UserRole + 1).toString() == "layer" && !item->isSelected())
         list_->setCurrentItem(item);
 
     QMenu menu(this);

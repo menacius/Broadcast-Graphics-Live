@@ -136,6 +136,9 @@ private:
     std::shared_ptr<Layer> clone_layer_for_insert(const Layer &layer, bool suffix_name) const;
     void insert_layer_above(const std::string &anchor_id, std::shared_ptr<Layer> layer);
     void select_after_layer_list_mutation(const std::string &layer_id);
+    std::vector<std::string> selected_layer_ids_for_operation() const;
+    std::vector<std::shared_ptr<Layer>> clone_layers_for_insert(const std::vector<std::shared_ptr<Layer>> &layers, bool suffix_name) const;
+    void duplicate_selected_layers();
     void copy_selected_layer();
     void cut_selected_layer();
     void paste_layer_from_clipboard();
@@ -217,7 +220,7 @@ private:
     bool             panels_locked_ = false;
     bool             restoring_editor_layout_ = false;
     bool             editor_layout_save_suppressed_ = false;
-    std::shared_ptr<Layer> layer_clipboard_;
+    std::vector<std::shared_ptr<Layer>> layer_clipboard_;
 };
 
 
