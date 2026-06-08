@@ -37,7 +37,10 @@ Rules for future refactors:
 
 | Module | Current files | Responsibility |
 | --- | --- | --- |
-| Core Architecture | `src/core/title-data.*`, `src/core/title-localization.h` | Shared title/project models, serialization helpers, localization helpers, and cross-module state contracts. |
+| Core Architecture | `src/core/title-data.*`, `src/core/title-localization.h` | Title/project ownership, serialization helpers, localization helpers, and data-store state contracts. |
+| Layer System | `src/layers/layer-model.h` | Layer type definitions, hierarchy metadata, transforms, masks, visibility/locking flags, and layer-owned defaults. |
+| Effects System | `src/effects/layer-effects.h` | Stackable layer effect types, blend modes, and effect parameter contracts. |
+| Timeline & Animation | `src/timeline/animation.*` | Keyframes, easing types, animated property contracts, and interpolation evaluation. |
 | Text Engine | `src/text/title-rich-text.*` | Rich-text model, mixed inline styles, plain-text conversion, and text serialization helpers. |
 | OBS Integration | `src/obs/plugin-main.*`, `src/obs/title-source.*` | OBS module registration, source creation/destruction, source properties, preview/live output, and OBS-facing rendering entry points. |
 | Editor UI / Docking | `src/editor/title-dock.*`, `src/editor/title-editor.*`, `src/editor/title-hotkeys.*`, `src/editor/title-assets.h` | Qt dock integration, editor windows, toolbars, properties panels, hotkeys, icons, and layout UI. |
@@ -64,19 +67,22 @@ clear destination even before all code is extracted from legacy files:
 
 ## Incremental migration phases
 
-1. **Source ownership split (completed in this pass).** Move existing files into
-   module folders and expose those folders in CMake include paths without
-   behavior changes.
-2. **Core contracts.** Extract command/undo interfaces and project metadata from
+1. **Source ownership split (completed).** Move existing files into module
+   folders and expose those folders in CMake include paths without behavior
+   changes.
+2. **Model contract extraction (in progress).** Move layer, effects, and timeline
+   primitives behind module-owned headers/sources while keeping existing JSON and
+   editor behavior stable.
+3. **Core contracts.** Extract command/undo interfaces and project metadata from
    `title-data` into smaller core headers and add serialization regression tests.
-3. **Rendering extraction.** Move Cairo/OBS drawing helpers out of
+4. **Rendering extraction.** Move Cairo/OBS drawing helpers out of
    `src/obs/title-source.cpp` and editor paint code into `src/rendering` with
    cache ownership documented at each boundary.
-4. **Layer/effects extraction.** Move layer-specific behavior and effect stacks
+5. **Layer/effects extraction.** Move layer-specific behavior and effect stacks
    into `src/layers` and `src/effects`, keeping serialization in core-facing DTOs.
-5. **Canvas/timeline extraction.** Move direct manipulation, shortcuts,
+6. **Canvas/timeline extraction.** Move direct manipulation, shortcuts,
    keyframe UI, playback, and easing logic out of editor widgets into tool and
    timeline services.
-6. **Stability pass.** Add regression tests and profiling checkpoints for render
+7. **Stability pass.** Add regression tests and profiling checkpoints for render
    spikes, cache invalidation, memory ownership, undo/redo consistency, and OBS
    source lifecycle crashes.

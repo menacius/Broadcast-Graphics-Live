@@ -259,6 +259,21 @@ set(OBS_GSP_CORE_HEADERS
     src/core/title-localization.h
 )
 
+set(OBS_GSP_LAYER_HEADERS
+    src/layers/layer-model.h
+)
+
+set(OBS_GSP_EFFECT_HEADERS
+    src/effects/layer-effects.h
+)
+
+set(OBS_GSP_TIMELINE_SOURCES
+    src/timeline/animation.cpp
+)
+set(OBS_GSP_TIMELINE_HEADERS
+    src/timeline/animation.h
+)
+
 set(OBS_GSP_TEXT_SOURCES
     src/text/title-rich-text.cpp
 )
@@ -289,6 +304,7 @@ set(OBS_GSP_EDITOR_HEADERS
 
 set(PLUGIN_SOURCES
     ${OBS_GSP_CORE_SOURCES}
+    ${OBS_GSP_TIMELINE_SOURCES}
     ${OBS_GSP_TEXT_SOURCES}
     ${OBS_GSP_OBS_SOURCES}
     ${OBS_GSP_EDITOR_SOURCES}
@@ -296,6 +312,9 @@ set(PLUGIN_SOURCES
 
 set(PLUGIN_HEADERS
     ${OBS_GSP_CORE_HEADERS}
+    ${OBS_GSP_LAYER_HEADERS}
+    ${OBS_GSP_EFFECT_HEADERS}
+    ${OBS_GSP_TIMELINE_HEADERS}
     ${OBS_GSP_TEXT_HEADERS}
     ${OBS_GSP_OBS_HEADERS}
     ${OBS_GSP_EDITOR_HEADERS}
@@ -313,6 +332,9 @@ add_library(obs-graphics-studio-pro MODULE
 target_include_directories(obs-graphics-studio-pro PRIVATE
     src
     src/core
+    src/layers
+    src/effects
+    src/timeline
     src/text
     src/obs
     src/editor
@@ -448,7 +470,13 @@ if(OBS_GSP_BUILD_TESTS)
   add_executable(rich_text_model_test
       tests/rich_text_model_test.cpp
       src/text/title-rich-text.cpp)
-  target_include_directories(rich_text_model_test PRIVATE src src/core src/text)
+  target_include_directories(rich_text_model_test PRIVATE src src/core src/layers src/effects src/timeline src/text)
   target_compile_definitions(rich_text_model_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
   add_test(NAME rich_text_model_test COMMAND rich_text_model_test)
+
+  add_executable(animation_model_test
+      tests/animation_model_test.cpp
+      src/timeline/animation.cpp)
+  target_include_directories(animation_model_test PRIVATE src/timeline)
+  add_test(NAME animation_model_test COMMAND animation_model_test)
 endif()
