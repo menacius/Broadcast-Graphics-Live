@@ -526,6 +526,19 @@ void Title::move_layer(const std::string &lid, int delta)
     layers.insert(layers.begin() + dst, layer);
 }
 
+
+static Title clone_title_for_snapshot(const Title &title)
+{
+    Title snapshot = title;
+    snapshot.layers.clear();
+    snapshot.layers.reserve(title.layers.size());
+    for (const auto &layer : title.layers) {
+        if (layer)
+            snapshot.layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    return snapshot;
+}
+
 /* ══════════════════════════════════════════════════════════════════
  *  TitleDataStore
  * ══════════════════════════════════════════════════════════════════ */
@@ -539,6 +552,29 @@ std::vector<std::shared_ptr<Title>> TitleDataStore::titles() const
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return titles_;
+}
+
+Title TitleDataStore::title_snapshot(const std::string &id) const
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    for (const auto &title : titles_) {
+        if (title && title->id == id)
+            return clone_title_for_snapshot(*title);
+    }
+    return Title();
+}
+
+bool TitleDataStore::title_dimensions(const std::string &id, int &width, int &height) const
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    for (const auto &title : titles_) {
+        if (title && title->id == id) {
+            width = title->width;
+            height = title->height;
+            return true;
+        }
+    }
+    return false;
 }
 
 uint64_t TitleDataStore::on_change(ChangeCallback cb)
@@ -1422,6 +1458,8 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["height"]   = t.height;
     json layers = json::array();
     for (auto &l : t.layers) {
+        if (!l)
+            continue;
         bool asset_embed_failed = false;
         layers.push_back(layer_to_json(*l, include_embedded_assets, require_embedded_assets, error, &asset_embed_failed));
         if (require_embedded_assets && asset_embed_failed) {
@@ -1544,19 +1582,21 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
 
 void TitleDataStore::save() const
 {
-    std::vector<std::shared_ptr<Title>> snapshot;
+    std::vector<Title> snapshot;
     std::string path;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        snapshot = titles_;
+        snapshot.reserve(titles_.size());
+        for (const auto &title : titles_) {
+            if (title)
+                snapshot.push_back(clone_title_for_snapshot(*title));
+        }
         path = loaded_path_.empty() ? data_path() : loaded_path_;
     }
 
     json root = json::array();
-    for (auto &t : snapshot) {
-        if (t)
-            root.push_back(title_to_json(*t));
-    }
+    for (const auto &title : snapshot)
+        root.push_back(title_to_json(title));
 
     const std::string tmp_path = path + ".tmp";
     {
@@ -1593,21 +1633,21 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
                                   std::string *error) const
 {
     if (error) error->clear();
-    auto t = get_title(id);
-    if (!t) {
+    Title exported_copy = title_snapshot(id);
+    if (exported_copy.id.empty()) {
         if (error) *error = "No title template is selected.";
         return false;
     }
 
     TitleTemplateExportMetadata export_metadata = metadata;
-    if (export_metadata.title.empty()) export_metadata.title = t->name;
-    if (export_metadata.description.empty()) export_metadata.description = t->description;
-    if (export_metadata.creator.empty()) export_metadata.creator = t->creator;
+    if (export_metadata.title.empty()) export_metadata.title = exported_copy.name;
+    if (export_metadata.description.empty()) export_metadata.description = exported_copy.description;
+    if (export_metadata.creator.empty()) export_metadata.creator = exported_copy.creator;
     if (export_metadata.creation_date.empty()) {
-        export_metadata.creation_date = t->creation_date.empty() ? current_iso_utc_string() : t->creation_date;
+        export_metadata.creation_date = exported_copy.creation_date.empty() ? current_iso_utc_string() : exported_copy.creation_date;
     }
     if (export_metadata.screenshot_png_base64.empty())
-        export_metadata.screenshot_png_base64 = t->preview_screenshot_png_base64;
+        export_metadata.screenshot_png_base64 = exported_copy.preview_screenshot_png_base64;
 
     json root;
     root["format"] = "obs-graphics-studio-pro-title-template";
@@ -1627,7 +1667,6 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
         {"creation_date", export_metadata.creation_date},
         {"screenshot", root["screenshot"]},
     };
-    Title exported_copy = *t;
     exported_copy.name = export_metadata.title;
     exported_copy.description = export_metadata.description;
     exported_copy.creator = export_metadata.creator;
