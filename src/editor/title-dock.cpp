@@ -93,6 +93,9 @@ constexpr const char *kPlaylistReverseKey = "playlistReverse";
 constexpr const char *kPlaylistHoldSecondsKey = "playlistHoldSeconds";
 constexpr const char *kBackgroundPersistenceKey = "backgroundPersistence";
 constexpr const char *kTextPersistenceKey = "textPersistence";
+constexpr const char *kSelectedTitleIdKey = "selectedTitleId";
+constexpr const char *kSelectedCurrentCueRowKey = "selectedCurrentCueRow";
+constexpr const char *kSelectedPendingCueRowKey = "selectedPendingCueRow";
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
     const std::vector<std::shared_ptr<Layer>> &exposed,
@@ -1188,7 +1191,10 @@ TitleDock::TitleDock(QWidget *parent)
     });
 
     install_obs_state_callbacks();
+    suppress_selection_persistence_ = true;
     populate_list();
+    suppress_selection_persistence_ = false;
+    restore_persisted_selection();
     seen_store_revision_ = TitleDataStore::instance().revision();
     live_refresh_timer_ = new QTimer(this);
     live_refresh_timer_->setInterval(100);
@@ -1197,12 +1203,14 @@ TitleDock::TitleDock(QWidget *parent)
         if (revision == seen_store_revision_ || updating_exposed_text_) return;
         seen_store_revision_ = revision;
         populate_exposed_text();
+        persist_current_selection();
     });
     live_refresh_timer_->start();
 }
 
 TitleDock::~TitleDock()
 {
+    persist_current_selection();
     remove_obs_state_callbacks();
 
     TitleDataStore::instance().remove_change_callback(change_callback_id_);
@@ -1237,6 +1245,9 @@ void TitleDock::load_dock_settings()
                                              background_persistence_).toBool();
     text_persistence_ = settings.value(QString::fromUtf8(kTextPersistenceKey),
                                        text_persistence_).toBool();
+    persisted_selected_title_id_ = settings.value(QString::fromUtf8(kSelectedTitleIdKey)).toString();
+    persisted_current_cue_row_ = settings.value(QString::fromUtf8(kSelectedCurrentCueRowKey), -1).toInt();
+    persisted_pending_cue_row_ = settings.value(QString::fromUtf8(kSelectedPendingCueRowKey), -1).toInt();
 
     const QByteArray splitter_state = settings.value(QString::fromUtf8(kDockSplitterStateKey)).toByteArray();
     if (!splitter_state.isEmpty() && sections_)
@@ -1259,6 +1270,9 @@ void TitleDock::save_dock_settings() const
     settings.setValue(QString::fromUtf8(kPlaylistHoldSecondsKey), playlist_hold_seconds_);
     settings.setValue(QString::fromUtf8(kBackgroundPersistenceKey), background_persistence_);
     settings.setValue(QString::fromUtf8(kTextPersistenceKey), text_persistence_);
+    settings.setValue(QString::fromUtf8(kSelectedTitleIdKey), persisted_selected_title_id_);
+    settings.setValue(QString::fromUtf8(kSelectedCurrentCueRowKey), persisted_current_cue_row_);
+    settings.setValue(QString::fromUtf8(kSelectedPendingCueRowKey), persisted_pending_cue_row_);
 
     settings.endGroup();
 }
@@ -1309,6 +1323,14 @@ void TitleDock::refresh_for_obs_source_state_change()
     populate_list();
 }
 
+void TitleDock::handle_scene_changed()
+{
+    update_scene_collection_title();
+    if (visibility_filter_active_)
+        populate_list();
+    select_first_available_title_for_current_scene();
+}
+
 void TitleDock::on_obs_source_state_signal(void *priv, calldata_t *)
 {
     auto *dock = static_cast<TitleDock *>(priv);
@@ -1324,8 +1346,10 @@ void TitleDock::on_obs_frontend_event(obs_frontend_event event, void *priv)
 
     switch (event) {
     case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+        QTimer::singleShot(0, dock, [dock]() { dock->handle_scene_changed(); });
+        break;
     case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
-        QTimer::singleShot(0, dock, [dock]() { dock->refresh_for_obs_source_state_change(); });
+        QTimer::singleShot(0, dock, [dock]() { dock->handle_scene_changed(); });
         break;
     default:
         break;
@@ -1733,6 +1757,46 @@ QSet<QString> TitleDock::active_title_source_ids() const
     return ids;
 }
 
+std::vector<std::string> TitleDock::current_scene_title_source_ids() const
+{
+    std::vector<std::string> ids;
+
+    obs_source_t *scene_source = obs_frontend_get_current_scene();
+    if (!scene_source)
+        return ids;
+
+    obs_scene_t *scene = obs_scene_from_source(scene_source);
+    if (scene) {
+        obs_scene_enum_items(scene, [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+            auto *result = static_cast<std::vector<std::string> *>(param);
+            if (!result || !item) return true;
+
+            obs_source_t *source = obs_sceneitem_get_source(item);
+            if (!source) return true;
+
+            const char *source_id = obs_source_get_id(source);
+            if (!source_id || strcmp(source_id, kTitleSourceId) != 0)
+                return true;
+
+            obs_data_t *settings = obs_source_get_settings(source);
+            const char *title_id = settings ? obs_data_get_string(settings, PROP_TITLE_ID) : nullptr;
+            const QString id = QString::fromUtf8(title_id ? title_id : "").trimmed();
+            if (!id.isEmpty()) {
+                const std::string std_id = id.toStdString();
+                if (std::find(result->begin(), result->end(), std_id) == result->end())
+                    result->push_back(std_id);
+            }
+            if (settings)
+                obs_data_release(settings);
+
+            return true;
+        }, &ids);
+    }
+
+    obs_source_release(scene_source);
+    return ids;
+}
+
 bool TitleDock::should_show_title(const std::shared_ptr<Title> &title, const QSet<QString> &active_ids) const
 {
     if (!visibility_filter_active_) return true;
@@ -1809,6 +1873,8 @@ std::vector<std::string> TitleDock::selected_title_ids() const
 void TitleDock::on_selection_changed()
 {
     const auto ids = selected_title_ids();
+    if (!suppress_selection_persistence_)
+        persist_current_selection();
     const int selected_count = (int)ids.size();
     const bool has = selected_count > 0;
     const bool single = selected_count == 1;
@@ -2100,6 +2166,7 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
         title->current_cue_row = -1;
         title->pending_cue_row = -1;
         ++title->cue_revision;
+        persist_live_text_cue_state(title);
         TitleDataStore::instance().save();
         TitleDataStore::instance().notify_change();
         updating_exposed_text_ = false;
@@ -2152,6 +2219,7 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     }
 
     ++title->cue_revision;
+    persist_live_text_cue_state(title);
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
     updating_exposed_text_ = false;
@@ -2551,6 +2619,7 @@ void TitleDock::on_import_live_text_data()
     title->current_cue_row = -1;
     title->pending_cue_row = -1;
     ++title->cue_revision;
+    persist_live_text_cue_state(title);
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
     populate_exposed_text();
@@ -2836,6 +2905,97 @@ void TitleDock::select_title(const std::string &id)
             break;
         }
     }
+}
+
+bool TitleDock::select_first_available_title_for_current_scene()
+{
+    const auto scene_title_ids = current_scene_title_source_ids();
+    for (const auto &id : scene_title_ids) {
+        if (!TitleDataStore::instance().get_title(id))
+            continue;
+        select_title(id);
+        if (selected_id() == id)
+            return true;
+    }
+
+    if (list_) {
+        list_->clearSelection();
+        list_->setCurrentItem(nullptr);
+    }
+    on_selection_changed();
+    return false;
+}
+
+void TitleDock::restore_persisted_selection()
+{
+    if (persisted_selected_title_id_.trimmed().isEmpty())
+        return;
+
+    const std::string id = persisted_selected_title_id_.trimmed().toStdString();
+    const int persisted_current_row = persisted_current_cue_row_;
+    const int persisted_pending_row = persisted_pending_cue_row_;
+    auto title = TitleDataStore::instance().get_title(id);
+    if (!title)
+        return;
+
+    suppress_selection_persistence_ = true;
+    select_title(id);
+    suppress_selection_persistence_ = false;
+    if (selected_id() != id)
+        return;
+
+    auto exposed = exposed_text_layers(title);
+    normalize_live_text_rows(title, exposed);
+    const int row_count = exposed.empty() ? 0 : (int)title->live_text_rows.size();
+    const int current_row = (persisted_current_row >= 0 && persisted_current_row < row_count)
+        ? persisted_current_row
+        : -1;
+    const int pending_row = (persisted_pending_row >= 0 && persisted_pending_row < row_count)
+        ? persisted_pending_row
+        : -1;
+
+    if (current_row < 0 && pending_row < 0) {
+        persist_current_selection();
+        return;
+    }
+
+    updating_exposed_text_ = true;
+    title->current_cue_row = current_row;
+    title->pending_cue_row = pending_row;
+    title->cue_persistence_transition = false;
+    title->cue_persistent_text_columns.clear();
+    if (current_row >= 0) {
+        for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[current_row].size(); ++col) {
+            exposed[col]->text_content = title->live_text_rows[current_row][col];
+            exposed[col]->rich_text_html.clear();
+        }
+    }
+    ++title->cue_revision;
+    persist_live_text_cue_state(title);
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    updating_exposed_text_ = false;
+    populate_exposed_text();
+}
+
+void TitleDock::persist_current_selection()
+{
+    const std::string id = selected_id();
+    auto title = TitleDataStore::instance().get_title(id);
+    persisted_selected_title_id_ = QString::fromStdString(id);
+    persisted_current_cue_row_ = title ? title->current_cue_row : -1;
+    persisted_pending_cue_row_ = title ? title->pending_cue_row : -1;
+    save_dock_settings();
+}
+
+void TitleDock::persist_live_text_cue_state(const std::shared_ptr<Title> &title)
+{
+    if (!title || selected_id() != title->id)
+        return;
+    persisted_selected_title_id_ = QString::fromStdString(title->id);
+    persisted_current_cue_row_ = title->current_cue_row;
+    persisted_pending_cue_row_ = title->pending_cue_row;
+    save_dock_settings();
 }
 
 std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
