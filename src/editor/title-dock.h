@@ -120,8 +120,11 @@ private:
     void persist_live_text_cue_state(const std::shared_ptr<Title> &title);
     void create_title_from_template(const std::string &name, int template_id);
     std::vector<int> selected_live_text_rows() const;
+    std::vector<int> visible_live_text_rows() const;
+    std::vector<int> visible_live_text_edit_columns() const;
     int append_live_text_row(bool clone_selected_row);
     void focus_live_text_cell(int row, int col);
+    void focus_first_visible_live_text_cell(int row);
     void handle_live_text_cell_tab(int row, int col, bool backwards);
     void commit_live_text_cell_edit(const std::shared_ptr<Title> &title, int row, int col, const QString &text);
 

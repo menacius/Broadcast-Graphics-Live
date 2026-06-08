@@ -2155,6 +2155,36 @@ std::vector<int> TitleDock::selected_live_text_rows() const
     return rows;
 }
 
+std::vector<int> TitleDock::visible_live_text_rows() const
+{
+    std::vector<int> rows;
+    if (!text_table_) return rows;
+
+    rows.reserve(text_table_->rowCount());
+    for (int row = 0; row < text_table_->rowCount(); ++row) {
+        if (!text_table_->isRowHidden(row))
+            rows.push_back(row);
+    }
+    return rows;
+}
+
+std::vector<int> TitleDock::visible_live_text_edit_columns() const
+{
+    std::vector<int> columns;
+    if (!text_table_ || !text_table_->horizontalHeader()) return columns;
+
+    auto *header = text_table_->horizontalHeader();
+    for (int visual = 0; visual < header->count(); ++visual) {
+        const int logical = header->logicalIndex(visual);
+        if (logical <= 0 || logical >= text_table_->columnCount() - 1)
+            continue;
+        if (text_table_->isColumnHidden(logical) || header->isSectionHidden(logical))
+            continue;
+        columns.push_back(logical);
+    }
+    return columns;
+}
+
 int TitleDock::append_live_text_row(bool clone_selected_row)
 {
     auto title = TitleDataStore::instance().get_title(selected_id());
@@ -2185,6 +2215,9 @@ void TitleDock::focus_live_text_cell(int row, int col)
     const int table_col = col + 1;
     if (row < 0 || row >= text_table_->rowCount()) return;
     if (table_col <= 0 || table_col >= text_table_->columnCount() - 1) return;
+    auto *header = text_table_->horizontalHeader();
+    if (text_table_->isRowHidden(row) || text_table_->isColumnHidden(table_col) ||
+        (header && header->isSectionHidden(table_col))) return;
 
     text_table_->setCurrentCell(row, table_col);
     text_table_->scrollTo(text_table_->model()->index(row, table_col), QAbstractItemView::PositionAtCenter);
@@ -2196,31 +2229,49 @@ void TitleDock::focus_live_text_cell(int row, int col)
     }
 }
 
+void TitleDock::focus_first_visible_live_text_cell(int row)
+{
+    const auto columns = visible_live_text_edit_columns();
+    if (columns.empty()) return;
+    focus_live_text_cell(row, columns.front() - 1);
+}
+
 void TitleDock::handle_live_text_cell_tab(int row, int col, bool backwards)
 {
     if (!text_table_) return;
-    const int editable_cols = std::max(0, text_table_->columnCount() - 2);
-    if (editable_cols <= 0) return;
 
-    int next_index = row * editable_cols + col + (backwards ? -1 : 1);
+    const auto rows = visible_live_text_rows();
+    const auto columns = visible_live_text_edit_columns();
+    if (rows.empty() || columns.empty()) return;
+
+    const int table_col = col + 1;
+    auto row_it = std::find(rows.begin(), rows.end(), row);
+    auto col_it = std::find(columns.begin(), columns.end(), table_col);
+    if (row_it == rows.end() || col_it == columns.end())
+        return;
+
+    const int row_pos = (int)std::distance(rows.begin(), row_it);
+    const int col_pos = (int)std::distance(columns.begin(), col_it);
+    const int column_count = (int)columns.size();
+    int next_index = row_pos * column_count + col_pos + (backwards ? -1 : 1);
     if (next_index < 0)
         return;
 
-    const int editable_count = text_table_->rowCount() * editable_cols;
+    const int editable_count = (int)rows.size() * column_count;
     if (next_index >= editable_count) {
         if (backwards)
             return;
         QTimer::singleShot(0, this, [this]() {
             const int added_row = append_live_text_row(false);
             if (added_row >= 0)
-                focus_live_text_cell(added_row, 0);
+                focus_first_visible_live_text_cell(added_row);
         });
         return;
     }
 
-    const int next_row = next_index / editable_cols;
-    const int next_col = next_index % editable_cols;
-    focus_live_text_cell(next_row, next_col);
+    const int next_row = rows[next_index / column_count];
+    const int next_col = columns[next_index % column_count];
+    focus_live_text_cell(next_row, next_col - 1);
 }
 
 void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
