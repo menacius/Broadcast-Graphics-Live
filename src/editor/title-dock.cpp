@@ -31,6 +31,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QTextEdit>
+#include <QTextDocument>
 #include <QMessageBox>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -59,6 +60,7 @@
 #include <QStringList>
 #include <QHeaderView>
 #include <QLineEdit>
+#include <QTextOption>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSet>
@@ -425,6 +427,60 @@ static LiveTextCueHeader *live_text_cue_header(QTableWidget *table)
 {
     return table ? dynamic_cast<LiveTextCueHeader *>(table->horizontalHeader()) : nullptr;
 }
+
+class LiveTextCueCellEdit : public QTextEdit {
+public:
+    explicit LiveTextCueCellEdit(const QString &text, QWidget *parent = nullptr)
+        : QTextEdit(parent)
+    {
+        setAcceptRichText(false);
+        setPlainText(text);
+        setToolTip(text);
+        viewport()->setToolTip(text);
+        setFrameShape(QFrame::NoFrame);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setLineWrapMode(QTextEdit::WidgetWidth);
+        setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        setTabChangesFocus(true);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+
+        connect(this, &QTextEdit::textChanged, this, [this]() {
+            const QString text = toPlainText();
+            setToolTip(text);
+            viewport()->setToolTip(text);
+            document()->adjustSize();
+            updateGeometry();
+            QTableWidget *table = nullptr;
+            for (QWidget *ancestor = parentWidget(); ancestor && !table; ancestor = ancestor->parentWidget())
+                table = qobject_cast<QTableWidget *>(ancestor);
+            if (table) {
+                const QModelIndex index = table->indexAt(table->viewport()->mapFromGlobal(mapToGlobal(rect().center())));
+                if (index.isValid())
+                    table->resizeRowToContents(index.row());
+            }
+        });
+    }
+
+    QSize sizeHint() const override
+    {
+        QTextDocument *doc = document();
+        doc->setTextWidth(std::max(1, viewport()->width()));
+        const int margin = frameWidth() * 2 + contentsMargins().top() + contentsMargins().bottom() + 8;
+        const int height = std::max(30, (int)std::ceil(doc->size().height()) + margin);
+        return QSize(QTextEdit::sizeHint().width(), height);
+    }
+
+    std::function<void(const QString &)> commit_requested;
+
+protected:
+    void focusOutEvent(QFocusEvent *event) override
+    {
+        if (commit_requested)
+            commit_requested(toPlainText());
+        QTextEdit::focusOutEvent(event);
+    }
+};
 
 class TemplateListWidget : public QListWidget {
 public:
@@ -1555,6 +1611,7 @@ void TitleDock::build_ui()
     text_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     text_table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    text_table_->setWordWrap(true);
     live_layout->addWidget(text_table_, 1);
     live_layout->addWidget(live_toolbar);
 
@@ -2111,11 +2168,13 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     for (int target_row : target_rows) {
         if (target_row < 0 || target_row >= text_table_->rowCount())
             continue;
-        auto *edit = qobject_cast<QLineEdit *>(text_table_->cellWidget(target_row, col + 1));
-        if (!edit || edit->text() == text)
+        auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(target_row, col + 1));
+        if (!edit || edit->toPlainText() == text)
             continue;
         QSignalBlocker block(edit);
-        edit->setText(text);
+        edit->setPlainText(text);
+        edit->setToolTip(text);
+        edit->viewport()->setToolTip(text);
     }
 
     TitleDataStore::instance().save();
@@ -2528,12 +2587,12 @@ void TitleDock::populate_exposed_text()
         select_item->setTextAlignment(Qt::AlignCenter);
         text_table_->setItem(row, 0, select_item);
         for (int col = 0; col < (int)exposed.size(); ++col) {
-            auto *edit = new QLineEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+            auto *edit = new LiveTextCueCellEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
-            edit->setStyleSheet("QLineEdit{padding:3px;}");
-            connect(edit, &QLineEdit::editingFinished, this, [this, title, row, col, edit]() {
-                commit_live_text_cell_edit(title, row, col, edit->text());
-            });
+            edit->setStyleSheet("QTextEdit{padding:3px;}");
+            edit->commit_requested = [this, title, row, col](const QString &text) {
+                commit_live_text_cell_edit(title, row, col, text);
+            };
             text_table_->setCellWidget(row, col + 1, edit);
         }
 
@@ -2553,6 +2612,7 @@ void TitleDock::populate_exposed_text()
         cue->setStyleSheet(cue_style);
         connect(cue, &QPushButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
         text_table_->setCellWidget(row, (int)exposed.size() + 1, cue);
+        text_table_->resizeRowToContents(row);
     }
     update_playlist_controls();
     update_persistence_controls();
