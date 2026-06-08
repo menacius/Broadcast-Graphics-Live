@@ -251,25 +251,58 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(nlohmann_json)
 
 # ── Sources ─────────────────────────────────────────────────────────
+set(OBS_GSP_CORE_SOURCES
+    src/core/title-data.cpp
+)
+set(OBS_GSP_CORE_HEADERS
+    src/core/title-data.h
+    src/core/title-localization.h
+)
+
+set(OBS_GSP_TEXT_SOURCES
+    src/text/title-rich-text.cpp
+)
+set(OBS_GSP_TEXT_HEADERS
+    src/text/title-rich-text.h
+)
+
+set(OBS_GSP_OBS_SOURCES
+    src/obs/plugin-main.cpp
+    src/obs/title-source.cpp
+)
+set(OBS_GSP_OBS_HEADERS
+    src/obs/plugin-main.h
+    src/obs/title-source.h
+)
+
+set(OBS_GSP_EDITOR_SOURCES
+    src/editor/title-hotkeys.cpp
+    src/editor/title-dock.cpp
+    src/editor/title-editor.cpp
+)
+set(OBS_GSP_EDITOR_HEADERS
+    src/editor/title-hotkeys.h
+    src/editor/title-dock.h
+    src/editor/title-editor.h
+    src/editor/title-assets.h
+)
+
 set(PLUGIN_SOURCES
-    src/plugin-main.cpp
-    src/title-data.cpp
-    src/title-rich-text.cpp
-    src/title-source.cpp
-    src/title-hotkeys.cpp
-    src/title-dock.cpp
-    src/title-editor.cpp
+    ${OBS_GSP_CORE_SOURCES}
+    ${OBS_GSP_TEXT_SOURCES}
+    ${OBS_GSP_OBS_SOURCES}
+    ${OBS_GSP_EDITOR_SOURCES}
 )
 
 set(PLUGIN_HEADERS
-    src/plugin-main.h
-    src/title-data.h
-    src/title-rich-text.h
-    src/title-source.h
-    src/title-hotkeys.h
-    src/title-dock.h
-    src/title-editor.h
+    ${OBS_GSP_CORE_HEADERS}
+    ${OBS_GSP_TEXT_HEADERS}
+    ${OBS_GSP_OBS_HEADERS}
+    ${OBS_GSP_EDITOR_HEADERS}
 )
+
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Source Files" FILES ${PLUGIN_SOURCES})
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Header Files" FILES ${PLUGIN_HEADERS})
 
 # ── Target ──────────────────────────────────────────────────────────
 add_library(obs-graphics-studio-pro MODULE
@@ -279,6 +312,10 @@ add_library(obs-graphics-studio-pro MODULE
 
 target_include_directories(obs-graphics-studio-pro PRIVATE
     src
+    src/core
+    src/text
+    src/obs
+    src/editor
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${PANGOCAIRO_INCLUDE_DIRS}
@@ -410,8 +447,8 @@ if(OBS_GSP_BUILD_TESTS)
   enable_testing()
   add_executable(rich_text_model_test
       tests/rich_text_model_test.cpp
-      src/title-rich-text.cpp)
-  target_include_directories(rich_text_model_test PRIVATE src)
+      src/text/title-rich-text.cpp)
+  target_include_directories(rich_text_model_test PRIVATE src src/core src/text)
   target_compile_definitions(rich_text_model_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
   add_test(NAME rich_text_model_test COMMAND rich_text_model_test)
 endif()
