@@ -26,6 +26,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QIODevice>
 #include <QItemSelectionModel>
 #include <QMenu>
@@ -49,6 +50,7 @@
 #include <QSettings>
 #include <QWidgetAction>
 #include <QPushButton>
+#include <QPoint>
 #include <QListView>
 #include <QListWidget>
 #include <QTreeWidget>
@@ -63,6 +65,7 @@
 #include <QTextOption>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPalette>
 #include <QSet>
 #include <QPixmap>
 #include <QSignalBlocker>
@@ -1599,8 +1602,12 @@ void TitleDock::build_ui()
 
     text_table_ = new LiveTextCueTable(live_section);
     auto *live_text_header = new LiveTextCueHeader(text_table_);
-    live_text_header->select_all_toggled = [this](bool checked) { set_all_live_text_rows_checked(checked); };
+    live_text_header->set_select_all_visible(false);
     text_table_->setHorizontalHeader(live_text_header);
+    auto *live_text_row_header = new LiveTextCueRowHeader(text_table_);
+    live_text_row_header->row_check_toggled = [this](int, bool) { update_live_text_select_all_state(); };
+    live_text_row_header->cue_clicked = [this](int row) { cue_live_text_row(row, true); };
+    text_table_->setVerticalHeader(live_text_row_header);
     text_table_->setMinimumHeight(96);
     text_table_->setAlternatingRowColors(false);
     text_table_->verticalHeader()->setSectionResizeMode(QHeaderView::Interactive);
@@ -2030,13 +2037,9 @@ bool TitleDock::restore_live_text_header_state()
 
 bool TitleDock::has_checked_live_text_rows() const
 {
-    if (!text_table_) return false;
-    for (int row = 0; row < text_table_->rowCount(); ++row) {
-        auto *item = text_table_->item(row, 0);
-        if (item && item->checkState() == Qt::Checked)
-            return true;
-    }
-    return false;
+    auto *row_header = live_text_cue_row_header(text_table_);
+    if (!row_header) return false;
+    return !row_header->checked_rows().empty();
 }
 
 void TitleDock::apply_live_text_row_selection(const std::vector<int> &rows, bool checked)
@@ -2045,19 +2048,15 @@ void TitleDock::apply_live_text_row_selection(const std::vector<int> &rows, bool
 
     QSignalBlocker block(text_table_);
     text_table_->clearSelection();
-    for (int row = 0; row < text_table_->rowCount(); ++row) {
-        auto *item = text_table_->item(row, 0);
-        if (item)
-            item->setCheckState(Qt::Unchecked);
-    }
+    if (auto *row_header = live_text_cue_row_header(text_table_))
+        row_header->set_all_checked(false);
 
     auto *selection_model = text_table_->selectionModel();
     for (int row : rows) {
         if (row < 0 || row >= text_table_->rowCount()) continue;
         if (checked) {
-            auto *item = text_table_->item(row, 0);
-            if (item)
-                item->setCheckState(Qt::Checked);
+            if (auto *row_header = live_text_cue_row_header(text_table_))
+                row_header->set_row_checked(row, true);
         }
         if (selection_model && text_table_->columnCount() > 0) {
             const QModelIndex left = text_table_->model()->index(row, 0);
@@ -2066,34 +2065,28 @@ void TitleDock::apply_live_text_row_selection(const std::vector<int> &rows, bool
                                     QItemSelectionModel::Select | QItemSelectionModel::Rows);
         }
     }
-    if (!rows.empty() && selection_model)
+    if (!rows.empty() && selection_model && text_table_->columnCount() > 0)
         selection_model->setCurrentIndex(text_table_->model()->index(rows.front(), 0), QItemSelectionModel::NoUpdate);
     update_live_text_select_all_state();
 }
 
 void TitleDock::set_all_live_text_rows_checked(bool checked)
 {
-    if (!text_table_) return;
-
-    QSignalBlocker block(text_table_);
-    for (int row = 0; row < text_table_->rowCount(); ++row) {
-        auto *item = text_table_->item(row, 0);
-        if (item)
-            item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
-    }
+    if (auto *row_header = live_text_cue_row_header(text_table_))
+        row_header->set_all_checked(checked);
     update_live_text_select_all_state();
 }
 
 void TitleDock::update_live_text_select_all_state()
 {
     auto *header = live_text_cue_header(text_table_);
-    if (!header || !text_table_) return;
+    auto *row_header = live_text_cue_row_header(text_table_);
+    if (!header || !row_header || !text_table_) return;
 
     const int row_count = text_table_->rowCount();
     bool all_checked = row_count > 0;
     for (int row = 0; row < row_count; ++row) {
-        auto *item = text_table_->item(row, 0);
-        if (!item || item->checkState() != Qt::Checked) {
+        if (!row_header->row_checked(row)) {
             all_checked = false;
             break;
         }
@@ -2106,11 +2099,8 @@ std::vector<int> TitleDock::selected_live_text_rows() const
     std::vector<int> rows;
     if (!text_table_) return rows;
 
-    for (int row = 0; row < text_table_->rowCount(); ++row) {
-        auto *item = text_table_->item(row, 0);
-        if (item && item->checkState() == Qt::Checked)
-            rows.push_back(row);
-    }
+    if (auto *row_header = live_text_cue_row_header(text_table_))
+        rows = row_header->checked_rows();
 
     if (rows.empty()) {
         if (auto *selection = text_table_->selectionModel()) {
@@ -2133,6 +2123,73 @@ std::vector<int> TitleDock::selected_live_text_rows() const
 
     std::sort(rows.begin(), rows.end());
     return rows;
+}
+
+int TitleDock::append_live_text_row(bool clone_selected_row)
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return -1;
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty()) return -1;
+
+    auto selected_rows = selected_live_text_rows();
+    std::vector<std::string> row(exposed.size());
+    if (clone_selected_row && selected_rows.size() == 1) {
+        const int source_row = selected_rows.front();
+        if (source_row >= 0 && source_row < (int)title->live_text_rows.size())
+            row = title->live_text_rows[source_row];
+    }
+    row.resize(exposed.size());
+
+    title->live_text_rows.push_back(std::move(row));
+    const int added_row = (int)title->live_text_rows.size() - 1;
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    return added_row;
+}
+
+void TitleDock::focus_live_text_cell(int row, int col)
+{
+    if (!text_table_) return;
+    if (row < 0 || row >= text_table_->rowCount()) return;
+    if (col < 0 || col >= text_table_->columnCount()) return;
+
+    text_table_->setCurrentCell(row, col);
+    text_table_->scrollTo(text_table_->model()->index(row, col), QAbstractItemView::PositionAtCenter);
+    if (auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(row, col))) {
+        edit->setFocus(Qt::TabFocusReason);
+        QTextCursor cursor = edit->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        edit->setTextCursor(cursor);
+    }
+}
+
+void TitleDock::handle_live_text_cell_tab(int row, int col, bool backwards)
+{
+    if (!text_table_) return;
+    const int editable_cols = text_table_->columnCount();
+    if (editable_cols <= 0) return;
+
+    int next_index = row * editable_cols + col + (backwards ? -1 : 1);
+    if (next_index < 0)
+        return;
+
+    const int editable_count = text_table_->rowCount() * editable_cols;
+    if (next_index >= editable_count) {
+        if (backwards)
+            return;
+        QTimer::singleShot(0, this, [this]() {
+            const int added_row = append_live_text_row(false);
+            if (added_row >= 0)
+                focus_live_text_cell(added_row, 0);
+        });
+        return;
+    }
+
+    const int next_row = next_index / editable_cols;
+    const int next_col = next_index % editable_cols;
+    focus_live_text_cell(next_row, next_col);
 }
 
 void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
@@ -2503,6 +2560,12 @@ void TitleDock::populate_exposed_text()
     text_table_->setColumnCount(0);
 
     auto *header = live_text_cue_header(text_table_);
+    auto *row_header = live_text_cue_row_header(text_table_);
+    if (row_header) {
+        row_header->set_row_count(0);
+        row_header->set_select_controls_visible(false);
+        row_header->set_cue_rows(-1, -1);
+    }
 
     auto title = TitleDataStore::instance().get_title(selected_id());
     if (!title) {
@@ -2530,28 +2593,21 @@ void TitleDock::populate_exposed_text()
     if (btn_row_up_) btn_row_up_->setEnabled(has_exposed);
     if (btn_row_down_) btn_row_down_->setEnabled(has_exposed);
     text_editor_lbl_->setText(obsgs_tr("OBSTitles.LiveTextCues"));
-    if (header) header->set_select_all_visible(has_exposed);
+    if (header) header->set_select_all_visible(false);
+    if (row_header) {
+        row_header->set_select_controls_visible(has_exposed);
+        row_header->set_cue_rows(title->current_cue_row, title->pending_cue_row);
+    }
     if (!has_exposed) {
         text_table_->setRowCount(1);
-        text_table_->setColumnCount(2);
-        text_table_->setHorizontalHeaderLabels(QStringList()
-                                               << obsgs_tr("OBSTitles.Title")
-                                               << QString());
+        if (row_header) row_header->set_row_count(1);
+        text_table_->setColumnCount(1);
+        text_table_->setHorizontalHeaderLabels(QStringList() << obsgs_tr("OBSTitles.Title"));
         text_table_->horizontalHeader()->setSectionsMovable(false);
         text_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-        text_table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-        text_table_->setVerticalHeaderItem(0, new QTableWidgetItem(QStringLiteral("1")));
-
         auto *title_item = new QTableWidgetItem(QString::fromStdString(title->name));
         title_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         text_table_->setItem(0, 0, title_item);
-
-        auto *cue = new QPushButton("▶", text_table_);
-        cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
-        cue->setStyleSheet("QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
-                           "QPushButton:hover{background:#3a3a3a;}");
-        connect(cue, &QPushButton::clicked, this, [this]() { cue_live_text_row(0, true); });
-        text_table_->setCellWidget(0, 1, cue);
         update_playlist_controls();
         update_persistence_controls();
         update_external_data_controls();
@@ -2560,32 +2616,25 @@ void TitleDock::populate_exposed_text()
     }
 
     text_table_->setRowCount((int)title->live_text_rows.size());
-    text_table_->setColumnCount((int)exposed.size() + 2);
+    if (row_header) row_header->set_row_count((int)title->live_text_rows.size());
+    text_table_->setColumnCount((int)exposed.size());
 
     QStringList headers;
-    headers << "";
     for (const auto &layer : exposed)
         headers << live_text_layer_header(layer);
-    headers << "";
     text_table_->setHorizontalHeaderLabels(headers);
     for (int col = 0; col < (int)exposed.size(); ++col) {
-        if (auto *item = text_table_->horizontalHeaderItem(col + 1))
+        if (auto *item = text_table_->horizontalHeaderItem(col))
             item->setToolTip(live_text_layer_header(exposed[col]));
     }
     text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     text_table_->horizontalHeader()->setSectionsMovable(true);
     if (!restore_live_text_header_state()) {
-        text_table_->resizeColumnToContents(0);
-        text_table_->resizeColumnToContents((int)exposed.size() + 1);
+        for (int col = 0; col < (int)exposed.size(); ++col)
+            text_table_->resizeColumnToContents(col);
     }
 
     for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
-        text_table_->setVerticalHeaderItem(row, new QTableWidgetItem(QString::number(row + 1)));
-        auto *select_item = new QTableWidgetItem();
-        select_item->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-        select_item->setCheckState(Qt::Unchecked);
-        select_item->setTextAlignment(Qt::AlignCenter);
-        text_table_->setItem(row, 0, select_item);
         for (int col = 0; col < (int)exposed.size(); ++col) {
             auto *edit = new LiveTextCueCellEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
@@ -2826,26 +2875,9 @@ void TitleDock::on_refresh_external_data()
 
 void TitleDock::on_add_live_text_row()
 {
-    auto title = TitleDataStore::instance().get_title(selected_id());
-    if (!title) return;
-    auto exposed = exposed_text_layers(title);
-    if (exposed.empty()) return;
-
-    auto selected_rows = selected_live_text_rows();
-    std::vector<std::string> row(exposed.size());
-    if (selected_rows.size() == 1) {
-        const int source_row = selected_rows.front();
-        if (source_row >= 0 && source_row < (int)title->live_text_rows.size())
-            row = title->live_text_rows[source_row];
-    }
-    row.resize(exposed.size());
-
-    title->live_text_rows.push_back(std::move(row));
-    const int added_row = (int)title->live_text_rows.size() - 1;
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().notify_change();
-    populate_exposed_text();
-    apply_live_text_row_selection({added_row}, false);
+    const int added_row = append_live_text_row(true);
+    if (added_row >= 0)
+        apply_live_text_row_selection({added_row}, false);
 }
 
 void TitleDock::on_delete_live_text_rows()
