@@ -55,20 +55,77 @@ QString TimecodeSpinBox::format_seconds(double seconds)
         .arg(frames, 2, 10, QChar('0'));
 }
 
+bool TimecodeSpinBox::parse_integer_timecode_or_frames(const QString &text, double fps_d, double *seconds_out)
+{
+    if (text.isEmpty())
+        return false;
+
+    for (const QChar ch : text) {
+        if (!ch.isDigit())
+            return false;
+    }
+
+    const int fps = std::max(1, (int)std::round(fps_d));
+    if (text.size() <= 8) {
+        int values[4] = {0, 0, 0, 0};
+        int end = text.size();
+        for (int field = 3; field >= 0 && end > 0; --field) {
+            const int start = std::max(0, end - 2);
+            bool ok = false;
+            values[field] = text.mid(start, end - start).toInt(&ok);
+            if (!ok)
+                return false;
+            end = start;
+        }
+
+        if (values[1] < 60 && values[2] < 60 && values[3] < fps) {
+            const double parsed_seconds = values[0] * 3600.0 + values[1] * 60.0 +
+                                          values[2] + values[3] / fps_d;
+            if (seconds_out) *seconds_out = parsed_seconds;
+            return std::isfinite(parsed_seconds);
+        }
+    }
+
+    bool ok = false;
+    const qlonglong raw_frames = text.toLongLong(&ok);
+    if (!ok || raw_frames < 0)
+        return false;
+
+    const double parsed_seconds = (double)raw_frames / fps_d;
+    if (seconds_out) *seconds_out = parsed_seconds;
+    return std::isfinite(parsed_seconds);
+}
+
 bool TimecodeSpinBox::parse_timecode(const QString &text, double *seconds_out)
 {
+    return parse_timecode(text, frame_rate(), seconds_out);
+}
+
+bool TimecodeSpinBox::parse_timecode(const QString &text, double fps_d, double *seconds_out)
+{
+    fps_d = std::max(1.0, fps_d);
+
     QString clean = text.trimmed();
-    if (clean.endsWith(QLatin1Char('s'), Qt::CaseInsensitive))
+    const bool seconds_suffix = clean.endsWith(QLatin1Char('s'), Qt::CaseInsensitive);
+    if (seconds_suffix)
         clean.chop(1);
     clean = clean.trimmed();
     if (clean.isEmpty())
         return false;
 
-    bool ok = false;
-    const double decimal_seconds = QLocale::c().toDouble(clean, &ok);
-    if (ok) {
-        if (seconds_out) *seconds_out = decimal_seconds;
-        return std::isfinite(decimal_seconds);
+    if (!seconds_suffix && clean.indexOf(QLatin1Char(':')) < 0 &&
+        clean.indexOf(QLatin1Char('.')) < 0 && clean.indexOf(QLatin1Char(',')) < 0) {
+        return parse_integer_timecode_or_frames(clean, fps_d, seconds_out);
+    }
+
+    if (clean.indexOf(QLatin1Char(':')) < 0) {
+        bool ok = false;
+        const double decimal_seconds = QLocale::c().toDouble(clean, &ok);
+        if (ok) {
+            if (seconds_out) *seconds_out = decimal_seconds;
+            return std::isfinite(decimal_seconds);
+        }
+        return false;
     }
 
     const QStringList parts = clean.split(QLatin1Char(':'));
@@ -84,12 +141,12 @@ bool TimecodeSpinBox::parse_timecode(const QString &text, double *seconds_out)
             return false;
     }
 
-    const int fps = rounded_fps();
+    const int fps = std::max(1, (int)std::round(fps_d));
     if (values[1] >= 60 || values[2] >= 60 || values[3] >= fps)
         return false;
 
     const double parsed_seconds = values[0] * 3600.0 + values[1] * 60.0 +
-                                  values[2] + values[3] / frame_rate();
+                                  values[2] + values[3] / fps_d;
     if (seconds_out) *seconds_out = parsed_seconds;
     return std::isfinite(parsed_seconds);
 }

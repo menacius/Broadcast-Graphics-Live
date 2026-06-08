@@ -7182,15 +7182,24 @@ void CanvasPreview::paintEvent(QPaintEvent *)
             layer_point_to_view(box.bottomLeft())
         };
 
+        const bool editing_text_layer = !inline_text_layer_id_.empty() &&
+            inline_text_layer_id_ == layer.id && is_canvas_text_layer(layer);
+        const QColor outline_color = editing_text_layer
+            ? QColor(255, 220, 0, handles ? 255 : 210)
+            : QColor(0, 120, 255, handles ? 230 : 150);
+        const QColor handle_stroke_color = editing_text_layer
+            ? QColor(255, 220, 0, 255)
+            : QColor(0, 120, 255, 255);
+
         p.save();
         p.setBrush(Qt::NoBrush);
-        p.setPen(QPen(QColor(0, 120, 255, handles ? 230 : 150), 1.5, Qt::DashLine));
+        p.setPen(QPen(outline_color, editing_text_layer ? 2.0 : 1.5, Qt::DashLine));
         QPolygonF outline;
         for (const QPointF &corner : corners)
             outline << corner;
         p.drawPolygon(outline);
         if (handles) {
-            p.setPen(QPen(QColor(0, 120, 255, 255), 1.0));
+            p.setPen(QPen(handle_stroke_color, 1.0));
             p.setBrush(QColor(255, 255, 255));
             const QPointF handle_points[] = {
                 corners[0], layer_point_to_view(QPointF(box.center().x(), box.top())), corners[1],
