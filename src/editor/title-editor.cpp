@@ -264,6 +264,81 @@ static uint32_t rich_text_argb_from_color(const QColor &color)
            (uint32_t)color.blue();
 }
 
+static std::vector<QRectF> text_edit_selection_viewport_rects(const QTextEdit *editor)
+{
+    std::vector<QRectF> rects;
+    if (!editor || !editor->textCursor().hasSelection())
+        return rects;
+
+    const QTextCursor cursor = editor->textCursor();
+    const int selection_start = cursor.selectionStart();
+    const int selection_end = cursor.selectionEnd();
+    if (selection_start >= selection_end)
+        return rects;
+
+    const QTextDocument *doc = editor->document();
+    const QAbstractTextDocumentLayout *doc_layout = doc ? doc->documentLayout() : nullptr;
+    if (!doc || !doc_layout)
+        return rects;
+
+    const QPointF scroll_offset(editor->horizontalScrollBar() ? editor->horizontalScrollBar()->value() : 0.0,
+                                editor->verticalScrollBar() ? editor->verticalScrollBar()->value() : 0.0);
+
+    for (QTextBlock block = doc->findBlock(selection_start);
+         block.isValid() && block.position() < selection_end;
+         block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        if (!layout)
+            continue;
+
+        const int block_start = block.position();
+        const int block_text_end = block_start + std::max(0, block.length() - 1);
+        const int block_selection_start = std::max(selection_start, block_start);
+        const int block_selection_end = std::min(selection_end, block_text_end);
+        if (block_selection_start >= block_selection_end)
+            continue;
+
+        const QRectF block_rect = doc_layout->blockBoundingRect(block);
+        for (int line_index = 0; line_index < layout->lineCount(); ++line_index) {
+            const QTextLine line = layout->lineAt(line_index);
+            if (!line.isValid())
+                continue;
+
+            const int line_start = block_start + line.textStart();
+            const int line_end = line_start + line.textLength();
+            const int line_selection_start = std::max(block_selection_start, line_start);
+            const int line_selection_end = std::min(block_selection_end, line_end);
+            if (line_selection_start >= line_selection_end)
+                continue;
+
+            const qreal x1 = line.cursorToX(line_selection_start - block_start);
+            const qreal x2 = line.cursorToX(line_selection_end - block_start);
+            QRectF rect(block_rect.left() + std::min(x1, x2),
+                        block_rect.top() + line.y(),
+                        std::max<qreal>(1.0, std::abs(x2 - x1)),
+                        std::max<qreal>(1.0, line.height()));
+            rect.translate(-scroll_offset);
+            rects.push_back(rect.adjusted(-1.0, 0.0, 1.0, 0.0));
+        }
+    }
+
+    return rects;
+}
+
+enum RichTextCharFormatMask : uint32_t {
+    RichTextCharFontFamily = 1u << 0,
+    RichTextCharFontSize = 1u << 1,
+    RichTextCharBold = 1u << 2,
+    RichTextCharItalic = 1u << 3,
+    RichTextCharUnderline = 1u << 4,
+    RichTextCharStrikethrough = 1u << 5,
+    RichTextCharTracking = 1u << 6,
+    RichTextCharScaleX = 1u << 7,
+    RichTextCharScaleY = 1u << 8,
+    RichTextCharBaselineShift = 1u << 9,
+    RichTextCharFillColor = 1u << 10,
+};
+
 enum RichTextFormatProperty {
     RichTextPropFontFamily = QTextFormat::UserProperty + 100,
     RichTextPropFontSize,
@@ -305,6 +380,32 @@ static void store_rich_text_format_properties(QTextCharFormat &out, const RichTe
     out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
     out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
     out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
+}
+
+static void store_rich_text_format_properties_masked(QTextCharFormat &out, const RichTextCharFormat &format, uint32_t mask)
+{
+    if (mask & RichTextCharFontFamily)
+        out.setProperty(RichTextPropFontFamily, QString::fromStdString(format.font_family));
+    if (mask & RichTextCharFontSize)
+        out.setProperty(RichTextPropFontSize, format.font_size);
+    if (mask & RichTextCharBold) out.setProperty(RichTextPropBold, format.bold);
+    if (mask & RichTextCharItalic) out.setProperty(RichTextPropItalic, format.italic);
+    if (mask & RichTextCharUnderline) out.setProperty(RichTextPropUnderline, format.underline);
+    if (mask & RichTextCharStrikethrough) out.setProperty(RichTextPropStrikethrough, format.strikethrough);
+    if (mask & RichTextCharTracking) out.setProperty(RichTextPropTracking, (double)format.tracking);
+    if (mask & RichTextCharScaleX) out.setProperty(RichTextPropScaleX, (double)format.scale_x);
+    if (mask & RichTextCharScaleY) out.setProperty(RichTextPropScaleY, (double)format.scale_y);
+    if (mask & RichTextCharBaselineShift) out.setProperty(RichTextPropBaselineShift, (double)format.baseline_shift);
+    if (mask & RichTextCharFillColor) {
+        out.setProperty(RichTextPropFillType, format.fill.type);
+        out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
+        out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
+        out.setProperty(RichTextPropGradientStartColor, (uint)format.fill.gradient_start_color);
+        out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
+        out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
+        out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
+        out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
+    }
 }
 
 static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharFormat &fmt,
@@ -416,12 +517,26 @@ static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const st
     return true;
 }
 
+static RichTextParagraphFormat layer_paragraph_format_for_editor(const Layer &layer)
+{
+    RichTextParagraphFormat f;
+    f.align_h = layer.align_h;
+    f.align_v = layer.align_v;
+    f.indent_left = layer.paragraph_indent_left;
+    f.indent_right = layer.paragraph_indent_right;
+    f.indent_first_line = layer.paragraph_indent_first_line;
+    f.space_before = layer.paragraph_space_before;
+    f.space_after = layer.paragraph_space_after;
+    f.hyphenate = layer.paragraph_hyphenate;
+    return f;
+}
+
 static RichTextDocument rich_text_document_from_qtext_document(const QTextDocument *doc, const Layer &layer, double visual_scale, const QTextCursor &text_cursor = QTextCursor())
 {
     RichTextDocument model = layer.rich_text.empty() ? rich_text_document_from_layer_defaults(layer) : layer.rich_text;
     if (!doc) return model;
     model.plain_text = doc->toPlainText().toStdString();
-    rich_text_document_sync_layer_defaults(model, layer);
+    model.default_paragraph_format = layer_paragraph_format_for_editor(layer);
     model.ranges.clear();
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
         for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
@@ -446,20 +561,6 @@ static RichTextDocument rich_text_document_from_qtext_document(const QTextDocume
 }
 
 
-
-enum RichTextCharFormatMask : uint32_t {
-    RichTextCharFontFamily = 1u << 0,
-    RichTextCharFontSize = 1u << 1,
-    RichTextCharBold = 1u << 2,
-    RichTextCharItalic = 1u << 3,
-    RichTextCharUnderline = 1u << 4,
-    RichTextCharStrikethrough = 1u << 5,
-    RichTextCharTracking = 1u << 6,
-    RichTextCharScaleX = 1u << 7,
-    RichTextCharScaleY = 1u << 8,
-    RichTextCharBaselineShift = 1u << 9,
-    RichTextCharFillColor = 1u << 10,
-};
 
 struct RichTextCharFormatSummary {
     RichTextCharFormat format;
@@ -586,9 +687,11 @@ static void merge_format_bits(RichTextCharFormat &dst, const RichTextCharFormat 
 static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCharFormat &format, uint32_t mask, bool active_selection)
 {
     if (layer.type != LayerType::Text && layer.type != LayerType::Ticker) return;
-    if (layer.rich_text.empty()) layer.rich_text = rich_text_document_from_layer_defaults(layer);
-    rich_text_document_sync_layer_defaults(layer.rich_text, layer);
+    if (layer.rich_text.empty())
+        layer.rich_text = rich_text_document_from_layer_defaults(layer);
     RichTextDocument &doc = layer.rich_text;
+    doc.default_paragraph_format = layer_paragraph_format_for_editor(layer);
+    doc.normalize();
     const size_t text_len = doc.plain_text.size();
     size_t start = active_selection ? std::min(doc.selection.anchor, doc.selection.head) : 0;
     size_t end = active_selection ? std::max(doc.selection.anchor, doc.selection.head) : text_len;
@@ -5672,8 +5775,8 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->setStyleSheet(
         "QTextEdit{background:transparent;border:0px;padding:0px;"
-        "color:rgba(255,255,255,1);selection-background-color:rgba(0,120,215,110);"
-        "selection-color:rgba(255,255,255,1);}");
+        "color:rgba(255,255,255,1);selection-background-color:rgba(255,255,255,0);"
+        "selection-color:rgba(255,255,255,0);}");
     inline_text_editor_->installEventFilter(this);
     connect(inline_text_editor_->document(), &QTextDocument::contentsChanged, this, [this]() {
         if (updating_inline_text_editor_ || refreshing_inline_text_) return;
@@ -5694,8 +5797,10 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
         if (committing_inline_text_ || updating_inline_text_editor_ || inline_text_layer_id_.empty()) return;
         const std::string layer_id = inline_text_layer_id_;
         sync_inline_text_layer(false);
-        if (inline_text_editor_)
+        if (inline_text_editor_) {
             inline_text_editor_->viewport()->update();
+            update(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
+        }
         emit text_edit_cursor_changed(layer_id);
     };
     connect(inline_text_editor_, &QTextEdit::cursorPositionChanged, this, emit_cursor_changed);
@@ -5724,10 +5829,12 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     }
     if (mask & RichTextCharUnderline) qfmt.setFontUnderline(format.underline);
     if (mask & RichTextCharStrikethrough) qfmt.setFontStrikeOut(format.strikethrough);
-    store_rich_text_format_properties(qfmt, format);
-    QColor transparent_color = rich_text_color_from_argb(format.fill.color);
-    transparent_color.setAlpha(0);
-    qfmt.setForeground(transparent_color);
+    store_rich_text_format_properties_masked(qfmt, format, mask);
+    if (mask & RichTextCharFillColor) {
+        QColor transparent_color = rich_text_color_from_argb(format.fill.color);
+        transparent_color.setAlpha(0);
+        qfmt.setForeground(transparent_color);
+    }
 
     QTextCursor cursor = inline_text_editor_->textCursor();
     cursor.mergeCharFormat(qfmt);
@@ -6721,6 +6828,23 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
 
+    if (inline_text_editor_ && inline_text_editor_->isVisible()) {
+        const QPoint viewport_origin = inline_text_editor_->viewport()->mapTo(this, QPoint(0, 0));
+        const std::vector<QRectF> selection_rects = text_edit_selection_viewport_rects(inline_text_editor_);
+        if (!selection_rects.empty()) {
+            p.save();
+            p.setClipRect(inline_text_editor_->viewport()->rect().translated(viewport_origin));
+            p.setCompositionMode(QPainter::CompositionMode_Difference);
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            for (QRectF selection_rect : selection_rects) {
+                selection_rect.translate(viewport_origin);
+                p.drawRect(selection_rect);
+            }
+            p.restore();
+        }
+    }
+
     if (safe_guides_visible_) {
         auto draw_guide = [&](double inset, const QColor &color) {
             QRectF r(ox + dw * inset, oy + dh * inset, dw * (1.0 - 2.0 * inset), dh * (1.0 - 2.0 * inset));
@@ -7138,7 +7262,15 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
         format_cursor.select(QTextCursor::Document);
         format_cursor.mergeCharFormat(char_format);
     }
-    inline_text_editor_->mergeCurrentCharFormat(char_format);
+    /*
+     * Do not call mergeCurrentCharFormat() while the saved cursor owns a
+     * selection. QTextEdit applies that merge to the selected document text,
+     * so re-positioning the inline editor after begin_text_edit() could repaint
+     * every character with the current/layer style and hide mixed per-character
+     * sizes or colors until edit mode was committed.
+     */
+    if (!saved_cursor.hasSelection())
+        inline_text_editor_->mergeCurrentCharFormat(char_format);
     if (auto *layout = doc->documentLayout())
         layout->documentSize();
     inline_text_editor_->setTextCursor(saved_cursor);
@@ -7461,20 +7593,8 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
 
-    if (!inline_text_layer_id_.empty()) {
-        if (ev->button() == Qt::MiddleButton) {
-            panning_ = true;
-            pan_start_view_ = QPointF(ev->pos());
-            pan_start_offset_ = pan_offset_;
-            setCursor(Qt::ClosedHandCursor);
-            ev->accept();
-            return;
-        }
-        if (inline_text_editor_)
-            inline_text_editor_->setFocus(Qt::MouseFocusReason);
-        ev->accept();
-        return;
-    }
+    if (!inline_text_layer_id_.empty())
+        commit_text_edit(true);
 
     setFocus(Qt::MouseFocusReason);
 
@@ -10726,7 +10846,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
                 } else {
                     layer_->text_content = value;
-                    rich_text_document_sync_layer_defaults(layer_->rich_text, *layer_);
+                    if (layer_->rich_text.empty())
+                        layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+                    layer_->rich_text.default_paragraph_format = layer_paragraph_format_for_editor(*layer_);
                     rich_text_document_replace_text(layer_->rich_text, value);
                     layer_->rich_text_html.clear();
                 }
