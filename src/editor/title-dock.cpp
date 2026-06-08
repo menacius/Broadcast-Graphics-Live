@@ -2949,7 +2949,12 @@ bool TitleDock::select_title(const std::string &id)
         }
     }
 
-    if (target_row >= 0) {
+    if (target_row < 0) {
+        suppress_selection_persistence_ = previous_suppression;
+        return false;
+    }
+
+    {
         QSignalBlocker block(list_);
         list_->clearSelection();
         list_->setCurrentRow(target_row);
@@ -2959,7 +2964,7 @@ bool TitleDock::select_title(const std::string &id)
 
     suppress_selection_persistence_ = previous_suppression;
     on_selection_changed();
-    return target_row >= 0;
+    return true;
 }
 
 bool TitleDock::select_first_available_title_for_current_scene()
@@ -2993,97 +2998,6 @@ void TitleDock::restore_persisted_selection()
         return;
 
     if (!select_title(id))
-        return;
-
-    auto exposed = exposed_text_layers(title);
-    normalize_live_text_rows(title, exposed);
-    const int row_count = exposed.empty() ? 0 : (int)title->live_text_rows.size();
-    const int current_row = (persisted_current_row >= 0 && persisted_current_row < row_count)
-        ? persisted_current_row
-        : -1;
-    const int pending_row = (persisted_pending_row >= 0 && persisted_pending_row < row_count)
-        ? persisted_pending_row
-        : -1;
-
-    if (current_row < 0 && pending_row < 0) {
-        persist_current_selection();
-        return;
-    }
-
-    updating_exposed_text_ = true;
-    title->current_cue_row = current_row;
-    title->pending_cue_row = pending_row;
-    title->cue_persistence_transition = false;
-    title->cue_persistent_text_columns.clear();
-    if (current_row >= 0) {
-        for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[current_row].size(); ++col) {
-            exposed[col]->text_content = title->live_text_rows[current_row][col];
-            exposed[col]->rich_text_html.clear();
-        }
-    }
-    ++title->cue_revision;
-    persist_live_text_cue_state(title);
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().notify_change();
-    updating_exposed_text_ = false;
-    populate_exposed_text();
-}
-
-void TitleDock::persist_current_selection()
-{
-    const std::string id = selected_id();
-    auto title = TitleDataStore::instance().get_title(id);
-    persisted_selected_title_id_ = QString::fromStdString(id);
-    persisted_current_cue_row_ = title ? title->current_cue_row : -1;
-    persisted_pending_cue_row_ = title ? title->pending_cue_row : -1;
-    save_dock_settings();
-}
-
-void TitleDock::persist_live_text_cue_state(const std::shared_ptr<Title> &title)
-{
-    if (!title || selected_id() != title->id)
-        return;
-    persisted_selected_title_id_ = QString::fromStdString(title->id);
-    persisted_current_cue_row_ = title->current_cue_row;
-    persisted_pending_cue_row_ = title->pending_cue_row;
-    save_dock_settings();
-}
-
-bool TitleDock::select_first_available_title_for_current_scene()
-{
-    const auto scene_title_ids = current_scene_title_source_ids();
-    for (const auto &id : scene_title_ids) {
-        if (!TitleDataStore::instance().get_title(id))
-            continue;
-        select_title(id);
-        if (selected_id() == id)
-            return true;
-    }
-
-    if (list_) {
-        list_->clearSelection();
-        list_->setCurrentItem(nullptr);
-    }
-    on_selection_changed();
-    return false;
-}
-
-void TitleDock::restore_persisted_selection()
-{
-    if (persisted_selected_title_id_.trimmed().isEmpty())
-        return;
-
-    const std::string id = persisted_selected_title_id_.trimmed().toStdString();
-    const int persisted_current_row = persisted_current_cue_row_;
-    const int persisted_pending_row = persisted_pending_cue_row_;
-    auto title = TitleDataStore::instance().get_title(id);
-    if (!title)
-        return;
-
-    suppress_selection_persistence_ = true;
-    select_title(id);
-    suppress_selection_persistence_ = false;
-    if (selected_id() != id)
         return;
 
     auto exposed = exposed_text_layers(title);
