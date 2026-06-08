@@ -9,7 +9,6 @@
 #include "title-data.h"
 #include "title-source.h"
 #include "title-assets.h"
-#include "timecode-spinbox.h"
 #include "title-localization.h"
 #include "plugin-main.h"
 
@@ -9979,23 +9978,32 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     cmb_loop_type_->addItem(obsgs_tr("OBSTitles.PingPongLoop"), 1);
     add_form_row(fl, obsgs_tr("OBSTitles.LoopTypeLabel"), cmb_loop_type_);
 
-    spn_pause_frame_ = new TimecodeSpinBox(this);
-    spn_pause_frame_->setRange(0.0, 3600.0);
+    spn_pause_frame_ = new QSpinBox(this);
+    spn_pause_frame_->setRange(0, 1000000);
     spn_pause_frame_->setToolTip(obsgs_tr("OBSTitles.PauseFrameTooltip"));
     add_form_row(fl, obsgs_tr("OBSTitles.PauseFrameLabel"), spn_pause_frame_);
 
 
-    spn_duration_ = new TimecodeSpinBox(this);
+    spn_duration_ = new QDoubleSpinBox(this);
     spn_duration_->setRange(0.1, 3600.0);
+    spn_duration_->setSingleStep(0.5);
+    spn_duration_->setDecimals(2);
+    spn_duration_->setSuffix(" s");
     add_form_row(fl, obsgs_tr("OBSTitles.LengthLabel"), spn_duration_);
 
-    spn_loop_start_ = new TimecodeSpinBox(this);
+    spn_loop_start_ = new QDoubleSpinBox(this);
     spn_loop_start_->setRange(0.0, 3600.0);
+    spn_loop_start_->setSingleStep(0.5);
+    spn_loop_start_->setDecimals(2);
+    spn_loop_start_->setSuffix(" s");
     spn_loop_start_->setToolTip(obsgs_tr("OBSTitles.LoopStartTooltip"));
     add_form_row(fl, obsgs_tr("OBSTitles.LoopStartLabel"), spn_loop_start_);
 
-    spn_loop_end_ = new TimecodeSpinBox(this);
+    spn_loop_end_ = new QDoubleSpinBox(this);
     spn_loop_end_->setRange(0.0, 3600.0);
+    spn_loop_end_->setSingleStep(0.5);
+    spn_loop_end_->setDecimals(2);
+    spn_loop_end_->setSuffix(" s");
     spn_loop_end_->setToolTip(obsgs_tr("OBSTitles.LoopEndTooltip"));
     add_form_row(fl, obsgs_tr("OBSTitles.LoopEndLabel"), spn_loop_end_);
 
@@ -10016,10 +10024,10 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                 emit title_changed(!numeric_label_dragging_);
             });
 
-    connect(spn_pause_frame_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this](double v) {
+    connect(spn_pause_frame_, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, [this](int frame) {
                 if (!title_ || loading_values_) return;
-                title_->pause_time = std::clamp(v, 0.0, title_->duration);
+                title_->pause_time = std::clamp(frame * obs_frame_duration(), 0.0, title_->duration);
                 load_values();
                 emit title_changed(!numeric_label_dragging_);
             });
@@ -10082,8 +10090,8 @@ void TitlePropertiesPanel::load_values()
     spn_loop_end_->setMaximum(duration);
     spn_loop_start_->setValue(std::clamp(loop_start, 0.0, duration));
     spn_loop_end_->setValue(std::clamp(loop_end, std::clamp(loop_start, 0.0, duration), duration));
-    spn_pause_frame_->setMaximum(duration);
-    spn_pause_frame_->setValue(pause_time);
+    spn_pause_frame_->setMaximum(std::max(0, (int)std::round(duration / obs_frame_duration())));
+    spn_pause_frame_->setValue((int)std::round(pause_time / obs_frame_duration()));
 
     bool show_loop = playback_mode == 1;
     bool show_pause = playback_mode == 2;
@@ -10614,10 +10622,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_ticker_style_->setStyleSheet(control_style);
     spn_ticker_speed_ = mk_dspin(1.0, 5000.0, 1.0);
     spn_ticker_speed_->setSuffix(" px/s");
-    spn_ticker_line_hold_ = new TimecodeSpinBox(inner);
-    spn_ticker_line_hold_->setRange(0.1, 60.0);
-    spn_ticker_line_hold_->setFixedHeight(22);
-    spn_ticker_line_hold_->setStyleSheet(control_style);
+    spn_ticker_line_hold_ = mk_dspin(0.1, 60.0, 0.1);
+    spn_ticker_line_hold_->setSuffix(" s");
     cmb_ticker_direction_ = new QComboBox(inner);
     cmb_ticker_direction_->setFixedHeight(22);
     cmb_ticker_direction_->setStyleSheet(control_style);

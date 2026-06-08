@@ -292,13 +292,11 @@ set(OBS_GSP_OBS_HEADERS
 
 set(OBS_GSP_EDITOR_SOURCES
     src/editor/title-hotkeys.cpp
-    src/editor/timecode-spinbox.cpp
     src/editor/title-dock.cpp
     src/editor/title-editor.cpp
 )
 set(OBS_GSP_EDITOR_HEADERS
     src/editor/title-hotkeys.h
-    src/editor/timecode-spinbox.h
     src/editor/title-dock.h
     src/editor/title-editor.h
     src/editor/title-assets.h

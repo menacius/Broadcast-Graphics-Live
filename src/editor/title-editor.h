@@ -646,7 +646,7 @@ private:
     bool numeric_label_dragging_ = false;
     QComboBox      *cmb_playback_mode_ = nullptr;
     QComboBox      *cmb_loop_type_ = nullptr;
-    QDoubleSpinBox *spn_pause_frame_ = nullptr;
+    QSpinBox       *spn_pause_frame_ = nullptr;
     QDoubleSpinBox *spn_duration_ = nullptr;
     QDoubleSpinBox *spn_loop_start_ = nullptr;
     QDoubleSpinBox *spn_loop_end_ = nullptr;
