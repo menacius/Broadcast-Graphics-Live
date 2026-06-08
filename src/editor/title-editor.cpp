@@ -7593,8 +7593,11 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
 
-    if (!inline_text_layer_id_.empty())
+    if (!inline_text_layer_id_.empty()) {
         commit_text_edit(true);
+        ev->accept();
+        return;
+    }
 
     setFocus(Qt::MouseFocusReason);
 
