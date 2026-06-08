@@ -7,7 +7,6 @@
 #include "title-data.h"
 #include "title-source.h"
 #include "title-assets.h"
-#include "timecode-spinbox.h"
 #include "title-localization.h"
 
 #include <obs-module.h>
@@ -1843,8 +1842,11 @@ void TitleDock::build_ui()
     auto *hold_layout = new QHBoxLayout(hold_widget);
     hold_layout->setContentsMargins(8, 4, 8, 4);
     hold_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.PlaylistHoldSeconds"), hold_widget));
-    auto *hold_spin = new TimecodeSpinBox(hold_widget);
+    auto *hold_spin = new QDoubleSpinBox(hold_widget);
     hold_spin->setRange(0.0, 3600.0);
+    hold_spin->setDecimals(1);
+    hold_spin->setSingleStep(0.5);
+    hold_spin->setSuffix(QStringLiteral(" s"));
     hold_spin->setValue(playlist_hold_seconds_);
     hold_layout->addWidget(hold_spin);
     auto *hold_action = new QWidgetAction(playlist_menu);
