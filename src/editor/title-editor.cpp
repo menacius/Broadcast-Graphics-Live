@@ -264,6 +264,20 @@ static uint32_t rich_text_argb_from_color(const QColor &color)
            (uint32_t)color.blue();
 }
 
+enum RichTextCharFormatMask : uint32_t {
+    RichTextCharFontFamily = 1u << 0,
+    RichTextCharFontSize = 1u << 1,
+    RichTextCharBold = 1u << 2,
+    RichTextCharItalic = 1u << 3,
+    RichTextCharUnderline = 1u << 4,
+    RichTextCharStrikethrough = 1u << 5,
+    RichTextCharTracking = 1u << 6,
+    RichTextCharScaleX = 1u << 7,
+    RichTextCharScaleY = 1u << 8,
+    RichTextCharBaselineShift = 1u << 9,
+    RichTextCharFillColor = 1u << 10,
+};
+
 enum RichTextFormatProperty {
     RichTextPropFontFamily = QTextFormat::UserProperty + 100,
     RichTextPropFontSize,
@@ -305,6 +319,32 @@ static void store_rich_text_format_properties(QTextCharFormat &out, const RichTe
     out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
     out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
     out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
+}
+
+static void store_rich_text_format_properties_masked(QTextCharFormat &out, const RichTextCharFormat &format, uint32_t mask)
+{
+    if (mask & RichTextCharFontFamily)
+        out.setProperty(RichTextPropFontFamily, QString::fromStdString(format.font_family));
+    if (mask & RichTextCharFontSize)
+        out.setProperty(RichTextPropFontSize, format.font_size);
+    if (mask & RichTextCharBold) out.setProperty(RichTextPropBold, format.bold);
+    if (mask & RichTextCharItalic) out.setProperty(RichTextPropItalic, format.italic);
+    if (mask & RichTextCharUnderline) out.setProperty(RichTextPropUnderline, format.underline);
+    if (mask & RichTextCharStrikethrough) out.setProperty(RichTextPropStrikethrough, format.strikethrough);
+    if (mask & RichTextCharTracking) out.setProperty(RichTextPropTracking, (double)format.tracking);
+    if (mask & RichTextCharScaleX) out.setProperty(RichTextPropScaleX, (double)format.scale_x);
+    if (mask & RichTextCharScaleY) out.setProperty(RichTextPropScaleY, (double)format.scale_y);
+    if (mask & RichTextCharBaselineShift) out.setProperty(RichTextPropBaselineShift, (double)format.baseline_shift);
+    if (mask & RichTextCharFillColor) {
+        out.setProperty(RichTextPropFillType, format.fill.type);
+        out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
+        out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
+        out.setProperty(RichTextPropGradientStartColor, (uint)format.fill.gradient_start_color);
+        out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
+        out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
+        out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
+        out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
+    }
 }
 
 static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharFormat &fmt,
@@ -416,12 +456,26 @@ static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const st
     return true;
 }
 
+static RichTextParagraphFormat layer_paragraph_format_for_editor(const Layer &layer)
+{
+    RichTextParagraphFormat f;
+    f.align_h = layer.align_h;
+    f.align_v = layer.align_v;
+    f.indent_left = layer.paragraph_indent_left;
+    f.indent_right = layer.paragraph_indent_right;
+    f.indent_first_line = layer.paragraph_indent_first_line;
+    f.space_before = layer.paragraph_space_before;
+    f.space_after = layer.paragraph_space_after;
+    f.hyphenate = layer.paragraph_hyphenate;
+    return f;
+}
+
 static RichTextDocument rich_text_document_from_qtext_document(const QTextDocument *doc, const Layer &layer, double visual_scale, const QTextCursor &text_cursor = QTextCursor())
 {
     RichTextDocument model = layer.rich_text.empty() ? rich_text_document_from_layer_defaults(layer) : layer.rich_text;
     if (!doc) return model;
     model.plain_text = doc->toPlainText().toStdString();
-    rich_text_document_sync_layer_defaults(model, layer);
+    model.default_paragraph_format = layer_paragraph_format_for_editor(layer);
     model.ranges.clear();
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
         for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
@@ -446,20 +500,6 @@ static RichTextDocument rich_text_document_from_qtext_document(const QTextDocume
 }
 
 
-
-enum RichTextCharFormatMask : uint32_t {
-    RichTextCharFontFamily = 1u << 0,
-    RichTextCharFontSize = 1u << 1,
-    RichTextCharBold = 1u << 2,
-    RichTextCharItalic = 1u << 3,
-    RichTextCharUnderline = 1u << 4,
-    RichTextCharStrikethrough = 1u << 5,
-    RichTextCharTracking = 1u << 6,
-    RichTextCharScaleX = 1u << 7,
-    RichTextCharScaleY = 1u << 8,
-    RichTextCharBaselineShift = 1u << 9,
-    RichTextCharFillColor = 1u << 10,
-};
 
 struct RichTextCharFormatSummary {
     RichTextCharFormat format;
@@ -586,9 +626,11 @@ static void merge_format_bits(RichTextCharFormat &dst, const RichTextCharFormat 
 static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCharFormat &format, uint32_t mask, bool active_selection)
 {
     if (layer.type != LayerType::Text && layer.type != LayerType::Ticker) return;
-    if (layer.rich_text.empty()) layer.rich_text = rich_text_document_from_layer_defaults(layer);
-    rich_text_document_sync_layer_defaults(layer.rich_text, layer);
+    if (layer.rich_text.empty())
+        layer.rich_text = rich_text_document_from_layer_defaults(layer);
     RichTextDocument &doc = layer.rich_text;
+    doc.default_paragraph_format = layer_paragraph_format_for_editor(layer);
+    doc.normalize();
     const size_t text_len = doc.plain_text.size();
     size_t start = active_selection ? std::min(doc.selection.anchor, doc.selection.head) : 0;
     size_t end = active_selection ? std::max(doc.selection.anchor, doc.selection.head) : text_len;
@@ -5724,10 +5766,12 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     }
     if (mask & RichTextCharUnderline) qfmt.setFontUnderline(format.underline);
     if (mask & RichTextCharStrikethrough) qfmt.setFontStrikeOut(format.strikethrough);
-    store_rich_text_format_properties(qfmt, format);
-    QColor transparent_color = rich_text_color_from_argb(format.fill.color);
-    transparent_color.setAlpha(0);
-    qfmt.setForeground(transparent_color);
+    store_rich_text_format_properties_masked(qfmt, format, mask);
+    if (mask & RichTextCharFillColor) {
+        QColor transparent_color = rich_text_color_from_argb(format.fill.color);
+        transparent_color.setAlpha(0);
+        qfmt.setForeground(transparent_color);
+    }
 
     QTextCursor cursor = inline_text_editor_->textCursor();
     cursor.mergeCharFormat(qfmt);
@@ -7138,7 +7182,15 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
         format_cursor.select(QTextCursor::Document);
         format_cursor.mergeCharFormat(char_format);
     }
-    inline_text_editor_->mergeCurrentCharFormat(char_format);
+    /*
+     * Do not call mergeCurrentCharFormat() while the saved cursor owns a
+     * selection. QTextEdit applies that merge to the selected document text,
+     * so re-positioning the inline editor after begin_text_edit() could repaint
+     * every character with the current/layer style and hide mixed per-character
+     * sizes or colors until edit mode was committed.
+     */
+    if (!saved_cursor.hasSelection())
+        inline_text_editor_->mergeCurrentCharFormat(char_format);
     if (auto *layout = doc->documentLayout())
         layout->documentSize();
     inline_text_editor_->setTextCursor(saved_cursor);
@@ -10726,7 +10778,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
                 } else {
                     layer_->text_content = value;
-                    rich_text_document_sync_layer_defaults(layer_->rich_text, *layer_);
+                    if (layer_->rich_text.empty())
+                        layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+                    layer_->rich_text.default_paragraph_format = layer_paragraph_format_for_editor(*layer_);
                     rich_text_document_replace_text(layer_->rich_text, value);
                     layer_->rich_text_html.clear();
                 }
