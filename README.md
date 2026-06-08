@@ -116,10 +116,13 @@ cmake -B build -G "Visual Studio 17 2022" -A x64 ^
 cmake --build build --config Release
 ```
 
-Or run the convenience script:
+Or run the convenience script. It validates the modular source-tree paths,
+configures CMake, builds the selected configuration, optionally runs the
+lightweight tests, and installs the staged plugin layout:
 
 ```powershell
 .\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio
+.\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio -Configuration RelWithDebInfo -BuildTests
 ```
 
 After install, OBS should see this structure:

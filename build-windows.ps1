@@ -8,6 +8,8 @@ param(
     [string]$InstallRoot,
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
+    [string]$Configuration = "Release",
+    [switch]$BuildTests,
     [switch]$SkipInstall
 )
 
@@ -47,6 +49,41 @@ $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
 Write-Host "=== Starting OBS Graphics Studio Pro build process ==="
 
+# Source files now live in ownership-oriented module folders. Keep Windows-only
+# preflight checks pointed at the same paths CMake builds so stale flat-tree
+# paths fail here instead of later in MSVC.
+$ModuleSources = @{
+    CoreTitleData = "src\core\title-data.cpp"
+    TextRichText = "src\text\title-rich-text.cpp"
+    ObsPluginMain = "src\obs\plugin-main.cpp"
+    ObsTitleSource = "src\obs\title-source.cpp"
+    EditorTitleDock = "src\editor\title-dock.cpp"
+    EditorTitleEditor = "src\editor\title-editor.cpp"
+    TimelineAnimation = "src\timeline\animation.cpp"
+}
+
+function Resolve-RepoPath {
+    param([string]$RelativePath)
+    return Join-Path $ScriptDir $RelativePath
+}
+
+function Assert-RepoFileExists {
+    param(
+        [string]$Name,
+        [string]$RelativePath
+    )
+
+    $FullPath = Resolve-RepoPath $RelativePath
+    if (-not (Test-Path $FullPath)) {
+        Write-Error "Expected $Name at $RelativePath, but the file was not found. The Windows build script may be out of sync with the module layout."
+        exit 1
+    }
+    return $FullPath
+}
+
+foreach ($Entry in $ModuleSources.GetEnumerator()) {
+    [void](Assert-RepoFileExists -Name $Entry.Key -RelativePath $Entry.Value)
+}
 
 # Guard against accidental duplicate out-of-class bodies in large UI
 # translation units. MSVC reports these late during compilation, so fail early
@@ -72,7 +109,7 @@ function Assert-UniqueSourceDefinition {
     }
 }
 
-$TitleEditorSource = Join-Path $ScriptDir "src\title-editor.cpp"
+$TitleEditorSource = Assert-RepoFileExists -Name "EditorTitleEditor" -RelativePath $ModuleSources.EditorTitleEditor
 Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
     "void TitleEditor::keyPressEvent(",
     "void CanvasPreview::set_safe_guides_visible(",
@@ -94,7 +131,7 @@ Assert-UniqueSourceDefinition -File $TitleEditorSource -Definitions @(
     "void TitlePropertiesPanel::load_values("
 )
 
-$TitleDockSource = Join-Path $ScriptDir "src\title-dock.cpp"
+$TitleDockSource = Assert-RepoFileExists -Name "EditorTitleDock" -RelativePath $ModuleSources.EditorTitleDock
 Assert-UniqueSourceDefinition -File $TitleDockSource -Definitions @(
     "void TitleDock::select_title(",
     "std::shared_ptr<Title> TitleDock::create_template_title(",
@@ -177,7 +214,8 @@ $CmakeArgs = @(
     "-G", $Generator,
     "-A", $Architecture,
     "-DCMAKE_TOOLCHAIN_FILE=$($VcpkgToolchain.Replace('\', '/'))",
-    "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))"
+    "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))",
+    "-DOBS_GSP_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
 )
 & cmake @CmakeArgs
 if ($LASTEXITCODE -ne 0) {
@@ -186,11 +224,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 5. Build the Plugin
-Write-Host "`n=== Building OBS Graphics Studio Pro ==="
-& cmake --build $BuildDir --config Release
+Write-Host "`n=== Building OBS Graphics Studio Pro ($Configuration) ==="
+& cmake --build $BuildDir --config $Configuration
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed."
     exit 1
+}
+
+if ($BuildTests) {
+    Write-Host "`n=== Running OBS Graphics Studio Pro tests ==="
+    & ctest --test-dir $BuildDir -C $Configuration --output-on-failure
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Tests failed."
+        exit 1
+    }
 }
 
 if ($SkipInstall) {
@@ -207,12 +254,15 @@ New-Item -ItemType Directory -Force -Path $ObsPluginData | Out-Null
 $StagedPluginRoot = Join-Path $BuildDir $PluginName
 $BuiltDllCandidates = @(
     (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$Configuration\$PluginDllName"),
     (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Release\$PluginDllName"),
     (Join-Path $StagedPluginRoot "bin\$ObsArchDir\RelWithDebInfo\$PluginDllName"),
     (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Debug\$PluginDllName"),
+    (Join-Path $BuildDir "obs-plugins\$Configuration\$PluginDllName"),
     (Join-Path $BuildDir "obs-plugins\Release\$PluginDllName"),
     (Join-Path $BuildDir "obs-plugins\$PluginDllName"),
     (Join-Path $BuildDir "obs-plugins\$ObsArchDir\$PluginDllName"),
+    (Join-Path $BuildDir "$Configuration\$PluginDllName"),
     (Join-Path $BuildDir "Release\$PluginDllName"),
     (Join-Path $BuildDir "RelWithDebInfo\$PluginDllName"),
     (Join-Path $BuildDir "Debug\$PluginDllName")
