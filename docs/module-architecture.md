@@ -1,0 +1,82 @@
+# OBS Graphics Studio Pro module architecture
+
+This document defines the incremental module split for OBS Graphics Studio Pro. The
+first pass moves the existing monolithic files into ownership-oriented source
+folders while preserving the legacy include names and runtime behavior. New work
+should land in the owning module below instead of expanding editor/source files
+without a clear boundary.
+
+## Dependency direction
+
+Keep dependencies flowing downward through stable data contracts:
+
+```text
+Editor UI / Docking ─┐
+Canvas & Tools ──────┼──> Layer System ─┐
+Timeline & Animation ┘                  ├──> Core Architecture
+Text Engine ────────────────────────────┘
+Effects System ─────> Rendering Engine ───> OBS Integration
+Performance & Stability audits observe all modules but should not own features.
+```
+
+Rules for future refactors:
+
+- `core` owns project data, serialization formats, title metadata, undo/redo
+  state, command contracts, and global state transitions.
+- Feature modules may depend on `core` models, but `core` must not depend on UI,
+  OBS, rendering, effects, timeline, or tool modules.
+- `obs` owns plugin registration and source lifecycle. Editor-only code should
+  call into `obs` through narrow interfaces, not by embedding OBS-specific
+  rendering or property logic in panels.
+- `editor`, `canvas`, and `timeline` own user interaction; they should request
+  model changes through commands instead of mutating shared state ad hoc.
+- `rendering`, `effects`, and `text` own drawing decisions and cache invalidation
+  for their domains. Expensive work should be explicit and measurable.
+
+## Current source ownership
+
+| Module | Current files | Responsibility |
+| --- | --- | --- |
+| Core Architecture | `src/core/title-data.*`, `src/core/title-localization.h` | Shared title/project models, serialization helpers, localization helpers, and cross-module state contracts. |
+| Text Engine | `src/text/title-rich-text.*` | Rich-text model, mixed inline styles, plain-text conversion, and text serialization helpers. |
+| OBS Integration | `src/obs/plugin-main.*`, `src/obs/title-source.*` | OBS module registration, source creation/destruction, source properties, preview/live output, and OBS-facing rendering entry points. |
+| Editor UI / Docking | `src/editor/title-dock.*`, `src/editor/title-editor.*`, `src/editor/title-hotkeys.*`, `src/editor/title-assets.h` | Qt dock integration, editor windows, toolbars, properties panels, hotkeys, icons, and layout UI. |
+
+## Target modules for subsequent phases
+
+The following directories are intentionally introduced now so future work has a
+clear destination even before all code is extracted from legacy files:
+
+- `src/rendering`: GPU/OBS render paths, Cairo fallback, textures, alpha,
+  blending, filters, render caches, invalidation, and performance-critical draw
+  code.
+- `src/layers`: Text/shape/image/group/mask layer behavior, hierarchy,
+  transforms, parenting, visibility, locking, and layer-specific keyframe hooks.
+- `src/effects`: Stackable effects such as shadows, glows, color overlays,
+  brightness/contrast, saturation, blend modes, effect serialization, and effect
+  caches.
+- `src/canvas`: Selection, transform handles, snapping, rulers, guides, direct
+  manipulation, drawing tools, zoom/pan, and keyboard-routing for canvas tools.
+- `src/timeline`: Playback, timecode, animation curves, keyframe selection,
+  easing types, and layer animation state.
+- `src/performance`: Profiling notes, cache audits, render-time spike analysis,
+  memory usage findings, crash-risk reviews, and regression-test plans.
+
+## Incremental migration phases
+
+1. **Source ownership split (completed in this pass).** Move existing files into
+   module folders and expose those folders in CMake include paths without
+   behavior changes.
+2. **Core contracts.** Extract command/undo interfaces and project metadata from
+   `title-data` into smaller core headers and add serialization regression tests.
+3. **Rendering extraction.** Move Cairo/OBS drawing helpers out of
+   `src/obs/title-source.cpp` and editor paint code into `src/rendering` with
+   cache ownership documented at each boundary.
+4. **Layer/effects extraction.** Move layer-specific behavior and effect stacks
+   into `src/layers` and `src/effects`, keeping serialization in core-facing DTOs.
+5. **Canvas/timeline extraction.** Move direct manipulation, shortcuts,
+   keyframe UI, playback, and easing logic out of editor widgets into tool and
+   timeline services.
+6. **Stability pass.** Add regression tests and profiling checkpoints for render
+   spikes, cache invalidation, memory ownership, undo/redo consistency, and OBS
+   source lifecycle crashes.

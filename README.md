@@ -13,13 +13,23 @@ OBS-Graphics-Studio-Pro/
 ├── data/
 │   └── locale/
 │       └── en-US.ini
+├── docs/
+│   └── module-architecture.md ← Incremental ownership map and migration phases
 └── src/
-    ├── plugin-main.h / .cpp   ← OBS module entry point
-    ├── title-data.h  / .cpp   ← Data model (Title, Layer, Keyframe) + JSON persistence
-    ├── title-source.h / .cpp  ← OBS source: Cairo renderer → gs_texture
-    ├── title-dock.h  / .cpp   ← OBS Dock: title list panel
-    └── title-editor.h / .cpp  ← After Effects–style editor (Canvas + LayerStack + Timeline + Properties)
+    ├── core/        ← Data model, serialization, metadata, localization, global state contracts
+    ├── text/        ← Rich-text model and text serialization helpers
+    ├── obs/         ← OBS module entry point, source lifecycle, OBS-facing render entry points
+    ├── editor/      ← Qt dock/editor UI, hotkeys, panels, toolbars, icons
+    ├── rendering/   ← Target module for GPU/Cairo render paths, textures, caches, blending
+    ├── layers/      ← Target module for layer hierarchy, transforms, masks, visibility, locking
+    ├── effects/     ← Target module for stackable effects, blend modes, effect caches
+    ├── canvas/      ← Target module for selection, tools, snapping, guides, zoom/pan
+    ├── timeline/    ← Target module for playback, timecode, keyframes, curves, easing
+    └── performance/ ← Target module for profiling, stability audits, regression plans
 ```
+
+See [`docs/module-architecture.md`](docs/module-architecture.md) for module ownership,
+dependency direction, and the phased migration plan.
 
 ### Component Map
 
@@ -211,9 +221,9 @@ Titles are saved in the OBS profile config directory:
 
 ### Adding a new layer type
 
-1. Add a value to `enum class LayerType` in `title-data.h`
-2. Add rendering logic in `title-source.cpp → render_title_frame()` (Cairo)
-3. Add Qt paint logic in `title-editor.cpp → CanvasPreview::render_to_pixmap()`
+1. Add a value to `enum class LayerType` in `src/core/title-data.h`
+2. Add rendering logic in `src/obs/title-source.cpp → render_title_frame()` (Cairo)
+3. Add Qt paint logic in `src/editor/title-editor.cpp → CanvasPreview::render_to_pixmap()`
 4. Add UI controls in `PropertiesPanel`
 5. Add JSON serialisation in `layer_to_json()` / `layer_from_json()`
 
