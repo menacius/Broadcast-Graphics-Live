@@ -96,8 +96,6 @@ public:
                                         std::string *error = nullptr);
 
     std::vector<std::shared_ptr<Title>> titles() const;
-    Title                  title_snapshot(const std::string &id) const;
-    bool                   title_dimensions(const std::string &id, int &width, int &height) const;
 
     /* Persistence */
     void load();

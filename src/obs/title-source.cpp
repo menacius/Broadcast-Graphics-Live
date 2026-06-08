@@ -228,6 +228,18 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
  * ══════════════════════════════════════════════════════════════════ */
+static Title snapshot_title_for_render(const Title &title)
+{
+    Title snapshot = title;
+    snapshot.layers.clear();
+    snapshot.layers.reserve(title.layers.size());
+    for (const auto &layer : title.layers) {
+        if (layer)
+            snapshot.layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    return snapshot;
+}
+
 struct TitleSourceData {
     obs_source_t *source  = nullptr;
 
@@ -478,25 +490,7 @@ static int exposed_text_layer_index(const std::vector<std::shared_ptr<Layer>> &e
     return -1;
 }
 
-static bool clear_title_cue_state(const std::shared_ptr<Title> &title)
-{
-    if (!title) return false;
-    const bool changed = title->current_cue_row != -1 ||
-                         title->pending_cue_row != -1 ||
-                         title->cue_persistence_transition ||
-                         !title->cue_persistent_text_columns.empty();
-    title->current_cue_row = -1;
-    title->pending_cue_row = -1;
-    title->cue_persistence_transition = false;
-    title->cue_persistent_text_columns.clear();
-    return changed;
-}
 
-static void apply_clear_title_cue_state(const std::shared_ptr<Title> &title)
-{
-    if (clear_title_cue_state(title))
-        TitleDataStore::instance().touch_runtime_change();
-}
 
 static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
 {
@@ -2980,8 +2974,8 @@ static void render_title_frame(TitleSourceData *data,
 
 QImage render_title_to_image(const Title &title, double t)
 {
-    const int w = static_cast<int>(clamped_source_dimension(title.width));
-    const int h = static_cast<int>(clamped_source_dimension(title.height));
+    const int w = std::max(1, title.width);
+    const int h = std::max(1, title.height);
     QImage image(w, h, QImage::Format_ARGB32_Premultiplied);
 
     auto surface = make_image_surface_for_qimage(image);
@@ -3082,22 +3076,16 @@ static uint32_t source_get_width(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return 1920;
-    int width = 1920;
-    int height = 1080;
-    return TitleDataStore::instance().title_dimensions(data->title_id, width, height)
-        ? clamped_source_dimension(width)
-        : 1920;
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    return title ? clamped_source_dimension(title->width) : 1920;
 }
 
 static uint32_t source_get_height(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return 1080;
-    int width = 1920;
-    int height = 1080;
-    return TitleDataStore::instance().title_dimensions(data->title_id, width, height)
-        ? clamped_source_dimension(height)
-        : 1080;
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    return title ? clamped_source_dimension(title->height) : 1080;
 }
 
 static void source_video_tick(void *priv, float seconds)
@@ -3197,7 +3185,11 @@ static void source_video_tick(void *priv, float seconds)
                 data->playing = false;
                 data->cue_phase = TitleSourceData::CuePhase::FreeRun;
                 data->active_cue_row = -1;
-                apply_clear_title_cue_state(title);
+                title->current_cue_row = -1;
+                title->pending_cue_row = -1;
+                title->cue_persistence_transition = false;
+                title->cue_persistent_text_columns.clear();
+                TitleDataStore::instance().touch_runtime_change();
             } else {
                 if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
                     apply_live_text_row(title, title->pending_cue_row);
@@ -3247,8 +3239,12 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = title->duration;
                 data->playing  = false;
                 if (title->current_cue_row >= 0 || title->pending_cue_row >= 0 || data->active_cue_row >= 0) {
+                    title->current_cue_row = -1;
+                    title->pending_cue_row = -1;
+                    title->cue_persistence_transition = false;
+                    title->cue_persistent_text_columns.clear();
                     data->active_cue_row = -1;
-                    apply_clear_title_cue_state(title);
+                    TitleDataStore::instance().touch_runtime_change();
                 }
             }
         }
@@ -3275,11 +3271,7 @@ static void source_video_tick(void *priv, float seconds)
     }
 
     if (data->dirty) {
-        Title render_snapshot = TitleDataStore::instance().title_snapshot(data->title_id);
-        if (render_snapshot.id.empty()) {
-            data->dirty = false;
-            return;
-        }
+        Title render_snapshot = snapshot_title_for_render(*title);
         render_title_frame(data, render_snapshot, data->playhead);
     }
 }
