@@ -7317,12 +7317,27 @@ QRectF CanvasPreview::toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardMo
     return rect;
 }
 
+QRectF CanvasPreview::snapped_toolbar_draw_rect(const QRectF &raw_rect)
+{
+    QRectF rect = raw_rect.normalized();
+    if (!rect.isValid()) {
+        clear_snap_feedback();
+        return rect;
+    }
+
+    const QPointF delta = snap_delta_for_bounds(rect, QPointF(0.0, 0.0), true, true);
+    rect.translate(delta);
+    return rect;
+}
+
 QRect CanvasPreview::toolbar_preview_update_rect() const
 {
     if (!title_ || !drawing_shape_)
         return QRect();
 
-    QRectF canvas_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+    const QRectF canvas_rect = shape_draw_current_rect_.isValid()
+                                  ? shape_draw_current_rect_
+                                  : toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
     QRectF view_rect(canvas_to_view(canvas_rect.topLeft()), canvas_to_view(canvas_rect.bottomRight()));
     view_rect = view_rect.normalized();
     return view_rect.adjusted(-24.0, -24.0, 24.0, 24.0).toAlignedRect();
@@ -7333,7 +7348,9 @@ void CanvasPreview::draw_toolbar_preview(QPainter &p)
     if (!title_ || !drawing_shape_)
         return;
 
-    QRectF canvas_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+    const QRectF canvas_rect = shape_draw_current_rect_.isValid()
+                                  ? shape_draw_current_rect_
+                                  : toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
     QRectF view_rect(canvas_to_view(canvas_rect.topLeft()), canvas_to_view(canvas_rect.bottomRight()));
     view_rect = view_rect.normalized();
 
@@ -7374,8 +7391,9 @@ void CanvasPreview::update_shape_drawing(const QPointF &view_pt, Qt::KeyboardMod
     const QRect old_update_rect = last_toolbar_preview_update_rect_;
     shape_draw_current_canvas_ = view_to_canvas(view_pt);
     shape_draw_modifiers_ = modifiers;
-    QRectF rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
-    drawing_shape_changed_ = rect.width() >= 2.0 || rect.height() >= 2.0;
+    const QRectF raw_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+    shape_draw_current_rect_ = snapped_toolbar_draw_rect(raw_rect);
+    drawing_shape_changed_ = shape_draw_current_rect_.width() >= 2.0 || shape_draw_current_rect_.height() >= 2.0;
 
     last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
     QRect repaint_rect = old_update_rect.united(last_toolbar_preview_update_rect_);
@@ -7923,12 +7941,13 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         drawing_shape_ = true;
         drawing_shape_changed_ = false;
         drag_mode_ = DragMode::None;
-        shape_draw_start_canvas_ = view_to_canvas(ev->pos());
-        shape_draw_current_canvas_ = shape_draw_start_canvas_;
-        shape_draw_modifiers_ = ev->modifiers();
-        last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
         selected_layer_ids_.clear();
         sel_layer_id_.clear();
+        shape_draw_start_canvas_ = snap_canvas_point(view_to_canvas(ev->pos()), true, true);
+        shape_draw_current_canvas_ = shape_draw_start_canvas_;
+        shape_draw_modifiers_ = ev->modifiers();
+        shape_draw_current_rect_ = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+        last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
         update(last_toolbar_preview_update_rect_.isEmpty() ? rect() : last_toolbar_preview_update_rect_);
         ev->accept();
         return;
@@ -8132,7 +8151,9 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
             update_shape_drawing(ev->pos(), ev->modifiers());
 
         const QRect repaint_rect = old_update_rect.united(last_toolbar_preview_update_rect_);
-        const QRectF final_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
+        const QRectF final_rect = shape_draw_current_rect_.isValid()
+                                    ? shape_draw_current_rect_.normalized()
+                                    : toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
         const bool has_drawn_size = drawing_shape_changed_ || dragged_far_enough;
         const bool was_text_tool = active_tool_ == CanvasTool::Text;
         const ShapeType final_shape_type = active_shape_type_;
@@ -8141,7 +8162,9 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 
         drawing_shape_ = false;
         drawing_shape_changed_ = false;
+        shape_draw_current_rect_ = QRectF();
         last_toolbar_preview_update_rect_ = QRect();
+        clear_snap_feedback();
         update(repaint_rect.isEmpty() ? rect() : repaint_rect);
 
         if (was_text_tool)

@@ -354,6 +354,7 @@ private:
     void add_snap_feedback(bool x_axis, double value, const QString &label);
     void apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     QRectF toolbar_draw_rect(const QPointF &canvas_pt, Qt::KeyboardModifiers modifiers) const;
+    QRectF snapped_toolbar_draw_rect(const QRectF &raw_rect);
     double toolbar_draw_aspect_ratio() const;
     QRect toolbar_preview_update_rect() const;
     void draw_toolbar_preview(QPainter &p);
@@ -396,6 +397,7 @@ private:
     bool refreshing_inline_text_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
+    QRectF shape_draw_current_rect_;
     Qt::KeyboardModifiers shape_draw_modifiers_ = Qt::NoModifier;
     QRect last_toolbar_preview_update_rect_;
 
