@@ -60,6 +60,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSet>
 #include <QPixmap>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -76,6 +77,7 @@
 #include <iterator>
 #include <array>
 #include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -83,6 +85,8 @@ constexpr int TemplateCategoryNameRole = Qt::UserRole + 1;
 constexpr const char *kDockSettingsGroup = "TitleDock";
 constexpr const char *kDockSplitterStateKey = "sectionSplitterState";
 constexpr const char *kTemplateIconViewKey = "templateIconView";
+constexpr const char *kVisibilityFilterKey = "visibilityFilterActive";
+constexpr const char *kTitleSourceId = "obs_graphics_studio_pro_source";
 constexpr const char *kPlaylistLoopKey = "playlistLoop";
 constexpr const char *kPlaylistReverseKey = "playlistReverse";
 constexpr const char *kPlaylistHoldSecondsKey = "playlistHoldSeconds";
@@ -1182,6 +1186,7 @@ TitleDock::TitleDock(QWidget *parent)
         });
     });
 
+    install_obs_state_callbacks();
     populate_list();
     seen_store_revision_ = TitleDataStore::instance().revision();
     live_refresh_timer_ = new QTimer(this);
@@ -1197,6 +1202,8 @@ TitleDock::TitleDock(QWidget *parent)
 
 TitleDock::~TitleDock()
 {
+    remove_obs_state_callbacks();
+
     TitleDataStore::instance().remove_change_callback(change_callback_id_);
     change_callback_id_ = 0;
 
@@ -1219,6 +1226,7 @@ void TitleDock::load_dock_settings()
     settings.beginGroup(QString::fromUtf8(kDockSettingsGroup));
 
     template_icon_view_ = settings.value(QString::fromUtf8(kTemplateIconViewKey), template_icon_view_).toBool();
+    visibility_filter_active_ = settings.value(QString::fromUtf8(kVisibilityFilterKey), visibility_filter_active_).toBool();
     playlist_loop_ = settings.value(QString::fromUtf8(kPlaylistLoopKey), playlist_loop_).toBool();
     playlist_reverse_ = settings.value(QString::fromUtf8(kPlaylistReverseKey), playlist_reverse_).toBool();
     playlist_hold_seconds_ = std::clamp(settings.value(QString::fromUtf8(kPlaylistHoldSecondsKey),
@@ -1244,6 +1252,7 @@ void TitleDock::save_dock_settings() const
     if (sections_)
         settings.setValue(QString::fromUtf8(kDockSplitterStateKey), sections_->saveState());
     settings.setValue(QString::fromUtf8(kTemplateIconViewKey), template_icon_view_);
+    settings.setValue(QString::fromUtf8(kVisibilityFilterKey), visibility_filter_active_);
     settings.setValue(QString::fromUtf8(kPlaylistLoopKey), playlist_loop_);
     settings.setValue(QString::fromUtf8(kPlaylistReverseKey), playlist_reverse_);
     settings.setValue(QString::fromUtf8(kPlaylistHoldSecondsKey), playlist_hold_seconds_);
@@ -1257,6 +1266,69 @@ void TitleDock::update_scene_collection_title()
 {
     if (template_lbl_)
         template_lbl_->setText(current_scene_collection_titles_label());
+}
+
+void TitleDock::install_obs_state_callbacks()
+{
+    if (obs_state_callbacks_installed_) return;
+
+    signal_handler_t *handler = obs_get_signal_handler();
+    if (!handler) return;
+
+    signal_handler_connect(handler, "source_activate", &TitleDock::on_obs_source_state_signal, this);
+    signal_handler_connect(handler, "source_deactivate", &TitleDock::on_obs_source_state_signal, this);
+    signal_handler_connect(handler, "source_show", &TitleDock::on_obs_source_state_signal, this);
+    signal_handler_connect(handler, "source_hide", &TitleDock::on_obs_source_state_signal, this);
+    signal_handler_connect(handler, "source_create", &TitleDock::on_obs_source_state_signal, this);
+    signal_handler_connect(handler, "source_destroy", &TitleDock::on_obs_source_state_signal, this);
+    obs_frontend_add_event_callback(&TitleDock::on_obs_frontend_event, this);
+    obs_state_callbacks_installed_ = true;
+}
+
+void TitleDock::remove_obs_state_callbacks()
+{
+    if (!obs_state_callbacks_installed_) return;
+
+    signal_handler_t *handler = obs_get_signal_handler();
+    if (handler) {
+        signal_handler_disconnect(handler, "source_activate", &TitleDock::on_obs_source_state_signal, this);
+        signal_handler_disconnect(handler, "source_deactivate", &TitleDock::on_obs_source_state_signal, this);
+        signal_handler_disconnect(handler, "source_show", &TitleDock::on_obs_source_state_signal, this);
+        signal_handler_disconnect(handler, "source_hide", &TitleDock::on_obs_source_state_signal, this);
+        signal_handler_disconnect(handler, "source_create", &TitleDock::on_obs_source_state_signal, this);
+        signal_handler_disconnect(handler, "source_destroy", &TitleDock::on_obs_source_state_signal, this);
+    }
+    obs_frontend_remove_event_callback(&TitleDock::on_obs_frontend_event, this);
+    obs_state_callbacks_installed_ = false;
+}
+
+void TitleDock::refresh_for_obs_source_state_change()
+{
+    if (!visibility_filter_active_) return;
+    populate_list();
+}
+
+void TitleDock::on_obs_source_state_signal(void *priv, calldata_t *)
+{
+    auto *dock = static_cast<TitleDock *>(priv);
+    if (!dock) return;
+
+    QTimer::singleShot(0, dock, [dock]() { dock->refresh_for_obs_source_state_change(); });
+}
+
+void TitleDock::on_obs_frontend_event(obs_frontend_event event, void *priv)
+{
+    auto *dock = static_cast<TitleDock *>(priv);
+    if (!dock) return;
+
+    switch (event) {
+    case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+    case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
+        QTimer::singleShot(0, dock, [dock]() { dock->refresh_for_obs_source_state_change(); });
+        break;
+    default:
+        break;
+    }
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1297,6 +1369,13 @@ void TitleDock::build_ui()
                                            obsgs_tr("OBSTitles.AddToSceneTooltip"));
     btn_view_ = make_obs_dock_tool_button(template_toolbar, obsgs_tr("OBSTitles.IconView"), obs_icon("icon-view.svg"),
                                           obsgs_tr("OBSTitles.IconViewTooltip"));
+    btn_visibility_filter_ = make_obs_dock_tool_button(template_toolbar, obsgs_tr("OBSTitles.VisibleSourceFilter"),
+                                                       obs_icon("layer-visible.svg"),
+                                                       obsgs_tr("OBSTitles.VisibleSourceFilterTooltip"));
+    btn_visibility_filter_->setCheckable(true);
+    btn_visibility_filter_->setStyleSheet(QStringLiteral(
+        "QToolButton:checked{background:#1d8f3a;color:white;border-radius:3px;}"
+        "QToolButton:checked:hover{background:#28b84f;}"));
 
     template_toolbar->addWidget(btn_add_);
     template_toolbar->addSeparator();
@@ -1304,6 +1383,7 @@ void TitleDock::build_ui()
     template_toolbar->addWidget(btn_del_);
     template_toolbar->addWidget(toolbar_spacer(template_toolbar));
     template_toolbar->addWidget(btn_view_);
+    template_toolbar->addWidget(btn_visibility_filter_);
     template_toolbar->addSeparator();
     template_toolbar->addWidget(btn_rename_);
     template_toolbar->addWidget(btn_export_);
@@ -1468,6 +1548,7 @@ void TitleDock::build_ui()
     connect(btn_edit_,  &QToolButton::clicked, this, &TitleDock::on_edit);
     connect(btn_scene_, &QToolButton::clicked, this, &TitleDock::on_add_to_scene);
     connect(btn_view_, &QToolButton::clicked, this, &TitleDock::on_toggle_template_view);
+    connect(btn_visibility_filter_, &QToolButton::toggled, this, &TitleDock::on_toggle_visibility_filter);
     connect(btn_add_text_row_, &QToolButton::clicked, this, &TitleDock::on_add_live_text_row);
     connect(btn_delete_text_row_, &QToolButton::clicked, this, &TitleDock::on_delete_live_text_rows);
     connect(btn_row_up_, &QToolButton::clicked, this, &TitleDock::on_move_live_text_row_up);
@@ -1561,6 +1642,7 @@ void TitleDock::build_ui()
     connect(playlist_timer_, &QTimer::timeout, this, &TitleDock::on_playlist_tick);
 
     load_dock_settings();
+    if (btn_visibility_filter_) btn_visibility_filter_->setChecked(visibility_filter_active_);
     if (act_playlist_loop_) act_playlist_loop_->setChecked(playlist_loop_);
     if (act_playlist_reverse_) act_playlist_reverse_->setChecked(playlist_reverse_);
     if (act_background_persistence_) act_background_persistence_->setChecked(background_persistence_);
@@ -1617,13 +1699,60 @@ void TitleDock::on_toggle_template_view()
     save_dock_settings();
 }
 
+void TitleDock::on_toggle_visibility_filter(bool enabled)
+{
+    visibility_filter_active_ = enabled;
+    populate_list();
+    save_dock_settings();
+}
+
+QSet<QString> TitleDock::active_title_source_ids() const
+{
+    QSet<QString> ids;
+
+    obs_enum_sources([](void *param, obs_source_t *source) {
+        auto *result = static_cast<QSet<QString> *>(param);
+        if (!result || !source) return true;
+
+        const char *source_id = obs_source_get_id(source);
+        if (!source_id || strcmp(source_id, kTitleSourceId) != 0)
+            return true;
+
+        if (!obs_source_active(source) && !obs_source_showing(source))
+            return true;
+
+        obs_data_t *settings = obs_source_get_settings(source);
+        const char *title_id = settings ? obs_data_get_string(settings, PROP_TITLE_ID) : nullptr;
+        const QString id = QString::fromUtf8(title_id ? title_id : "").trimmed();
+        if (!id.isEmpty())
+            result->insert(id);
+        if (settings)
+            obs_data_release(settings);
+
+        return true;
+    }, &ids);
+
+    return ids;
+}
+
+bool TitleDock::should_show_title(const std::shared_ptr<Title> &title, const QSet<QString> &active_ids) const
+{
+    if (!visibility_filter_active_) return true;
+    if (!title) return false;
+    return active_ids.contains(QString::fromStdString(title->id));
+}
+
 void TitleDock::populate_list()
 {
     QString prev_id = QString::fromStdString(selected_id());
     list_->blockSignals(true);
     list_->clear();
 
+    const QSet<QString> active_ids = visibility_filter_active_ ? active_title_source_ids() : QSet<QString>();
+
     for (auto &t : TitleDataStore::instance().titles()) {
+        if (!should_show_title(t, active_ids))
+            continue;
         auto *item = new QListWidgetItem(QString::fromStdString(t->name));
         if (template_icon_view_)
             item->setIcon(title_cached_screenshot_icon(*t, QSize(120, 72)));

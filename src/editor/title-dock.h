@@ -13,6 +13,7 @@
 #pragma once
 
 #include "title-data.h"
+#include <obs-frontend-api.h>
 #include <QDockWidget>
 #include <QListWidget>
 #include <QListWidgetItem>
@@ -26,11 +27,14 @@
 #include <QTimer>
 #include <QByteArray>
 #include <QDateTime>
+#include <QSet>
 #include <map>
 #include <vector>
 
 class TitleEditor;
 class QString;
+struct calldata;
+typedef struct calldata calldata_t;
 
 class TitleDock : public QDockWidget {
     Q_OBJECT
@@ -54,6 +58,7 @@ private slots:
     void on_edit();
     void on_add_to_scene();
     void on_toggle_template_view();
+    void on_toggle_visibility_filter(bool enabled);
     void on_selection_changed();
     void on_add_live_text_row();
     void on_delete_live_text_rows();
@@ -72,6 +77,13 @@ private:
     void build_ui();
     void populate_list();
     void populate_exposed_text();
+    void install_obs_state_callbacks();
+    void remove_obs_state_callbacks();
+    void refresh_for_obs_source_state_change();
+    QSet<QString> active_title_source_ids() const;
+    bool should_show_title(const std::shared_ptr<Title> &title, const QSet<QString> &active_ids) const;
+    static void on_obs_source_state_signal(void *priv, calldata_t *data);
+    static void on_obs_frontend_event(obs_frontend_event event, void *priv);
     void update_template_view_mode();
     void set_all_live_text_rows_checked(bool checked);
     void update_live_text_select_all_state();
@@ -114,6 +126,7 @@ private:
     QToolButton *btn_edit_   = nullptr;
     QToolButton *btn_scene_  = nullptr;
     QToolButton *btn_view_   = nullptr;
+    QToolButton *btn_visibility_filter_ = nullptr;
     QLabel       *template_lbl_ = nullptr;
     QLabel       *status_lbl_ = nullptr;
     QLabel       *text_editor_lbl_ = nullptr;
@@ -134,6 +147,8 @@ private:
     QAction     *act_text_persistence_ = nullptr;
     bool          updating_exposed_text_ = false;
     bool          template_icon_view_ = false;
+    bool          visibility_filter_active_ = false;
+    bool          obs_state_callbacks_installed_ = false;
     std::map<int, QByteArray> live_text_header_states_;
     QTimer       *live_refresh_timer_ = nullptr;
     QTimer       *playlist_timer_ = nullptr;
