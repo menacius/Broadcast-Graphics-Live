@@ -1773,10 +1773,20 @@ static QColor evaluated_background_color(const Layer &layer, double t)
 
 static bool rich_text_format_differs_from_default(const RichTextCharFormat &a, const RichTextCharFormat &b)
 {
-    return a.font_family != b.font_family || a.font_size != b.font_size ||
-           a.bold != b.bold || a.italic != b.italic || a.underline != b.underline ||
-           a.strikethrough != b.strikethrough || a.fill.type != b.fill.type ||
-           a.fill.color != b.fill.color || a.fill.gradient_start_color != b.fill.gradient_start_color ||
+    return a.font_family != b.font_family || a.font_style != b.font_style ||
+           a.font_size != b.font_size || a.bold != b.bold || a.italic != b.italic ||
+           a.underline != b.underline || a.strikethrough != b.strikethrough ||
+           a.kerning != b.kerning || a.kerning_mode != b.kerning_mode ||
+           std::abs(a.manual_kerning - b.manual_kerning) >= 0.0001f ||
+           std::abs(a.tracking - b.tracking) >= 0.0001f ||
+           std::abs(a.scale_x - b.scale_x) >= 0.0001f ||
+           std::abs(a.scale_y - b.scale_y) >= 0.0001f ||
+           std::abs(a.baseline_shift - b.baseline_shift) >= 0.0001f ||
+           a.text_style != b.text_style || a.ligatures != b.ligatures ||
+           a.stylistic_alternates != b.stylistic_alternates || a.fractions != b.fractions ||
+           a.opentype_features != b.opentype_features || a.language != b.language ||
+           a.fill.type != b.fill.type || a.fill.color != b.fill.color ||
+           a.fill.gradient_start_color != b.fill.gradient_start_color ||
            a.fill.gradient_end_color != b.fill.gradient_end_color;
 }
 
@@ -1784,6 +1794,38 @@ static bool rich_text_model_requires_document_renderer(const RichTextDocument &m
 {
     if (model.ranges.size() > 1) return true;
     return model.ranges.size() == 1 && rich_text_format_differs_from_default(model.ranges.front().format, model.default_format);
+}
+
+static void apply_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
+{
+    if (!format.font_style.empty())
+        font.setStyleName(QString::fromStdString(format.font_style));
+    font.setKerning(format.kerning_mode != 2 && format.kerning);
+    font.setLetterSpacing(QFont::AbsoluteSpacing,
+                          format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
+    font.setStretch(std::clamp((int)std::round(format.scale_x * 100.0f), 1, 4000));
+    font.setCapitalization(QFont::MixedCase);
+    if (format.text_style == 1)
+        font.setCapitalization(QFont::AllUppercase);
+    else if (format.text_style == 2)
+        font.setCapitalization(QFont::SmallCaps);
+    if (format.text_style == 3 || format.text_style == 4)
+        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
+    if (!format.ligatures)
+        font.setStyleStrategy((QFont::StyleStrategy)(font.styleStrategy() | QFont::PreferNoShaping));
+}
+
+static void apply_rich_text_extended_char_format(QTextCharFormat &out, const RichTextCharFormat &format)
+{
+    if (format.text_style == 3)
+        out.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+    else if (format.text_style == 4)
+        out.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+    else
+        out.setVerticalAlignment(QTextCharFormat::AlignNormal);
+    out.setFontKerning(format.kerning_mode != 2 && format.kerning);
+    out.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+    out.setFontLetterSpacing(format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
 }
 
 static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &format, const QFont &fallback_font)
@@ -1796,9 +1838,11 @@ static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &fo
     font.setItalic(format.italic);
     font.setUnderline(format.underline);
     font.setStrikeOut(format.strikethrough);
+    apply_rich_text_extended_font_properties(font, format);
     out.setFont(font);
     out.setFontUnderline(format.underline);
     out.setFontStrikeOut(format.strikethrough);
+    apply_rich_text_extended_char_format(out, format);
     out.setForeground(color_from_argb(format.fill.color));
     return out;
 }

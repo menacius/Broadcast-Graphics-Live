@@ -24,8 +24,16 @@ int main()
     RichTextCharFormat blue = doc.default_format;
     blue.fill.color = 0xFF0000FF;
     blue.font_size = 72;
+    blue.text_style = 1;
+    blue.ligatures = false;
+    blue.kerning_mode = 2;
+    blue.manual_kerning = 12.0f;
     doc.ranges = {{0, 5, red}, {5, 5, blue}};
     doc.normalize();
+    assert(doc.ranges.size() == 2);
+    assert(doc.ranges[1].format.text_style == 1);
+    assert(!doc.ranges[1].format.ligatures);
+    assert(doc.ranges[1].format.kerning_mode == 2);
 
     rich_text_document_replace_text(doc, "Hello Big World");
     assert(doc.plain_text == "Hello Big World");
