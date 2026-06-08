@@ -1773,11 +1773,33 @@ static QColor evaluated_background_color(const Layer &layer, double t)
 
 static bool rich_text_format_differs_from_default(const RichTextCharFormat &a, const RichTextCharFormat &b)
 {
-    return a.font_family != b.font_family || a.font_size != b.font_size ||
-           a.bold != b.bold || a.italic != b.italic || a.underline != b.underline ||
-           a.strikethrough != b.strikethrough || a.fill.type != b.fill.type ||
-           a.fill.color != b.fill.color || a.fill.gradient_start_color != b.fill.gradient_start_color ||
-           a.fill.gradient_end_color != b.fill.gradient_end_color;
+    return a.font_family != b.font_family || a.font_style != b.font_style ||
+           a.font_size != b.font_size || a.bold != b.bold || a.italic != b.italic ||
+           a.underline != b.underline || a.strikethrough != b.strikethrough ||
+           a.kerning != b.kerning || a.kerning_mode != b.kerning_mode ||
+           std::abs(a.manual_kerning - b.manual_kerning) >= 0.0001f ||
+           std::abs(a.tracking - b.tracking) >= 0.0001f ||
+           std::abs(a.scale_x - b.scale_x) >= 0.0001f ||
+           std::abs(a.scale_y - b.scale_y) >= 0.0001f ||
+           std::abs(a.baseline_shift - b.baseline_shift) >= 0.0001f ||
+           a.text_style != b.text_style || a.ligatures != b.ligatures ||
+           a.stylistic_alternates != b.stylistic_alternates || a.fractions != b.fractions ||
+           a.opentype_features != b.opentype_features || a.language != b.language ||
+           a.fill.type != b.fill.type || a.fill.color != b.fill.color ||
+           a.fill.gradient_type != b.fill.gradient_type ||
+           a.fill.gradient_start_color != b.fill.gradient_start_color ||
+           a.fill.gradient_end_color != b.fill.gradient_end_color ||
+           std::abs(a.fill.gradient_start_pos - b.fill.gradient_start_pos) >= 0.0001f ||
+           std::abs(a.fill.gradient_end_pos - b.fill.gradient_end_pos) >= 0.0001f ||
+           std::abs(a.fill.gradient_start_opacity - b.fill.gradient_start_opacity) >= 0.0001f ||
+           std::abs(a.fill.gradient_end_opacity - b.fill.gradient_end_opacity) >= 0.0001f ||
+           std::abs(a.fill.gradient_opacity - b.fill.gradient_opacity) >= 0.0001f ||
+           std::abs(a.fill.gradient_angle - b.fill.gradient_angle) >= 0.0001f ||
+           std::abs(a.fill.gradient_center_x - b.fill.gradient_center_x) >= 0.0001f ||
+           std::abs(a.fill.gradient_center_y - b.fill.gradient_center_y) >= 0.0001f ||
+           std::abs(a.fill.gradient_scale - b.fill.gradient_scale) >= 0.0001f ||
+           std::abs(a.fill.gradient_focal_x - b.fill.gradient_focal_x) >= 0.0001f ||
+           std::abs(a.fill.gradient_focal_y - b.fill.gradient_focal_y) >= 0.0001f;
 }
 
 static bool rich_text_model_requires_document_renderer(const RichTextDocument &model)
@@ -1786,7 +1808,77 @@ static bool rich_text_model_requires_document_renderer(const RichTextDocument &m
     return model.ranges.size() == 1 && rich_text_format_differs_from_default(model.ranges.front().format, model.default_format);
 }
 
-static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &format, const QFont &fallback_font)
+static void apply_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
+{
+    if (!format.font_style.empty())
+        font.setStyleName(QString::fromStdString(format.font_style));
+    font.setKerning(format.kerning_mode != 2 && format.kerning);
+    font.setLetterSpacing(QFont::AbsoluteSpacing,
+                          format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
+    font.setStretch(std::clamp((int)std::round(format.scale_x * 100.0f), 1, 4000));
+    font.setCapitalization(QFont::MixedCase);
+    if (format.text_style == 1)
+        font.setCapitalization(QFont::AllUppercase);
+    else if (format.text_style == 2)
+        font.setCapitalization(QFont::SmallCaps);
+    if (format.text_style == 3 || format.text_style == 4)
+        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
+    if (!format.ligatures)
+        font.setStyleStrategy((QFont::StyleStrategy)(font.styleStrategy() | QFont::PreferNoShaping));
+}
+
+static void apply_rich_text_extended_char_format(QTextCharFormat &out, const RichTextCharFormat &format)
+{
+    if (format.text_style == 3)
+        out.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+    else if (format.text_style == 4)
+        out.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+    else
+        out.setVerticalAlignment(QTextCharFormat::AlignNormal);
+    out.setFontKerning(format.kerning_mode != 2 && format.kerning);
+    out.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+    out.setFontLetterSpacing(format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
+}
+
+static QBrush rich_text_fill_brush(const RichTextFill &fill, const QRectF &box)
+{
+    auto gradient_color = [](uint32_t argb, double gradient_opacity, double stop_opacity) {
+        QColor color = color_from_argb(argb);
+        color.setAlphaF(std::clamp((double)color.alphaF() * gradient_opacity * stop_opacity, 0.0, 1.0));
+        return color;
+    };
+
+    if (fill.type != 1)
+        return QBrush(color_from_argb(fill.color));
+
+    const double opacity = std::clamp((double)fill.gradient_opacity, 0.0, 1.0);
+    const double cx = box.left() + std::clamp((double)fill.gradient_center_x, 0.0, 1.0) * box.width();
+    const double cy = box.top() + std::clamp((double)fill.gradient_center_y, 0.0, 1.0) * box.height();
+    const double scale = std::clamp((double)fill.gradient_scale, 0.01, 10.0);
+    const double start_pos = std::clamp((double)fill.gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)fill.gradient_end_pos, 0.0, 1.0);
+    if (fill.gradient_type == 1) {
+        const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
+        QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
+                                 QPointF(box.left() + std::clamp((double)fill.gradient_focal_x, 0.0, 1.0) * box.width(),
+                                         box.top() + std::clamp((double)fill.gradient_focal_y, 0.0, 1.0) * box.height()));
+        gradient.setColorAt(start_pos, gradient_color(fill.gradient_start_color, opacity, fill.gradient_start_opacity));
+        gradient.setColorAt(end_pos, gradient_color(fill.gradient_end_color, opacity, fill.gradient_end_opacity));
+        return QBrush(gradient);
+    }
+
+    const double length = std::hypot(box.width(), box.height()) * 0.5 * scale;
+    const double angle = fill.gradient_angle * std::acos(-1.0) / 180.0;
+    const double dx = std::cos(angle) * length;
+    const double dy = std::sin(angle) * length;
+    QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
+    gradient.setColorAt(start_pos, gradient_color(fill.gradient_start_color, opacity, fill.gradient_start_opacity));
+    gradient.setColorAt(end_pos, gradient_color(fill.gradient_end_color, opacity, fill.gradient_end_opacity));
+    return QBrush(gradient);
+}
+
+static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &format, const QFont &fallback_font,
+                                                     const QRectF &text_rect)
 {
     QTextCharFormat out;
     QFont font = fallback_font;
@@ -1796,25 +1888,28 @@ static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &fo
     font.setItalic(format.italic);
     font.setUnderline(format.underline);
     font.setStrikeOut(format.strikethrough);
+    apply_rich_text_extended_font_properties(font, format);
     out.setFont(font);
     out.setFontUnderline(format.underline);
     out.setFontStrikeOut(format.strikethrough);
-    out.setForeground(color_from_argb(format.fill.color));
+    apply_rich_text_extended_char_format(out, format);
+    out.setForeground(rich_text_fill_brush(format.fill, text_rect));
     return out;
 }
 
-static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const QFont &font)
+static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const QFont &font,
+                                   const QRectF &text_rect)
 {
     const RichTextDocument &model = layer.rich_text;
     QTextCursor all(&doc);
     all.select(QTextCursor::Document);
-    all.mergeCharFormat(text_format_from_rich_format(model.default_format, font));
+    all.mergeCharFormat(text_format_from_rich_format(model.default_format, font, text_rect));
     for (const auto &range : model.ranges) {
         if (range.length == 0 || range.start >= model.plain_text.size()) continue;
         QTextCursor cursor(&doc);
         cursor.setPosition((int)std::min(range.start, model.plain_text.size()));
         cursor.setPosition((int)std::min(range.start + range.length, model.plain_text.size()), QTextCursor::KeepAnchor);
-        cursor.mergeCharFormat(text_format_from_rich_format(range.format, font));
+        cursor.mergeCharFormat(text_format_from_rich_format(range.format, font, text_rect));
     }
 }
 
@@ -1840,7 +1935,7 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
     doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width()));
     if (layer.type != LayerType::Ticker && (!layer.rich_text.plain_text.empty() || !layer.rich_text.ranges.empty())) {
         doc->setPlainText(QString::fromStdString(layer.rich_text.plain_text));
-        apply_rich_text_ranges(*doc, layer, font);
+        apply_rich_text_ranges(*doc, layer, font, QRectF(0.0, 0.0, text_rect.width(), text_rect.height()));
     } else if (!layer.rich_text_html.empty()) {
         doc->setHtml(QString::fromStdString(layer.rich_text_html));
     } else {
@@ -1976,7 +2071,11 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         if (has_rich_text) {
             painter.save();
             painter.setOpacity(fill.alphaF());
-            if (layer.fill_type == 1) {
+            const bool legacy_html_gradient = !layer.rich_text_html.empty() &&
+                                              layer.rich_text.plain_text.empty() &&
+                                              layer.rich_text.ranges.empty() &&
+                                              layer.fill_type == 1;
+            if (legacy_html_gradient) {
                 QImage gradient_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
                 gradient_mask.fill(Qt::transparent);
                 QPainter mask_painter(&gradient_mask);

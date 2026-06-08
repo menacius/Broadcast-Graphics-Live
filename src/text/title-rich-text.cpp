@@ -11,15 +11,25 @@ static RichTextCharFormat layer_char_format(const Layer &layer)
 {
     RichTextCharFormat f;
     f.font_family = layer.font_family;
+    f.font_style = layer.font_style;
     f.font_size = layer.font_size;
     f.bold = layer.font_bold;
     f.italic = layer.font_italic;
     f.underline = layer.text_underline;
     f.strikethrough = layer.text_strikethrough;
+    f.kerning = layer.font_kerning;
+    f.kerning_mode = layer.kerning_mode;
+    f.manual_kerning = layer.manual_kerning;
     f.tracking = layer.char_tracking;
     f.scale_x = layer.char_scale_x;
     f.scale_y = layer.char_scale_y;
     f.baseline_shift = layer.baseline_shift;
+    f.text_style = layer.text_style;
+    f.ligatures = layer.text_ligatures;
+    f.stylistic_alternates = layer.text_stylistic_alternates;
+    f.fractions = layer.text_fractions;
+    f.opentype_features = layer.text_opentype_features;
+    f.language = layer.text_language;
     f.fill.type = layer.fill_type;
     f.fill.color = layer.text_color;
     f.fill.gradient_type = layer.gradient_type;
@@ -27,7 +37,15 @@ static RichTextCharFormat layer_char_format(const Layer &layer)
     f.fill.gradient_end_color = layer.gradient_end_color;
     f.fill.gradient_start_pos = layer.gradient_start_pos;
     f.fill.gradient_end_pos = layer.gradient_end_pos;
+    f.fill.gradient_start_opacity = layer.gradient_start_opacity;
+    f.fill.gradient_end_opacity = layer.gradient_end_opacity;
+    f.fill.gradient_opacity = layer.gradient_opacity;
     f.fill.gradient_angle = layer.gradient_angle;
+    f.fill.gradient_center_x = layer.gradient_center_x;
+    f.fill.gradient_center_y = layer.gradient_center_y;
+    f.fill.gradient_scale = layer.gradient_scale;
+    f.fill.gradient_focal_x = layer.gradient_focal_x;
+    f.fill.gradient_focal_y = layer.gradient_focal_y;
     return f;
 }
 
@@ -49,17 +67,30 @@ static RichTextParagraphFormat layer_paragraph_format(const Layer &layer)
 
 static bool same_format(const RichTextCharFormat &a, const RichTextCharFormat &b)
 {
-    return a.font_family == b.font_family && a.font_size == b.font_size &&
-           a.bold == b.bold && a.italic == b.italic && a.underline == b.underline &&
-           a.strikethrough == b.strikethrough && a.tracking == b.tracking &&
+    return a.font_family == b.font_family && a.font_style == b.font_style &&
+           a.font_size == b.font_size && a.bold == b.bold && a.italic == b.italic &&
+           a.underline == b.underline && a.strikethrough == b.strikethrough &&
+           a.kerning == b.kerning && a.kerning_mode == b.kerning_mode &&
+           a.manual_kerning == b.manual_kerning && a.tracking == b.tracking &&
            a.scale_x == b.scale_x && a.scale_y == b.scale_y &&
-           a.baseline_shift == b.baseline_shift && a.fill.type == b.fill.type &&
+           a.baseline_shift == b.baseline_shift && a.text_style == b.text_style &&
+           a.ligatures == b.ligatures && a.stylistic_alternates == b.stylistic_alternates &&
+           a.fractions == b.fractions && a.opentype_features == b.opentype_features &&
+           a.language == b.language && a.fill.type == b.fill.type &&
            a.fill.color == b.fill.color && a.fill.gradient_type == b.fill.gradient_type &&
            a.fill.gradient_start_color == b.fill.gradient_start_color &&
            a.fill.gradient_end_color == b.fill.gradient_end_color &&
            a.fill.gradient_start_pos == b.fill.gradient_start_pos &&
            a.fill.gradient_end_pos == b.fill.gradient_end_pos &&
-           a.fill.gradient_angle == b.fill.gradient_angle;
+           a.fill.gradient_start_opacity == b.fill.gradient_start_opacity &&
+           a.fill.gradient_end_opacity == b.fill.gradient_end_opacity &&
+           a.fill.gradient_opacity == b.fill.gradient_opacity &&
+           a.fill.gradient_angle == b.fill.gradient_angle &&
+           a.fill.gradient_center_x == b.fill.gradient_center_x &&
+           a.fill.gradient_center_y == b.fill.gradient_center_y &&
+           a.fill.gradient_scale == b.fill.gradient_scale &&
+           a.fill.gradient_focal_x == b.fill.gradient_focal_x &&
+           a.fill.gradient_focal_y == b.fill.gradient_focal_y;
 }
 
 void RichTextDocument::normalize()

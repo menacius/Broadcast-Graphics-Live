@@ -264,6 +264,89 @@ static uint32_t rich_text_argb_from_color(const QColor &color)
            (uint32_t)color.blue();
 }
 
+static std::vector<QRectF> text_edit_selection_viewport_rects(const QTextEdit *editor)
+{
+    std::vector<QRectF> rects;
+    if (!editor || !editor->textCursor().hasSelection())
+        return rects;
+
+    const QTextCursor cursor = editor->textCursor();
+    const int selection_start = cursor.selectionStart();
+    const int selection_end = cursor.selectionEnd();
+    if (selection_start >= selection_end)
+        return rects;
+
+    const QTextDocument *doc = editor->document();
+    const QAbstractTextDocumentLayout *doc_layout = doc ? doc->documentLayout() : nullptr;
+    if (!doc || !doc_layout)
+        return rects;
+
+    const QPointF scroll_offset(editor->horizontalScrollBar() ? editor->horizontalScrollBar()->value() : 0.0,
+                                editor->verticalScrollBar() ? editor->verticalScrollBar()->value() : 0.0);
+
+    for (QTextBlock block = doc->findBlock(selection_start);
+         block.isValid() && block.position() < selection_end;
+         block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        if (!layout)
+            continue;
+
+        const int block_start = block.position();
+        const int block_text_end = block_start + std::max(0, block.length() - 1);
+        const int block_selection_start = std::max(selection_start, block_start);
+        const int block_selection_end = std::min(selection_end, block_text_end);
+        if (block_selection_start >= block_selection_end)
+            continue;
+
+        const QRectF block_rect = doc_layout->blockBoundingRect(block);
+        for (int line_index = 0; line_index < layout->lineCount(); ++line_index) {
+            const QTextLine line = layout->lineAt(line_index);
+            if (!line.isValid())
+                continue;
+
+            const int line_start = block_start + line.textStart();
+            const int line_end = line_start + line.textLength();
+            const int line_selection_start = std::max(block_selection_start, line_start);
+            const int line_selection_end = std::min(block_selection_end, line_end);
+            if (line_selection_start >= line_selection_end)
+                continue;
+
+            const qreal x1 = line.cursorToX(line_selection_start - block_start);
+            const qreal x2 = line.cursorToX(line_selection_end - block_start);
+            QRectF rect(block_rect.left() + std::min(x1, x2),
+                        block_rect.top() + line.y(),
+                        std::max<qreal>(1.0, std::abs(x2 - x1)),
+                        std::max<qreal>(1.0, line.height()));
+            rect.translate(-scroll_offset);
+            rects.push_back(rect.adjusted(-1.0, 0.0, 1.0, 0.0));
+        }
+    }
+
+    return rects;
+}
+
+enum RichTextCharFormatMask : uint32_t {
+    RichTextCharFontFamily = 1u << 0,
+    RichTextCharFontSize = 1u << 1,
+    RichTextCharBold = 1u << 2,
+    RichTextCharItalic = 1u << 3,
+    RichTextCharUnderline = 1u << 4,
+    RichTextCharStrikethrough = 1u << 5,
+    RichTextCharTracking = 1u << 6,
+    RichTextCharScaleX = 1u << 7,
+    RichTextCharScaleY = 1u << 8,
+    RichTextCharBaselineShift = 1u << 9,
+    RichTextCharFillColor = 1u << 10,
+    RichTextCharFontStyle = 1u << 11,
+    RichTextCharKerning = 1u << 12,
+    RichTextCharTextStyle = 1u << 13,
+    RichTextCharLigatures = 1u << 14,
+    RichTextCharStylisticAlternates = 1u << 15,
+    RichTextCharFractions = 1u << 16,
+    RichTextCharOpenTypeFeatures = 1u << 17,
+    RichTextCharLanguage = 1u << 18,
+};
+
 enum RichTextFormatProperty {
     RichTextPropFontFamily = QTextFormat::UserProperty + 100,
     RichTextPropFontSize,
@@ -282,21 +365,49 @@ enum RichTextFormatProperty {
     RichTextPropGradientEndColor,
     RichTextPropGradientStartPos,
     RichTextPropGradientEndPos,
+    RichTextPropGradientStartOpacity,
+    RichTextPropGradientEndOpacity,
+    RichTextPropGradientOpacity,
     RichTextPropGradientAngle,
+    RichTextPropGradientCenterX,
+    RichTextPropGradientCenterY,
+    RichTextPropGradientScale,
+    RichTextPropGradientFocalX,
+    RichTextPropGradientFocalY,
+    RichTextPropFontStyle,
+    RichTextPropKerning,
+    RichTextPropKerningMode,
+    RichTextPropManualKerning,
+    RichTextPropTextStyle,
+    RichTextPropLigatures,
+    RichTextPropStylisticAlternates,
+    RichTextPropFractions,
+    RichTextPropOpenTypeFeatures,
+    RichTextPropLanguage,
 };
 
 static void store_rich_text_format_properties(QTextCharFormat &out, const RichTextCharFormat &format)
 {
     out.setProperty(RichTextPropFontFamily, QString::fromStdString(format.font_family));
+    out.setProperty(RichTextPropFontStyle, QString::fromStdString(format.font_style));
     out.setProperty(RichTextPropFontSize, format.font_size);
     out.setProperty(RichTextPropBold, format.bold);
     out.setProperty(RichTextPropItalic, format.italic);
     out.setProperty(RichTextPropUnderline, format.underline);
     out.setProperty(RichTextPropStrikethrough, format.strikethrough);
+    out.setProperty(RichTextPropKerning, format.kerning);
+    out.setProperty(RichTextPropKerningMode, format.kerning_mode);
+    out.setProperty(RichTextPropManualKerning, (double)format.manual_kerning);
     out.setProperty(RichTextPropTracking, (double)format.tracking);
     out.setProperty(RichTextPropScaleX, (double)format.scale_x);
     out.setProperty(RichTextPropScaleY, (double)format.scale_y);
     out.setProperty(RichTextPropBaselineShift, (double)format.baseline_shift);
+    out.setProperty(RichTextPropTextStyle, format.text_style);
+    out.setProperty(RichTextPropLigatures, format.ligatures);
+    out.setProperty(RichTextPropStylisticAlternates, format.stylistic_alternates);
+    out.setProperty(RichTextPropFractions, format.fractions);
+    out.setProperty(RichTextPropOpenTypeFeatures, format.opentype_features);
+    out.setProperty(RichTextPropLanguage, QString::fromStdString(format.language));
     out.setProperty(RichTextPropFillType, format.fill.type);
     out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
     out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
@@ -304,7 +415,96 @@ static void store_rich_text_format_properties(QTextCharFormat &out, const RichTe
     out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
     out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
     out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
+    out.setProperty(RichTextPropGradientStartOpacity, (double)format.fill.gradient_start_opacity);
+    out.setProperty(RichTextPropGradientEndOpacity, (double)format.fill.gradient_end_opacity);
+    out.setProperty(RichTextPropGradientOpacity, (double)format.fill.gradient_opacity);
     out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
+    out.setProperty(RichTextPropGradientCenterX, (double)format.fill.gradient_center_x);
+    out.setProperty(RichTextPropGradientCenterY, (double)format.fill.gradient_center_y);
+    out.setProperty(RichTextPropGradientScale, (double)format.fill.gradient_scale);
+    out.setProperty(RichTextPropGradientFocalX, (double)format.fill.gradient_focal_x);
+    out.setProperty(RichTextPropGradientFocalY, (double)format.fill.gradient_focal_y);
+}
+
+static void store_editor_rich_text_format_properties_masked(QTextCharFormat &out, const RichTextCharFormat &format, uint32_t mask)
+{
+    if (mask & RichTextCharFontFamily)
+        out.setProperty(RichTextPropFontFamily, QString::fromStdString(format.font_family));
+    if (mask & RichTextCharFontStyle)
+        out.setProperty(RichTextPropFontStyle, QString::fromStdString(format.font_style));
+    if (mask & RichTextCharFontSize)
+        out.setProperty(RichTextPropFontSize, format.font_size);
+    if (mask & RichTextCharBold) out.setProperty(RichTextPropBold, format.bold);
+    if (mask & RichTextCharItalic) out.setProperty(RichTextPropItalic, format.italic);
+    if (mask & RichTextCharUnderline) out.setProperty(RichTextPropUnderline, format.underline);
+    if (mask & RichTextCharStrikethrough) out.setProperty(RichTextPropStrikethrough, format.strikethrough);
+    if (mask & RichTextCharKerning) {
+        out.setProperty(RichTextPropKerning, format.kerning);
+        out.setProperty(RichTextPropKerningMode, format.kerning_mode);
+        out.setProperty(RichTextPropManualKerning, (double)format.manual_kerning);
+    }
+    if (mask & RichTextCharTracking) out.setProperty(RichTextPropTracking, (double)format.tracking);
+    if (mask & RichTextCharScaleX) out.setProperty(RichTextPropScaleX, (double)format.scale_x);
+    if (mask & RichTextCharScaleY) out.setProperty(RichTextPropScaleY, (double)format.scale_y);
+    if (mask & RichTextCharBaselineShift) out.setProperty(RichTextPropBaselineShift, (double)format.baseline_shift);
+    if (mask & RichTextCharTextStyle) out.setProperty(RichTextPropTextStyle, format.text_style);
+    if (mask & RichTextCharLigatures) out.setProperty(RichTextPropLigatures, format.ligatures);
+    if (mask & RichTextCharStylisticAlternates)
+        out.setProperty(RichTextPropStylisticAlternates, format.stylistic_alternates);
+    if (mask & RichTextCharFractions) out.setProperty(RichTextPropFractions, format.fractions);
+    if (mask & RichTextCharOpenTypeFeatures) out.setProperty(RichTextPropOpenTypeFeatures, format.opentype_features);
+    if (mask & RichTextCharLanguage)
+        out.setProperty(RichTextPropLanguage, QString::fromStdString(format.language));
+    if (mask & RichTextCharFillColor) {
+        out.setProperty(RichTextPropFillType, format.fill.type);
+        out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
+        out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
+        out.setProperty(RichTextPropGradientStartColor, (uint)format.fill.gradient_start_color);
+        out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
+        out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
+        out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
+        out.setProperty(RichTextPropGradientStartOpacity, (double)format.fill.gradient_start_opacity);
+        out.setProperty(RichTextPropGradientEndOpacity, (double)format.fill.gradient_end_opacity);
+        out.setProperty(RichTextPropGradientOpacity, (double)format.fill.gradient_opacity);
+        out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
+        out.setProperty(RichTextPropGradientCenterX, (double)format.fill.gradient_center_x);
+        out.setProperty(RichTextPropGradientCenterY, (double)format.fill.gradient_center_y);
+        out.setProperty(RichTextPropGradientScale, (double)format.fill.gradient_scale);
+        out.setProperty(RichTextPropGradientFocalX, (double)format.fill.gradient_focal_x);
+        out.setProperty(RichTextPropGradientFocalY, (double)format.fill.gradient_focal_y);
+    }
+}
+
+static void apply_editor_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
+{
+    if (!format.font_style.empty())
+        font.setStyleName(QString::fromStdString(format.font_style));
+    font.setKerning(format.kerning_mode != 2 && format.kerning);
+    font.setLetterSpacing(QFont::AbsoluteSpacing,
+                          format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
+    font.setStretch(std::clamp((int)std::round(format.scale_x * 100.0f), 1, 4000));
+    font.setCapitalization(QFont::MixedCase);
+    if (format.text_style == 1)
+        font.setCapitalization(QFont::AllUppercase);
+    else if (format.text_style == 2)
+        font.setCapitalization(QFont::SmallCaps);
+    if (format.text_style == 3 || format.text_style == 4)
+        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
+    if (!format.ligatures)
+        font.setStyleStrategy((QFont::StyleStrategy)(font.styleStrategy() | QFont::PreferNoShaping));
+}
+
+static void apply_editor_rich_text_extended_char_format(QTextCharFormat &out, const RichTextCharFormat &format)
+{
+    if (format.text_style == 3)
+        out.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+    else if (format.text_style == 4)
+        out.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+    else
+        out.setVerticalAlignment(QTextCharFormat::AlignNormal);
+    out.setFontKerning(format.kerning_mode != 2 && format.kerning);
+    out.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+    out.setFontLetterSpacing(format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
 }
 
 static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharFormat &fmt,
@@ -316,6 +516,10 @@ static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharForm
     out.font_family = fmt.property(RichTextPropFontFamily).toString().isEmpty()
                           ? (!font.family().isEmpty() ? font.family().toStdString() : out.font_family)
                           : fmt.property(RichTextPropFontFamily).toString().toStdString();
+    if (fmt.hasProperty(RichTextPropFontStyle))
+        out.font_style = fmt.property(RichTextPropFontStyle).toString().toStdString();
+    else if (!font.styleName().isEmpty())
+        out.font_style = font.styleName().toStdString();
     int px = font.pixelSize();
     if (px <= 0 && font.pointSizeF() > 0.0) px = (int)std::round(font.pointSizeF());
     out.font_size = fmt.hasProperty(RichTextPropFontSize)
@@ -325,10 +529,24 @@ static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharForm
     out.italic = fmt.hasProperty(RichTextPropItalic) ? fmt.property(RichTextPropItalic).toBool() : fmt.fontItalic();
     out.underline = fmt.hasProperty(RichTextPropUnderline) ? fmt.property(RichTextPropUnderline).toBool() : fmt.fontUnderline();
     out.strikethrough = fmt.hasProperty(RichTextPropStrikethrough) ? fmt.property(RichTextPropStrikethrough).toBool() : fmt.fontStrikeOut();
+    if (fmt.hasProperty(RichTextPropKerning)) out.kerning = fmt.property(RichTextPropKerning).toBool();
+    else out.kerning = font.kerning();
+    if (fmt.hasProperty(RichTextPropKerningMode)) out.kerning_mode = fmt.property(RichTextPropKerningMode).toInt();
+    if (fmt.hasProperty(RichTextPropManualKerning)) out.manual_kerning = (float)fmt.property(RichTextPropManualKerning).toDouble();
     if (fmt.hasProperty(RichTextPropTracking)) out.tracking = (float)fmt.property(RichTextPropTracking).toDouble();
     if (fmt.hasProperty(RichTextPropScaleX)) out.scale_x = (float)fmt.property(RichTextPropScaleX).toDouble();
     if (fmt.hasProperty(RichTextPropScaleY)) out.scale_y = (float)fmt.property(RichTextPropScaleY).toDouble();
     if (fmt.hasProperty(RichTextPropBaselineShift)) out.baseline_shift = (float)fmt.property(RichTextPropBaselineShift).toDouble();
+    if (fmt.hasProperty(RichTextPropTextStyle)) out.text_style = fmt.property(RichTextPropTextStyle).toInt();
+    else if (font.capitalization() == QFont::AllUppercase) out.text_style = 1;
+    else if (font.capitalization() == QFont::SmallCaps) out.text_style = 2;
+    else if (fmt.verticalAlignment() == QTextCharFormat::AlignSuperScript) out.text_style = 3;
+    else if (fmt.verticalAlignment() == QTextCharFormat::AlignSubScript) out.text_style = 4;
+    if (fmt.hasProperty(RichTextPropLigatures)) out.ligatures = fmt.property(RichTextPropLigatures).toBool();
+    if (fmt.hasProperty(RichTextPropStylisticAlternates)) out.stylistic_alternates = fmt.property(RichTextPropStylisticAlternates).toBool();
+    if (fmt.hasProperty(RichTextPropFractions)) out.fractions = fmt.property(RichTextPropFractions).toBool();
+    if (fmt.hasProperty(RichTextPropOpenTypeFeatures)) out.opentype_features = fmt.property(RichTextPropOpenTypeFeatures).toBool();
+    if (fmt.hasProperty(RichTextPropLanguage)) out.language = fmt.property(RichTextPropLanguage).toString().toStdString();
     if (fmt.hasProperty(RichTextPropFillType)) out.fill.type = fmt.property(RichTextPropFillType).toInt();
     if (fmt.hasProperty(RichTextPropFillColor)) out.fill.color = fmt.property(RichTextPropFillColor).toUInt();
     else if (fmt.foreground().style() != Qt::NoBrush) {
@@ -341,7 +559,15 @@ static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharForm
     if (fmt.hasProperty(RichTextPropGradientEndColor)) out.fill.gradient_end_color = fmt.property(RichTextPropGradientEndColor).toUInt();
     if (fmt.hasProperty(RichTextPropGradientStartPos)) out.fill.gradient_start_pos = (float)fmt.property(RichTextPropGradientStartPos).toDouble();
     if (fmt.hasProperty(RichTextPropGradientEndPos)) out.fill.gradient_end_pos = (float)fmt.property(RichTextPropGradientEndPos).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientStartOpacity)) out.fill.gradient_start_opacity = (float)fmt.property(RichTextPropGradientStartOpacity).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientEndOpacity)) out.fill.gradient_end_opacity = (float)fmt.property(RichTextPropGradientEndOpacity).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientOpacity)) out.fill.gradient_opacity = (float)fmt.property(RichTextPropGradientOpacity).toDouble();
     if (fmt.hasProperty(RichTextPropGradientAngle)) out.fill.gradient_angle = (float)fmt.property(RichTextPropGradientAngle).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientCenterX)) out.fill.gradient_center_x = (float)fmt.property(RichTextPropGradientCenterX).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientCenterY)) out.fill.gradient_center_y = (float)fmt.property(RichTextPropGradientCenterY).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientScale)) out.fill.gradient_scale = (float)fmt.property(RichTextPropGradientScale).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientFocalX)) out.fill.gradient_focal_x = (float)fmt.property(RichTextPropGradientFocalX).toDouble();
+    if (fmt.hasProperty(RichTextPropGradientFocalY)) out.fill.gradient_focal_y = (float)fmt.property(RichTextPropGradientFocalY).toDouble();
     return out;
 }
 
@@ -354,9 +580,11 @@ static QTextCharFormat qtext_format_from_rich_text_format(const RichTextCharForm
     font.setItalic(format.italic);
     font.setUnderline(format.underline);
     font.setStrikeOut(format.strikethrough);
+    apply_editor_rich_text_extended_font_properties(font, format);
     out.setFont(font);
     out.setFontUnderline(format.underline);
     out.setFontStrikeOut(format.strikethrough);
+    apply_editor_rich_text_extended_char_format(out, format);
     store_rich_text_format_properties(out, format);
     QColor color = rich_text_color_from_argb(format.fill.color);
     color.setAlpha(0);
@@ -389,18 +617,31 @@ static bool rich_text_fills_equal(const RichTextFill &a, const RichTextFill &b)
            a.gradient_end_color == b.gradient_end_color &&
            std::abs(a.gradient_start_pos - b.gradient_start_pos) < 0.0001f &&
            std::abs(a.gradient_end_pos - b.gradient_end_pos) < 0.0001f &&
-           std::abs(a.gradient_angle - b.gradient_angle) < 0.0001f;
+           std::abs(a.gradient_start_opacity - b.gradient_start_opacity) < 0.0001f &&
+           std::abs(a.gradient_end_opacity - b.gradient_end_opacity) < 0.0001f &&
+           std::abs(a.gradient_opacity - b.gradient_opacity) < 0.0001f &&
+           std::abs(a.gradient_angle - b.gradient_angle) < 0.0001f &&
+           std::abs(a.gradient_center_x - b.gradient_center_x) < 0.0001f &&
+           std::abs(a.gradient_center_y - b.gradient_center_y) < 0.0001f &&
+           std::abs(a.gradient_scale - b.gradient_scale) < 0.0001f &&
+           std::abs(a.gradient_focal_x - b.gradient_focal_x) < 0.0001f &&
+           std::abs(a.gradient_focal_y - b.gradient_focal_y) < 0.0001f;
 }
 
 static bool rich_text_char_formats_equal(const RichTextCharFormat &a, const RichTextCharFormat &b)
 {
-    return a.font_family == b.font_family && a.font_size == b.font_size &&
-           a.bold == b.bold && a.italic == b.italic && a.underline == b.underline &&
-           a.strikethrough == b.strikethrough &&
+    return a.font_family == b.font_family && a.font_style == b.font_style &&
+           a.font_size == b.font_size && a.bold == b.bold && a.italic == b.italic &&
+           a.underline == b.underline && a.strikethrough == b.strikethrough &&
+           a.kerning == b.kerning && a.kerning_mode == b.kerning_mode &&
+           std::abs(a.manual_kerning - b.manual_kerning) < 0.0001f &&
            std::abs(a.tracking - b.tracking) < 0.0001f &&
            std::abs(a.scale_x - b.scale_x) < 0.0001f &&
            std::abs(a.scale_y - b.scale_y) < 0.0001f &&
            std::abs(a.baseline_shift - b.baseline_shift) < 0.0001f &&
+           a.text_style == b.text_style && a.ligatures == b.ligatures &&
+           a.stylistic_alternates == b.stylistic_alternates && a.fractions == b.fractions &&
+           a.opentype_features == b.opentype_features && a.language == b.language &&
            rich_text_fills_equal(a.fill, b.fill);
 }
 
@@ -416,12 +657,26 @@ static bool rich_text_ranges_equal(const std::vector<RichTextRange> &a, const st
     return true;
 }
 
+static RichTextParagraphFormat layer_paragraph_format_for_editor(const Layer &layer)
+{
+    RichTextParagraphFormat f;
+    f.align_h = layer.align_h;
+    f.align_v = layer.align_v;
+    f.indent_left = layer.paragraph_indent_left;
+    f.indent_right = layer.paragraph_indent_right;
+    f.indent_first_line = layer.paragraph_indent_first_line;
+    f.space_before = layer.paragraph_space_before;
+    f.space_after = layer.paragraph_space_after;
+    f.hyphenate = layer.paragraph_hyphenate;
+    return f;
+}
+
 static RichTextDocument rich_text_document_from_qtext_document(const QTextDocument *doc, const Layer &layer, double visual_scale, const QTextCursor &text_cursor = QTextCursor())
 {
     RichTextDocument model = layer.rich_text.empty() ? rich_text_document_from_layer_defaults(layer) : layer.rich_text;
     if (!doc) return model;
     model.plain_text = doc->toPlainText().toStdString();
-    rich_text_document_sync_layer_defaults(model, layer);
+    model.default_paragraph_format = layer_paragraph_format_for_editor(layer);
     model.ranges.clear();
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
         for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
@@ -447,20 +702,6 @@ static RichTextDocument rich_text_document_from_qtext_document(const QTextDocume
 
 
 
-enum RichTextCharFormatMask : uint32_t {
-    RichTextCharFontFamily = 1u << 0,
-    RichTextCharFontSize = 1u << 1,
-    RichTextCharBold = 1u << 2,
-    RichTextCharItalic = 1u << 3,
-    RichTextCharUnderline = 1u << 4,
-    RichTextCharStrikethrough = 1u << 5,
-    RichTextCharTracking = 1u << 6,
-    RichTextCharScaleX = 1u << 7,
-    RichTextCharScaleY = 1u << 8,
-    RichTextCharBaselineShift = 1u << 9,
-    RichTextCharFillColor = 1u << 10,
-};
-
 struct RichTextCharFormatSummary {
     RichTextCharFormat format;
     uint32_t mixed = 0;
@@ -471,15 +712,25 @@ static RichTextCharFormat layer_char_format_for_editor(const Layer &layer)
 {
     RichTextCharFormat f;
     f.font_family = layer.font_family;
+    f.font_style = layer.font_style;
     f.font_size = layer.font_size;
     f.bold = layer.font_bold;
     f.italic = layer.font_italic;
     f.underline = layer.text_underline;
     f.strikethrough = layer.text_strikethrough;
+    f.kerning = layer.font_kerning;
+    f.kerning_mode = layer.kerning_mode;
+    f.manual_kerning = layer.manual_kerning;
     f.tracking = layer.char_tracking;
     f.scale_x = layer.char_scale_x;
     f.scale_y = layer.char_scale_y;
     f.baseline_shift = layer.baseline_shift;
+    f.text_style = layer.text_style;
+    f.ligatures = layer.text_ligatures;
+    f.stylistic_alternates = layer.text_stylistic_alternates;
+    f.fractions = layer.text_fractions;
+    f.opentype_features = layer.text_opentype_features;
+    f.language = layer.text_language;
     f.fill.type = layer.fill_type;
     f.fill.color = layer.text_color;
     f.fill.gradient_type = layer.gradient_type;
@@ -487,7 +738,15 @@ static RichTextCharFormat layer_char_format_for_editor(const Layer &layer)
     f.fill.gradient_end_color = layer.gradient_end_color;
     f.fill.gradient_start_pos = layer.gradient_start_pos;
     f.fill.gradient_end_pos = layer.gradient_end_pos;
+    f.fill.gradient_start_opacity = layer.gradient_start_opacity;
+    f.fill.gradient_end_opacity = layer.gradient_end_opacity;
+    f.fill.gradient_opacity = layer.gradient_opacity;
     f.fill.gradient_angle = layer.gradient_angle;
+    f.fill.gradient_center_x = layer.gradient_center_x;
+    f.fill.gradient_center_y = layer.gradient_center_y;
+    f.fill.gradient_scale = layer.gradient_scale;
+    f.fill.gradient_focal_x = layer.gradient_focal_x;
+    f.fill.gradient_focal_y = layer.gradient_focal_y;
     return f;
 }
 
@@ -495,16 +754,26 @@ static bool format_value_differs(const RichTextCharFormat &a, const RichTextChar
 {
     switch (bit) {
     case RichTextCharFontFamily: return a.font_family != b.font_family;
+    case RichTextCharFontStyle: return a.font_style != b.font_style;
     case RichTextCharFontSize: return a.font_size != b.font_size;
     case RichTextCharBold: return a.bold != b.bold;
     case RichTextCharItalic: return a.italic != b.italic;
     case RichTextCharUnderline: return a.underline != b.underline;
     case RichTextCharStrikethrough: return a.strikethrough != b.strikethrough;
+    case RichTextCharKerning:
+        return a.kerning != b.kerning || a.kerning_mode != b.kerning_mode ||
+               std::abs(a.manual_kerning - b.manual_kerning) >= 0.0001f;
     case RichTextCharTracking: return a.tracking != b.tracking;
     case RichTextCharScaleX: return a.scale_x != b.scale_x;
     case RichTextCharScaleY: return a.scale_y != b.scale_y;
     case RichTextCharBaselineShift: return a.baseline_shift != b.baseline_shift;
-    case RichTextCharFillColor: return a.fill.color != b.fill.color || a.fill.type != b.fill.type;
+    case RichTextCharFillColor: return !rich_text_fills_equal(a.fill, b.fill);
+    case RichTextCharTextStyle: return a.text_style != b.text_style;
+    case RichTextCharLigatures: return a.ligatures != b.ligatures;
+    case RichTextCharStylisticAlternates: return a.stylistic_alternates != b.stylistic_alternates;
+    case RichTextCharFractions: return a.fractions != b.fractions;
+    case RichTextCharOpenTypeFeatures: return a.opentype_features != b.opentype_features;
+    case RichTextCharLanguage: return a.language != b.language;
     default: return false;
     }
 }
@@ -557,9 +826,12 @@ static RichTextCharFormatSummary summarize_rich_text_char_format(const Layer &la
     }
     summary.format = format_at_offset(doc, start);
     summary.valid = true;
-    constexpr uint32_t bits[] = {RichTextCharFontFamily, RichTextCharFontSize, RichTextCharBold,
-        RichTextCharItalic, RichTextCharUnderline, RichTextCharStrikethrough, RichTextCharTracking,
-        RichTextCharScaleX, RichTextCharScaleY, RichTextCharBaselineShift, RichTextCharFillColor};
+    constexpr uint32_t bits[] = {RichTextCharFontFamily, RichTextCharFontStyle, RichTextCharFontSize,
+        RichTextCharBold, RichTextCharItalic, RichTextCharUnderline, RichTextCharStrikethrough,
+        RichTextCharKerning, RichTextCharTracking, RichTextCharScaleX, RichTextCharScaleY,
+        RichTextCharBaselineShift, RichTextCharFillColor, RichTextCharTextStyle, RichTextCharLigatures,
+        RichTextCharStylisticAlternates, RichTextCharFractions, RichTextCharOpenTypeFeatures,
+        RichTextCharLanguage};
     for (size_t i = start + 1; i < end; ++i) {
         RichTextCharFormat f = format_at_offset(doc, i);
         for (uint32_t bit : bits)
@@ -571,24 +843,38 @@ static RichTextCharFormatSummary summarize_rich_text_char_format(const Layer &la
 static void merge_format_bits(RichTextCharFormat &dst, const RichTextCharFormat &src, uint32_t mask)
 {
     if (mask & RichTextCharFontFamily) dst.font_family = src.font_family;
+    if (mask & RichTextCharFontStyle) dst.font_style = src.font_style;
     if (mask & RichTextCharFontSize) dst.font_size = src.font_size;
     if (mask & RichTextCharBold) dst.bold = src.bold;
     if (mask & RichTextCharItalic) dst.italic = src.italic;
     if (mask & RichTextCharUnderline) dst.underline = src.underline;
     if (mask & RichTextCharStrikethrough) dst.strikethrough = src.strikethrough;
+    if (mask & RichTextCharKerning) {
+        dst.kerning = src.kerning;
+        dst.kerning_mode = src.kerning_mode;
+        dst.manual_kerning = src.manual_kerning;
+    }
     if (mask & RichTextCharTracking) dst.tracking = src.tracking;
     if (mask & RichTextCharScaleX) dst.scale_x = src.scale_x;
     if (mask & RichTextCharScaleY) dst.scale_y = src.scale_y;
     if (mask & RichTextCharBaselineShift) dst.baseline_shift = src.baseline_shift;
+    if (mask & RichTextCharTextStyle) dst.text_style = src.text_style;
+    if (mask & RichTextCharLigatures) dst.ligatures = src.ligatures;
+    if (mask & RichTextCharStylisticAlternates) dst.stylistic_alternates = src.stylistic_alternates;
+    if (mask & RichTextCharFractions) dst.fractions = src.fractions;
+    if (mask & RichTextCharOpenTypeFeatures) dst.opentype_features = src.opentype_features;
+    if (mask & RichTextCharLanguage) dst.language = src.language;
     if (mask & RichTextCharFillColor) { dst.fill.type = src.fill.type; dst.fill.color = src.fill.color; }
 }
 
 static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCharFormat &format, uint32_t mask, bool active_selection)
 {
     if (layer.type != LayerType::Text && layer.type != LayerType::Ticker) return;
-    if (layer.rich_text.empty()) layer.rich_text = rich_text_document_from_layer_defaults(layer);
-    rich_text_document_sync_layer_defaults(layer.rich_text, layer);
+    if (layer.rich_text.empty())
+        layer.rich_text = rich_text_document_from_layer_defaults(layer);
     RichTextDocument &doc = layer.rich_text;
+    doc.default_paragraph_format = layer_paragraph_format_for_editor(layer);
+    doc.normalize();
     const size_t text_len = doc.plain_text.size();
     size_t start = active_selection ? std::min(doc.selection.anchor, doc.selection.head) : 0;
     size_t end = active_selection ? std::max(doc.selection.anchor, doc.selection.head) : text_len;
@@ -5672,8 +5958,8 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->setStyleSheet(
         "QTextEdit{background:transparent;border:0px;padding:0px;"
-        "color:rgba(255,255,255,1);selection-background-color:rgba(0,120,215,110);"
-        "selection-color:rgba(255,255,255,1);}");
+        "color:rgba(255,255,255,1);selection-background-color:rgba(255,255,255,0);"
+        "selection-color:rgba(255,255,255,0);}");
     inline_text_editor_->installEventFilter(this);
     connect(inline_text_editor_->document(), &QTextDocument::contentsChanged, this, [this]() {
         if (updating_inline_text_editor_ || refreshing_inline_text_) return;
@@ -5694,8 +5980,10 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
         if (committing_inline_text_ || updating_inline_text_editor_ || inline_text_layer_id_.empty()) return;
         const std::string layer_id = inline_text_layer_id_;
         sync_inline_text_layer(false);
-        if (inline_text_editor_)
+        if (inline_text_editor_) {
             inline_text_editor_->viewport()->update();
+            update(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
+        }
         emit text_edit_cursor_changed(layer_id);
     };
     connect(inline_text_editor_, &QTextEdit::cursorPositionChanged, this, emit_cursor_changed);
@@ -5711,10 +5999,11 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
     const double visual_scale = layer ? inline_text_visual_scale(*layer) : 1.0;
     QTextCharFormat qfmt;
-    if (mask & (RichTextCharFontFamily | RichTextCharFontSize | RichTextCharBold | RichTextCharItalic |
-                RichTextCharUnderline | RichTextCharStrikethrough)) {
+    if (mask & (RichTextCharFontFamily | RichTextCharFontStyle | RichTextCharFontSize |
+                RichTextCharBold | RichTextCharItalic | RichTextCharUnderline | RichTextCharStrikethrough)) {
         QFont font = inline_text_editor_->currentFont();
         if (mask & RichTextCharFontFamily) font.setFamily(QString::fromStdString(format.font_family));
+        if (mask & RichTextCharFontStyle) font.setStyleName(QString::fromStdString(format.font_style));
         if (mask & RichTextCharFontSize) font.setPixelSize(std::max(1, (int)std::round(format.font_size * visual_scale)));
         if (mask & RichTextCharBold) font.setBold(format.bold);
         if (mask & RichTextCharItalic) font.setItalic(format.italic);
@@ -5724,10 +6013,30 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     }
     if (mask & RichTextCharUnderline) qfmt.setFontUnderline(format.underline);
     if (mask & RichTextCharStrikethrough) qfmt.setFontStrikeOut(format.strikethrough);
-    store_rich_text_format_properties(qfmt, format);
-    QColor transparent_color = rich_text_color_from_argb(format.fill.color);
-    transparent_color.setAlpha(0);
-    qfmt.setForeground(transparent_color);
+    if (mask & RichTextCharKerning) qfmt.setFontKerning(format.kerning_mode != 2 && format.kerning);
+    if (mask & (RichTextCharKerning | RichTextCharTracking)) {
+        qfmt.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+        qfmt.setFontLetterSpacing(format.tracking +
+                                  (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
+    }
+    if (mask & RichTextCharScaleX)
+        qfmt.setFontStretch(std::clamp((int)std::round(format.scale_x * 100.0f), 1, 4000));
+    if (mask & RichTextCharTextStyle) {
+        qfmt.setFontCapitalization(format.text_style == 1 ? QFont::AllUppercase
+                                  : (format.text_style == 2 ? QFont::SmallCaps : QFont::MixedCase));
+        if (format.text_style == 3)
+            qfmt.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
+        else if (format.text_style == 4)
+            qfmt.setVerticalAlignment(QTextCharFormat::AlignSubScript);
+        else
+            qfmt.setVerticalAlignment(QTextCharFormat::AlignNormal);
+    }
+    store_editor_rich_text_format_properties_masked(qfmt, format, mask);
+    if (mask & RichTextCharFillColor) {
+        QColor transparent_color = rich_text_color_from_argb(format.fill.color);
+        transparent_color.setAlpha(0);
+        qfmt.setForeground(transparent_color);
+    }
 
     QTextCursor cursor = inline_text_editor_->textCursor();
     cursor.mergeCharFormat(qfmt);
@@ -6721,6 +7030,23 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
 
+    if (inline_text_editor_ && inline_text_editor_->isVisible()) {
+        const QPoint viewport_origin = inline_text_editor_->viewport()->mapTo(this, QPoint(0, 0));
+        const std::vector<QRectF> selection_rects = text_edit_selection_viewport_rects(inline_text_editor_);
+        if (!selection_rects.empty()) {
+            p.save();
+            p.setClipRect(inline_text_editor_->viewport()->rect().translated(viewport_origin));
+            p.setCompositionMode(QPainter::CompositionMode_Difference);
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            for (QRectF selection_rect : selection_rects) {
+                selection_rect.translate(viewport_origin);
+                p.drawRect(selection_rect);
+            }
+            p.restore();
+        }
+    }
+
     if (safe_guides_visible_) {
         auto draw_guide = [&](double inset, const QColor &color) {
             QRectF r(ox + dw * inset, oy + dh * inset, dw * (1.0 - 2.0 * inset), dh * (1.0 - 2.0 * inset));
@@ -7138,7 +7464,15 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
         format_cursor.select(QTextCursor::Document);
         format_cursor.mergeCharFormat(char_format);
     }
-    inline_text_editor_->mergeCurrentCharFormat(char_format);
+    /*
+     * Do not call mergeCurrentCharFormat() while the saved cursor owns a
+     * selection. QTextEdit applies that merge to the selected document text,
+     * so re-positioning the inline editor after begin_text_edit() could repaint
+     * every character with the current/layer style and hide mixed per-character
+     * sizes or colors until edit mode was committed.
+     */
+    if (!saved_cursor.hasSelection())
+        inline_text_editor_->mergeCurrentCharFormat(char_format);
     if (auto *layout = doc->documentLayout())
         layout->documentSize();
     inline_text_editor_->setTextCursor(saved_cursor);
@@ -7462,16 +7796,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     if (!title_) return;
 
     if (!inline_text_layer_id_.empty()) {
-        if (ev->button() == Qt::MiddleButton) {
-            panning_ = true;
-            pan_start_view_ = QPointF(ev->pos());
-            pan_start_offset_ = pan_offset_;
-            setCursor(Qt::ClosedHandCursor);
-            ev->accept();
-            return;
-        }
-        if (inline_text_editor_)
-            inline_text_editor_->setFocus(Qt::MouseFocusReason);
+        commit_text_edit(true);
         ev->accept();
         return;
     }
@@ -10537,6 +10862,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         apply_rich_text_format_to_layer_range(*layer_, format, mask, active);
         emit text_char_format_changed(layer_->id, format, mask);
     };
+    auto apply_text_fill_format = [this, apply_text_char_format]() {
+        if (!layer_ || loading_values_) return;
+        RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+        apply_text_char_format(fmt, RichTextCharFillColor);
+    };
     auto local_time = [this]() {
         return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
                                    std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
@@ -10726,7 +11056,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
                 } else {
                     layer_->text_content = value;
-                    rich_text_document_sync_layer_defaults(layer_->rich_text, *layer_);
+                    if (layer_->rich_text.empty())
+                        layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+                    layer_->rich_text.default_paragraph_format = layer_paragraph_format_for_editor(*layer_);
                     rich_text_document_replace_text(layer_->rich_text, value);
                     layer_->rich_text_html.clear();
                 }
@@ -10760,7 +11092,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->font_bold = fdb.bold(s, cmb_font_style_->currentText());
                 layer_->font_italic = fdb.italic(s, cmb_font_style_->currentText());
                 RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
-                apply_text_char_format(fmt, RichTextCharFontFamily | RichTextCharBold | RichTextCharItalic);
+                apply_text_char_format(fmt, RichTextCharFontFamily | RichTextCharFontStyle |
+                                       RichTextCharBold | RichTextCharItalic);
                 emit_change();
             });
     connect(cmb_font_style_, &QComboBox::currentTextChanged,
@@ -10772,7 +11105,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->font_bold = fdb.bold(family, s);
                 layer_->font_italic = fdb.italic(family, s);
                 RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
-                apply_text_char_format(fmt, RichTextCharBold | RichTextCharItalic);
+                apply_text_char_format(fmt, RichTextCharFontStyle | RichTextCharBold | RichTextCharItalic);
                 emit_change();
             });
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -10788,21 +11121,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->font_italic = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharItalic); emit_change(); }
             });
     connect(chk_font_kerning_, &QToolButton::toggled,
-            this, [this, can_edit, emit_change](bool v){
-                if (can_edit()) { layer_->font_kerning = v; emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format](bool v){
+                if (can_edit()) { layer_->font_kerning = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
             });
     connect(cmb_kerning_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
+            this, [this, can_edit, emit_change, apply_text_char_format](int idx) {
                 if (!can_edit()) return;
                 layer_->kerning_mode = cmb_kerning_mode_->itemData(idx).toInt();
                 layer_->font_kerning = layer_->kerning_mode != 2;
                 if (chk_font_kerning_) chk_font_kerning_->setChecked(layer_->font_kerning);
                 if (spn_kerning_value_) spn_kerning_value_->setEnabled(layer_->kerning_mode == 2);
+                RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+                apply_text_char_format(fmt, RichTextCharKerning);
                 emit_change();
             });
     connect(spn_kerning_value_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) {
-                if (can_edit()) { layer_->manual_kerning = (float)v; emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format](double v) {
+                if (can_edit()) { layer_->manual_kerning = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharKerning); emit_change(); }
             });
     connect(spn_text_leading_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change](double v){
@@ -10825,12 +11160,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) { layer_->baseline_shift = (float)v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharBaselineShift); emit_change(); }
             });
     connect(cmb_language_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change](const QString &s){
-                if (can_edit()) { layer_->text_language = s.toStdString(); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format](const QString &s){
+                if (can_edit()) { layer_->text_language = s.toStdString(); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharLanguage); emit_change(); }
             });
-    auto set_exclusive_text_style = [this, can_edit, emit_change](int style, bool checked) {
+    auto set_exclusive_text_style = [this, can_edit, emit_change, apply_text_char_format](int style, bool checked) {
         if (!can_edit() || !checked) return;
         layer_->text_style = style;
+        RichTextCharFormat fmt = layer_char_format_for_editor(*layer_);
+        apply_text_char_format(fmt, RichTextCharTextStyle);
         emit_change();
         load_values();
     };
@@ -10840,13 +11177,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(btn_subscript_, &QToolButton::toggled, this, [set_exclusive_text_style](bool v){ set_exclusive_text_style(4, v); });
     connect(btn_underline_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_underline = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharUnderline); emit_change(); }});
     connect(btn_strikethrough_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_strikethrough = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharStrikethrough); emit_change(); }});
-    connect(btn_ligatures_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_ligatures = v; emit_change(); }});
-    connect(btn_stylistic_alternates_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_stylistic_alternates = v; emit_change(); }});
-    connect(btn_fractions_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_fractions = v; emit_change(); }});
-    connect(btn_opentype_features_, &QToolButton::toggled, this, [this, can_edit, emit_change](bool v){ if (can_edit()) { layer_->text_opentype_features = v; emit_change(); }});
+    connect(btn_ligatures_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_ligatures = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharLigatures); emit_change(); }});
+    connect(btn_stylistic_alternates_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_stylistic_alternates = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharStylisticAlternates); emit_change(); }});
+    connect(btn_fractions_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_fractions = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharFractions); emit_change(); }});
+    connect(btn_opentype_features_, &QToolButton::toggled, this, [this, can_edit, emit_change, apply_text_char_format](bool v){ if (can_edit()) { layer_->text_opentype_features = v; RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharOpenTypeFeatures); emit_change(); }});
     connect(cmb_text_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->text_style = cmb_text_style_->itemData(idx).toInt(); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_char_format](int idx) {
+                if (can_edit()) { layer_->text_style = cmb_text_style_->itemData(idx).toInt(); RichTextCharFormat fmt = layer_char_format_for_editor(*layer_); apply_text_char_format(fmt, RichTextCharTextStyle); emit_change(); }
             });
     connect(cmb_text_overflow_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, emit_change](int idx) {
@@ -11118,54 +11455,56 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(cmb_fill_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
+            this, [this, can_edit, emit_change, apply_text_fill_format](int idx) {
                 if (!can_edit()) return;
                 layer_->fill_type = cmb_fill_type_->itemData(idx).toInt();
+                apply_text_fill_format();
                 load_values();
                 emit_change();
             });
     connect(cmb_gradient_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->gradient_type = cmb_gradient_type_->itemData(idx).toInt(); emit_change(); }
+            this, [this, can_edit, emit_change, apply_text_fill_format](int idx) {
+                if (can_edit()) { layer_->gradient_type = cmb_gradient_type_->itemData(idx).toInt(); apply_text_fill_format(); emit_change(); }
             });
-    auto connect_gradient_color = [this, can_edit, emit_change](QPushButton *button, uint32_t Layer::*member,
-                                                                 const char *title_key) {
-        connect(button, &QPushButton::clicked, this, [this, can_edit, emit_change, button, member, title_key]() {
+    auto connect_gradient_color = [this, can_edit, emit_change, apply_text_fill_format](QPushButton *button, uint32_t Layer::*member,
+                                                                 const char *title_key, bool text_fill) {
+        connect(button, &QPushButton::clicked, this, [this, can_edit, emit_change, apply_text_fill_format, button, member, title_key, text_fill]() {
             if (!can_edit()) return;
             QColor picked = QColorDialog::getColor(color_from_argb((*layer_).*member), this, obsgs_tr(title_key),
                                                     QColorDialog::ShowAlphaChannel);
             if (!picked.isValid()) return;
             (*layer_).*member = argb_from_color(picked);
             style_color_button(button, (*layer_).*member);
+            if (text_fill) apply_text_fill_format();
             emit_change();
         });
     };
-    connect_gradient_color(btn_gradient_start_color_, &Layer::gradient_start_color, "OBSTitles.StartColorLabel");
-    connect_gradient_color(btn_gradient_end_color_, &Layer::gradient_end_color, "OBSTitles.EndColorLabel");
-    connect_gradient_color(btn_background_gradient_start_color_, &Layer::background_gradient_start_color, "OBSTitles.StartColorLabel");
-    connect_gradient_color(btn_background_gradient_end_color_, &Layer::background_gradient_end_color, "OBSTitles.EndColorLabel");
+    connect_gradient_color(btn_gradient_start_color_, &Layer::gradient_start_color, "OBSTitles.StartColorLabel", true);
+    connect_gradient_color(btn_gradient_end_color_, &Layer::gradient_end_color, "OBSTitles.EndColorLabel", true);
+    connect_gradient_color(btn_background_gradient_start_color_, &Layer::background_gradient_start_color, "OBSTitles.StartColorLabel", false);
+    connect_gradient_color(btn_background_gradient_end_color_, &Layer::background_gradient_end_color, "OBSTitles.EndColorLabel", false);
     connect(spn_gradient_start_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_start_pos = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_start_pos = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_end_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_end_pos = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_end_pos = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_start_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_start_opacity = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_start_opacity = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_end_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_end_opacity = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_end_opacity = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_opacity = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_opacity = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_angle = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_angle = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_center_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_center_x = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_center_x = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_center_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_center_y = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_center_y = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_scale_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_scale = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_scale = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_focal_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_focal_x = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_focal_x = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_focal_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->gradient_focal_y = (float)v; emit_change(); } });
+            this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_focal_y = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(cmb_background_fill_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, emit_change](int idx) {
                 if (!can_edit()) return;
@@ -12041,45 +12380,123 @@ void PropertiesPanel::load_values()
     if (btn_superscript_) btn_superscript_->setChecked(layer_->text_style == 3);
     if (btn_subscript_) btn_subscript_->setChecked(layer_->text_style == 4);
     if (btn_underline_) btn_underline_->setChecked(layer_->text_underline);
-    if ((layer_->type == LayerType::Text || layer_->type == LayerType::Ticker) && !is_clock) {
+    const bool use_rich_char_summary = (layer_->type == LayerType::Text || layer_->type == LayerType::Ticker) && !is_clock;
+    if (use_rich_char_summary) {
         const bool active = active_text_edit_layer_id_ == layer_->id;
         RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer_, active);
         const RichTextCharFormat &fmt = summary.format;
         int rich_fi = cmb_font_->findText(QString::fromStdString(fmt.font_family));
         if (rich_fi >= 0) cmb_font_->setCurrentIndex(rich_fi);
-        populate_font_style_combo(cmb_font_style_, QString::fromStdString(fmt.font_family), QString::fromStdString(layer_->font_style));
+        populate_font_style_combo(cmb_font_style_, QString::fromStdString(fmt.font_family), QString::fromStdString(fmt.font_style));
+        int rich_style_i = cmb_font_style_->findText(QString::fromStdString(fmt.font_style));
+        if (rich_style_i >= 0) cmb_font_style_->setCurrentIndex(rich_style_i);
         spn_size_->setValue(fmt.font_size);
         chk_bold_->setChecked(fmt.bold);
         chk_italic_->setChecked(fmt.italic);
+        if (chk_font_kerning_) chk_font_kerning_->setChecked(fmt.kerning);
+        if (cmb_kerning_mode_) {
+            int rich_kerning_i = cmb_kerning_mode_->findData(fmt.kerning_mode);
+            cmb_kerning_mode_->setCurrentIndex(rich_kerning_i >= 0 ? rich_kerning_i : 0);
+        }
+        if (spn_kerning_value_) {
+            spn_kerning_value_->setValue(fmt.manual_kerning);
+            spn_kerning_value_->setEnabled(fmt.kerning_mode == 2);
+        }
         if (spn_char_tracking_) spn_char_tracking_->setValue(fmt.tracking);
         if (spn_char_scale_x_) spn_char_scale_x_->setValue(fmt.scale_x * 100.0);
         if (spn_char_scale_y_) spn_char_scale_y_->setValue(fmt.scale_y * 100.0);
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(fmt.baseline_shift);
         if (btn_underline_) btn_underline_->setChecked(fmt.underline);
         if (btn_strikethrough_) btn_strikethrough_->setChecked(fmt.strikethrough);
-        if (summary.mixed & RichTextCharFillColor)
+        if (cmb_language_) {
+            int rich_language_i = cmb_language_->findText(QString::fromStdString(fmt.language));
+            cmb_language_->setCurrentIndex(rich_language_i >= 0 ? rich_language_i : 0);
+        }
+        if (btn_all_caps_) btn_all_caps_->setChecked(fmt.text_style == 1);
+        if (btn_small_caps_) btn_small_caps_->setChecked(fmt.text_style == 2);
+        if (btn_superscript_) btn_superscript_->setChecked(fmt.text_style == 3);
+        if (btn_subscript_) btn_subscript_->setChecked(fmt.text_style == 4);
+        if (btn_ligatures_) btn_ligatures_->setChecked(fmt.ligatures);
+        if (btn_stylistic_alternates_) btn_stylistic_alternates_->setChecked(fmt.stylistic_alternates);
+        if (btn_fractions_) btn_fractions_->setChecked(fmt.fractions);
+        if (btn_opentype_features_) btn_opentype_features_->setChecked(fmt.opentype_features);
+        int rich_text_style_i = cmb_text_style_->findData(fmt.text_style);
+        cmb_text_style_->setCurrentIndex(rich_text_style_i >= 0 ? rich_text_style_i : 0);
+        if (summary.mixed & RichTextCharFillColor) {
             style_color_button_mixed(btn_text_color_);
-        else
+            style_color_button_mixed(btn_gradient_start_color_);
+            style_color_button_mixed(btn_gradient_end_color_);
+        } else {
             style_color_button(btn_text_color_, fmt.fill.color);
+            if (cmb_fill_type_) {
+                int rich_fill_i = cmb_fill_type_->findData(fmt.fill.type);
+                cmb_fill_type_->setCurrentIndex(rich_fill_i >= 0 ? rich_fill_i : 0);
+            }
+            if (cmb_gradient_type_) {
+                int rich_gradient_i = cmb_gradient_type_->findData(fmt.fill.gradient_type);
+                cmb_gradient_type_->setCurrentIndex(rich_gradient_i >= 0 ? rich_gradient_i : 0);
+            }
+            if (btn_gradient_start_color_) style_color_button(btn_gradient_start_color_, fmt.fill.gradient_start_color);
+            if (btn_gradient_end_color_) style_color_button(btn_gradient_end_color_, fmt.fill.gradient_end_color);
+            if (spn_gradient_start_pos_) spn_gradient_start_pos_->setValue(fmt.fill.gradient_start_pos);
+            if (spn_gradient_end_pos_) spn_gradient_end_pos_->setValue(fmt.fill.gradient_end_pos);
+            if (spn_gradient_start_opacity_) spn_gradient_start_opacity_->setValue(fmt.fill.gradient_start_opacity);
+            if (spn_gradient_end_opacity_) spn_gradient_end_opacity_->setValue(fmt.fill.gradient_end_opacity);
+            if (spn_gradient_opacity_) spn_gradient_opacity_->setValue(fmt.fill.gradient_opacity);
+            if (spn_gradient_angle_) spn_gradient_angle_->setValue(fmt.fill.gradient_angle);
+            if (spn_gradient_center_x_) spn_gradient_center_x_->setValue(fmt.fill.gradient_center_x);
+            if (spn_gradient_center_y_) spn_gradient_center_y_->setValue(fmt.fill.gradient_center_y);
+            if (spn_gradient_scale_) spn_gradient_scale_->setValue(fmt.fill.gradient_scale);
+            if (spn_gradient_focal_x_) spn_gradient_focal_x_->setValue(fmt.fill.gradient_focal_x);
+            if (spn_gradient_focal_y_) spn_gradient_focal_y_->setValue(fmt.fill.gradient_focal_y);
+        }
 
         set_combo_mixed(cmb_font_, summary.mixed & RichTextCharFontFamily);
-        set_combo_mixed(cmb_font_style_, summary.mixed & (RichTextCharFontFamily | RichTextCharBold | RichTextCharItalic));
+        set_combo_mixed(cmb_font_style_, summary.mixed & (RichTextCharFontFamily | RichTextCharFontStyle | RichTextCharBold | RichTextCharItalic));
         set_spin_mixed(spn_size_, summary.mixed & RichTextCharFontSize);
         set_button_mixed(chk_bold_, summary.mixed & RichTextCharBold);
         set_button_mixed(chk_italic_, summary.mixed & RichTextCharItalic);
+        set_button_mixed(chk_font_kerning_, summary.mixed & RichTextCharKerning);
+        set_combo_mixed(cmb_kerning_mode_, summary.mixed & RichTextCharKerning);
+        set_spin_mixed(spn_kerning_value_, summary.mixed & RichTextCharKerning);
         set_spin_mixed(spn_char_tracking_, summary.mixed & RichTextCharTracking);
         set_spin_mixed(spn_char_scale_x_, summary.mixed & RichTextCharScaleX);
         set_spin_mixed(spn_char_scale_y_, summary.mixed & RichTextCharScaleY);
         set_spin_mixed(spn_baseline_shift_, summary.mixed & RichTextCharBaselineShift);
         set_button_mixed(btn_underline_, summary.mixed & RichTextCharUnderline);
         set_button_mixed(btn_strikethrough_, summary.mixed & RichTextCharStrikethrough);
+        set_combo_mixed(cmb_language_, summary.mixed & RichTextCharLanguage);
+        set_button_mixed(btn_all_caps_, summary.mixed & RichTextCharTextStyle);
+        set_button_mixed(btn_small_caps_, summary.mixed & RichTextCharTextStyle);
+        set_button_mixed(btn_superscript_, summary.mixed & RichTextCharTextStyle);
+        set_button_mixed(btn_subscript_, summary.mixed & RichTextCharTextStyle);
+        set_button_mixed(btn_ligatures_, summary.mixed & RichTextCharLigatures);
+        set_button_mixed(btn_stylistic_alternates_, summary.mixed & RichTextCharStylisticAlternates);
+        set_button_mixed(btn_fractions_, summary.mixed & RichTextCharFractions);
+        set_button_mixed(btn_opentype_features_, summary.mixed & RichTextCharOpenTypeFeatures);
+        set_combo_mixed(cmb_text_style_, summary.mixed & RichTextCharTextStyle);
+        set_combo_mixed(cmb_fill_type_, summary.mixed & RichTextCharFillColor);
+        set_combo_mixed(cmb_gradient_type_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_start_pos_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_end_pos_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_start_opacity_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_end_opacity_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_opacity_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_angle_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_center_x_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_center_y_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_scale_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_focal_x_, summary.mixed & RichTextCharFillColor);
+        set_spin_mixed(spn_gradient_focal_y_, summary.mixed & RichTextCharFillColor);
     }
-    if (btn_ligatures_) btn_ligatures_->setChecked(layer_->text_ligatures);
-    if (btn_stylistic_alternates_) btn_stylistic_alternates_->setChecked(layer_->text_stylistic_alternates);
-    if (btn_fractions_) btn_fractions_->setChecked(layer_->text_fractions);
-    if (btn_opentype_features_) btn_opentype_features_->setChecked(layer_->text_opentype_features);
-    int style_idx = cmb_text_style_->findData(layer_->text_style);
-    cmb_text_style_->setCurrentIndex(style_idx >= 0 ? style_idx : 0);
+    if (!use_rich_char_summary) {
+        if (btn_ligatures_) btn_ligatures_->setChecked(layer_->text_ligatures);
+        if (btn_stylistic_alternates_) btn_stylistic_alternates_->setChecked(layer_->text_stylistic_alternates);
+        if (btn_fractions_) btn_fractions_->setChecked(layer_->text_fractions);
+        if (btn_opentype_features_) btn_opentype_features_->setChecked(layer_->text_opentype_features);
+        int style_idx = cmb_text_style_->findData(layer_->text_style);
+        cmb_text_style_->setCurrentIndex(style_idx >= 0 ? style_idx : 0);
+    }
     int overflow_idx = cmb_text_overflow_->findData(layer_->text_overflow_mode);
     cmb_text_overflow_->setCurrentIndex(overflow_idx >= 0 ? overflow_idx : 0);
     spn_text_fit_min_scale_->setValue(layer_->text_fit_min_scale);

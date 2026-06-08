@@ -728,7 +728,11 @@ static json rich_fill_to_json(const RichTextFill &f)
     return {{"type", f.type}, {"color", f.color}, {"gradient_type", f.gradient_type},
             {"gradient_start_color", f.gradient_start_color}, {"gradient_end_color", f.gradient_end_color},
             {"gradient_start_pos", f.gradient_start_pos}, {"gradient_end_pos", f.gradient_end_pos},
-            {"gradient_angle", f.gradient_angle}};
+            {"gradient_start_opacity", f.gradient_start_opacity}, {"gradient_end_opacity", f.gradient_end_opacity},
+            {"gradient_opacity", f.gradient_opacity}, {"gradient_angle", f.gradient_angle},
+            {"gradient_center_x", f.gradient_center_x}, {"gradient_center_y", f.gradient_center_y},
+            {"gradient_scale", f.gradient_scale}, {"gradient_focal_x", f.gradient_focal_x},
+            {"gradient_focal_y", f.gradient_focal_y}};
 }
 
 static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallback = {})
@@ -742,16 +746,30 @@ static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallb
     f.gradient_end_color = json_color(j, "gradient_end_color", f.gradient_end_color);
     f.gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "gradient_start_pos", f.gradient_start_pos), f.gradient_start_pos), 0.0, 1.0);
     f.gradient_end_pos = (float)std::clamp(finite_or(json_double(j, "gradient_end_pos", f.gradient_end_pos), f.gradient_end_pos), 0.0, 1.0);
+    f.gradient_start_opacity = (float)std::clamp(finite_or(json_double(j, "gradient_start_opacity", f.gradient_start_opacity), f.gradient_start_opacity), 0.0, 1.0);
+    f.gradient_end_opacity = (float)std::clamp(finite_or(json_double(j, "gradient_end_opacity", f.gradient_end_opacity), f.gradient_end_opacity), 0.0, 1.0);
+    f.gradient_opacity = (float)std::clamp(finite_or(json_double(j, "gradient_opacity", f.gradient_opacity), f.gradient_opacity), 0.0, 1.0);
     f.gradient_angle = (float)finite_or(json_double(j, "gradient_angle", f.gradient_angle), f.gradient_angle);
+    f.gradient_center_x = (float)std::clamp(finite_or(json_double(j, "gradient_center_x", f.gradient_center_x), f.gradient_center_x), 0.0, 1.0);
+    f.gradient_center_y = (float)std::clamp(finite_or(json_double(j, "gradient_center_y", f.gradient_center_y), f.gradient_center_y), 0.0, 1.0);
+    f.gradient_scale = (float)std::clamp(finite_or(json_double(j, "gradient_scale", f.gradient_scale), f.gradient_scale), 0.01, 10.0);
+    f.gradient_focal_x = (float)std::clamp(finite_or(json_double(j, "gradient_focal_x", f.gradient_focal_x), f.gradient_focal_x), 0.0, 1.0);
+    f.gradient_focal_y = (float)std::clamp(finite_or(json_double(j, "gradient_focal_y", f.gradient_focal_y), f.gradient_focal_y), 0.0, 1.0);
     return f;
 }
 
 static json rich_char_format_to_json(const RichTextCharFormat &f)
 {
-    return {{"font_family", f.font_family}, {"font_size", f.font_size}, {"bold", f.bold},
-            {"italic", f.italic}, {"underline", f.underline}, {"strikethrough", f.strikethrough},
-            {"tracking", f.tracking}, {"scale_x", f.scale_x}, {"scale_y", f.scale_y},
-            {"baseline_shift", f.baseline_shift}, {"fill", rich_fill_to_json(f.fill)}};
+    return {{"font_family", f.font_family}, {"font_style", f.font_style},
+            {"font_size", f.font_size}, {"bold", f.bold}, {"italic", f.italic},
+            {"underline", f.underline}, {"strikethrough", f.strikethrough},
+            {"kerning", f.kerning}, {"kerning_mode", f.kerning_mode},
+            {"manual_kerning", f.manual_kerning}, {"tracking", f.tracking},
+            {"scale_x", f.scale_x}, {"scale_y", f.scale_y},
+            {"baseline_shift", f.baseline_shift}, {"text_style", f.text_style},
+            {"ligatures", f.ligatures}, {"stylistic_alternates", f.stylistic_alternates},
+            {"fractions", f.fractions}, {"opentype_features", f.opentype_features},
+            {"language", f.language}, {"fill", rich_fill_to_json(f.fill)}};
 }
 
 static RichTextCharFormat rich_char_format_from_json(const json &j, const RichTextCharFormat &fallback = {})
@@ -759,15 +777,25 @@ static RichTextCharFormat rich_char_format_from_json(const json &j, const RichTe
     RichTextCharFormat f = fallback;
     if (!j.is_object()) return f;
     f.font_family = bounded_string(j, "font_family", f.font_family, kMaxNameLength);
+    f.font_style = bounded_string(j, "font_style", f.font_style, kMaxNameLength);
     f.font_size = std::clamp(json_int(j, "font_size", f.font_size), 1, 512);
     f.bold = json_bool(j, "bold", f.bold);
     f.italic = json_bool(j, "italic", f.italic);
     f.underline = json_bool(j, "underline", f.underline);
     f.strikethrough = json_bool(j, "strikethrough", f.strikethrough);
+    f.kerning = json_bool(j, "kerning", f.kerning);
+    f.kerning_mode = std::clamp(json_int(j, "kerning_mode", f.kerning_mode), 0, 2);
+    f.manual_kerning = (float)std::clamp(finite_or(json_double(j, "manual_kerning", f.manual_kerning), f.manual_kerning), -1000.0, 1000.0);
     f.tracking = (float)std::clamp(finite_or(json_double(j, "tracking", f.tracking), f.tracking), -1000.0, 1000.0);
     f.scale_x = (float)std::clamp(finite_or(json_double(j, "scale_x", f.scale_x), f.scale_x), 0.01, 100.0);
     f.scale_y = (float)std::clamp(finite_or(json_double(j, "scale_y", f.scale_y), f.scale_y), 0.01, 100.0);
     f.baseline_shift = (float)std::clamp(finite_or(json_double(j, "baseline_shift", f.baseline_shift), f.baseline_shift), -1000.0, 1000.0);
+    f.text_style = std::clamp(json_int(j, "text_style", f.text_style), 0, 4);
+    f.ligatures = json_bool(j, "ligatures", f.ligatures);
+    f.stylistic_alternates = json_bool(j, "stylistic_alternates", f.stylistic_alternates);
+    f.fractions = json_bool(j, "fractions", f.fractions);
+    f.opentype_features = json_bool(j, "opentype_features", f.opentype_features);
+    f.language = bounded_string(j, "language", f.language, kMaxNameLength);
     if (j.contains("fill")) f.fill = rich_fill_from_json(j["fill"], f.fill);
     return f;
 }

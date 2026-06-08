@@ -13,20 +13,38 @@ struct RichTextFill {
     uint32_t gradient_end_color = 0xFF1B1B1B;
     float gradient_start_pos = 0.0f;
     float gradient_end_pos = 1.0f;
+    float gradient_start_opacity = 1.0f;
+    float gradient_end_opacity = 1.0f;
+    float gradient_opacity = 1.0f;
     float gradient_angle = 0.0f;
+    float gradient_center_x = 0.5f;
+    float gradient_center_y = 0.5f;
+    float gradient_scale = 1.0f;
+    float gradient_focal_x = 0.5f;
+    float gradient_focal_y = 0.5f;
 };
 
 struct RichTextCharFormat {
     std::string font_family = "Helvetica Neue";
+    std::string font_style = "Regular";
     int font_size = 72;
     bool bold = false;
     bool italic = false;
     bool underline = false;
     bool strikethrough = false;
+    bool kerning = true;
+    int kerning_mode = 0;
+    float manual_kerning = 0.0f;
     float tracking = 0.0f;
     float scale_x = 1.0f;
     float scale_y = 1.0f;
     float baseline_shift = 0.0f;
+    int text_style = 0;
+    bool ligatures = true;
+    bool stylistic_alternates = false;
+    bool fractions = false;
+    bool opentype_features = false;
+    std::string language = "English";
     RichTextFill fill;
 };
 
