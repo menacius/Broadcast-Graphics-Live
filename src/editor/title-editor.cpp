@@ -426,7 +426,7 @@ static void store_rich_text_format_properties(QTextCharFormat &out, const RichTe
     out.setProperty(RichTextPropGradientFocalY, (double)format.fill.gradient_focal_y);
 }
 
-static void store_rich_text_format_properties_masked(QTextCharFormat &out, const RichTextCharFormat &format, uint32_t mask)
+static void store_editor_rich_text_format_properties_masked(QTextCharFormat &out, const RichTextCharFormat &format, uint32_t mask)
 {
     if (mask & RichTextCharFontFamily)
         out.setProperty(RichTextPropFontFamily, QString::fromStdString(format.font_family));
@@ -475,7 +475,7 @@ static void store_rich_text_format_properties_masked(QTextCharFormat &out, const
     }
 }
 
-static void apply_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
+static void apply_editor_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
 {
     if (!format.font_style.empty())
         font.setStyleName(QString::fromStdString(format.font_style));
@@ -494,80 +494,7 @@ static void apply_rich_text_extended_font_properties(QFont &font, const RichText
         font.setStyleStrategy((QFont::StyleStrategy)(font.styleStrategy() | QFont::PreferNoShaping));
 }
 
-static void apply_rich_text_extended_char_format(QTextCharFormat &out, const RichTextCharFormat &format)
-{
-    if (format.text_style == 3)
-        out.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
-    else if (format.text_style == 4)
-        out.setVerticalAlignment(QTextCharFormat::AlignSubScript);
-    else
-        out.setVerticalAlignment(QTextCharFormat::AlignNormal);
-    out.setFontKerning(format.kerning_mode != 2 && format.kerning);
-    out.setFontLetterSpacingType(QFont::AbsoluteSpacing);
-    out.setFontLetterSpacing(format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
-}
-
-static void store_rich_text_format_properties_masked(QTextCharFormat &out, const RichTextCharFormat &format, uint32_t mask)
-{
-    if (mask & RichTextCharFontFamily)
-        out.setProperty(RichTextPropFontFamily, QString::fromStdString(format.font_family));
-    if (mask & RichTextCharFontStyle)
-        out.setProperty(RichTextPropFontStyle, QString::fromStdString(format.font_style));
-    if (mask & RichTextCharFontSize)
-        out.setProperty(RichTextPropFontSize, format.font_size);
-    if (mask & RichTextCharBold) out.setProperty(RichTextPropBold, format.bold);
-    if (mask & RichTextCharItalic) out.setProperty(RichTextPropItalic, format.italic);
-    if (mask & RichTextCharUnderline) out.setProperty(RichTextPropUnderline, format.underline);
-    if (mask & RichTextCharStrikethrough) out.setProperty(RichTextPropStrikethrough, format.strikethrough);
-    if (mask & RichTextCharKerning) {
-        out.setProperty(RichTextPropKerning, format.kerning);
-        out.setProperty(RichTextPropKerningMode, format.kerning_mode);
-        out.setProperty(RichTextPropManualKerning, (double)format.manual_kerning);
-    }
-    if (mask & RichTextCharTracking) out.setProperty(RichTextPropTracking, (double)format.tracking);
-    if (mask & RichTextCharScaleX) out.setProperty(RichTextPropScaleX, (double)format.scale_x);
-    if (mask & RichTextCharScaleY) out.setProperty(RichTextPropScaleY, (double)format.scale_y);
-    if (mask & RichTextCharBaselineShift) out.setProperty(RichTextPropBaselineShift, (double)format.baseline_shift);
-    if (mask & RichTextCharTextStyle) out.setProperty(RichTextPropTextStyle, format.text_style);
-    if (mask & RichTextCharLigatures) out.setProperty(RichTextPropLigatures, format.ligatures);
-    if (mask & RichTextCharStylisticAlternates)
-        out.setProperty(RichTextPropStylisticAlternates, format.stylistic_alternates);
-    if (mask & RichTextCharFractions) out.setProperty(RichTextPropFractions, format.fractions);
-    if (mask & RichTextCharOpenTypeFeatures) out.setProperty(RichTextPropOpenTypeFeatures, format.opentype_features);
-    if (mask & RichTextCharLanguage)
-        out.setProperty(RichTextPropLanguage, QString::fromStdString(format.language));
-    if (mask & RichTextCharFillColor) {
-        out.setProperty(RichTextPropFillType, format.fill.type);
-        out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
-        out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
-        out.setProperty(RichTextPropGradientStartColor, (uint)format.fill.gradient_start_color);
-        out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
-        out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
-        out.setProperty(RichTextPropGradientEndPos, (double)format.fill.gradient_end_pos);
-        out.setProperty(RichTextPropGradientAngle, (double)format.fill.gradient_angle);
-    }
-}
-
-static void apply_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
-{
-    if (!format.font_style.empty())
-        font.setStyleName(QString::fromStdString(format.font_style));
-    font.setKerning(format.kerning_mode != 2 && format.kerning);
-    font.setLetterSpacing(QFont::AbsoluteSpacing,
-                          format.tracking + (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
-    font.setStretch(std::clamp((int)std::round(format.scale_x * 100.0f), 1, 4000));
-    font.setCapitalization(QFont::MixedCase);
-    if (format.text_style == 1)
-        font.setCapitalization(QFont::AllUppercase);
-    else if (format.text_style == 2)
-        font.setCapitalization(QFont::SmallCaps);
-    if (format.text_style == 3 || format.text_style == 4)
-        font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
-    if (!format.ligatures)
-        font.setStyleStrategy((QFont::StyleStrategy)(font.styleStrategy() | QFont::PreferNoShaping));
-}
-
-static void apply_rich_text_extended_char_format(QTextCharFormat &out, const RichTextCharFormat &format)
+static void apply_editor_rich_text_extended_char_format(QTextCharFormat &out, const RichTextCharFormat &format)
 {
     if (format.text_style == 3)
         out.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
@@ -653,11 +580,11 @@ static QTextCharFormat qtext_format_from_rich_text_format(const RichTextCharForm
     font.setItalic(format.italic);
     font.setUnderline(format.underline);
     font.setStrikeOut(format.strikethrough);
-    apply_rich_text_extended_font_properties(font, format);
+    apply_editor_rich_text_extended_font_properties(font, format);
     out.setFont(font);
     out.setFontUnderline(format.underline);
     out.setFontStrikeOut(format.strikethrough);
-    apply_rich_text_extended_char_format(out, format);
+    apply_editor_rich_text_extended_char_format(out, format);
     store_rich_text_format_properties(out, format);
     QColor color = rich_text_color_from_argb(format.fill.color);
     color.setAlpha(0);
@@ -6104,7 +6031,7 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
         else
             qfmt.setVerticalAlignment(QTextCharFormat::AlignNormal);
     }
-    store_rich_text_format_properties_masked(qfmt, format, mask);
+    store_editor_rich_text_format_properties_masked(qfmt, format, mask);
     if (mask & RichTextCharFillColor) {
         QColor transparent_color = rich_text_color_from_argb(format.fill.color);
         transparent_color.setAlpha(0);
