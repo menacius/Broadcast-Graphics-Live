@@ -26,11 +26,14 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QIODevice>
 #include <QItemSelectionModel>
 #include <QMenu>
 #include <QMimeData>
 #include <QTextEdit>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QMessageBox>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -48,6 +51,7 @@
 #include <QSettings>
 #include <QWidgetAction>
 #include <QPushButton>
+#include <QPoint>
 #include <QListView>
 #include <QListWidget>
 #include <QTreeWidget>
@@ -59,6 +63,7 @@
 #include <QStringList>
 #include <QHeaderView>
 #include <QLineEdit>
+#include <QTextOption>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSet>
@@ -425,6 +430,77 @@ static LiveTextCueHeader *live_text_cue_header(QTableWidget *table)
 {
     return table ? dynamic_cast<LiveTextCueHeader *>(table->horizontalHeader()) : nullptr;
 }
+
+class LiveTextCueCellEdit : public QTextEdit {
+public:
+    explicit LiveTextCueCellEdit(const QString &text, QWidget *parent = nullptr)
+        : QTextEdit(parent)
+    {
+        setAcceptRichText(false);
+        setPlainText(text);
+        setToolTip(text);
+        viewport()->setToolTip(text);
+        setFrameShape(QFrame::NoFrame);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setLineWrapMode(QTextEdit::WidgetWidth);
+        setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        setTabChangesFocus(false);
+        setFocusPolicy(Qt::StrongFocus);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+        viewport()->setCursor(Qt::IBeamCursor);
+
+        connect(this, &QTextEdit::textChanged, this, [this]() {
+            setToolTip(toPlainText());
+            viewport()->setToolTip(toPlainText());
+            document()->adjustSize();
+            updateGeometry();
+            QTableWidget *table = nullptr;
+            for (QWidget *ancestor = parentWidget(); ancestor && !table; ancestor = ancestor->parentWidget())
+                table = qobject_cast<QTableWidget *>(ancestor);
+            if (table) {
+                const QPoint viewport_pos = table->viewport()->mapFromGlobal(mapToGlobal(rect().center()));
+                const QModelIndex index = table->indexAt(viewport_pos);
+                if (index.isValid())
+                    table->resizeRowToContents(index.row());
+            }
+        });
+    }
+
+    QSize sizeHint() const override
+    {
+        const int document_width = std::max(1, viewport()->width());
+        QTextDocument *doc = document();
+        doc->setTextWidth(document_width);
+        const int margin = frameWidth() * 2 + contentsMargins().top() + contentsMargins().bottom() + 8;
+        const int height = std::max(30, (int)std::ceil(doc->size().height()) + margin);
+        return QSize(QTextEdit::sizeHint().width(), height);
+    }
+
+    std::function<void(const QString &)> commit_requested;
+    std::function<void(bool)> tab_requested;
+
+protected:
+    void focusOutEvent(QFocusEvent *event) override
+    {
+        if (commit_requested)
+            commit_requested(toPlainText());
+        QTextEdit::focusOutEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event && (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab)) {
+            if (commit_requested)
+                commit_requested(toPlainText());
+            if (tab_requested)
+                tab_requested(event->key() == Qt::Key_Backtab || event->modifiers().testFlag(Qt::ShiftModifier));
+            event->accept();
+            return;
+        }
+        QTextEdit::keyPressEvent(event);
+    }
+};
 
 class TemplateListWidget : public QListWidget {
 public:
@@ -1555,6 +1631,7 @@ void TitleDock::build_ui()
     text_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     text_table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     text_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    text_table_->setWordWrap(true);
     live_layout->addWidget(text_table_, 1);
     live_layout->addWidget(live_toolbar);
 
@@ -2078,6 +2155,125 @@ std::vector<int> TitleDock::selected_live_text_rows() const
     return rows;
 }
 
+std::vector<int> TitleDock::visible_live_text_rows() const
+{
+    std::vector<int> rows;
+    if (!text_table_) return rows;
+
+    rows.reserve(text_table_->rowCount());
+    for (int row = 0; row < text_table_->rowCount(); ++row) {
+        if (!text_table_->isRowHidden(row))
+            rows.push_back(row);
+    }
+    return rows;
+}
+
+std::vector<int> TitleDock::visible_live_text_edit_columns() const
+{
+    std::vector<int> columns;
+    if (!text_table_ || !text_table_->horizontalHeader()) return columns;
+
+    auto *header = text_table_->horizontalHeader();
+    for (int visual = 0; visual < header->count(); ++visual) {
+        const int logical = header->logicalIndex(visual);
+        if (logical <= 0 || logical >= text_table_->columnCount() - 1)
+            continue;
+        if (text_table_->isColumnHidden(logical) || header->isSectionHidden(logical))
+            continue;
+        columns.push_back(logical);
+    }
+    return columns;
+}
+
+int TitleDock::append_live_text_row(bool clone_selected_row)
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title) return -1;
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty()) return -1;
+
+    auto selected_rows = selected_live_text_rows();
+    std::vector<std::string> row(exposed.size());
+    if (clone_selected_row && selected_rows.size() == 1) {
+        const int source_row = selected_rows.front();
+        if (source_row >= 0 && source_row < (int)title->live_text_rows.size())
+            row = title->live_text_rows[source_row];
+    }
+    row.resize(exposed.size());
+
+    title->live_text_rows.push_back(std::move(row));
+    const int added_row = (int)title->live_text_rows.size() - 1;
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().notify_change();
+    populate_exposed_text();
+    return added_row;
+}
+
+void TitleDock::focus_live_text_cell(int row, int col)
+{
+    if (!text_table_) return;
+    const int table_col = col + 1;
+    if (row < 0 || row >= text_table_->rowCount()) return;
+    if (table_col <= 0 || table_col >= text_table_->columnCount() - 1) return;
+    auto *header = text_table_->horizontalHeader();
+    if (text_table_->isRowHidden(row) || text_table_->isColumnHidden(table_col) ||
+        (header && header->isSectionHidden(table_col))) return;
+
+    text_table_->setCurrentCell(row, table_col);
+    text_table_->scrollTo(text_table_->model()->index(row, table_col), QAbstractItemView::PositionAtCenter);
+    if (auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(row, table_col))) {
+        edit->setFocus(Qt::TabFocusReason);
+        QTextCursor cursor = edit->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        edit->setTextCursor(cursor);
+    }
+}
+
+void TitleDock::focus_first_visible_live_text_cell(int row)
+{
+    const auto columns = visible_live_text_edit_columns();
+    if (columns.empty()) return;
+    focus_live_text_cell(row, columns.front() - 1);
+}
+
+void TitleDock::handle_live_text_cell_tab(int row, int col, bool backwards)
+{
+    if (!text_table_) return;
+
+    const auto rows = visible_live_text_rows();
+    const auto columns = visible_live_text_edit_columns();
+    if (rows.empty() || columns.empty()) return;
+
+    const int table_col = col + 1;
+    auto row_it = std::find(rows.begin(), rows.end(), row);
+    auto col_it = std::find(columns.begin(), columns.end(), table_col);
+    if (row_it == rows.end() || col_it == columns.end())
+        return;
+
+    const int row_pos = (int)std::distance(rows.begin(), row_it);
+    const int col_pos = (int)std::distance(columns.begin(), col_it);
+    const int column_count = (int)columns.size();
+    int next_index = row_pos * column_count + col_pos + (backwards ? -1 : 1);
+    if (next_index < 0)
+        return;
+
+    const int editable_count = (int)rows.size() * column_count;
+    if (next_index >= editable_count) {
+        if (backwards)
+            return;
+        QTimer::singleShot(0, this, [this]() {
+            const int added_row = append_live_text_row(false);
+            if (added_row >= 0)
+                focus_first_visible_live_text_cell(added_row);
+        });
+        return;
+    }
+
+    const int next_row = rows[next_index / column_count];
+    const int next_col = columns[next_index % column_count];
+    focus_live_text_cell(next_row, next_col - 1);
+}
+
 void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
                                            int row, int col, const QString &text)
 {
@@ -2111,11 +2307,13 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     for (int target_row : target_rows) {
         if (target_row < 0 || target_row >= text_table_->rowCount())
             continue;
-        auto *edit = qobject_cast<QLineEdit *>(text_table_->cellWidget(target_row, col + 1));
-        if (!edit || edit->text() == text)
+        auto *edit = qobject_cast<QTextEdit *>(text_table_->cellWidget(target_row, col + 1));
+        if (!edit || edit->toPlainText() == text)
             continue;
         QSignalBlocker block(edit);
-        edit->setText(text);
+        edit->setPlainText(text);
+        edit->setToolTip(text);
+        edit->viewport()->setToolTip(text);
     }
 
     TitleDataStore::instance().save();
@@ -2488,6 +2686,7 @@ void TitleDock::populate_exposed_text()
         text_table_->setItem(0, 0, title_item);
 
         auto *cue = new QPushButton("▶", text_table_);
+        cue->setFocusPolicy(Qt::NoFocus);
         cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
         cue->setStyleSheet("QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
                            "QPushButton:hover{background:#3a3a3a;}");
@@ -2528,16 +2727,20 @@ void TitleDock::populate_exposed_text()
         select_item->setTextAlignment(Qt::AlignCenter);
         text_table_->setItem(row, 0, select_item);
         for (int col = 0; col < (int)exposed.size(); ++col) {
-            auto *edit = new QLineEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+            auto *edit = new LiveTextCueCellEdit(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
-            edit->setStyleSheet("QLineEdit{padding:3px;}");
-            connect(edit, &QLineEdit::editingFinished, this, [this, title, row, col, edit]() {
-                commit_live_text_cell_edit(title, row, col, edit->text());
-            });
+            edit->setStyleSheet("QTextEdit{padding:3px;}");
+            edit->commit_requested = [this, title, row, col](const QString &text) {
+                commit_live_text_cell_edit(title, row, col, text);
+            };
+            edit->tab_requested = [this, row, col](bool backwards) {
+                handle_live_text_cell_tab(row, col, backwards);
+            };
             text_table_->setCellWidget(row, col + 1, edit);
         }
 
         auto *cue = new QPushButton("▶", text_table_);
+        cue->setFocusPolicy(Qt::NoFocus);
         cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
         QString cue_style;
         if (row == title->current_cue_row) {
@@ -2553,6 +2756,7 @@ void TitleDock::populate_exposed_text()
         cue->setStyleSheet(cue_style);
         connect(cue, &QPushButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
         text_table_->setCellWidget(row, (int)exposed.size() + 1, cue);
+        text_table_->resizeRowToContents(row);
     }
     update_playlist_controls();
     update_persistence_controls();
@@ -2766,26 +2970,9 @@ void TitleDock::on_refresh_external_data()
 
 void TitleDock::on_add_live_text_row()
 {
-    auto title = TitleDataStore::instance().get_title(selected_id());
-    if (!title) return;
-    auto exposed = exposed_text_layers(title);
-    if (exposed.empty()) return;
-
-    auto selected_rows = selected_live_text_rows();
-    std::vector<std::string> row(exposed.size());
-    if (selected_rows.size() == 1) {
-        const int source_row = selected_rows.front();
-        if (source_row >= 0 && source_row < (int)title->live_text_rows.size())
-            row = title->live_text_rows[source_row];
-    }
-    row.resize(exposed.size());
-
-    title->live_text_rows.push_back(std::move(row));
-    const int added_row = (int)title->live_text_rows.size() - 1;
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().notify_change();
-    populate_exposed_text();
-    apply_live_text_row_selection({added_row}, false);
+    const int added_row = append_live_text_row(true);
+    if (added_row >= 0)
+        apply_live_text_row_selection({added_row}, false);
 }
 
 void TitleDock::on_delete_live_text_rows()
