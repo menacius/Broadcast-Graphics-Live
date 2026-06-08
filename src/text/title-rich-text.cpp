@@ -11,15 +11,25 @@ static RichTextCharFormat layer_char_format(const Layer &layer)
 {
     RichTextCharFormat f;
     f.font_family = layer.font_family;
+    f.font_style = layer.font_style;
     f.font_size = layer.font_size;
     f.bold = layer.font_bold;
     f.italic = layer.font_italic;
     f.underline = layer.text_underline;
     f.strikethrough = layer.text_strikethrough;
+    f.kerning = layer.font_kerning;
+    f.kerning_mode = layer.kerning_mode;
+    f.manual_kerning = layer.manual_kerning;
     f.tracking = layer.char_tracking;
     f.scale_x = layer.char_scale_x;
     f.scale_y = layer.char_scale_y;
     f.baseline_shift = layer.baseline_shift;
+    f.text_style = layer.text_style;
+    f.ligatures = layer.text_ligatures;
+    f.stylistic_alternates = layer.text_stylistic_alternates;
+    f.fractions = layer.text_fractions;
+    f.opentype_features = layer.text_opentype_features;
+    f.language = layer.text_language;
     f.fill.type = layer.fill_type;
     f.fill.color = layer.text_color;
     f.fill.gradient_type = layer.gradient_type;
@@ -49,11 +59,16 @@ static RichTextParagraphFormat layer_paragraph_format(const Layer &layer)
 
 static bool same_format(const RichTextCharFormat &a, const RichTextCharFormat &b)
 {
-    return a.font_family == b.font_family && a.font_size == b.font_size &&
-           a.bold == b.bold && a.italic == b.italic && a.underline == b.underline &&
-           a.strikethrough == b.strikethrough && a.tracking == b.tracking &&
+    return a.font_family == b.font_family && a.font_style == b.font_style &&
+           a.font_size == b.font_size && a.bold == b.bold && a.italic == b.italic &&
+           a.underline == b.underline && a.strikethrough == b.strikethrough &&
+           a.kerning == b.kerning && a.kerning_mode == b.kerning_mode &&
+           a.manual_kerning == b.manual_kerning && a.tracking == b.tracking &&
            a.scale_x == b.scale_x && a.scale_y == b.scale_y &&
-           a.baseline_shift == b.baseline_shift && a.fill.type == b.fill.type &&
+           a.baseline_shift == b.baseline_shift && a.text_style == b.text_style &&
+           a.ligatures == b.ligatures && a.stylistic_alternates == b.stylistic_alternates &&
+           a.fractions == b.fractions && a.opentype_features == b.opentype_features &&
+           a.language == b.language && a.fill.type == b.fill.type &&
            a.fill.color == b.fill.color && a.fill.gradient_type == b.fill.gradient_type &&
            a.fill.gradient_start_color == b.fill.gradient_start_color &&
            a.fill.gradient_end_color == b.fill.gradient_end_color &&
