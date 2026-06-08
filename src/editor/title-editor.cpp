@@ -3763,6 +3763,59 @@ void TitleEditor::update_panel_lock_state()
     }
 }
 
+
+static bool text_has_rtl_direction(const QString &text, bool fallback_rtl = false)
+{
+    for (const QChar ch : text) {
+        switch (ch.direction()) {
+        case QChar::DirL:
+        case QChar::DirLRE:
+        case QChar::DirLRO:
+            return false;
+        case QChar::DirR:
+        case QChar::DirAL:
+        case QChar::DirRLE:
+        case QChar::DirRLO:
+            return true;
+        default:
+            break;
+        }
+    }
+    return fallback_rtl;
+}
+
+static void set_text_layer_direction_defaults(Layer &layer, bool paragraph_box, bool rtl)
+{
+    layer.align_h = rtl ? 2 : 0;
+    layer.align_v = 0;
+    layer.origin_x = rtl ? 1.0f : 0.0f;
+    layer.origin_y = 0.0f;
+    layer.origin_x_prop.static_value = layer.origin_x;
+    layer.origin_y_prop.static_value = layer.origin_y;
+    layer.text_overflow_mode = paragraph_box ? 0 : 1;
+    layer.text_box_width_to_text = !paragraph_box;
+    layer.text_box_height_to_text = !paragraph_box;
+    layer.max_text_box_width = 9999.0f;
+    layer.max_text_box_height = 9999.0f;
+    layer.rich_text.default_paragraph_format.align_h = layer.align_h;
+    layer.rich_text.default_paragraph_format.align_v = layer.align_v;
+    for (auto &block : layer.rich_text.blocks) {
+        block.format.align_h = layer.align_h;
+        block.format.align_v = layer.align_v;
+    }
+}
+
+static void set_new_text_layer_contents_empty(Layer &layer)
+{
+    layer.text_content.clear();
+    layer.rich_text_html.clear();
+    layer.rich_text = rich_text_document_from_layer_defaults(layer);
+    layer.rich_text.plain_text.clear();
+    layer.rich_text.ranges.clear();
+    layer.rich_text.blocks.clear();
+    layer.rich_text.selection = {0, 0};
+}
+
 std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QString &name_override)
 {
     if (!title_) return nullptr;
@@ -3781,6 +3834,10 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     l->text_content = (type == LayerType::Text) ? editor_text_std("OBSTitles.NewText") :
                       (type == LayerType::Ticker) ? editor_text_std("OBSTitles.NewTickerText") : "";
     l->rich_text = rich_text_document_from_layer_defaults(*l);
+    if (type == LayerType::Text) {
+        set_new_text_layer_contents_empty(*l);
+        set_text_layer_direction_defaults(*l, false, false);
+    }
     l->clock_format = (type == LayerType::Clock) ? "H:i:s" : l->clock_format;
     l->pos_x.static_value = title_->width / 2.0;
     l->pos_y.static_value = title_->height / 2.0;
@@ -3834,7 +3891,12 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
     if (!layer) return;
     layer->pos_x.static_value = canvas_pt.x();
     layer->pos_y.static_value = canvas_pt.y();
-    layer->rich_text_html.clear();
+    if (type == LayerType::Text) {
+        set_new_text_layer_contents_empty(*layer);
+        set_text_layer_direction_defaults(*layer, false, false);
+    } else {
+        layer->rich_text_html.clear();
+    }
 
     canvas_created_shape_layer_id_ = layer->id;
     title_->add_layer(layer);
@@ -3854,13 +3916,20 @@ void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
     if (rect.width() < 1.0) rect.setWidth(width);
     if (rect.height() < 1.0) rect.setHeight(height);
 
-    layer->pos_x.static_value = rect.center().x();
-    layer->pos_y.static_value = rect.center().y();
+    if (is_canvas_text_layer(*layer)) {
+        const bool rtl = text_has_rtl_direction(QString::fromStdString(layer->text_content), layer->origin_x > 0.5f);
+        set_text_layer_direction_defaults(*layer, true, rtl);
+        layer->pos_x.static_value = rtl ? rect.right() : rect.left();
+        layer->pos_y.static_value = rect.top();
+    } else {
+        layer->pos_x.static_value = rect.center().x();
+        layer->pos_y.static_value = rect.center().y();
+    }
     layer->rect_width = (float)width;
     layer->rect_height = (float)height;
     layer->box_width.static_value = layer->rect_width;
     layer->box_height.static_value = layer->rect_height;
-    if (layer->shape_type == ShapeType::RoundedRectangle)
+    if (!is_canvas_text_layer(*layer) && layer->shape_type == ShapeType::RoundedRectangle)
         layer->corner_radius = (float)std::min(width, height) * 0.12f;
 
     update_layer_panels(layer, playhead_);
@@ -3874,9 +3943,12 @@ void TitleEditor::finish_canvas_created_shape(bool keep_layer)
 
     auto layer = title_->find_layer(layer_id);
     if (!layer) return;
-    const bool too_small = layer->shape_type == ShapeType::Line
-        ? layer->rect_width < 2.0f
-        : (layer->rect_width < 2.0f || layer->rect_height < 2.0f);
+    const bool is_text_layer = is_canvas_text_layer(*layer);
+    const bool too_small = is_text_layer
+        ? false
+        : (layer->shape_type == ShapeType::Line
+               ? layer->rect_width < 2.0f
+               : (layer->rect_width < 2.0f || layer->rect_height < 2.0f));
     if (!keep_layer || too_small) {
         title_->remove_layer(layer_id);
         layers_->refresh();
@@ -3891,6 +3963,8 @@ void TitleEditor::finish_canvas_created_shape(bool keep_layer)
     timeline_->set_title(title_);
     on_layer_selected(layer_id);
     on_title_modified();
+    if (is_text_layer && canvas_)
+        canvas_->begin_text_edit_for_layer(layer_id);
 }
 
 void TitleEditor::build_ui()
@@ -4356,6 +4430,8 @@ void TitleEditor::build_ui()
                 layers_->refresh();
                 on_layer_selected(l->id);
                 on_title_modified();
+                if (type == LayerType::Text && canvas_)
+                    canvas_->begin_text_edit_for_layer(l->id);
             });
 
     connect(layers_, &LayerStack::clone_layer_requested,
@@ -5992,6 +6068,16 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
 
 
 
+void CanvasPreview::begin_text_edit_for_layer(const std::string &layer_id)
+{
+    if (!title_ || layer_id.empty()) return;
+    auto layer = title_->find_layer(layer_id);
+    if (!layer || !is_canvas_text_layer(*layer) || layer->type == LayerType::Clock) return;
+    selected_layer_ids_ = {layer_id};
+    sel_layer_id_ = layer_id;
+    begin_text_edit(layer);
+}
+
 void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask)
 {
     if (!inline_text_editor_ || inline_text_layer_id_.empty() || inline_text_layer_id_ != layer_id)
@@ -7513,9 +7599,19 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
         return false;
     }
 
+    const bool paragraph_box = !(layer->text_box_width_to_text && layer->text_box_height_to_text);
+    const bool was_rtl = layer->origin_x > 0.5f;
+    const bool rtl = text_has_rtl_direction(QString::fromStdString(plain), was_rtl);
+    const double old_width = eval_box_width(*layer, std::max(0.0, playhead_ - layer->in_time));
+
     layer->text_content = plain;
     layer->rich_text = std::move(next_model);
     layer->rich_text_html.clear();
+    if (layer->type == LayerType::Text) {
+        set_text_layer_direction_defaults(*layer, paragraph_box, rtl);
+        if (paragraph_box && rtl != was_rtl)
+            layer->pos_x.static_value += rtl ? old_width : -old_width;
+    }
     if (editor_doc)
         editor_doc->setModified(false);
     if (mark_dirty) dirty_ = true;

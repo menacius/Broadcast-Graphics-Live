@@ -294,6 +294,7 @@ public:
     void set_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
     void set_text_tool_active(LayerType type);
+    void begin_text_edit_for_layer(const std::string &layer_id);
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
 
 signals:
