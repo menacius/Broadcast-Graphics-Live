@@ -10269,6 +10269,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_scale_lock_ = new QCheckBox(obsgs_tr("OBSTitles.ScaleLock"), inner);
     chk_scale_lock_->setChecked(true);
     style_checkbox(chk_scale_lock_);
+    chk_use_as_scene_mask_ = new QCheckBox(QStringLiteral("Use as Scene Mask"), inner);
+    chk_use_as_scene_mask_->setToolTip(QStringLiteral("Expose this layer as an alpha mask that can composite an OBS scene inside this Title/Graphics source."));
+    style_checkbox(chk_use_as_scene_mask_);
     spn_rot_     = mk_dspin(-9999,  9999,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
     spn_origin_x_ = mk_dspin(0.0, 1.0, 0.05);
@@ -10297,6 +10300,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(tfl, obsgs_tr("OBSTitles.ScaleXLabel"),  with_kf(spn_scale_x_, btn_kf_scale_x_));
     add_form_row(tfl, obsgs_tr("OBSTitles.ScaleYLabel"),  with_kf(spn_scale_y_, btn_kf_scale_y_));
     add_form_row(tfl, QString(), chk_scale_lock_);
+    add_form_row(tfl, QString(), chk_use_as_scene_mask_);
     add_form_row(tfl, obsgs_tr("OBSTitles.RotationLabel"),with_kf(spn_rot_, btn_kf_rotation_));
     add_form_row(tfl, obsgs_tr("OBSTitles.OpacityLabel"), with_kf(spn_opacity_, btn_kf_opacity_));
     add_form_row(tfl, obsgs_tr("OBSTitles.AnchorLabel"), with_kf(cmb_anchor_, mk_kf_button(obsgs_tr("OBSTitles.ToggleAnchorKeyframe"))));
@@ -11133,6 +11137,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 }
                 emit_change();
             });
+    connect(chk_use_as_scene_mask_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool enabled) {
+                if (!can_edit()) return;
+                layer_->use_as_scene_mask = enabled;
+                emit_change();
+            });
+
     connect(spn_rot_,      QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
                 if (can_edit()) { set_animated_value(layer_->rotation, local_time(), v); emit_change(); }
@@ -12103,6 +12114,7 @@ void PropertiesPanel::load_values()
         if (spn_scale_x_) spn_scale_x_->setValue(100.0);
         if (spn_scale_y_) spn_scale_y_->setValue(100.0);
         if (chk_scale_lock_) chk_scale_lock_->setChecked(true);
+        if (chk_use_as_scene_mask_) chk_use_as_scene_mask_->setChecked(false);
         if (spn_char_scale_x_) spn_char_scale_x_->setValue(100.0);
         if (spn_char_scale_y_) spn_char_scale_y_->setValue(100.0);
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(0.0);
@@ -12309,6 +12321,7 @@ void PropertiesPanel::load_values()
                             ? layer_->scale_y.evaluate(lt)
                             : layer_->scale_y.static_value) * 100.0);
     if (chk_scale_lock_) chk_scale_lock_->setChecked(layer_->scale_lock);
+    if (chk_use_as_scene_mask_) chk_use_as_scene_mask_->setChecked(layer_->use_as_scene_mask);
     spn_rot_->setValue(layer_->rotation.is_animated()
                        ? layer_->rotation.evaluate(lt)
                        : layer_->rotation.static_value);

@@ -862,6 +862,7 @@ private:
     QDoubleSpinBox  *spn_origin_x_ = nullptr;
     QDoubleSpinBox  *spn_origin_y_ = nullptr;
     QCheckBox       *chk_scale_lock_ = nullptr;
+    QCheckBox       *chk_use_as_scene_mask_ = nullptr;
     QCheckBox       *chk_lock_aspect_ = nullptr;
     QComboBox       *cmb_anchor_ = nullptr;
     QGroupBox       *shadow_box_ = nullptr;

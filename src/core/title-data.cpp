@@ -909,6 +909,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["parent_id"] = l.parent_id;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
+    j["use_as_scene_mask"] = l.use_as_scene_mask;
     json effects = json::array();
     for (const auto &effect : l.effects) {
         effects.push_back({{"type", (int)effect.type},
@@ -1117,6 +1118,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedAlpha);
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
+    l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false);
     if (j.contains("effects") && j["effects"].is_array()) {
         const size_t count = std::min(j["effects"].size(), (size_t)64);
         l->effects.reserve(count);

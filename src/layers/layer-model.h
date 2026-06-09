@@ -58,6 +58,7 @@ struct Layer {
     std::string parent_id;
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;
+    bool        use_as_scene_mask = false;
     std::vector<LayerEffect> effects;
 
     /* Timeline in/out (seconds) within parent title clip */

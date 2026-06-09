@@ -15,6 +15,7 @@
 #include "title-localization.h"
 
 #include <obs-module.h>
+#include <obs-frontend-api.h>
 #include <graphics/graphics.h>
 #include <util/threading.h>
 
@@ -57,10 +58,55 @@
 #include <limits>
 #include <unordered_map>
 #include <sstream>
+#include <cstdlib>
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr uint32_t kMaxSourceDimension = 16384;
+constexpr uint32_t kMaxSceneMasks = 64;
+
+static const char *kSceneMaskEffect = R"(
+uniform texture2d scene_image;
+uniform texture2d mask_image;
+uniform float4x4 ViewProj;
+
+sampler_state linear_sampler {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+    VertData vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float4 PSDrawSceneMask(VertData v_in) : TARGET
+{
+    float4 scene = scene_image.Sample(linear_sampler, v_in.uv);
+    float mask_alpha = mask_image.Sample(linear_sampler, v_in.uv).a;
+    scene.a *= mask_alpha;
+    return scene;
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSDrawSceneMask(v_in);
+    }
+}
+)";
+
 
 static uint32_t clamped_source_dimension(int value)
 {
@@ -240,6 +286,25 @@ static Title snapshot_title_for_render(const Title &title)
     return snapshot;
 }
 
+struct SceneMaskConfig {
+    std::string layer_id;
+    std::string scene_name;
+    double zoom = 1.0;
+    double x = 0.0;
+    double y = 0.0;
+    bool follow_position = true;
+    bool follow_size = true;
+};
+
+struct SceneMaskRuntime {
+    SceneMaskConfig config;
+    std::vector<uint8_t> pixels;
+    gs_texture_t *mask_texture = nullptr;
+    gs_texrender_t *scene_texrender = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct TitleSourceData {
     obs_source_t *source  = nullptr;
 
@@ -266,6 +331,7 @@ struct TitleSourceData {
     /* GPU texture */
     std::mutex    texture_mutex;
     gs_texture_t *texture    = nullptr;
+    gs_effect_t  *scene_mask_effect = nullptr;
     uint32_t      tex_w      = 0;
     uint32_t      tex_h      = 0;
 
@@ -282,6 +348,8 @@ struct TitleSourceData {
         QPointF origin;
     };
     std::unordered_map<std::string, CachedEffectLayer> effect_layer_cache;
+    std::vector<SceneMaskConfig> scene_mask_configs;
+    std::vector<SceneMaskRuntime> scene_masks;
 };
 
 
@@ -611,6 +679,107 @@ static const Layer *find_layer_by_id(const Title &title, const std::string &id)
             return candidate.get();
     }
     return nullptr;
+}
+
+
+static std::string scene_mask_setting_key(const std::string &layer_id, const char *suffix)
+{
+    return std::string(PROP_SCENE_MASK_PREFIX) + layer_id + "_" + suffix;
+}
+
+static std::vector<const Layer *> title_scene_mask_layers(const Title &title)
+{
+    std::vector<const Layer *> masks;
+    masks.reserve(title.layers.size());
+    for (const auto &layer : title.layers) {
+        if (layer && layer->use_as_scene_mask)
+            masks.push_back(layer.get());
+    }
+    return masks;
+}
+
+static std::vector<SceneMaskConfig> read_scene_mask_configs(obs_data_t *settings, const Title *title)
+{
+    std::vector<SceneMaskConfig> configs;
+    if (!settings || !title)
+        return configs;
+
+    const auto mask_layers = title_scene_mask_layers(*title);
+    configs.reserve(std::min(mask_layers.size(), (size_t)kMaxSceneMasks));
+    for (const Layer *layer : mask_layers) {
+        if (!layer || configs.size() >= kMaxSceneMasks)
+            break;
+        SceneMaskConfig cfg;
+        cfg.layer_id = layer->id;
+        cfg.scene_name = obs_data_get_string(settings, scene_mask_setting_key(layer->id, "scene").c_str());
+        const std::string zoom_key = scene_mask_setting_key(layer->id, "zoom");
+        const double stored_zoom = obs_data_get_double(settings, zoom_key.c_str());
+        cfg.zoom = stored_zoom > 0.0 ? std::clamp(stored_zoom, 0.01, 100.0) : 1.0;
+        cfg.x = obs_data_get_double(settings, scene_mask_setting_key(layer->id, "x").c_str());
+        cfg.y = obs_data_get_double(settings, scene_mask_setting_key(layer->id, "y").c_str());
+        const std::string follow_pos_key = scene_mask_setting_key(layer->id, "follow_position");
+        const std::string follow_size_key = scene_mask_setting_key(layer->id, "follow_size");
+        cfg.follow_position = obs_data_has_user_value(settings, follow_pos_key.c_str())
+            ? obs_data_get_bool(settings, follow_pos_key.c_str())
+            : true;
+        cfg.follow_size = obs_data_has_user_value(settings, follow_size_key.c_str())
+            ? obs_data_get_bool(settings, follow_size_key.c_str())
+            : true;
+        configs.push_back(cfg);
+    }
+    return configs;
+}
+
+static void destroy_scene_mask_runtime(SceneMaskRuntime &runtime)
+{
+    obs_enter_graphics();
+    if (runtime.mask_texture)
+        gs_texture_destroy(runtime.mask_texture);
+    if (runtime.scene_texrender)
+        gs_texrender_destroy(runtime.scene_texrender);
+    obs_leave_graphics();
+    runtime.mask_texture = nullptr;
+    runtime.scene_texrender = nullptr;
+}
+
+static void set_scene_mask_configs(TitleSourceData *data, const std::vector<SceneMaskConfig> &configs)
+{
+    if (!data)
+        return;
+    for (auto &runtime : data->scene_masks)
+        destroy_scene_mask_runtime(runtime);
+    data->scene_masks.clear();
+    data->scene_mask_configs = configs;
+    data->scene_masks.reserve(configs.size());
+    for (const auto &cfg : configs) {
+        SceneMaskRuntime runtime;
+        runtime.config = cfg;
+        data->scene_masks.push_back(std::move(runtime));
+    }
+}
+
+static double layer_evaluated_pos_x(const Layer &layer, double title_time)
+{
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    return layer.pos_x.evaluate(lt);
+}
+
+static double layer_evaluated_pos_y(const Layer &layer, double title_time)
+{
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    return layer.pos_y.evaluate(lt);
+}
+
+static double layer_evaluated_scale_x(const Layer &layer, double title_time)
+{
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    return layer.scale_x.evaluate(lt);
+}
+
+static double layer_evaluated_scale_y(const Layer &layer, double title_time)
+{
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    return layer.scale_y.evaluate(lt);
 }
 
 static bool layer_chain_visible(const Title &title, const Layer &layer, double title_time, int depth = 0)
@@ -2864,6 +3033,60 @@ static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Tit
     }
 }
 
+static void update_scene_mask_textures(TitleSourceData *data, const Title &title, double t, int canvas_w, int canvas_h)
+{
+    if (!data || data->scene_masks.empty() || canvas_w <= 0 || canvas_h <= 0)
+        return;
+
+    for (auto &runtime : data->scene_masks) {
+        const Layer *mask_layer = find_layer_by_id(title, runtime.config.layer_id);
+        if (!mask_layer || !layer_chain_visible(title, *mask_layer, t)) {
+            if (runtime.mask_texture) {
+                obs_enter_graphics();
+                gs_texture_destroy(runtime.mask_texture);
+                obs_leave_graphics();
+                runtime.mask_texture = nullptr;
+            }
+            runtime.pixels.clear();
+            runtime.width = runtime.height = 0;
+            continue;
+        }
+
+        const bool mask_size_changed = runtime.width != (uint32_t)canvas_w || runtime.height != (uint32_t)canvas_h;
+        runtime.width = (uint32_t)canvas_w;
+        runtime.height = (uint32_t)canvas_h;
+        runtime.pixels.assign((size_t)canvas_w * (size_t)canvas_h * 4, 0);
+
+        CairoSurfacePtr mask_surface(cairo_image_surface_create_for_data(
+            runtime.pixels.data(), CAIRO_FORMAT_ARGB32, canvas_w, canvas_h, canvas_w * 4));
+        auto mask_cr = make_cairo_context(mask_surface.get());
+        if (!mask_surface || cairo_surface_status(mask_surface.get()) != CAIRO_STATUS_SUCCESS || !mask_cr)
+            continue;
+
+        cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_CLEAR);
+        cairo_paint(mask_cr.get());
+        cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_OVER);
+        render_layer_unmasked(mask_cr.get(), title, *mask_layer, t, canvas_w, canvas_h);
+        mask_cr.reset();
+        cairo_surface_flush(mask_surface.get());
+        mask_surface.reset();
+
+        unpremultiply_bgra_for_obs(runtime.pixels.data(), (size_t)canvas_w * (size_t)canvas_h);
+
+        obs_enter_graphics();
+        if (!runtime.mask_texture || mask_size_changed) {
+            if (runtime.mask_texture)
+                gs_texture_destroy(runtime.mask_texture);
+            runtime.mask_texture = gs_texture_create((uint32_t)canvas_w, (uint32_t)canvas_h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+        }
+        if (runtime.mask_texture)
+            gs_texture_set_image(runtime.mask_texture, runtime.pixels.data(), (uint32_t)canvas_w * 4, false);
+        if (!runtime.scene_texrender)
+            runtime.scene_texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+        obs_leave_graphics();
+    }
+}
+
 /* Composite a full title frame into pixel_buf */
 static void render_title_frame(TitleSourceData *data,
                                 const Title &title, double t)
@@ -2969,6 +3192,8 @@ static void render_title_frame(TitleSourceData *data,
         }
     }
 
+    update_scene_mask_textures(data, title, t, (int)w, (int)h);
+
     data->dirty = false;
 }
 
@@ -3023,8 +3248,10 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     }
     data->last_tick = std::chrono::steady_clock::now();
     data->last_clock_refresh = data->last_tick;
-    if (auto title = TitleDataStore::instance().get_title(data->title_id))
+    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
         data->seen_cue_revision = title->cue_revision;
+        set_scene_mask_configs(data, read_scene_mask_configs(settings, title.get()));
+    }
     data->seen_store_revision = TitleDataStore::instance().revision();
     data->playing = false;
     data->waiting_for_cue = true;
@@ -3041,11 +3268,14 @@ static void source_destroy(void *priv)
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         obs_enter_graphics();
         if (data->texture) gs_texture_destroy(data->texture);
+        if (data->scene_mask_effect) gs_effect_destroy(data->scene_mask_effect);
         obs_leave_graphics();
         data->texture = nullptr;
         data->tex_w = 0;
         data->tex_h = 0;
     }
+    for (auto &runtime : data->scene_masks)
+        destroy_scene_mask_runtime(runtime);
     delete data;
 }
 
@@ -3062,8 +3292,10 @@ static void source_update(void *priv, obs_data_t *settings)
     data->playing = false;
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
-    if (auto title = TitleDataStore::instance().get_title(data->title_id))
+    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
         data->seen_cue_revision = title->cue_revision;
+        set_scene_mask_configs(data, read_scene_mask_configs(settings, title.get()));
+    }
     else
         data->seen_cue_revision = 0;
     data->last_clock_refresh = std::chrono::steady_clock::now();
@@ -3267,12 +3499,107 @@ static void source_video_tick(void *priv, float seconds)
     if (revision != data->seen_store_revision) {
         data->seen_store_revision = revision;
         data->effect_layer_cache.clear();
+        obs_data_t *settings = data->source ? obs_source_get_settings(data->source) : nullptr;
+        set_scene_mask_configs(data, read_scene_mask_configs(settings, title.get()));
+        if (settings)
+            obs_data_release(settings);
         data->dirty = true;
     }
 
     if (data->dirty) {
         Title render_snapshot = snapshot_title_for_render(*title);
         render_title_frame(data, render_snapshot, data->playhead);
+    }
+}
+
+static void ensure_scene_mask_effect(TitleSourceData *data)
+{
+    if (!data || data->scene_mask_effect)
+        return;
+    char *error = nullptr;
+    data->scene_mask_effect = gs_effect_create(kSceneMaskEffect, "obs-graphics-studio-pro-scene-mask", &error);
+    if (!data->scene_mask_effect && error)
+        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to create scene mask effect: %s", error);
+    if (error)
+        bfree(error);
+}
+
+static void render_scene_mask_overlays(TitleSourceData *data)
+{
+    if (!data || data->scene_masks.empty())
+        return;
+    ensure_scene_mask_effect(data);
+    if (!data->scene_mask_effect)
+        return;
+
+    gs_effect_t *effect = data->scene_mask_effect;
+    gs_eparam_t *scene_param = gs_effect_get_param_by_name(effect, "scene_image");
+    gs_eparam_t *mask_param = gs_effect_get_param_by_name(effect, "mask_image");
+    if (!scene_param || !mask_param)
+        return;
+
+    for (auto &runtime : data->scene_masks) {
+        if (!runtime.mask_texture || !runtime.scene_texrender || runtime.config.scene_name.empty())
+            continue;
+
+        obs_source_t *scene = obs_get_source_by_name(runtime.config.scene_name.c_str());
+        if (!scene)
+            continue;
+
+        const uint32_t scene_w = std::max(1u, obs_source_get_width(scene));
+        const uint32_t scene_h = std::max(1u, obs_source_get_height(scene));
+
+        const Layer *mask_layer = nullptr;
+        if (auto title = TitleDataStore::instance().get_title(data->title_id))
+            mask_layer = find_layer_by_id(*title, runtime.config.layer_id);
+
+        double draw_x = runtime.config.x;
+        double draw_y = runtime.config.y;
+        double draw_w = (double)scene_w;
+        double draw_h = (double)scene_h;
+        if (mask_layer) {
+            const double lt = data->playhead;
+            const double mask_lt = std::max(0.0, lt - mask_layer->in_time);
+            const double mask_w = eval_box_width(*mask_layer, mask_lt);
+            const double mask_h = eval_box_height(*mask_layer, mask_lt);
+            if (runtime.config.follow_position) {
+                draw_x += layer_evaluated_pos_x(*mask_layer, lt) -
+                    eval_origin_x(*mask_layer, mask_lt) * mask_w * layer_evaluated_scale_x(*mask_layer, lt);
+                draw_y += layer_evaluated_pos_y(*mask_layer, lt) -
+                    eval_origin_y(*mask_layer, mask_lt) * mask_h * layer_evaluated_scale_y(*mask_layer, lt);
+            }
+            if (runtime.config.follow_size) {
+                draw_w = std::max(1.0, mask_w * std::abs(layer_evaluated_scale_x(*mask_layer, lt)));
+                draw_h = std::max(1.0, mask_h * std::abs(layer_evaluated_scale_y(*mask_layer, lt)));
+            }
+        }
+        const double zoom = std::max(0.01, runtime.config.zoom);
+        draw_w *= zoom;
+        draw_h *= zoom;
+
+        if (gs_texrender_begin(runtime.scene_texrender, data->tex_w, data->tex_h)) {
+            gs_clear(GS_CLEAR_COLOR, nullptr, 0.0f, 0);
+            gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
+            gs_matrix_push();
+            gs_matrix_translate3f((float)draw_x, (float)draw_y, 0.0f);
+            gs_matrix_scale3f((float)(draw_w / (double)scene_w), (float)(draw_h / (double)scene_h), 1.0f);
+            obs_source_video_render(scene);
+            gs_matrix_pop();
+            gs_texrender_end(runtime.scene_texrender);
+        }
+
+        gs_texture_t *scene_texture = gs_texrender_get_texture(runtime.scene_texrender);
+        if (!scene_texture) {
+            obs_source_release(scene);
+            continue;
+        }
+
+        gs_effect_set_texture(scene_param, scene_texture);
+        gs_effect_set_texture(mask_param, runtime.mask_texture);
+        while (gs_effect_loop(effect, "Draw"))
+            gs_draw_sprite(scene_texture, 0, data->tex_w, data->tex_h);
+
+        obs_source_release(scene);
     }
 }
 
@@ -3293,11 +3620,65 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
 
     while (gs_effect_loop(eff, "Draw"))
         gs_draw_sprite(data->texture, 0, 0, 0);
+
+    render_scene_mask_overlays(data);
+}
+
+static bool refresh_source_properties(obs_properties_t *, obs_property_t *, obs_data_t *)
+{
+    return true;
+}
+
+static void add_scene_list_items(obs_property_t *property)
+{
+    if (!property)
+        return;
+    obs_property_list_add_string(property, "None", "");
+    obs_frontend_source_list scenes = {};
+    obs_frontend_get_scenes(&scenes);
+    for (size_t i = 0; i < scenes.sources.num; ++i) {
+        obs_source_t *source = scenes.sources.array[i];
+        const char *name = source ? obs_source_get_name(source) : nullptr;
+        if (name && *name)
+            obs_property_list_add_string(property, name, name);
+    }
+    obs_frontend_source_list_free(&scenes);
+}
+
+static void add_scene_mask_properties(obs_properties_t *props, const TitleSourceData *data)
+{
+    if (!props || !data)
+        return;
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    if (!title)
+        return;
+    const auto mask_layers = title_scene_mask_layers(*title);
+    if (mask_layers.empty())
+        return;
+
+    obs_properties_add_text(props, "scene_mask_header", "Scene Masks", OBS_TEXT_INFO);
+    size_t index = 0;
+    for (const Layer *layer : mask_layers) {
+        if (!layer || index++ >= kMaxSceneMasks)
+            break;
+        const std::string prefix = std::string(PROP_SCENE_MASK_PREFIX) + layer->id + "_";
+        obs_properties_t *group = obs_properties_create();
+        obs_property_t *scene = obs_properties_add_list(group, (prefix + "scene").c_str(), "Target OBS scene",
+            OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+        add_scene_list_items(scene);
+        obs_properties_add_float_slider(group, (prefix + "zoom").c_str(), "Scene Zoom Level", 0.01, 10.0, 0.01);
+        obs_properties_add_float(group, (prefix + "x").c_str(), "Scene X Position", -100000.0, 100000.0, 1.0);
+        obs_properties_add_float(group, (prefix + "y").c_str(), "Scene Y Position", -100000.0, 100000.0, 1.0);
+        obs_properties_add_bool(group, (prefix + "follow_position").c_str(), "Follow Mask Position");
+        obs_properties_add_bool(group, (prefix + "follow_size").c_str(), "Follow Mask Size");
+        obs_properties_add_group(props, (prefix + "group").c_str(), layer->name.c_str(), OBS_GROUP_NORMAL, group);
+    }
 }
 
 /* ── Properties panel ─────────────────────────────────────────────── */
-static obs_properties_t *source_get_properties(void * /*priv*/)
+static obs_properties_t *source_get_properties(void *priv)
 {
+    auto *data = static_cast<TitleSourceData *>(priv);
     obs_properties_t *props = obs_properties_create();
 
     /* Title selector */
@@ -3308,10 +3689,13 @@ static obs_properties_t *source_get_properties(void * /*priv*/)
     obs_property_list_add_string(p, obsgs_tr_c("OBSTitles.NoTitle"), "");
     for (auto &t : TitleDataStore::instance().titles())
         obs_property_list_add_string(p, t->name.c_str(), t->id.c_str());
+    obs_property_set_modified_callback(p, refresh_source_properties);
 
     obs_properties_add_bool(props,   PROP_LOOP,  obsgs_tr_c("OBSTitles.Loop"));
     obs_properties_add_float_slider(props, PROP_SPEED,
         obsgs_tr_c("OBSTitles.Speed"), 0.1, 4.0, 0.05);
+
+    add_scene_mask_properties(props, data);
 
     return props;
 }
@@ -3321,6 +3705,7 @@ static void source_get_defaults(obs_data_t *settings)
     obs_data_set_default_string(settings, PROP_TITLE_ID, "");
     obs_data_set_default_bool(settings,   PROP_LOOP,     true);
     obs_data_set_default_double(settings, PROP_SPEED,    1.0);
+    /* Per-mask defaults are keyed by layer UUID and are initialized when those settings are first read. */
 }
 
 /* ══════════════════════════════════════════════════════════════════
