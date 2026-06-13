@@ -1,0 +1,10 @@
+^C:\USERS\MENAC\DESKTOP\OBS-TITLES-PLUGIN\OBS-GRAPHICS-STUDIO-PRO\BUILD\CMAKEFILES\CF9B1425CCEA812376F2F0C896F7E704\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro -BC:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build/obs-graphics-studio-pro.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

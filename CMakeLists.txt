@@ -263,17 +263,29 @@ set(OBS_GSP_CORE_HEADERS
 
 set(OBS_GSP_LAYER_HEADERS
     src/layers/layer-model.h
+    src/layers/layer-stack-widget.h
+)
+
+set(OBS_GSP_LAYER_SOURCES
+    src/layers/layer-stack-widget.cpp
 )
 
 set(OBS_GSP_EFFECT_HEADERS
     src/effects/layer-effects.h
+    src/effects/effects-panel.h
+)
+
+set(OBS_GSP_EFFECT_SOURCES
+    src/effects/effects-panel.cpp
 )
 
 set(OBS_GSP_TIMELINE_SOURCES
     src/timeline/animation.cpp
+    src/timeline/timeline-widget.cpp
 )
 set(OBS_GSP_TIMELINE_HEADERS
     src/timeline/animation.h
+    src/timeline/timeline-widget.h
 )
 
 set(OBS_GSP_TEXT_SOURCES
@@ -290,6 +302,13 @@ set(OBS_GSP_RENDERING_HEADERS
     src/rendering/title-gpu-filter-pipeline.h
 )
 
+set(OBS_GSP_CANVAS_SOURCES
+    src/canvas/canvas-preview.cpp
+)
+set(OBS_GSP_CANVAS_HEADERS
+    src/canvas/canvas-preview.h
+)
+
 set(OBS_GSP_OBS_SOURCES
     src/obs/plugin-main.cpp
     src/obs/title-source.cpp
@@ -303,21 +322,31 @@ set(OBS_GSP_EDITOR_SOURCES
     src/editor/title-hotkeys.cpp
     src/editor/timecode-spinbox.cpp
     src/editor/title-dock.cpp
+    src/editor/tools-sidebar.cpp
+    src/editor/title-properties-panel.cpp
+    src/editor/properties-panel.cpp
     src/editor/title-editor.cpp
 )
 set(OBS_GSP_EDITOR_HEADERS
     src/editor/title-hotkeys.h
     src/editor/timecode-spinbox.h
     src/editor/title-dock.h
+    src/editor/tools-sidebar.h
+    src/editor/title-properties-panel.h
+    src/editor/properties-panel.h
+    src/editor/title-editor-internal.h
     src/editor/title-editor.h
     src/editor/title-assets.h
 )
 
 set(PLUGIN_SOURCES
     ${OBS_GSP_CORE_SOURCES}
+    ${OBS_GSP_LAYER_SOURCES}
+    ${OBS_GSP_EFFECT_SOURCES}
     ${OBS_GSP_TIMELINE_SOURCES}
     ${OBS_GSP_TEXT_SOURCES}
     ${OBS_GSP_RENDERING_SOURCES}
+    ${OBS_GSP_CANVAS_SOURCES}
     ${OBS_GSP_OBS_SOURCES}
     ${OBS_GSP_EDITOR_SOURCES}
 )
@@ -329,6 +358,7 @@ set(PLUGIN_HEADERS
     ${OBS_GSP_TIMELINE_HEADERS}
     ${OBS_GSP_TEXT_HEADERS}
     ${OBS_GSP_RENDERING_HEADERS}
+    ${OBS_GSP_CANVAS_HEADERS}
     ${OBS_GSP_OBS_HEADERS}
     ${OBS_GSP_EDITOR_HEADERS}
 )
@@ -350,6 +380,7 @@ target_include_directories(obs-graphics-studio-pro PRIVATE
     src/timeline
     src/text
     src/rendering
+    src/canvas
     src/obs
     src/editor
     ${CAIRO_INCLUDE_DIRS}

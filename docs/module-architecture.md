@@ -40,10 +40,19 @@ Rules for future refactors:
 | Core Architecture | `src/core/title-data.*`, `src/core/title-localization.h` | Title/project ownership, serialization helpers, localization helpers, and data-store state contracts. |
 | Layer System | `src/layers/layer-model.h` | Layer type definitions, hierarchy metadata, transforms, masks, visibility/locking flags, and layer-owned defaults. |
 | Effects System | `src/effects/layer-effects.h` | Stackable layer effect types, blend modes, and effect parameter contracts. |
-| Timeline & Animation | `src/timeline/animation.*` | Keyframes, easing types, animated property contracts, and interpolation evaluation. |
+| Timeline & Animation | `src/timeline/animation.*`, `src/timeline/timeline-widget.*` | Keyframes, easing types, animated property contracts, interpolation evaluation, timeline interaction, keyframe selection, and timeline painting. |
 | Text Engine | `src/text/title-rich-text.*` | Rich-text model, mixed inline styles, plain-text conversion, and text serialization helpers. |
 | OBS Integration | `src/obs/plugin-main.*`, `src/obs/title-source.*` | OBS module registration, source creation/destruction, source properties, preview/live output, and OBS-facing rendering entry points. |
-| Editor UI / Docking | `src/editor/title-dock.*`, `src/editor/title-editor.*`, `src/editor/title-hotkeys.*`, `src/editor/title-assets.h` | Qt dock integration, editor windows, toolbars, properties panels, hotkeys, icons, and layout UI. |
+| Canvas & Tools | `src/canvas/canvas-preview.*`, `src/editor/tools-sidebar.*` | Canvas preview rendering, direct manipulation, zoom/pan, snapping, inline text editing, drawing tools, and tool palette state. |
+| Editor UI / Docking | `src/editor/title-dock.*`, `src/editor/title-editor.*`, `src/editor/title-hotkeys.*`, `src/editor/title-assets.h`, `src/editor/title-properties-panel.*`, `src/editor/properties-panel.*` | Qt dock integration, editor window orchestration, toolbars, property inspectors, hotkeys, icons, and layout UI. |
+| Layer Stack UI | `src/layers/layer-stack-widget.*` | Layer list interaction, ordering, visibility/lock toggles, hierarchy/mask controls, and layer context actions. |
+| Effects UI | `src/effects/effects-panel.*` | Effect stack editing, effect-specific inspector controls, and synchronization with layer effect contracts. |
+
+`src/editor/title-editor.cpp` is now the editor shell only: window setup,
+toolbar/menu wiring, persistence, title commands, and cross-panel coordination.
+Do not add Text Layer, Canvas, Timeline, Layer Stack, or Effects feature work to
+that file. Put it in the module listed above and expose only the narrow signal,
+slot, or model contract the editor shell needs.
 
 ## Target modules for subsequent phases
 

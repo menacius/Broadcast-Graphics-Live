@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\menac\Desktop\obs-titles-plugin\OBS-Graphics-Studio-Pro\build\_deps\nlohmann_json-subbuild\CMakeFiles\4981bf0d03dd4c05aa1e5295a191476f\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{747D0B91-8F7E-38DE-9D9C-DE85FC40DB6A}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

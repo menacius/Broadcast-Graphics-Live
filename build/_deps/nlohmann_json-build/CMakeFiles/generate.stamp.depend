@@ -1,0 +1,11 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.3/Modules/CMakePackageConfigHelpers.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/ExternalProject.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/ExternalProject/shared_internal_commands.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/GNUInstallDirs.cmake
+C:/Program Files/CMake/share/cmake-4.3/Modules/WriteBasicConfigVersionFile.cmake
+C:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build/CMakeFiles/cmake.verify_globs
+C:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build/_deps/nlohmann_json-src/CMakeLists.txt
+C:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build/_deps/nlohmann_json-src/cmake/config.cmake.in
+C:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build/_deps/nlohmann_json-src/cmake/nlohmann_jsonConfigVersion.cmake.in
+C:/Users/menac/Desktop/obs-titles-plugin/OBS-Graphics-Studio-Pro/build/_deps/nlohmann_json-src/cmake/pkg-config.pc.in

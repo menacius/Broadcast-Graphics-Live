@@ -2082,8 +2082,13 @@ static bool rich_text_format_differs_from_default(const RichTextCharFormat &a, c
 
 static bool rich_text_model_requires_document_renderer(const RichTextDocument &model)
 {
-    if (model.ranges.size() > 1) return true;
-    return model.ranges.size() == 1 && rich_text_format_differs_from_default(model.ranges.front().format, model.default_format);
+    if (model.plain_text.empty() || model.ranges.empty())
+        return false;
+    if (model.ranges.size() > 1)
+        return true;
+    const RichTextRange &range = model.ranges.front();
+    return range.start != 0 || range.length != model.plain_text.size() ||
+           rich_text_format_differs_from_default(range.format, model.default_format);
 }
 
 static void apply_rich_text_extended_font_properties(QFont &font, const RichTextCharFormat &format)
