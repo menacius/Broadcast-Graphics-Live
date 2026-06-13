@@ -3580,11 +3580,16 @@ static QString easing_label(EasingType easing)
 
 static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
 {
-    return {&layer.pos_x, &layer.pos_y,
-            &layer.scale_x, &layer.scale_y,
+    /* Position, Scale, Size and Origin are edited/keyframed as 2D vector
+     * properties in the UI. Keep the scalar AnimatedProperty storage for
+     * backward-compatible rendering/JSON, but expose one timeline lane per
+     * vector by using the X/W property as the group representative.
+     */
+    return {&layer.pos_x,
+            &layer.scale_x,
             &layer.rotation, &layer.opacity,
-            &layer.box_width, &layer.box_height,
-            &layer.origin_x_prop, &layer.origin_y_prop,
+            &layer.box_width,
+            &layer.origin_x_prop,
             &layer.paragraph_indent_left_prop, &layer.paragraph_indent_right_prop,
             &layer.paragraph_indent_first_line_prop,
             &layer.text_color_a, &layer.text_color_r,

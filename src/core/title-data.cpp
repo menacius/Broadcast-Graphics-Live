@@ -722,6 +722,24 @@ static AnimatedProperty aprop_from_json(const json &j, const std::string &name)
     return p;
 }
 
+static json vec2_aprop_to_json(const AnimatedProperty &x, const AnimatedProperty &y)
+{
+    json j;
+    j["x"] = aprop_to_json(x);
+    j["y"] = aprop_to_json(y);
+    return j;
+}
+
+static void vec2_aprop_from_json(const json &j,
+                                 AnimatedProperty &x, const std::string &x_name,
+                                 AnimatedProperty &y, const std::string &y_name)
+{
+    if (!j.is_object())
+        return;
+    if (j.contains("x")) x = aprop_from_json(j["x"], x_name);
+    if (j.contains("y")) y = aprop_from_json(j["y"], y_name);
+}
+
 
 static json rich_fill_to_json(const RichTextFill &f)
 {
@@ -937,6 +955,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
 
+    j["position"] = vec2_aprop_to_json(l.pos_x, l.pos_y);
+    j["scale"]    = vec2_aprop_to_json(l.scale_x, l.scale_y);
+    /* Legacy scalar keys are still written so older builds can open files. */
     j["pos_x"]    = aprop_to_json(l.pos_x);
     j["pos_y"]    = aprop_to_json(l.pos_y);
     j["scale_x"]  = aprop_to_json(l.scale_x);
@@ -1078,6 +1099,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["shape_inner_radius"] = l.shape_inner_radius;
     j["shape_outer_radius"] = l.shape_outer_radius;
     j["shape_roundness"] = l.shape_roundness;
+    j["size"]          = vec2_aprop_to_json(l.box_width, l.box_height);
+    j["origin"]        = vec2_aprop_to_json(l.origin_x_prop, l.origin_y_prop);
+    /* Legacy scalar keys are still written so older builds can open files. */
     j["box_width"]     = aprop_to_json(l.box_width);
     j["box_height"]    = aprop_to_json(l.box_height);
     j["origin_x"]      = l.origin_x;
@@ -1208,6 +1232,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->in_time  = std::clamp(finite_or(json_double(j, "in_time", 0.0), 0.0), 0.0, kMaxDuration);
     l->out_time = std::clamp(finite_or(json_double(j, "out_time", 5.0), 5.0), l->in_time, kMaxDuration);
 
+    if (j.contains("position")) vec2_aprop_from_json(j["position"], l->pos_x, "pos_x", l->pos_y, "pos_y");
+    if (j.contains("scale"))    vec2_aprop_from_json(j["scale"], l->scale_x, "scale_x", l->scale_y, "scale_y");
     if (j.contains("pos_x"))    l->pos_x    = aprop_from_json(j["pos_x"],    "pos_x");
     if (j.contains("pos_y"))    l->pos_y    = aprop_from_json(j["pos_y"],    "pos_y");
     if (j.contains("scale_x"))  l->scale_x  = aprop_from_json(j["scale_x"],  "scale_x");
@@ -1373,6 +1399,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, 1.0);
     l->box_width.static_value = l->rect_width;
     l->box_height.static_value = l->rect_height;
+    if (j.contains("size")) vec2_aprop_from_json(j["size"], l->box_width, "box_width", l->box_height, "box_height");
     if (j.contains("box_width"))  l->box_width  = aprop_from_json(j["box_width"],  "box_width");
     if (j.contains("box_height")) l->box_height = aprop_from_json(j["box_height"], "box_height");
     l->box_width.static_value = std::clamp(l->box_width.static_value, 0.0, (double)kMaxCanvasDimension);
@@ -1381,6 +1408,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->origin_y      = std::clamp(finite_or(json_double(j, "origin_y", 0.5), 0.5), 0.0, 1.0);
     l->origin_x_prop.static_value = l->origin_x;
     l->origin_y_prop.static_value = l->origin_y;
+    if (j.contains("origin")) vec2_aprop_from_json(j["origin"], l->origin_x_prop, "origin_x", l->origin_y_prop, "origin_y");
     if (j.contains("origin_x_prop")) l->origin_x_prop = aprop_from_json(j["origin_x_prop"], "origin_x");
     if (j.contains("origin_y_prop")) l->origin_y_prop = aprop_from_json(j["origin_y_prop"], "origin_y");
     l->origin_x_prop.static_value = std::clamp(l->origin_x_prop.static_value, 0.0, 1.0);

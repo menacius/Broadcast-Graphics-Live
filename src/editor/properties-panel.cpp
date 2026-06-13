@@ -1478,18 +1478,18 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         });
     };
 
-    install_prop_delete_all(btn_kf_pos_x_, &Layer::pos_x);
-    install_prop_delete_all(btn_kf_pos_y_, &Layer::pos_y);
-    install_prop_delete_all(btn_kf_scale_x_, &Layer::scale_x);
-    install_prop_delete_all(btn_kf_scale_y_, &Layer::scale_y);
+    install_group_delete_all(btn_kf_pos_x_, {&Layer::pos_x, &Layer::pos_y});
+    install_group_delete_all(btn_kf_pos_y_, {&Layer::pos_x, &Layer::pos_y});
+    install_group_delete_all(btn_kf_scale_x_, {&Layer::scale_x, &Layer::scale_y});
+    install_group_delete_all(btn_kf_scale_y_, {&Layer::scale_x, &Layer::scale_y});
     install_prop_delete_all(btn_kf_rotation_, &Layer::rotation);
     install_prop_delete_all(btn_kf_opacity_, &Layer::opacity);
-    install_prop_delete_all(btn_kf_origin_x_, &Layer::origin_x_prop);
-    install_prop_delete_all(btn_kf_origin_y_, &Layer::origin_y_prop);
+    install_group_delete_all(btn_kf_origin_x_, {&Layer::origin_x_prop, &Layer::origin_y_prop});
+    install_group_delete_all(btn_kf_origin_y_, {&Layer::origin_x_prop, &Layer::origin_y_prop});
     install_prop_delete_all(btn_kf_paragraph_indent_left_, &Layer::paragraph_indent_left_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_right_, &Layer::paragraph_indent_right_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line_prop);
-    install_prop_delete_all(btn_kf_width_, &Layer::box_width);
+    install_group_delete_all(btn_kf_width_, {&Layer::box_width, &Layer::box_height});
     install_group_delete_all(btn_kf_text_color_, {&Layer::text_color_a, &Layer::text_color_r,
                                                   &Layer::text_color_g, &Layer::text_color_b});
     install_group_delete_all(btn_kf_fill_color_, {&Layer::fill_color_a, &Layer::fill_color_r,
@@ -3405,51 +3405,41 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
 
-    connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->pos_x, local_time(), spn_px_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->pos_y, local_time(), spn_py_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_scale_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        const double t = local_time();
-        if (layer_->scale_lock) {
-            const bool remove = keyframe_at_time(layer_->scale_x, t) || keyframe_at_time(layer_->scale_y, t);
-            if (remove) {
-                remove_keyframe_at(layer_->scale_x, t);
-                remove_keyframe_at(layer_->scale_y, t);
-            } else {
-                add_or_replace_keyframe(layer_->scale_x, t, spn_scale_x_->value() / 100.0);
-                add_or_replace_keyframe(layer_->scale_y, t, spn_scale_y_->value() / 100.0);
-            }
+    auto toggle_vec2_keyframe = [this](AnimatedProperty &x_prop, AnimatedProperty &y_prop,
+                                        double time, double x_value, double y_value) {
+        const bool remove = keyframe_at_time(x_prop, time) || keyframe_at_time(y_prop, time);
+        if (remove) {
+            remove_keyframe_at(x_prop, time);
+            remove_keyframe_at(y_prop, time);
         } else {
-            toggle_keyframe(layer_->scale_x, t, spn_scale_x_->value() / 100.0);
+            add_or_replace_keyframe(x_prop, time, x_value);
+            add_or_replace_keyframe(y_prop, time, y_value);
         }
+    };
+
+    connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
+        if (!can_edit()) return;
+        toggle_vec2_keyframe(layer_->pos_x, layer_->pos_y, local_time(), spn_px_->value(), spn_py_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_scale_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+    connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        const double t = local_time();
-        if (layer_->scale_lock) {
-            const bool remove = keyframe_at_time(layer_->scale_x, t) || keyframe_at_time(layer_->scale_y, t);
-            if (remove) {
-                remove_keyframe_at(layer_->scale_x, t);
-                remove_keyframe_at(layer_->scale_y, t);
-            } else {
-                add_or_replace_keyframe(layer_->scale_x, t, spn_scale_x_->value() / 100.0);
-                add_or_replace_keyframe(layer_->scale_y, t, spn_scale_y_->value() / 100.0);
-            }
-        } else {
-            toggle_keyframe(layer_->scale_y, t, spn_scale_y_->value() / 100.0);
-        }
+        toggle_vec2_keyframe(layer_->pos_x, layer_->pos_y, local_time(), spn_px_->value(), spn_py_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_scale_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
+        if (!can_edit()) return;
+        toggle_vec2_keyframe(layer_->scale_x, layer_->scale_y, local_time(),
+                             spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_scale_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
+        if (!can_edit()) return;
+        toggle_vec2_keyframe(layer_->scale_x, layer_->scale_y, local_time(),
+                             spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
         load_values();
         emit_change();
     });
@@ -3465,15 +3455,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
-    connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+    connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_keyframe(layer_->origin_x_prop, local_time(), spn_origin_x_->value());
+        toggle_vec2_keyframe(layer_->origin_x_prop, layer_->origin_y_prop, local_time(),
+                             spn_origin_x_->value(), spn_origin_y_->value());
         load_values();
         emit_change();
     });
-    connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+    connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_keyframe(layer_->origin_y_prop, local_time(), spn_origin_y_->value());
+        toggle_vec2_keyframe(layer_->origin_x_prop, layer_->origin_y_prop, local_time(),
+                             spn_origin_x_->value(), spn_origin_y_->value());
         load_values();
         emit_change();
     });
@@ -3495,9 +3487,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
-    connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+    connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_keyframe(layer_->box_width, local_time(), spn_layer_w_->value());
+        toggle_vec2_keyframe(layer_->box_width, layer_->box_height, local_time(),
+                             spn_layer_w_->value(), spn_layer_h_->value());
         load_values();
         emit_change();
     });
@@ -4171,18 +4164,18 @@ void PropertiesPanel::load_values()
     auto set_group_kf_icon = [&](QPushButton *button, std::initializer_list<const AnimatedProperty *> props) {
         set_kf_icon(button, any_keyframe_at_time(props, lt), any_keyframes(props));
     };
-    set_prop_kf_icon(btn_kf_pos_x_, layer_->pos_x);
-    set_prop_kf_icon(btn_kf_pos_y_, layer_->pos_y);
-    set_prop_kf_icon(btn_kf_scale_x_, layer_->scale_x);
-    set_prop_kf_icon(btn_kf_scale_y_, layer_->scale_y);
+    set_group_kf_icon(btn_kf_pos_x_, {&layer_->pos_x, &layer_->pos_y});
+    set_group_kf_icon(btn_kf_pos_y_, {&layer_->pos_x, &layer_->pos_y});
+    set_group_kf_icon(btn_kf_scale_x_, {&layer_->scale_x, &layer_->scale_y});
+    set_group_kf_icon(btn_kf_scale_y_, {&layer_->scale_x, &layer_->scale_y});
     set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
-    set_prop_kf_icon(btn_kf_origin_x_, layer_->origin_x_prop);
-    set_prop_kf_icon(btn_kf_origin_y_, layer_->origin_y_prop);
+    set_group_kf_icon(btn_kf_origin_x_, {&layer_->origin_x_prop, &layer_->origin_y_prop});
+    set_group_kf_icon(btn_kf_origin_y_, {&layer_->origin_x_prop, &layer_->origin_y_prop});
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_first_line_, layer_->paragraph_indent_first_line_prop);
-    set_prop_kf_icon(btn_kf_width_, layer_->box_width);
+    set_group_kf_icon(btn_kf_width_, {&layer_->box_width, &layer_->box_height});
     set_group_kf_icon(btn_kf_text_color_, {&layer_->text_color_a, &layer_->text_color_r,
                                            &layer_->text_color_g, &layer_->text_color_b});
     set_group_kf_icon(btn_kf_fill_color_, {&layer_->fill_color_a, &layer_->fill_color_r,
