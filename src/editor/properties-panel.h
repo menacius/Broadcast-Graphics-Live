@@ -56,6 +56,7 @@ public:
 signals:
     void property_changed(bool push_undo_snapshot = true);
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
+    void gradient_editor_active_changed(bool active);
 
 private:
     void build_text_section(QWidget *w, QFormLayout *fl);

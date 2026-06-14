@@ -90,6 +90,8 @@ public:
     void set_shape_tool_active(ShapeType shape_type);
     void set_text_tool_active(LayerType type);
     void set_color_picker_tool_active();
+    void set_gradient_tool_active();
+    void set_gradient_editor_active(bool active);
     void begin_text_edit_for_layer(const std::string &layer_id);
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
 
@@ -148,7 +150,7 @@ private:
         GuideX,
         GuideY
     };
-    enum class CanvasTool { Selection, Shape, Text, ColorPicker };
+    enum class CanvasTool { Selection, Shape, Text, ColorPicker, Gradient };
 
     struct GradientHandleGeometry {
         bool valid = false;
@@ -175,12 +177,14 @@ private:
     QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
     QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
     DragMode hit_test_selected(const QPointF &view_pt) const;
+    bool gradient_handles_visible() const;
     bool layer_supports_gradient_handles(const Layer &layer) const;
     GradientHandleGeometry gradient_handle_geometry(const Layer &layer) const;
     DragMode hit_test_gradient_handles(const Layer &layer, const QPointF &view_pt) const;
     void draw_gradient_handles(QPainter &p, const Layer &layer);
     void begin_gradient_drag(const Layer &layer);
     bool apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    bool begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool layer_supports_corner_radius_handles(const Layer &layer) const;
     QPointF corner_radius_handle_local_pos(const Layer &layer, const QRectF &box, DragMode mode) const;
     DragMode hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const;
@@ -276,6 +280,8 @@ private:
     Qt::KeyboardModifiers shape_draw_modifiers_ = Qt::NoModifier;
     QRect last_toolbar_preview_update_rect_;
     bool color_picker_tooltip_visible_ = false;
+    bool gradient_tool_dragging_ = false;
+    QPointF gradient_tool_start_local_;
     QPointF color_picker_tooltip_pos_;
     QColor color_picker_tooltip_color_;
 
@@ -333,6 +339,7 @@ private:
         float angle = 0.0f;
     };
     GradientDragState gradient_drag_;
+    bool gradient_editor_active_ = false;
     struct CornerRadiusDragState {
         bool active = false;
         QRectF local_rect;

@@ -104,6 +104,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QMessageBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -662,7 +663,7 @@ class GradientEditorPreview : public QWidget {
 public:
     explicit GradientEditorPreview(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setMinimumSize(440, 300);
+        setMinimumSize(440, 128);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
     }
@@ -672,33 +673,66 @@ public:
                       double opacity, double angle, double center_x, double center_y, double scale)
     {
         type_ = std::clamp(type, 0, 4);
-        colors_[0] = gradient_editor_color_from_argb(start_color);
-        colors_[1] = gradient_editor_color_from_argb(end_color);
-        colors_[0].setAlpha(255);
-        colors_[1].setAlpha(255);
-        positions_[0] = std::clamp(start_pos, 0.0, 1.0);
-        positions_[1] = std::clamp(end_pos, 0.0, 1.0);
-        stop_opacities_[0] = std::clamp(start_opacity, 0.0, 1.0);
-        stop_opacities_[1] = std::clamp(end_opacity, 0.0, 1.0);
+        colors_.assign({gradient_editor_color_from_argb(start_color), gradient_editor_color_from_argb(end_color)});
+        for (auto &color : colors_) color.setAlpha(255);
+        positions_.assign({std::clamp(start_pos, 0.0, 1.0), std::clamp(end_pos, 0.0, 1.0)});
+        stop_opacities_.assign({std::clamp(start_opacity, 0.0, 1.0), std::clamp(end_opacity, 0.0, 1.0)});
+        if (selected_stop_ >= stop_count()) selected_stop_ = -1;
         opacity_ = std::clamp(opacity, 0.0, 1.0);
         angle_ = angle;
-        center_x_ = std::clamp(center_x, 0.0, 1.0);
-        center_y_ = std::clamp(center_y, 0.0, 1.0);
-        scale_ = std::clamp(scale, 0.01, 10.0);
+        center_x_ = center_x;
+        center_y_ = center_y;
+        scale_ = std::clamp(scale, 0.01, 100.0);
         update();
+    }
+
+    void set_extra_stops(const std::vector<GradientStop> &stops)
+    {
+        while (colors_.size() > 2) {
+            colors_.pop_back();
+            positions_.pop_back();
+            stop_opacities_.pop_back();
+        }
+        for (const auto &stop : stops) {
+            QColor c = gradient_editor_color_from_argb(stop.color);
+            c.setAlpha(255);
+            colors_.push_back(c);
+            positions_.push_back(std::clamp((double)stop.position, 0.0, 1.0));
+            stop_opacities_.push_back(std::clamp((double)stop.opacity, 0.0, 1.0));
+        }
+        if (selected_stop_ >= stop_count()) selected_stop_ = -1;
+        update();
+    }
+
+    std::vector<GradientStop> extra_stops() const
+    {
+        std::vector<GradientStop> stops;
+        for (int i = 2; i < stop_count(); ++i) {
+            GradientStop stop;
+            stop.color = gradient_editor_argb_from_color(colors_[i]);
+            stop.position = (float)std::clamp(positions_[i], 0.0, 1.0);
+            stop.opacity = (float)std::clamp(stop_opacities_[i], 0.0, 1.0);
+            stops.push_back(stop);
+        }
+        std::sort(stops.begin(), stops.end(), [](const GradientStop &a, const GradientStop &b) {
+            return a.position < b.position;
+        });
+        return stops;
     }
 
     int gradient_type() const { return type_; }
     int selected_stop() const { return selected_stop_; }
-    uint32_t stop_color_argb(int index) const { return gradient_editor_argb_from_color(colors_[std::clamp(index, 0, 1)]); }
+    int stop_count() const { return (int)std::min({colors_.size(), positions_.size(), stop_opacities_.size()}); }
+    uint32_t stop_color_argb(int index) const { return gradient_editor_argb_from_color(colors_[clamp_stop_index(index)]); }
     QColor stop_color(int index) const
     {
-        QColor color = colors_[std::clamp(index, 0, 1)];
-        color.setAlphaF(std::clamp(color.alphaF() * stop_opacities_[std::clamp(index, 0, 1)] * opacity_, 0.0, 1.0));
+        const int i = clamp_stop_index(index);
+        QColor color = colors_[i];
+        color.setAlphaF(std::clamp((double)color.alphaF() * stop_opacities_[i] * opacity_, 0.0, 1.0));
         return color;
     }
-    double stop_position(int index) const { return positions_[std::clamp(index, 0, 1)]; }
-    double stop_opacity(int index) const { return stop_opacities_[std::clamp(index, 0, 1)]; }
+    double stop_position(int index) const { return positions_[clamp_stop_index(index)]; }
+    double stop_opacity(int index) const { return stop_opacities_[clamp_stop_index(index)]; }
     double gradient_opacity() const { return opacity_; }
     double angle() const { return angle_; }
     double center_x() const { return center_x_; }
@@ -707,30 +741,54 @@ public:
 
     void set_gradient_type(int type) { type_ = std::clamp(type, 0, 4); changed(); }
     void set_angle(double value) { angle_ = value; changed(); }
-    void set_center_x(double value) { center_x_ = std::clamp(value, 0.0, 1.0); changed(); }
-    void set_center_y(double value) { center_y_ = std::clamp(value, 0.0, 1.0); changed(); }
-    void set_scale(double value) { scale_ = std::clamp(value, 0.01, 10.0); changed(); }
-    void set_stop_position(int index, double value) { positions_[std::clamp(index, 0, 1)] = std::clamp(value, 0.0, 1.0); changed(); }
-    void set_stop_opacity(int index, double value) { stop_opacities_[std::clamp(index, 0, 1)] = std::clamp(value, 0.0, 1.0); changed(); }
+    void set_center_x(double value) { center_x_ = value; changed(); }
+    void set_center_y(double value) { center_y_ = value; changed(); }
+    void set_scale(double value) { scale_ = std::clamp(value, 0.01, 100.0); changed(); }
+    void set_stop_position(int index, double value) { positions_[clamp_stop_index(index)] = std::clamp(value, 0.0, 1.0); changed(); }
+    void set_stop_opacity(int index, double value) { stop_opacities_[clamp_stop_index(index)] = std::clamp(value, 0.0, 1.0); changed(); }
     void set_stop_color(int index, const QColor &color)
     {
         if (!color.isValid()) return;
-        const int i = std::clamp(index, 0, 1);
+        const int i = clamp_stop_index(index);
         colors_[i] = color;
         colors_[i].setAlpha(255);
         stop_opacities_[i] = color.alphaF();
         changed();
     }
+    int add_stop(double position, QColor color = QColor())
+    {
+        const double p = std::clamp(position, 0.0, 1.0);
+        if (!color.isValid()) color = interpolated_color(p);
+        color.setAlpha(255);
+        colors_.push_back(color);
+        positions_.push_back(p);
+        stop_opacities_.push_back(std::clamp((double)color.alphaF(), 0.0, 1.0));
+        selected_stop_ = stop_count() - 1;
+        changed();
+        if (selection_changed) selection_changed(selected_stop_);
+        return selected_stop_;
+    }
+    void remove_stop(int index)
+    {
+        const int i = clamp_stop_index(index);
+        if (i < 0 || stop_count() <= 2) return;
+        colors_.erase(colors_.begin() + i);
+        positions_.erase(positions_.begin() + i);
+        stop_opacities_.erase(stop_opacities_.begin() + i);
+        selected_stop_ = stop_count() > 0 ? std::min(selected_stop_, stop_count() - 1) : -1;
+        changed();
+        if (selection_changed) selection_changed(selected_stop_);
+    }
     void set_selected_stop(int index)
     {
-        selected_stop_ = std::clamp(index, 0, 1);
+        selected_stop_ = (index >= 0 && index < stop_count()) ? index : -1;
         update();
         if (selection_changed) selection_changed(selected_stop_);
     }
 
     QPoint stop_global_anchor(int index) const
     {
-        const QPointF p = stop_point(std::clamp(index, 0, 1));
+        const QPointF p = stop_point(clamp_stop_index(index));
         return mapToGlobal(QPoint((int)std::round(p.x()), (int)std::round(p.y() + 14.0)));
     }
 
@@ -745,21 +803,19 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.fillRect(rect(), QColor(43, 43, 43));
 
-        QRectF canvas = preview_rect();
-        draw_checkerboard(p, canvas.toAlignedRect());
-        p.fillRect(canvas, preview_brush(canvas));
+        const QRectF ramp = gradient_line_rect();
+        draw_checkerboard(p, ramp.toAlignedRect());
+        p.fillRect(ramp, preview_brush(ramp));
         p.setPen(QPen(QColor(24, 24, 24), 1));
         p.setBrush(Qt::NoBrush);
-        p.drawRoundedRect(canvas, 3, 3);
+        p.drawRect(ramp);
 
-        QRectF line = gradient_line_rect();
-        p.setPen(QPen(QColor(220, 220, 220), 1));
-        p.drawLine(QPointF(line.left(), line.center().y()), QPointF(line.right(), line.center().y()));
-        p.setPen(QPen(QColor(120, 120, 120), 1));
-        for (int i = 0; i < 2; ++i) {
-            double other = positions_[1 - i];
-            double mid = (positions_[i] + other) * 0.5;
-            QPointF m(line.left() + mid * line.width(), line.center().y());
+        // Photoshop-style midpoint diamonds between adjacent color stops.
+        auto sorted = sorted_stop_indices();
+        p.setPen(QPen(QColor(145, 145, 145), 1));
+        for (int i = 0; i + 1 < (int)sorted.size(); ++i) {
+            double mid = (positions_[sorted[i]] + positions_[sorted[i + 1]]) * 0.5;
+            QPointF m(ramp.left() + mid * ramp.width(), ramp.bottom() + 8.0);
             QPolygonF diamond;
             diamond << QPointF(m.x(), m.y() - 5) << QPointF(m.x() + 5, m.y())
                     << QPointF(m.x(), m.y() + 5) << QPointF(m.x() - 5, m.y());
@@ -767,12 +823,31 @@ protected:
             p.drawPolygon(diamond);
         }
 
-        for (int i = 0; i < 2; ++i) {
-            QRectF handle = stop_handle_rect(i);
+        for (int i = 0; i < stop_count(); ++i) {
+            const QPointF pos(ramp.left() + positions_[i] * ramp.width(), 0.0);
+
+            // Opacity stop handle above the ramp.
+            QPolygonF opacity_handle;
+            opacity_handle << QPointF(pos.x() - 6, ramp.top() - 18)
+                           << QPointF(pos.x() + 6, ramp.top() - 18)
+                           << QPointF(pos.x() + 6, ramp.top() - 7)
+                           << QPointF(pos.x(), ramp.top() - 2)
+                           << QPointF(pos.x() - 6, ramp.top() - 7);
+            p.setPen(QPen(i == selected_stop_ ? QColor(120, 170, 230) : QColor(18, 18, 18), i == selected_stop_ ? 2 : 1));
+            p.setBrush(QColor(210, 210, 210, (int)std::round(stop_opacities_[i] * 255.0)));
+            p.drawPolygon(opacity_handle);
+
+            // Color stop handle below the ramp.
+            QPolygonF color_handle;
+            color_handle << QPointF(pos.x(), ramp.bottom() + 2)
+                         << QPointF(pos.x() + 7, ramp.bottom() + 8)
+                         << QPointF(pos.x() + 7, ramp.bottom() + 23)
+                         << QPointF(pos.x() - 7, ramp.bottom() + 23)
+                         << QPointF(pos.x() - 7, ramp.bottom() + 8);
             p.setPen(QPen(i == selected_stop_ ? QColor(120, 170, 230) : QColor(18, 18, 18), i == selected_stop_ ? 2 : 1));
             p.setBrush(QColor(36, 36, 36));
-            p.drawRoundedRect(handle, 2, 2);
-            QRectF swatch = handle.adjusted(4, 4, -4, -4);
+            p.drawPolygon(color_handle);
+            QRectF swatch(pos.x() - 5, ramp.bottom() + 10, 10, 10);
             draw_checkerboard(p, swatch.toAlignedRect());
             p.fillRect(swatch, stop_color(i));
             p.setPen(QColor(18, 18, 18));
@@ -780,10 +855,9 @@ protected:
         }
 
         p.setPen(QColor(210, 210, 210));
-        p.drawText(QRectF(canvas.left() + 10, canvas.top() + 8, 220, 20),
-                   QStringLiteral("%1  %2%")
-                       .arg(type_name(type_))
-                       .arg((int)std::round(opacity_ * 100.0)));
+        p.drawText(QRectF(ramp.left(), 6, ramp.width(), 20),
+                   QStringLiteral("Opacity stops above, color stops below — %1 stops")
+                       .arg(stop_count()));
     }
 
     void mousePressEvent(QMouseEvent *event) override
@@ -796,6 +870,7 @@ protected:
         if (hit >= 0) {
             set_selected_stop(hit);
             dragging_stop_ = true;
+            dragging_stop_index_ = hit;
             event->accept();
             return;
         }
@@ -805,8 +880,16 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override
     {
         if (dragging_stop_ && (event->buttons() & Qt::LeftButton)) {
+            const int drag_index = clamp_stop_index(dragging_stop_index_);
+            if (drag_index < 0 || drag_index >= stop_count()) {
+                dragging_stop_ = false;
+                dragging_stop_index_ = -1;
+                QWidget::mouseMoveEvent(event);
+                return;
+            }
+            selected_stop_ = drag_index;
             const QRectF line = gradient_line_rect();
-            positions_[selected_stop_] = std::clamp((event->position().x() - line.left()) / line.width(), 0.0, 1.0);
+            positions_[drag_index] = std::clamp((double)(event->position().x() - line.left()) / std::max(1.0, (double)line.width()), 0.0, 1.0);
             changed();
             event->accept();
             return;
@@ -818,6 +901,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override
     {
         dragging_stop_ = false;
+        dragging_stop_index_ = -1;
         QWidget::mouseReleaseEvent(event);
     }
 
@@ -826,18 +910,16 @@ protected:
         int hit = hit_stop(event->pos());
         if (hit >= 0) {
             set_selected_stop(hit);
-            if (color_popup_requested) color_popup_requested(hit, stop_global_anchor(hit));
+            if (stop_count() > 2) {
+                remove_stop(hit);
+            }
             event->accept();
             return;
         }
         if (gradient_line_rect().adjusted(-6, -12, 6, 12).contains(event->position())) {
             const QRectF line = gradient_line_rect();
-            const double pos = std::clamp((event->position().x() - line.left()) / line.width(), 0.0, 1.0);
-            const int target = std::abs(pos - positions_[0]) <= std::abs(pos - positions_[1]) ? 0 : 1;
-            set_selected_stop(target);
-            positions_[target] = pos;
-            changed();
-            if (color_popup_requested) color_popup_requested(target, stop_global_anchor(target));
+            const double pos = std::clamp((double)(event->position().x() - line.left()) / std::max(1.0, (double)line.width()), 0.0, 1.0);
+            add_stop(pos);
             event->accept();
             return;
         }
@@ -845,27 +927,72 @@ protected:
     }
 
 private:
-    QRectF preview_rect() const { return QRectF(12, 12, width() - 24, height() - 62); }
+    int clamp_stop_index(int index) const { return std::clamp(index, 0, std::max(0, stop_count() - 1)); }
+    QRectF preview_rect() const { return gradient_line_rect(); }
     QRectF gradient_line_rect() const
     {
-        QRectF canvas = preview_rect();
-        return QRectF(canvas.left() + 28, canvas.bottom() - 62, canvas.width() - 56, 20);
+        return QRectF(24, 42, std::max(1, width() - 48), 28);
     }
     QPointF stop_point(int index) const
     {
+        const int i = clamp_stop_index(index);
         const QRectF line = gradient_line_rect();
-        return QPointF(line.left() + positions_[index] * line.width(), line.center().y());
+        return QPointF(line.left() + positions_[i] * line.width(), line.center().y());
     }
     QRectF stop_handle_rect(int index) const
     {
         QPointF p = stop_point(index);
-        return QRectF(p.x() - 10, p.y() - 12, 20, 20);
+        return QRectF(p.x() - 10, p.y() - 20, 20, 48);
     }
     int hit_stop(const QPointF &pos) const
     {
-        for (int i = 1; i >= 0; --i)
-            if (stop_handle_rect(i).adjusted(-4, -4, 4, 4).contains(pos)) return i;
-        return -1;
+        int best = -1;
+        double best_distance = std::numeric_limits<double>::max();
+        for (int i = 0; i < stop_count(); ++i) {
+            if (!stop_handle_rect(i).adjusted(-4, -4, 4, 4).contains(pos))
+                continue;
+            const double distance = std::abs(pos.x() - stop_point(i).x());
+            const bool prefer_selected = (i == selected_stop_ && best != selected_stop_);
+            if (prefer_selected || distance < best_distance - 0.5 ||
+                (std::abs(distance - best_distance) <= 0.5 &&
+                 (best < 0 || (best != selected_stop_ && i < best)))) {
+                best = i;
+                best_distance = distance;
+            }
+        }
+        return best;
+    }
+
+    std::vector<int> sorted_stop_indices() const
+    {
+        std::vector<int> indices;
+        for (int i = 0; i < stop_count(); ++i) indices.push_back(i);
+        std::sort(indices.begin(), indices.end(), [&](int a, int b) { return positions_[a] < positions_[b]; });
+        return indices;
+    }
+
+    QColor interpolated_color(double pos) const
+    {
+        auto sorted = sorted_stop_indices();
+        if (sorted.empty()) return QColor(255, 255, 255, 255);
+        int left = sorted.front();
+        int right = sorted.back();
+        for (int i = 0; i + 1 < (int)sorted.size(); ++i) {
+            if (positions_[sorted[i]] <= pos && pos <= positions_[sorted[i + 1]]) {
+                left = sorted[i];
+                right = sorted[i + 1];
+                break;
+            }
+        }
+        const double span = std::max(0.0001, positions_[right] - positions_[left]);
+        const double t = std::clamp((pos - positions_[left]) / span, 0.0, 1.0);
+        QColor a = colors_[left];
+        QColor b = colors_[right];
+        QColor out((int)std::round(a.red() + (b.red() - a.red()) * t),
+                   (int)std::round(a.green() + (b.green() - a.green()) * t),
+                   (int)std::round(a.blue() + (b.blue() - a.blue()) * t),
+                   (int)std::round((stop_opacities_[left] + (stop_opacities_[right] - stop_opacities_[left]) * t) * 255.0));
+        return out;
     }
 
     void changed()
@@ -874,38 +1001,18 @@ private:
         if (gradient_changed) gradient_changed();
     }
 
+    void set_all_stops(QGradient &gradient) const
+    {
+        for (int i = 0; i < stop_count(); ++i)
+            gradient.setColorAt(std::clamp(positions_[i], 0.0, 1.0), stop_color(i));
+    }
+
     QBrush preview_brush(const QRectF &r) const
     {
-        QColor a = stop_color(0);
-        QColor b = stop_color(1);
-        if (type_ == 1) {
-            QRadialGradient gradient(QPointF(r.left() + center_x_ * r.width(), r.top() + center_y_ * r.height()),
-                                     std::max(r.width(), r.height()) * 0.5 * scale_);
-            gradient.setColorAt(positions_[0], a);
-            gradient.setColorAt(positions_[1], b);
-            return QBrush(gradient);
-        }
-        if (type_ == 2) {
-            QConicalGradient gradient(QPointF(r.left() + center_x_ * r.width(), r.top() + center_y_ * r.height()), -angle_);
-            gradient.setColorAt(positions_[0], a);
-            gradient.setColorAt(positions_[1], b);
-            return QBrush(gradient);
-        }
-        if (type_ == 4) {
-            QRadialGradient gradient(QPointF(r.left() + center_x_ * r.width(), r.top() + center_y_ * r.height()),
-                                     std::max(r.width(), r.height()) * 0.42 * scale_);
-            gradient.setColorAt(positions_[0], a);
-            gradient.setColorAt(positions_[1], b);
-            return QBrush(gradient);
-        }
-        const double radians = angle_ * std::acos(-1.0) / 180.0;
-        const QPointF c(r.left() + center_x_ * r.width(), r.top() + center_y_ * r.height());
-        const double len = std::max(r.width(), r.height()) * 0.5 * scale_;
-        const QPointF d(std::cos(radians) * len, std::sin(radians) * len);
-        QLinearGradient gradient(c - d, c + d);
-        if (type_ == 3) gradient.setSpread(QGradient::ReflectSpread);
-        gradient.setColorAt(positions_[0], a);
-        gradient.setColorAt(positions_[1], b);
+        // The editor ramp is always a left-to-right linear preview, like Photoshop.
+        // The selected gradient type still controls the actual object/canvas rendering.
+        QLinearGradient gradient(QPointF(r.left(), r.center().y()), QPointF(r.right(), r.center().y()));
+        set_all_stops(gradient);
         return QBrush(gradient);
     }
 
@@ -931,16 +1038,17 @@ private:
     }
 
     int type_ = 0;
-    QColor colors_[2] = {QColor(75, 110, 168), QColor(27, 27, 27)};
-    double positions_[2] = {0.0, 1.0};
-    double stop_opacities_[2] = {1.0, 1.0};
+    std::vector<QColor> colors_ = {QColor(75, 110, 168), QColor(27, 27, 27)};
+    std::vector<double> positions_ = {0.0, 1.0};
+    std::vector<double> stop_opacities_ = {1.0, 1.0};
     double opacity_ = 1.0;
     double angle_ = 0.0;
     double center_x_ = 0.5;
     double center_y_ = 0.5;
     double scale_ = 1.0;
-    int selected_stop_ = 0;
+    int selected_stop_ = -1;
     bool dragging_stop_ = false;
+    int dragging_stop_index_ = -1;
 };
 
 
@@ -2316,6 +2424,27 @@ static QIcon cursor_tool_icon()
     return QIcon(pixmap);
 }
 
+static QIcon gradient_tool_icon()
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QRectF r(4, 5, 16, 14);
+    QLinearGradient g(r.topLeft(), r.topRight());
+    g.setColorAt(0.0, QColor(255, 80, 80));
+    g.setColorAt(0.5, QColor(255, 230, 80));
+    g.setColorAt(1.0, QColor(80, 160, 255));
+    painter.setBrush(g);
+    painter.setPen(QPen(QColor(230, 230, 230), 1.2));
+    painter.drawRoundedRect(r, 2, 2);
+    painter.setPen(QPen(QColor(230, 230, 230), 1.5));
+    painter.drawLine(QPointF(5, 20), QPointF(19, 20));
+    painter.setBrush(QColor(230, 230, 230));
+    painter.drawEllipse(QPointF(5, 20), 2.0, 2.0);
+    painter.drawEllipse(QPointF(19, 20), 2.0, 2.0);
+    return QIcon(pixmap);
+}
 
 static QString text_tool_display_name(LayerType type)
 {
@@ -3090,58 +3219,101 @@ static QColor gradient_color_with_opacity(uint32_t argb, double gradient_opacity
     return color;
 }
 
-static QBrush gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
+
+static void apply_extra_gradient_stops(QGradient &gradient, const std::vector<GradientStop> &stops, double gradient_opacity)
 {
-    const double opacity = std::clamp((double)layer.gradient_opacity * layer_opacity, 0.0, 1.0);
-    const double cx = box.left() + std::clamp((double)layer.gradient_center_x, 0.0, 1.0) * box.width();
-    const double cy = box.top() + std::clamp((double)layer.gradient_center_y, 0.0, 1.0) * box.height();
-    const double scale = std::clamp((double)layer.gradient_scale, 0.01, 10.0);
-    const double start_pos = std::clamp((double)layer.gradient_start_pos, 0.0, 1.0);
-    const double end_pos = std::clamp((double)layer.gradient_end_pos, 0.0, 1.0);
-    if (layer.gradient_type == 1) {
-        const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
-        QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
-                                 QPointF(box.left() + std::clamp((double)layer.gradient_focal_x, 0.0, 1.0) * box.width(),
-                                         box.top() + std::clamp((double)layer.gradient_focal_y, 0.0, 1.0) * box.height()));
-        gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.gradient_start_color, opacity, layer.gradient_start_opacity));
-        gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.gradient_end_color, opacity, layer.gradient_end_opacity));
-        return QBrush(gradient);
+    for (const auto &stop : stops) {
+        const double pos = std::clamp((double)stop.position, 0.0, 1.0);
+        gradient.setColorAt(pos, gradient_color_with_opacity(stop.color, gradient_opacity, stop.opacity));
     }
-    const double length = std::hypot(box.width(), box.height()) * 0.5 * scale;
-    const double angle = layer.gradient_angle * std::acos(-1.0) / 180.0;
+}
+
+static void apply_base_gradient_stops(QGradient &gradient,
+                                      double start_pos, uint32_t start_color, double start_opacity,
+                                      double end_pos, uint32_t end_color, double end_opacity,
+                                      const std::vector<GradientStop> &extra_stops,
+                                      double opacity)
+{
+    gradient.setColorAt(start_pos, gradient_color_with_opacity(start_color, opacity, start_opacity));
+    gradient.setColorAt(end_pos, gradient_color_with_opacity(end_color, opacity, end_opacity));
+    apply_extra_gradient_stops(gradient, extra_stops, opacity);
+}
+
+static QBrush make_gradient_brush(int gradient_type,
+                                  const QRectF &box,
+                                  double opacity,
+                                  double center_x, double center_y,
+                                  double focal_x, double focal_y,
+                                  double scale, double angle_degrees,
+                                  double start_pos, uint32_t start_color, double start_opacity,
+                                  double end_pos, uint32_t end_color, double end_opacity,
+                                  const std::vector<GradientStop> &extra_stops)
+{
+    const int type = std::clamp(gradient_type, 0, 4);
+    const double cx = box.left() + center_x * box.width();
+    const double cy = box.top() + center_y * box.height();
+    const double safe_scale = std::clamp(scale, 0.01, 100.0);
+    const double length = std::max(1.0, std::hypot(box.width(), box.height()) * 0.5 * safe_scale);
+    const double angle = angle_degrees * std::acos(-1.0) / 180.0;
     const double dx = std::cos(angle) * length;
     const double dy = std::sin(angle) * length;
+
+    if (type == 1 || type == 4) {
+        const double radius = std::max(box.width(), box.height()) * 0.5 * safe_scale;
+        // Qt has no native diamond gradient. Use a centered radial brush as a safe
+        // rendering fallback while preserving the distinct Diamond type in data/UI.
+        QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
+                                 type == 1 ? QPointF(box.left() + focal_x * box.width(),
+                                                     box.top() + focal_y * box.height())
+                                           : QPointF(cx, cy));
+        apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
+                                  end_pos, end_color, end_opacity, extra_stops, opacity);
+        return QBrush(gradient);
+    }
+
+    if (type == 2) {
+        QConicalGradient gradient(QPointF(cx, cy), -angle_degrees);
+        apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
+                                  end_pos, end_color, end_opacity, extra_stops, opacity);
+        return QBrush(gradient);
+    }
+
     QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
-    gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.gradient_start_color, opacity, layer.gradient_start_opacity));
-    gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.gradient_end_color, opacity, layer.gradient_end_opacity));
+    if (type == 3)
+        gradient.setSpread(QGradient::ReflectSpread);
+    apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
+                              end_pos, end_color, end_opacity, extra_stops, opacity);
     return QBrush(gradient);
+}
+
+static QBrush gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
+{
+    return make_gradient_brush(layer.gradient_type, box,
+                               std::clamp((double)layer.gradient_opacity * layer_opacity, 0.0, 1.0),
+                               layer.gradient_center_x, layer.gradient_center_y,
+                               layer.gradient_focal_x, layer.gradient_focal_y,
+                               std::clamp((double)layer.gradient_scale, 0.01, 100.0),
+                               layer.gradient_angle,
+                               std::clamp((double)layer.gradient_start_pos, 0.0, 1.0),
+                               layer.gradient_start_color, layer.gradient_start_opacity,
+                               std::clamp((double)layer.gradient_end_pos, 0.0, 1.0),
+                               layer.gradient_end_color, layer.gradient_end_opacity,
+                               layer.gradient_stops);
 }
 
 static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
 {
-    const double opacity = std::clamp((double)layer.background_gradient_opacity * layer_opacity, 0.0, 1.0);
-    const double cx = box.left() + std::clamp((double)layer.background_gradient_center_x, 0.0, 1.0) * box.width();
-    const double cy = box.top() + std::clamp((double)layer.background_gradient_center_y, 0.0, 1.0) * box.height();
-    const double scale = std::clamp((double)layer.background_gradient_scale, 0.01, 10.0);
-    const double start_pos = std::clamp((double)layer.background_gradient_start_pos, 0.0, 1.0);
-    const double end_pos = std::clamp((double)layer.background_gradient_end_pos, 0.0, 1.0);
-    if (layer.background_gradient_type == 1) {
-        const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
-        QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
-                                 QPointF(box.left() + std::clamp((double)layer.background_gradient_focal_x, 0.0, 1.0) * box.width(),
-                                         box.top() + std::clamp((double)layer.background_gradient_focal_y, 0.0, 1.0) * box.height()));
-        gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.background_gradient_start_color, opacity, layer.background_gradient_start_opacity));
-        gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.background_gradient_end_color, opacity, layer.background_gradient_end_opacity));
-        return QBrush(gradient);
-    }
-    const double length = std::hypot(box.width(), box.height()) * 0.5 * scale;
-    const double angle = layer.background_gradient_angle * std::acos(-1.0) / 180.0;
-    const double dx = std::cos(angle) * length;
-    const double dy = std::sin(angle) * length;
-    QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
-    gradient.setColorAt(start_pos, gradient_color_with_opacity(layer.background_gradient_start_color, opacity, layer.background_gradient_start_opacity));
-    gradient.setColorAt(end_pos, gradient_color_with_opacity(layer.background_gradient_end_color, opacity, layer.background_gradient_end_opacity));
-    return QBrush(gradient);
+    return make_gradient_brush(layer.background_gradient_type, box,
+                               std::clamp((double)layer.background_gradient_opacity * layer_opacity, 0.0, 1.0),
+                               layer.background_gradient_center_x, layer.background_gradient_center_y,
+                               layer.background_gradient_focal_x, layer.background_gradient_focal_y,
+                               std::clamp((double)layer.background_gradient_scale, 0.01, 100.0),
+                               layer.background_gradient_angle,
+                               std::clamp((double)layer.background_gradient_start_pos, 0.0, 1.0),
+                               layer.background_gradient_start_color, layer.background_gradient_start_opacity,
+                               std::clamp((double)layer.background_gradient_end_pos, 0.0, 1.0),
+                               layer.background_gradient_end_color, layer.background_gradient_end_opacity,
+                               layer.background_gradient_stops);
 }
 
 static QString effect_type_name(LayerEffectType type)
@@ -3523,8 +3695,13 @@ static void style_gradient_button(QPushButton *button, uint32_t start_argb, uint
     QColor start = color_from_argb(start_argb);
     QColor end = color_from_argb(end_argb);
     button->setText(QString());
-    const bool radial = gradient_type == 1;
-    button->setToolTip(radial ? QStringLiteral("Radial Gradient") : QStringLiteral("Linear Gradient"));
+    const bool radial = gradient_type == 1 || gradient_type == 4;
+    QString type_name = QStringLiteral("Linear Gradient");
+    if (gradient_type == 1) type_name = QStringLiteral("Radial Gradient");
+    else if (gradient_type == 2) type_name = QStringLiteral("Angle Gradient");
+    else if (gradient_type == 3) type_name = QStringLiteral("Reflected Gradient");
+    else if (gradient_type == 4) type_name = QStringLiteral("Diamond Gradient");
+    button->setToolTip(type_name);
     const QString fill = radial
         ? QStringLiteral("qradialgradient(cx:0.5,cy:0.5,radius:0.65,fx:0.5,fy:0.5,stop:0 %1,stop:1 %2)")
               .arg(start.name(QColor::HexArgb), end.name(QColor::HexArgb))

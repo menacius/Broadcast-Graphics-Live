@@ -429,6 +429,31 @@ void CanvasPreview::set_color_picker_tool_active()
     update();
 }
 
+void CanvasPreview::set_gradient_tool_active()
+{
+    commit_text_edit(true);
+    active_tool_ = CanvasTool::Gradient;
+    drawing_shape_ = false;
+    color_picker_tooltip_visible_ = false;
+    gradient_tool_dragging_ = false;
+    setCursor(Qt::CrossCursor);
+    update();
+}
+
+void CanvasPreview::set_gradient_editor_active(bool active)
+{
+    if (gradient_editor_active_ == active) return;
+    gradient_editor_active_ = active;
+    if (!active && active_tool_ != CanvasTool::Gradient) {
+        gradient_drag_ = GradientDragState{};
+        if (drag_mode_ == DragMode::GradientStart || drag_mode_ == DragMode::GradientEnd ||
+            drag_mode_ == DragMode::GradientCenter || drag_mode_ == DragMode::GradientRadius ||
+            drag_mode_ == DragMode::GradientFocal)
+            drag_mode_ = DragMode::None;
+    }
+    update();
+}
+
 void CanvasPreview::fit_canvas(bool up_to_100)
 {
     fit_zoom_active_ = true;
@@ -601,9 +626,14 @@ QRectF CanvasPreview::selected_canvas_bounds() const
     return bounds.normalized();
 }
 
+bool CanvasPreview::gradient_handles_visible() const
+{
+    return active_tool_ == CanvasTool::Gradient || gradient_editor_active_;
+}
+
 bool CanvasPreview::layer_supports_gradient_handles(const Layer &layer) const
 {
-    if (layer.locked || !layer.visible || layer.fill_type != 1)
+    if (!gradient_handles_visible() || layer.locked || !layer.visible || layer.fill_type != 1)
         return false;
     if (playhead_ < layer.in_time || playhead_ > layer.out_time)
         return false;
@@ -622,19 +652,19 @@ CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(co
         return g;
 
     g.valid = true;
-    g.radial = layer.gradient_type == 1;
+    g.radial = layer.gradient_type == 1 || layer.gradient_type == 4;
     g.local_rect = box;
-    g.center = QPointF(box.left() + std::clamp((double)layer.gradient_center_x, 0.0, 1.0) * box.width(),
-                       box.top() + std::clamp((double)layer.gradient_center_y, 0.0, 1.0) * box.height());
+    g.center = QPointF(box.left() + (double)layer.gradient_center_x * box.width(),
+                       box.top() + (double)layer.gradient_center_y * box.height());
 
-    const double scale = std::clamp((double)layer.gradient_scale, 0.01, 10.0);
+    const double scale = std::clamp((double)layer.gradient_scale, 0.01, 100.0);
     const double angle = degrees_to_radians(layer.gradient_angle);
     const QPointF axis(std::cos(angle), std::sin(angle));
     if (g.radial) {
         const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
         g.radius = g.center + axis * std::max(1.0, radius);
-        g.focal = QPointF(box.left() + std::clamp((double)layer.gradient_focal_x, 0.0, 1.0) * box.width(),
-                          box.top() + std::clamp((double)layer.gradient_focal_y, 0.0, 1.0) * box.height());
+        g.focal = QPointF(box.left() + (double)layer.gradient_focal_x * box.width(),
+                          box.top() + (double)layer.gradient_focal_y * box.height());
         g.start = g.center;
         g.end = g.radius;
     } else {
@@ -760,8 +790,8 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
 
     const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
     auto normalized = [&](const QPointF &pt) {
-        return QPointF(std::clamp((pt.x() - box.left()) / box.width(), 0.0, 1.0),
-                       std::clamp((pt.y() - box.top()) / box.height(), 0.0, 1.0));
+        return QPointF((pt.x() - box.left()) / box.width(),
+                       (pt.y() - box.top()) / box.height());
     };
     auto assign_center = [&](const QPointF &pt) {
         const QPointF n = normalized(pt);
@@ -783,7 +813,7 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
             angle = std::round(angle / CANVAS_ROTATION_SNAP_DEGREES) * CANVAS_ROTATION_SNAP_DEGREES;
         layer->gradient_angle = (float)normalize_degrees(angle);
         const double base = std::max(1.0, std::hypot(box.width(), box.height()));
-        layer->gradient_scale = (float)std::clamp(distance / base, 0.01, 10.0);
+        layer->gradient_scale = (float)std::clamp(distance / base, 0.01, 100.0);
     };
 
     clear_snap_feedback();
@@ -803,7 +833,7 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         if (modifiers.testFlag(Qt::ShiftModifier))
             angle = std::round(angle / CANVAS_ROTATION_SNAP_DEGREES) * CANVAS_ROTATION_SNAP_DEGREES;
         layer->gradient_angle = (float)normalize_degrees(angle);
-        layer->gradient_scale = (float)std::clamp(radius / base, 0.01, 10.0);
+        layer->gradient_scale = (float)std::clamp(radius / base, 0.01, 100.0);
     } else if (drag_mode_ == DragMode::GradientStart) {
         assign_axis(local, gradient_drag_.end);
     } else if (drag_mode_ == DragMode::GradientEnd) {
@@ -813,6 +843,46 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
     dirty_ = true;
     drag_changed_ = true;
     drag_current_view_ = view_pt;
+    update();
+    return true;
+}
+
+
+bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked || !layer->visible)
+        return false;
+    if (!(layer->type == LayerType::SolidRect || layer->type == LayerType::Shape || is_canvas_text_layer(*layer)))
+        return false;
+
+    const QRectF box = layer_local_rect(*layer);
+    if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
+        return false;
+
+    layer->fill_type = 1;
+    if (layer->gradient_type < 0 || layer->gradient_type > 4)
+        layer->gradient_type = 0;
+    const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    gradient_tool_dragging_ = true;
+    gradient_tool_start_local_ = local;
+    drag_mode_ = (layer->gradient_type == 1 || layer->gradient_type == 4) ? DragMode::GradientRadius : DragMode::GradientEnd;
+
+    auto normalized = [&](const QPointF &pt) {
+        return QPointF((pt.x() - box.left()) / box.width(),
+                       (pt.y() - box.top()) / box.height());
+    };
+    const QPointF n = normalized(local);
+    layer->gradient_center_x = (float)n.x();
+    layer->gradient_center_y = (float)n.y();
+    layer->gradient_focal_x = (float)n.x();
+    layer->gradient_focal_y = (float)n.y();
+    layer->gradient_scale = 0.01f;
+    layer->gradient_angle = modifiers.testFlag(Qt::ShiftModifier) ? 0.0f : layer->gradient_angle;
+
+    begin_gradient_drag(*layer);
+    dirty_ = true;
+    drag_changed_ = true;
     update();
     return true;
 }
@@ -2220,7 +2290,8 @@ void CanvasPreview::paintEvent(QPaintEvent *)
             p.drawLine(QPointF(origin.x(), origin.y() - CANVAS_CONTROL_SIZE_PX),
                        QPointF(origin.x(), origin.y() + CANVAS_CONTROL_SIZE_PX));
 
-            draw_gradient_handles(p, layer);
+            if (gradient_handles_visible())
+                draw_gradient_handles(p, layer);
             draw_corner_radius_handles(p, layer);
         }
         p.restore();
@@ -3273,6 +3344,40 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
+    /*
+     * Gradient handles are an editor overlay, not normal layer geometry.
+     * When the Gradient tab is open (or the Gradient tool is active), the
+     * handles are visible and must get first chance at the mouse press.
+     *
+     * This is intentionally before setFocus(), guide hit-testing, selection,
+     * marquee, and normal transform handles. Otherwise a click on a gradient
+     * handle can be interpreted as a dock/panel focus change or a normal canvas
+     * selection operation, which makes the Gradient tab lose the interaction
+     * and feels like the user is dragging the window instead of the handle.
+     */
+    if (ev->button() == Qt::LeftButton && gradient_handles_visible()) {
+        if (auto layer = selected_layer()) {
+            DragMode gradient_hit = hit_test_gradient_handles(*layer, ev->pos());
+            if (gradient_hit != DragMode::None) {
+                drag_mode_ = gradient_hit;
+                drag_changed_ = false;
+                drag_start_view_ = ev->pos();
+                drag_current_view_ = ev->pos();
+                drag_start_canvas_ = view_to_canvas(ev->pos());
+                drag_layer_states_.clear();
+                gradient_drag_ = GradientDragState{};
+                corner_radius_drag_ = CornerRadiusDragState{};
+                begin_gradient_drag(*layer);
+                if (drag_mode_ == DragMode::GradientCenter || drag_mode_ == DragMode::GradientFocal)
+                    setCursor(Qt::CrossCursor);
+                else
+                    setCursor(Qt::SizeAllCursor);
+                ev->accept();
+                return;
+            }
+        }
+    }
+
     setFocus(Qt::MouseFocusReason);
 
     if (ev->button() == Qt::LeftButton) {
@@ -3321,6 +3426,13 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
             emit color_picked(color_picker_tooltip_color_);
         ev->accept();
         return;
+    }
+
+    if (active_tool_ == CanvasTool::Gradient) {
+        if (begin_gradient_tool_drag(ev->pos(), ev->modifiers())) {
+            ev->accept();
+            return;
+        }
     }
 
     if (active_tool_ == CanvasTool::Text) {
@@ -3511,6 +3623,18 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         setCursor(Qt::CrossCursor);
         return;
     }
+    if (active_tool_ == CanvasTool::Gradient || gradient_handles_visible()) {
+        if (auto layer = selected_layer()) {
+            DragMode mode = hit_test_gradient_handles(*layer, ev->pos());
+            if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
+            else if (mode == DragMode::GradientStart || mode == DragMode::GradientEnd ||
+                     mode == DragMode::GradientRadius) setCursor(Qt::SizeAllCursor);
+            else setCursor(active_tool_ == CanvasTool::Gradient ? Qt::CrossCursor : Qt::ArrowCursor);
+        } else {
+            setCursor(active_tool_ == CanvasTool::Gradient ? Qt::CrossCursor : Qt::ArrowCursor);
+        }
+        return;
+    }
 
     bool hover_x_axis = true;
     if (guide_hit_test(ev->pos(), hover_x_axis) >= 0) {
@@ -3627,12 +3751,22 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 
         setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor :
                   (active_tool_ == CanvasTool::Text ? Qt::IBeamCursor :
-                   (active_tool_ == CanvasTool::ColorPicker ? Qt::CrossCursor : Qt::ArrowCursor)));
+                   (active_tool_ == CanvasTool::ColorPicker || active_tool_ == CanvasTool::Gradient ? Qt::CrossCursor : Qt::ArrowCursor)));
         ev->accept();
         return;
     }
 
     if (ev->button() != Qt::LeftButton || drag_mode_ == DragMode::None) return;
+
+    if (gradient_tool_dragging_) {
+        apply_gradient_drag(ev->pos(), ev->modifiers());
+        gradient_tool_dragging_ = false;
+        gradient_drag_ = GradientDragState{};
+        drag_mode_ = DragMode::None;
+        emit layer_geometry_changed();
+        ev->accept();
+        return;
+    }
 
     if (drag_mode_ == DragMode::GuideX || drag_mode_ == DragMode::GuideY) {
         const bool x_axis = drag_mode_ == DragMode::GuideX;

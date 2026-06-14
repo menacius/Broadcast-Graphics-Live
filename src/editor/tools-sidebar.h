@@ -60,6 +60,7 @@ signals:
     void shape_tool_requested(ShapeType shape_type);
     void text_tool_requested(LayerType type);
     void color_picker_tool_requested();
+    void gradient_tool_requested();
 
 private:
     void rebuild_shape_menu();
@@ -68,6 +69,7 @@ private:
     QToolButton *shape_button_ = nullptr;
     QToolButton *text_button_ = nullptr;
     QToolButton *color_picker_button_ = nullptr;
+    QToolButton *gradient_button_ = nullptr;
     QActionGroup *tool_group_ = nullptr;
     QMenu *shape_menu_ = nullptr;
     QMenu *text_menu_ = nullptr;

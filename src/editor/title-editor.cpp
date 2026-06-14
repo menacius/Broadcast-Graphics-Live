@@ -1486,6 +1486,10 @@ void TitleEditor::build_ui()
             this, [this](const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask) {
                 if (canvas_) canvas_->apply_active_text_char_format(layer_id, format, mask);
             });
+    connect(props_, &PropertiesPanel::gradient_editor_active_changed,
+            this, [this](bool active) {
+                if (canvas_) canvas_->set_gradient_editor_active(active);
+            });
     connect(title_props_, &TitlePropertiesPanel::title_changed,
             this, [this](bool push_undo_snapshot) {
                 if (!title_) return;
@@ -1577,6 +1581,9 @@ void TitleEditor::build_ui()
         });
         connect(tools_sidebar_, &ToolsSidebar::color_picker_tool_requested, this, [this]() {
             if (canvas_) canvas_->set_color_picker_tool_active();
+        });
+        connect(tools_sidebar_, &ToolsSidebar::gradient_tool_requested, this, [this]() {
+            if (canvas_) canvas_->set_gradient_tool_active();
         });
     }
 }

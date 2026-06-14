@@ -52,6 +52,12 @@ enum class ImageScaleFilter {
     Area,
 };
 
+struct GradientStop {
+    uint32_t color = 0xFFFFFFFF;
+    float position = 0.5f;
+    float opacity = 1.0f;
+};
+
 /* ══════════════════════════════════════════════════════════════════
  *  Layer
  * ══════════════════════════════════════════════════════════════════ */
@@ -147,7 +153,7 @@ struct Layer {
     int         outline_join_style = 1;  /* 0=miter, 1=round, 2=bevel */
     bool        outline_on_front = true;
     bool        outline_antialias = true;
-    int         stroke_gradient_type = 0;  /* 0=linear, 1=radial */
+    int         stroke_gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
     uint32_t    stroke_gradient_start_color = 0xFFFFFFFF;
     uint32_t    stroke_gradient_end_color   = 0xFF000000;
     float       stroke_gradient_start_pos = 0.0f;
@@ -161,6 +167,7 @@ struct Layer {
     float       stroke_gradient_scale     = 1.0f;
     float       stroke_gradient_focal_x   = 0.5f;
     float       stroke_gradient_focal_y   = 0.5f;
+    std::vector<GradientStop> stroke_gradient_stops; /* additional intermediate gradient stops between start/end */
 
     int         align_h       = 1;  /* 0=left 1=center 2=right 3=justify last left 4=justify last center 5=justify last right 6=justify all */
     int         align_v       = 1;  /* 0=top  1=middle 2=bottom */
@@ -179,7 +186,7 @@ struct Layer {
     /* ----- Solid / shape ----- */
     uint32_t    fill_color    = 0xFF222222;
     int         fill_type     = 0;  /* 0=solid, 1=gradient */
-    int         gradient_type = 0;  /* 0=linear, 1=radial */
+    int         gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
     uint32_t    gradient_start_color = 0xFF4B6EA8;
     uint32_t    gradient_end_color   = 0xFF1B1B1B;
     float       gradient_start_pos = 0.0f;
@@ -193,6 +200,7 @@ struct Layer {
     float       gradient_scale     = 1.0f;
     float       gradient_focal_x   = 0.5f;
     float       gradient_focal_y   = 0.5f;
+    std::vector<GradientStop> gradient_stops; /* additional intermediate gradient stops between start/end */
 
     /* Optional box background for text/image layers. */
     bool        background_enabled = false;
@@ -202,7 +210,7 @@ struct Layer {
     float       background_padding_y = 0.0f;
     float       background_corner_radius = 0.0f;
     int         background_fill_type = 0;  /* 0=solid, 1=gradient */
-    int         background_gradient_type = 0;  /* 0=linear, 1=radial */
+    int         background_gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
     uint32_t    background_gradient_start_color = 0xFF4B6EA8;
     uint32_t    background_gradient_end_color   = 0xFF1B1B1B;
     float       background_gradient_start_pos = 0.0f;
@@ -216,6 +224,7 @@ struct Layer {
     float       background_gradient_scale     = 1.0f;
     float       background_gradient_focal_x   = 0.5f;
     float       background_gradient_focal_y   = 0.5f;
+    std::vector<GradientStop> background_gradient_stops; /* additional intermediate gradient stops between start/end */
     AnimatedProperty background_enabled_prop { "background_enabled", 0.0 };
     AnimatedProperty background_opacity_prop { "background_opacity", 0.35 };
     AnimatedProperty background_padding_x_prop { "background_padding_x", 0.0 };

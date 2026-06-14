@@ -1,5 +1,7 @@
 #include "title-editor-internal.h"
 
+#include <memory>
+
 PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 {
     setWidgetResizable(true);
@@ -1120,6 +1122,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_gradient_type_ = new QComboBox(inner);
     cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
     cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
+    cmb_gradient_type_->addItem(QStringLiteral("Angle"), 2);
+    cmb_gradient_type_->addItem(QStringLiteral("Reflected"), 3);
+    cmb_gradient_type_->addItem(QStringLiteral("Diamond"), 4);
     cmb_gradient_type_->setFixedHeight(22);
     cmb_gradient_type_->setStyleSheet(control_style);
     btn_gradient_start_color_ = new QPushButton(inner);
@@ -1130,11 +1135,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_gradient_end_opacity_ = mk_dspin(0.0, 1.0, 0.01);
     spn_gradient_opacity_ = mk_dspin(0.0, 1.0, 0.01);
     spn_gradient_angle_ = mk_dspin(-360.0, 360.0, 1.0);
-    spn_gradient_center_x_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_gradient_center_y_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_gradient_scale_ = mk_dspin(0.01, 10.0, 0.05);
-    spn_gradient_focal_x_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_gradient_focal_y_ = mk_dspin(0.0, 1.0, 0.01);
+    spn_gradient_center_x_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_gradient_center_y_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_gradient_scale_ = mk_dspin(0.01, 100.0, 0.05);
+    spn_gradient_focal_x_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_gradient_focal_y_ = mk_dspin(-100.0, 100.0, 0.01);
     for (auto *spin : std::initializer_list<QDoubleSpinBox *>{spn_gradient_start_pos_, spn_gradient_end_pos_,
                                                                spn_gradient_start_opacity_, spn_gradient_end_opacity_,
                                                                spn_gradient_opacity_, spn_gradient_center_x_,
@@ -1167,6 +1172,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_background_gradient_type_ = new QComboBox(inner);
     cmb_background_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
     cmb_background_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
+    cmb_background_gradient_type_->addItem(QStringLiteral("Angle"), 2);
+    cmb_background_gradient_type_->addItem(QStringLiteral("Reflected"), 3);
+    cmb_background_gradient_type_->addItem(QStringLiteral("Diamond"), 4);
     cmb_background_gradient_type_->setFixedHeight(22);
     cmb_background_gradient_type_->setStyleSheet(control_style);
     btn_background_gradient_start_color_ = new QPushButton(inner);
@@ -1177,11 +1185,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_background_gradient_end_opacity_ = mk_dspin(0.0, 1.0, 0.01);
     spn_background_gradient_opacity_ = mk_dspin(0.0, 1.0, 0.01);
     spn_background_gradient_angle_ = mk_dspin(-360.0, 360.0, 1.0);
-    spn_background_gradient_center_x_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_center_y_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_scale_ = mk_dspin(0.01, 10.0, 0.05);
-    spn_background_gradient_focal_x_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_focal_y_ = mk_dspin(0.0, 1.0, 0.01);
+    spn_background_gradient_center_x_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_background_gradient_center_y_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_background_gradient_scale_ = mk_dspin(0.01, 100.0, 0.05);
+    spn_background_gradient_focal_x_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_background_gradient_focal_y_ = mk_dspin(-100.0, 100.0, 0.01);
     for (auto *spin : std::initializer_list<QDoubleSpinBox *>{spn_background_gradient_start_pos_, spn_background_gradient_end_pos_,
                                                                spn_background_gradient_start_opacity_, spn_background_gradient_end_opacity_,
                                                                spn_background_gradient_opacity_, spn_background_gradient_center_x_,
@@ -1241,6 +1249,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_stroke_gradient_type_ = new QComboBox(inner);
     cmb_stroke_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
     cmb_stroke_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
+    cmb_stroke_gradient_type_->addItem(QStringLiteral("Angle"), 2);
+    cmb_stroke_gradient_type_->addItem(QStringLiteral("Reflected"), 3);
+    cmb_stroke_gradient_type_->addItem(QStringLiteral("Diamond"), 4);
     cmb_stroke_gradient_type_->setFixedHeight(22);
     cmb_stroke_gradient_type_->setStyleSheet(control_style);
     btn_stroke_gradient_start_color_ = new QPushButton(inner);
@@ -1251,11 +1262,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_stroke_gradient_end_opacity_ = mk_dspin(0.0, 1.0, 0.01);
     spn_stroke_gradient_opacity_ = mk_dspin(0.0, 1.0, 0.01);
     spn_stroke_gradient_angle_ = mk_dspin(-360.0, 360.0, 1.0);
-    spn_stroke_gradient_center_x_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_center_y_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_scale_ = mk_dspin(0.01, 10.0, 0.05);
-    spn_stroke_gradient_focal_x_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_focal_y_ = mk_dspin(0.0, 1.0, 0.01);
+    spn_stroke_gradient_center_x_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_stroke_gradient_center_y_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_stroke_gradient_scale_ = mk_dspin(0.01, 100.0, 0.05);
+    spn_stroke_gradient_focal_x_ = mk_dspin(-100.0, 100.0, 0.01);
+    spn_stroke_gradient_focal_y_ = mk_dspin(-100.0, 100.0, 0.01);
     for (auto *spin : std::initializer_list<QDoubleSpinBox *>{spn_stroke_gradient_start_pos_, spn_stroke_gradient_end_pos_,
                                                                spn_stroke_gradient_start_opacity_, spn_stroke_gradient_end_opacity_,
                                                                spn_stroke_gradient_opacity_, spn_stroke_gradient_center_x_,
@@ -2106,7 +2117,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
         QDialog popup(this, Qt::Popup | Qt::FramelessWindowHint);
         popup.setModal(true);
-        popup.setMinimumWidth(880);
+        popup.setMinimumWidth(760);
         QString popup_css = QStringLiteral(
             "QDialog{background:@panel@;border:1px solid @border@;}"
             "QTabWidget::pane{border:1px solid @border@;background:@panel@;}"
@@ -2136,6 +2147,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *root = new QVBoxLayout(&popup);
         root->setContentsMargins(8, 8, 8, 8);
         auto *tabs = new QTabWidget(&popup);
+        // Keep the selector as the existing tabbed popup; do not open a separate Gradient Editor window.
         root->addWidget(tabs);
 
         auto update_main_swatch = [this, stroke, text_fill]() {
@@ -2402,98 +2414,73 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
         auto *gradient_tab = new QWidget(tabs);
         auto *gradient_layout = new QVBoxLayout(gradient_tab);
-        gradient_layout->setContentsMargins(8, 8, 8, 8);
+        gradient_layout->setContentsMargins(10, 10, 10, 10);
         gradient_layout->setSpacing(8);
-        auto *gradient_main = new QWidget(gradient_tab);
-        auto *gradient_main_layout = new QHBoxLayout(gradient_main);
-        gradient_main_layout->setContentsMargins(0, 0, 0, 0);
-        gradient_main_layout->setSpacing(12);
-        auto *preview = new GradientEditorPreview(gradient_main);
-        gradient_main_layout->addWidget(preview, 1);
-        auto *properties = new QWidget(gradient_main);
-        properties->setFixedWidth(360);
-        auto *properties_layout = new QVBoxLayout(properties);
-        properties_layout->setContentsMargins(0, 0, 0, 0);
-        properties_layout->setSpacing(8);
 
-        auto *type = new QComboBox(gradient_tab);
-        type->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
+        auto *preset_box = new QGroupBox(QStringLiteral("Presets"), gradient_tab);
+        preset_box->setStyleSheet(QStringLiteral("QGroupBox{color:%1;background:%2;border:1px solid %3;"
+                                "border-radius:2px;margin-top:15px;padding-top:8px;font-size:10px;}"
+                                "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;background:%2;}")
+                                .arg(panel_text_name, section_bg_name, border_name));
+        auto *preset_layout = new QVBoxLayout(preset_box);
+        preset_layout->setContentsMargins(8, 8, 8, 8);
+        preset_layout->setSpacing(6);
+        auto *preset_folders = new QWidget(preset_box);
+        auto *preset_folders_layout = new QGridLayout(preset_folders);
+        preset_folders_layout->setContentsMargins(0, 0, 0, 0);
+        preset_folders_layout->setHorizontalSpacing(10);
+        preset_folders_layout->setVerticalSpacing(4);
+        const QStringList preset_groups = {QStringLiteral("Cloud"), QStringLiteral("Iridescent"),
+                                           QStringLiteral("Pastels"), QStringLiteral("Neutrals")};
+        for (int i = 0; i < preset_groups.size(); ++i) {
+            auto *label = new QLabel(QStringLiteral("▸  📁  %1").arg(preset_groups[i]), preset_folders);
+            label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:10px;}").arg(panel_text_name));
+            preset_folders_layout->addWidget(label, i / 2, i % 2);
+        }
+        preset_layout->addWidget(preset_folders);
+        auto *preset_strip = new QWidget(preset_box);
+        auto *preset_strip_layout = new QHBoxLayout(preset_strip);
+        preset_strip_layout->setContentsMargins(0, 0, 0, 0);
+        preset_strip_layout->setSpacing(4);
+        preset_layout->addWidget(preset_strip);
+
+        auto *gradient_form = new QWidget(gradient_tab);
+        auto *gradient_form_layout = new QGridLayout(gradient_form);
+        gradient_form_layout->setContentsMargins(0, 0, 0, 0);
+        gradient_form_layout->setHorizontalSpacing(8);
+        gradient_form_layout->setVerticalSpacing(6);
+        auto *name_edit = new QLineEdit(QStringLiteral("Custom"), gradient_form);
+        name_edit->setStyleSheet(control_style);
+        auto *new_preset = new QPushButton(QStringLiteral("New"), gradient_form);
+        auto *type = new QComboBox(gradient_form);
+        type->addItem(QStringLiteral("Linear"), 0);
         type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
         type->addItem(QStringLiteral("Angle"), 2);
         type->addItem(QStringLiteral("Reflected"), 3);
         type->addItem(QStringLiteral("Diamond"), 4);
-        type->hide();
-        auto *type_box = new QGroupBox(QStringLiteral("Gradient Type"), properties);
-        type_box->setStyleSheet(QStringLiteral("QGroupBox{color:%1;background:%2;border:1px solid %3;"
-                                "border-radius:2px;margin-top:15px;padding-top:8px;font-size:10px;}"
-                                "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;background:%2;}")
-                                .arg(panel_text_name, section_bg_name, border_name));
-        auto *type_layout = new QGridLayout(type_box);
-        type_layout->setContentsMargins(8, 8, 8, 8);
-        type_layout->setHorizontalSpacing(6);
-        type_layout->setVerticalSpacing(4);
-        auto *type_group = new QButtonGroup(type_box);
-        type_group->setExclusive(true);
-        auto make_type_button = [&](int id, const QString &name) {
-            auto *button = new QToolButton(type_box);
-            button->setCheckable(true);
-            button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-            button->setText(name);
-            button->setIconSize(QSize(38, 28));
-            button->setFixedSize(64, 60);
-            QPixmap pix(38, 28);
-            pix.fill(Qt::transparent);
-            QPainter ip(&pix);
-            ip.setRenderHint(QPainter::Antialiasing, true);
-            QRectF r(4, 4, 30, 20);
-            ip.setPen(QPen(QColor(210, 210, 210), 1));
-            ip.setBrush(Qt::NoBrush);
-            if (id == 1) {
-                ip.drawEllipse(r);
-                ip.drawLine(r.center(), r.bottomRight());
-            } else if (id == 2) {
-                ip.drawArc(r, 20 * 16, 250 * 16);
-                ip.drawLine(r.center(), QPointF(r.right(), r.top()));
-            } else if (id == 3) {
-                ip.drawRect(r);
-                ip.drawRect(r.adjusted(6, 4, -6, -4));
-            } else if (id == 4) {
-                QPolygonF diamond;
-                diamond << QPointF(r.center().x(), r.top()) << QPointF(r.right(), r.center().y())
-                        << QPointF(r.center().x(), r.bottom()) << QPointF(r.left(), r.center().y());
-                ip.drawPolygon(diamond);
-            } else {
-                QLinearGradient g(r.topLeft(), r.topRight());
-                g.setColorAt(0, QColor(210, 210, 210));
-                g.setColorAt(1, QColor(70, 70, 70));
-                ip.fillRect(r, g);
-                ip.drawRect(r);
-            }
-            ip.end();
-            button->setIcon(QIcon(pix));
-            button->setStyleSheet(QStringLiteral("QToolButton{color:%1;background:%2;border:1px solid %3;"
-                                  "border-radius:2px;padding:2px;font-size:9px;}"
-                                  "QToolButton:hover{background:%4;}"
-                                  "QToolButton:checked{background:%5;border-color:%5;color:%6;}")
-                                  .arg(button_text_name, button_bg_name, border_name, hover_bg_name,
-                                       highlight_name, highlighted_text_name));
-            type_group->addButton(button, id);
-            type_layout->addWidget(button, id / 3, id % 3);
-            return button;
-        };
-        make_type_button(0, QStringLiteral("Linear"));
-        make_type_button(1, QStringLiteral("Radial"));
-        make_type_button(2, QStringLiteral("Angle"));
-        make_type_button(3, QStringLiteral("Reflected"));
-        make_type_button(4, QStringLiteral("Diamond"));
-        properties_layout->addWidget(type_box);
+        type->setStyleSheet(control_style);
+        auto *smoothness = new QSpinBox(gradient_form);
+        smoothness->setRange(0, 100);
+        smoothness->setValue(100);
+        smoothness->setSuffix(QStringLiteral("%"));
+        smoothness->setStyleSheet(control_style);
+        gradient_form_layout->addWidget(new QLabel(QStringLiteral("Name:"), gradient_form), 0, 0);
+        gradient_form_layout->addWidget(name_edit, 0, 1, 1, 3);
+        gradient_form_layout->addWidget(new_preset, 0, 4);
+        gradient_form_layout->addWidget(new QLabel(QStringLiteral("Type:"), gradient_form), 1, 0);
+        gradient_form_layout->addWidget(type, 1, 1);
+        gradient_form_layout->addWidget(new QLabel(QStringLiteral("Smoothness:"), gradient_form), 1, 2);
+        gradient_form_layout->addWidget(smoothness, 1, 3);
+        gradient_form_layout->setColumnStretch(1, 1);
 
-        auto *param_box = new QGroupBox(QStringLiteral("Parameters"), properties);
-        param_box->setStyleSheet(type_box->styleSheet());
-        auto *form = new QFormLayout(param_box);
-        form->setContentsMargins(8, 8, 8, 8);
-        form->setHorizontalSpacing(8);
-        form->setVerticalSpacing(5);
+        auto *preview = new GradientEditorPreview(gradient_tab);
+        preview->setMinimumHeight(110);
+        preview->setMaximumHeight(150);
+
+        auto *type_group = new QButtonGroup(gradient_tab);
+        type_group->setExclusive(true);
+        // Kept for existing signal wiring; gradient type is now chosen from the Photoshop-style Type combo.
+
         auto *start_color = new QPushButton(gradient_tab);
         auto *end_color = new QPushButton(gradient_tab);
         auto make_spin = [&](double lo, double hi, double step, int decimals = 2) {
@@ -2512,18 +2499,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *gradient_opacity = make_spin(0.0, 1.0, 0.01);
         auto *angle = make_spin(-360.0, 360.0, 1.0, 0);
         angle->setSuffix(QStringLiteral("°"));
-        auto *center_x = make_spin(0.0, 1.0, 0.01);
-        auto *center_y = make_spin(0.0, 1.0, 0.01);
-        auto *scale = make_spin(0.01, 10.0, 0.05);
-        auto *focal_x = make_spin(0.0, 1.0, 0.01);
-        auto *focal_y = make_spin(0.0, 1.0, 0.01);
-        auto *reverse_gradient = new QCheckBox(QStringLiteral("Reverse Gradient"), param_box);
-        auto *dither_gradient = new QCheckBox(QStringLiteral("Dither"), param_box);
-        auto *repeat_mode = new QComboBox(param_box);
+        auto *center_x = make_spin(-100.0, 100.0, 0.01);
+        auto *center_y = make_spin(-100.0, 100.0, 0.01);
+        auto *scale = make_spin(0.01, 100.0, 0.05);
+        auto *focal_x = make_spin(-100.0, 100.0, 0.01);
+        auto *focal_y = make_spin(-100.0, 100.0, 0.01);
+        auto *reverse_gradient = new QCheckBox(QStringLiteral("Reverse Gradient"), gradient_tab);
+        auto *dither_gradient = new QCheckBox(QStringLiteral("Dither"), gradient_tab);
+        auto *repeat_mode = new QComboBox(gradient_tab);
         repeat_mode->addItem(QStringLiteral("Clamp"), 0);
         repeat_mode->addItem(QStringLiteral("Repeat"), 1);
         repeat_mode->addItem(QStringLiteral("Mirror"), 2);
         repeat_mode->setStyleSheet(control_style);
+        for (auto *w : {gradient_opacity, angle, center_x, center_y, scale, focal_x, focal_y})
+            w->hide();
+        reverse_gradient->hide();
+        dither_gradient->hide();
+        repeat_mode->hide();
 
         if (stroke) {
             type->setCurrentIndex(std::max(0, type->findData(std::clamp(layer_->stroke_gradient_type, 0, 4))));
@@ -2558,22 +2550,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         }
         start_color->setText(QString());
         end_color->setText(QString());
-        if (auto *button = type_group->button(type->currentData().toInt()))
-            button->setChecked(true);
 
-        form->addRow(obsgs_tr("OBSTitles.AngleLabel"), angle);
-        form->addRow(obsgs_tr("OBSTitles.CenterXLabel"), center_x);
-        form->addRow(obsgs_tr("OBSTitles.CenterYLabel"), center_y);
-        form->addRow(obsgs_tr("OBSTitles.ScaleLabel"), scale);
-        form->addRow(obsgs_tr("OBSTitles.FocalXLabel"), focal_x);
-        form->addRow(obsgs_tr("OBSTitles.FocalYLabel"), focal_y);
-        form->addRow(QString(), reverse_gradient);
-        form->addRow(QString(), dither_gradient);
-        form->addRow(QStringLiteral("Repeat"), repeat_mode);
-        properties_layout->addWidget(param_box);
-
-        auto *stops_box = new QGroupBox(QStringLiteral("Gradient Stops"), properties);
-        stops_box->setStyleSheet(type_box->styleSheet());
+        auto *stops_box = new QGroupBox(QStringLiteral("Stops"), gradient_tab);
+        stops_box->setStyleSheet(preset_box->styleSheet());
         auto *stops_layout = new QVBoxLayout(stops_box);
         stops_layout->setContentsMargins(8, 8, 8, 8);
         stops_layout->setSpacing(5);
@@ -2582,35 +2561,70 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             auto *row = new QWidget(stops_box);
             auto *layout = new QHBoxLayout(row);
             layout->setContentsMargins(0, 0, 0, 0);
-            layout->setSpacing(5);
-            color_button->setFixedSize(36, 24);
+            layout->setSpacing(6);
+            color_button->setFixedSize(38, 24);
+            layout->addWidget(new QLabel(stop_index < 2 ? (stop_index == 0 ? QStringLiteral("Start") : QStringLiteral("End"))
+                                                        : QStringLiteral("Stop"), row));
             layout->addWidget(color_button);
             pos_spin->setSuffix(QStringLiteral("%"));
             pos_spin->setRange(0.0, 100.0);
             pos_spin->setDecimals(0);
-            pos_spin->setFixedWidth(70);
+            pos_spin->setFixedWidth(76);
             opacity_spin->setSuffix(QStringLiteral("%"));
             opacity_spin->setRange(0.0, 100.0);
             opacity_spin->setDecimals(0);
-            opacity_spin->setFixedWidth(70);
+            opacity_spin->setFixedWidth(76);
             auto *delete_button = new QPushButton(QStringLiteral("×"), row);
             delete_button->setFixedSize(24, 24);
             delete_button->setEnabled(false);
-            delete_button->setToolTip(QStringLiteral("The current title model stores two persistent gradient stops."));
+            delete_button->setToolTip(QStringLiteral("Start/end stops cannot be deleted. Use the Delete button for selected intermediate stops."));
+            layout->addWidget(new QLabel(QStringLiteral("Location"), row));
             layout->addWidget(pos_spin);
+            layout->addWidget(new QLabel(QStringLiteral("Opacity"), row));
             layout->addWidget(opacity_spin);
             layout->addWidget(delete_button);
-            connect(row, &QWidget::destroyed, stops_box, [](){});
             row->setProperty("stop_index", stop_index);
             stops_layout->addWidget(row);
             return row;
         };
         auto *stop0_row = make_stop_row(0, start_color, start_pos, start_opacity);
         auto *stop1_row = make_stop_row(1, end_color, end_pos, end_opacity);
+        // Start/end controls remain as hidden backing controls for existing layer serialization.
+        stop0_row->hide();
+        stop1_row->hide();
         start_pos->setValue(start_pos->value() * 100.0);
         end_pos->setValue(end_pos->value() * 100.0);
         start_opacity->setValue(start_opacity->value() * 100.0);
         end_opacity->setValue(end_opacity->value() * 100.0);
+
+        auto *selected_stop_row = new QWidget(stops_box);
+        auto *selected_stop_layout = new QGridLayout(selected_stop_row);
+        selected_stop_layout->setContentsMargins(0, 0, 0, 0);
+        selected_stop_layout->setHorizontalSpacing(6);
+        selected_stop_layout->setVerticalSpacing(5);
+        auto *selected_stop_label = new QLabel(QStringLiteral("No stop selected"), selected_stop_row);
+        auto *selected_stop_color = new QPushButton(selected_stop_row);
+        selected_stop_color->setFixedSize(42, 24);
+        auto *selected_stop_location = make_spin(0.0, 100.0, 1.0, 0);
+        selected_stop_location->setSuffix(QStringLiteral("%"));
+        selected_stop_location->setFixedWidth(76);
+        auto *selected_stop_opacity = make_spin(0.0, 100.0, 1.0, 0);
+        selected_stop_opacity->setSuffix(QStringLiteral("%"));
+        selected_stop_opacity->setFixedWidth(76);
+        auto *selected_stop_delete = new QPushButton(QStringLiteral("×"), selected_stop_row);
+        selected_stop_delete->setFixedSize(24, 24);
+        selected_stop_delete->setToolTip(QStringLiteral("Delete selected stop until two remain"));
+        selected_stop_layout->addWidget(selected_stop_label, 0, 0, 1, 5);
+        selected_stop_layout->addWidget(new QLabel(QStringLiteral("Color"), selected_stop_row), 1, 0);
+        selected_stop_layout->addWidget(selected_stop_color, 1, 1);
+        selected_stop_layout->addWidget(new QLabel(QStringLiteral("Location"), selected_stop_row), 1, 2);
+        selected_stop_layout->addWidget(selected_stop_location, 1, 3);
+        selected_stop_layout->addWidget(selected_stop_delete, 1, 4);
+        selected_stop_layout->addWidget(new QLabel(QStringLiteral("Opacity"), selected_stop_row), 2, 2);
+        selected_stop_layout->addWidget(selected_stop_opacity, 2, 3);
+        stops_layout->addWidget(selected_stop_row);
+
+        bool syncing_selected_stop_controls = false;
         auto *stop_actions = new QWidget(stops_box);
         auto *stop_actions_layout = new QHBoxLayout(stop_actions);
         stop_actions_layout->setContentsMargins(0, 0, 0, 0);
@@ -2618,52 +2632,63 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *add_stop = new QPushButton(QStringLiteral("+ Add Stop"), stop_actions);
         auto *duplicate_stop = new QPushButton(QStringLiteral("Duplicate"), stop_actions);
         auto *sort_stops = new QPushButton(QStringLiteral("Sort"), stop_actions);
-        duplicate_stop->setToolTip(QStringLiteral("Duplicates the selected stop into the opposite persistent stop."));
-        add_stop->setToolTip(QStringLiteral("Adds by moving the nearest persistent stop to the current preview position."));
+        auto *delete_stop = new QPushButton(QStringLiteral("Delete"), stop_actions);
+        delete_stop->setToolTip(QStringLiteral("Deletes the selected stop until only two stops remain."));
+        duplicate_stop->setToolTip(QStringLiteral("Duplicates the selected stop as a new intermediate stop."));
+        add_stop->setToolTip(QStringLiteral("Adds a new intermediate stop. Double-click empty gradient ramp space to add one; double-click an existing stop to delete it until only two stops remain."));
         stop_actions_layout->addWidget(add_stop);
         stop_actions_layout->addWidget(duplicate_stop);
         stop_actions_layout->addWidget(sort_stops);
+        stop_actions_layout->addWidget(delete_stop);
+        stop_actions_layout->addStretch(1);
         stops_layout->addWidget(stop_actions);
-        properties_layout->addWidget(stops_box);
-        properties_layout->addStretch(1);
-        gradient_main_layout->addWidget(properties);
-        gradient_layout->addWidget(gradient_main, 1);
 
-        auto *preset_box = new QGroupBox(QStringLiteral("Presets"), gradient_tab);
-        preset_box->setStyleSheet(type_box->styleSheet());
-        auto *preset_layout = new QHBoxLayout(preset_box);
-        preset_layout->setContentsMargins(8, 8, 8, 8);
-        preset_layout->setSpacing(8);
         auto make_preset = [&](uint32_t a, uint32_t b) {
-            auto *button = new QPushButton(preset_box);
-            button->setFixedSize(46, 32);
+            auto *button = new QPushButton(preset_strip);
+            button->setFixedSize(46, 30);
             style_gradient_button(button, a, b, 0);
             button->setText(QString());
             connect(button, &QPushButton::clicked, &popup, [=]() {
                 style_color_button(start_color, a);
                 style_color_button(end_color, b);
+                start_pos->setValue(0.0);
+                end_pos->setValue(100.0);
+                start_opacity->setValue(100.0);
+                end_opacity->setValue(100.0);
+                gradient_opacity->setValue(1.0);
                 if (stroke) {
                     layer_->stroke_gradient_start_color = a;
                     layer_->stroke_gradient_end_color = b;
+                    layer_->stroke_gradient_stops.clear();
                 } else {
                     layer_->gradient_start_color = a;
                     layer_->gradient_end_color = b;
+                    layer_->gradient_stops.clear();
                 }
-                preview->set_gradient(type->currentData().toInt(), a, b, start_pos->value() / 100.0,
-                                      end_pos->value() / 100.0, start_opacity->value() / 100.0,
-                                      end_opacity->value() / 100.0, gradient_opacity->value(),
-                                      angle->value(), center_x->value(), center_y->value(), scale->value());
+                preview->set_gradient(type->currentData().toInt(), a, b, 0.0, 1.0, 1.0, 1.0,
+                                      gradient_opacity->value(), angle->value(), center_x->value(),
+                                      center_y->value(), scale->value());
+                preview->set_extra_stops({});
+                preview->set_selected_stop(-1);
+                if (preview->gradient_changed) preview->gradient_changed();
             });
-            preset_layout->addWidget(button);
+            preset_strip_layout->addWidget(button);
         };
         make_preset(0xFFFFFFFF, 0xFF000000);
         make_preset(0xFF4B6EA8, 0xFF1B1B1B);
         make_preset(0xFFFF4D4D, 0xFFFFC857);
         make_preset(0xFF20C997, 0xFF4B6EA8);
         make_preset(0x00FFFFFF, 0xFFFFFFFF);
-        preset_layout->addStretch(1);
+        preset_strip_layout->addStretch(1);
+
         gradient_layout->addWidget(preset_box);
+        gradient_layout->addWidget(gradient_form);
+        gradient_layout->addWidget(preview);
+        gradient_layout->addWidget(stops_box);
+        gradient_layout->addStretch(1);
         tabs->addTab(gradient_tab, QStringLiteral("Gradient"));
+        if ((stroke && layer_->stroke_fill_type == 2) || (!stroke && layer_->fill_type == 1))
+            tabs->setCurrentWidget(gradient_tab);
 
         auto *pattern_tab = new QWidget(tabs);
         auto *pattern_layout = new QVBoxLayout(pattern_tab);
@@ -2671,12 +2696,38 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         tabs->addTab(pattern_tab, QStringLiteral("Pattern"));
         tabs->setTabEnabled(3, false);
 
-        auto sync_stop_rows = [=]() {
-            const bool start_selected = preview->selected_stop() == 0;
-            stop0_row->setStyleSheet(start_selected ? QStringLiteral("background:#2e4662;border:1px solid #6b8fb5;")
-                                                    : QStringLiteral("background:transparent;border:1px solid transparent;"));
-            stop1_row->setStyleSheet(!start_selected ? QStringLiteral("background:#2e4662;border:1px solid #6b8fb5;")
-                                                     : QStringLiteral("background:transparent;border:1px solid transparent;"));
+        auto preview_change_in_progress = std::make_shared<bool>(false);
+
+        auto sync_stop_rows = [=, &syncing_selected_stop_controls]() {
+            const int selected = preview->selected_stop();
+            const bool has_selection = selected >= 0 && selected < preview->stop_count();
+            const bool can_delete_selected = has_selection && preview->stop_count() > 2;
+
+            syncing_selected_stop_controls = true;
+            selected_stop_label->setText(has_selection
+                ? QStringLiteral("Selected %1 stop").arg(selected < 2 ? (selected == 0 ? QStringLiteral("start") : QStringLiteral("end"))
+                                                               : QStringLiteral("intermediate"))
+                : QStringLiteral("No stop selected"));
+            selected_stop_color->setEnabled(has_selection);
+            selected_stop_location->setEnabled(has_selection);
+            selected_stop_opacity->setEnabled(has_selection);
+            selected_stop_delete->setEnabled(can_delete_selected);
+            delete_stop->setEnabled(can_delete_selected);
+            duplicate_stop->setEnabled(has_selection);
+
+            if (has_selection) {
+                style_color_button(selected_stop_color, preview->stop_color_argb(selected));
+                selected_stop_color->setText(QString());
+                selected_stop_location->setValue(preview->stop_position(selected) * 100.0);
+                selected_stop_opacity->setValue(preview->stop_opacity(selected) * 100.0);
+            } else {
+                selected_stop_color->setStyleSheet(QStringLiteral("QPushButton{background:%1;border:1px solid %2;border-radius:2px;padding:0;}")
+                                                   .arg(control_bg_name, border_name));
+                selected_stop_color->setText(QString());
+                selected_stop_location->setValue(0.0);
+                selected_stop_opacity->setValue(0.0);
+            }
+            syncing_selected_stop_controls = false;
         };
         auto update_preview = [=]() {
             const uint32_t start_argb = stroke ? layer_->stroke_gradient_start_color : layer_->gradient_start_color;
@@ -2686,6 +2737,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                   start_opacity->value() / 100.0, end_opacity->value() / 100.0,
                                   gradient_opacity->value(), angle->value(),
                                   center_x->value(), center_y->value(), scale->value());
+            preview->set_extra_stops(stroke ? layer_->stroke_gradient_stops : layer_->gradient_stops);
             sync_stop_rows();
         };
         auto apply_gradient = [=, &popup]() {
@@ -2705,6 +2757,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->stroke_gradient_scale = (float)scale->value();
                 layer_->stroke_gradient_focal_x = (float)focal_x->value();
                 layer_->stroke_gradient_focal_y = (float)focal_y->value();
+                layer_->stroke_gradient_stops = preview->extra_stops();
             } else {
                 layer_->fill_type = 1;
                 layer_->gradient_type = type->currentData().toInt();
@@ -2719,9 +2772,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->gradient_scale = (float)scale->value();
                 layer_->gradient_focal_x = (float)focal_x->value();
                 layer_->gradient_focal_y = (float)focal_y->value();
+                layer_->gradient_stops = preview->extra_stops();
                 if (text_fill) apply_text_fill_format();
             }
-            update_preview();
+            if (!*preview_change_in_progress)
+                update_preview();
+            else
+                sync_stop_rows();
             update_main_swatch();
             emit_change();
         };
@@ -2744,11 +2801,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             apply_gradient();
         };
         auto show_stop_color_popup = [=, &popup](int stop_index, const QPoint &global_pos) {
-            auto *color_button = stop_index == 0 ? start_color : end_color;
-            QColor initial = color_from_argb(stroke
-                ? (stop_index == 0 ? layer_->stroke_gradient_start_color : layer_->stroke_gradient_end_color)
-                : (stop_index == 0 ? layer_->gradient_start_color : layer_->gradient_end_color));
-            initial.setAlphaF(stop_index == 0 ? start_opacity->value() / 100.0 : end_opacity->value() / 100.0);
+            auto *color_button = stop_index == 0 ? start_color : (stop_index == 1 ? end_color : nullptr);
+            QColor initial = color_from_argb(preview->stop_color_argb(stop_index));
+            initial.setAlphaF(preview->stop_opacity(stop_index));
 
             QDialog color_popup(&popup, Qt::Popup | Qt::FramelessWindowHint);
             QString stop_popup_css = QStringLiteral(
@@ -2832,15 +2887,18 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 const uint32_t argb = argb_from_color(QColor(color.red(), color.green(), color.blue(), 255));
                 if (stroke) {
                     if (stop_index == 0) layer_->stroke_gradient_start_color = argb;
-                    else layer_->stroke_gradient_end_color = argb;
+                    else if (stop_index == 1) layer_->stroke_gradient_end_color = argb;
                 } else {
                     if (stop_index == 0) layer_->gradient_start_color = argb;
-                    else layer_->gradient_end_color = argb;
+                    else if (stop_index == 1) layer_->gradient_end_color = argb;
                 }
-                style_color_button(color_button, argb);
-                color_button->setText(QString());
+                if (color_button) {
+                    style_color_button(color_button, argb);
+                    color_button->setText(QString());
+                }
                 if (stop_index == 0) start_opacity->setValue(color.alphaF() * 100.0);
-                else end_opacity->setValue(color.alphaF() * 100.0);
+                else if (stop_index == 1) end_opacity->setValue(color.alphaF() * 100.0);
+                else preview->set_stop_opacity(stop_index, color.alphaF());
                 preview->set_stop_color(stop_index, color);
                 apply_gradient();
             };
@@ -2865,9 +2923,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         color_picker->color_changed = [&](const QColor &color) {
             apply_and_sync_color(color, false);
         };
-        connect(tabs, &QTabWidget::currentChanged, &popup, [=](int idx) {
+        connect(tabs, &QTabWidget::currentChanged, &popup, [=, &selected_color](int idx) {
+            emit gradient_editor_active_changed(idx == 2);
             if (idx == 0)
-                apply_solid_color(color_picker->color());
+                apply_solid_color(selected_color);
             else if (idx == 2)
                 apply_gradient();
         });
@@ -2878,6 +2937,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 });
         preview->selection_changed = [=](int) { sync_stop_rows(); };
         preview->gradient_changed = [=]() {
+            *preview_change_in_progress = true;
             {
                 QSignalBlocker b0(start_pos), b1(end_pos), b2(start_opacity), b3(end_opacity);
                 start_pos->setValue(preview->stop_position(0) * 100.0);
@@ -2888,19 +2948,46 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             if (stroke) {
                 layer_->stroke_gradient_start_color = preview->stop_color_argb(0);
                 layer_->stroke_gradient_end_color = preview->stop_color_argb(1);
+                layer_->stroke_gradient_stops = preview->extra_stops();
             } else {
                 layer_->gradient_start_color = preview->stop_color_argb(0);
                 layer_->gradient_end_color = preview->stop_color_argb(1);
+                layer_->gradient_stops = preview->extra_stops();
             }
             style_color_button(start_color, preview->stop_color_argb(0));
             style_color_button(end_color, preview->stop_color_argb(1));
             start_color->setText(QString());
             end_color->setText(QString());
             apply_gradient();
+            *preview_change_in_progress = false;
         };
         preview->color_popup_requested = [=, &show_stop_color_popup](int stop_index, const QPoint &global_pos) {
             show_stop_color_popup(stop_index, global_pos);
         };
+        connect(selected_stop_color, &QPushButton::clicked, &popup, [=, &show_stop_color_popup]() {
+            const int selected = preview->selected_stop();
+            if (selected < 0) return;
+            show_stop_color_popup(selected, preview->stop_global_anchor(selected));
+        });
+        connect(selected_stop_location, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &popup,
+                [=, &syncing_selected_stop_controls](double value) {
+                    if (syncing_selected_stop_controls) return;
+                    const int selected = preview->selected_stop();
+                    if (selected < 0) return;
+                    preview->set_stop_position(selected, value / 100.0);
+                });
+        connect(selected_stop_opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &popup,
+                [=, &syncing_selected_stop_controls](double value) {
+                    if (syncing_selected_stop_controls) return;
+                    const int selected = preview->selected_stop();
+                    if (selected < 0) return;
+                    preview->set_stop_opacity(selected, value / 100.0);
+                });
+        connect(selected_stop_delete, &QPushButton::clicked, &popup, [=]() {
+            const int selected = preview->selected_stop();
+            if (selected < 0 || preview->stop_count() <= 2) return;
+            preview->remove_stop(selected);
+        });
         for (auto *spin : {start_pos, end_pos, start_opacity, end_opacity, gradient_opacity,
                            angle, center_x, center_y, scale, focal_x, focal_y}) {
             connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), &popup, [=](double){ apply_gradient(); });
@@ -2915,24 +3002,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         });
         connect(duplicate_stop, &QPushButton::clicked, &popup, [=]() {
             int src = preview->selected_stop();
-            int dst = src == 0 ? 1 : 0;
-            if (stroke) {
-                if (dst == 0) layer_->stroke_gradient_start_color = preview->stop_color_argb(src);
-                else layer_->stroke_gradient_end_color = preview->stop_color_argb(src);
-            } else {
-                if (dst == 0) layer_->gradient_start_color = preview->stop_color_argb(src);
-                else layer_->gradient_end_color = preview->stop_color_argb(src);
-            }
-            (dst == 0 ? start_pos : end_pos)->setValue(std::clamp(preview->stop_position(src) * 100.0 + (src == 0 ? 12.0 : -12.0), 0.0, 100.0));
-            (dst == 0 ? start_opacity : end_opacity)->setValue(preview->stop_opacity(src) * 100.0);
-            apply_gradient();
+            if (src < 0) return;
+            QColor color = color_from_argb(preview->stop_color_argb(src));
+            color.setAlphaF(preview->stop_opacity(src));
+            const double pos = std::clamp(preview->stop_position(src) + 0.08, 0.0, 1.0);
+            preview->add_stop(pos, color);
         });
         connect(add_stop, &QPushButton::clicked, &popup, [=]() {
-            int dst = preview->selected_stop() == 0 ? 1 : 0;
-            (dst == 0 ? start_pos : end_pos)->setValue(50.0);
-            preview->set_selected_stop(dst);
-            apply_gradient();
-            show_stop_color_popup(dst, preview->stop_global_anchor(dst));
+            preview->add_stop(0.5);
+        });
+        connect(delete_stop, &QPushButton::clicked, &popup, [=]() {
+            const int selected = preview->selected_stop();
+            if (selected < 0 || preview->stop_count() <= 2) return;
+            preview->remove_stop(selected);
         });
         connect(sort_stops, &QPushButton::clicked, &popup, [=]() {
             if (start_pos->value() <= end_pos->value()) return;
@@ -2953,7 +3035,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         });
 
         update_preview();
-        tabs->setCurrentIndex((stroke ? layer_->stroke_fill_type == 2 : layer_->fill_type == 1) ? 2 : 0);
+        const bool is_gradient_value = stroke ? (layer_->stroke_fill_type == 2) : (layer_->fill_type == 1);
+        tabs->setCurrentIndex(is_gradient_value ? 2 : 0);
+        emit gradient_editor_active_changed(is_gradient_value);
         auto *source_button = stroke ? btn_appearance_stroke_color_ : btn_appearance_fill_color_;
         popup.adjustSize();
         const QPoint button_center = source_button->mapToGlobal(QPoint(source_button->width() / 2,
@@ -2961,6 +3045,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         const QPoint desired_pos(button_center.x() - popup.width() / 2, button_center.y());
         popup.move(clamp_popup_position_to_screen(desired_pos, popup.size(), source_button));
         popup.exec();
+        emit gradient_editor_active_changed(false);
     };
     connect(btn_appearance_fill_color_, &QPushButton::clicked,
             this, [open_color_selector]() { open_color_selector(false); });

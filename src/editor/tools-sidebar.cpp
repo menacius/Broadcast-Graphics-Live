@@ -71,6 +71,8 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
                                     QStringLiteral("Text Tool: choose text, clock, or ticker, then click and drag on the canvas"));
     color_picker_button_ = make_tool_button(QStringLiteral("Color Picker Tool"), obs_icon("eyedropper.svg"),
                                             QStringLiteral("Color Picker Tool: sample a color from the canvas into the selected layer"));
+    gradient_button_ = make_tool_button(QStringLiteral("Gradient Tool"), gradient_tool_icon(),
+                                        QStringLiteral("Gradient Tool: drag on the selected object to place or edit its gradient"));
 
     auto *selection_action = new QAction(cursor_tool_icon(), QStringLiteral("Selection Tool"), this);
     selection_action->setCheckable(true);
@@ -81,14 +83,18 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     text_action->setCheckable(true);
     auto *color_picker_action = new QAction(obs_icon("eyedropper.svg"), QStringLiteral("Color Picker Tool"), this);
     color_picker_action->setCheckable(true);
+    auto *gradient_action = new QAction(gradient_tool_icon(), QStringLiteral("Gradient Tool"), this);
+    gradient_action->setCheckable(true);
     tool_group_->addAction(selection_action);
     tool_group_->addAction(shape_action);
     tool_group_->addAction(text_action);
     tool_group_->addAction(color_picker_action);
+    tool_group_->addAction(gradient_action);
     selection_button_->setDefaultAction(selection_action);
     shape_button_->setDefaultAction(shape_action);
     text_button_->setDefaultAction(text_action);
     color_picker_button_->setDefaultAction(color_picker_action);
+    gradient_button_->setDefaultAction(gradient_action);
 
     shape_menu_ = new QMenu(shape_button_);
     shape_button_->setMenu(shape_menu_);
@@ -108,6 +114,9 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     });
     connect(color_picker_action, &QAction::triggered, this, [this]() {
         emit color_picker_tool_requested();
+    });
+    connect(gradient_action, &QAction::triggered, this, [this]() {
+        emit gradient_tool_requested();
     });
 
     layout->addStretch(1);
