@@ -78,5 +78,6 @@ private:
     QToolButton *btn_duplicate_ = nullptr;
     QToolButton *btn_move_up_ = nullptr;
     QToolButton *btn_move_down_ = nullptr;
+    QToolButton *btn_respect_masks_ = nullptr;
 };
 

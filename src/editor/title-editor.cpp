@@ -1,5 +1,52 @@
 #include "title-editor-internal.h"
 
+
+namespace {
+
+const Layer *editor_layer_by_id_for_parenting(const std::shared_ptr<Title> &title, const std::string &id)
+{
+    if (!title || id.empty()) return nullptr;
+    for (const auto &candidate : title->layers) {
+        if (candidate && candidate->id == id) return candidate.get();
+    }
+    return nullptr;
+}
+
+QTransform editor_layer_world_transform_for_parenting(const std::shared_ptr<Title> &title,
+                                                      const Layer &layer,
+                                                      double playhead,
+                                                      int depth = 0)
+{
+    QTransform xf;
+    if (depth > 64) return xf;
+    if (!layer.parent_id.empty()) {
+        if (const Layer *parent = editor_layer_by_id_for_parenting(title, layer.parent_id))
+            xf = editor_layer_world_transform_for_parenting(title, *parent, playhead, depth + 1);
+    }
+    const double lt = std::max(0.0, playhead - layer.in_time);
+    xf.translate(layer.pos_x.evaluate(lt), layer.pos_y.evaluate(lt));
+    xf.rotate(layer.rotation.evaluate(lt));
+    xf.scale(layer.scale_x.evaluate(lt), layer.scale_y.evaluate(lt));
+    return xf;
+}
+
+bool editor_parenting_would_cycle(const std::shared_ptr<Title> &title,
+                                  const std::string &layer_id,
+                                  const std::string &parent_id)
+{
+    std::string cursor = parent_id;
+    int guard = 0;
+    while (!cursor.empty() && guard++ < 64) {
+        if (cursor == layer_id) return true;
+        const Layer *parent = editor_layer_by_id_for_parenting(title, cursor);
+        if (!parent) break;
+        cursor = parent->parent_id;
+    }
+    return false;
+}
+
+} // namespace
+
 TitleEditor::TitleEditor(QWidget *parent)
     : QMainWindow(parent, Qt::Window)
 {
@@ -1367,7 +1414,28 @@ void TitleEditor::build_ui()
             this, [this](const std::string &lid, const std::string &parent_id) {
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
-                    layer->parent_id = parent_id;
+                    const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                                 std::max(0.0, layer->out_time - layer->in_time));
+                    const QPointF world_pos = editor_layer_world_transform_for_parenting(title_, *layer, playhead_)
+                        .map(QPointF(0.0, 0.0));
+
+                    std::string next_parent_id = parent_id;
+                    if (next_parent_id == layer->id || editor_parenting_would_cycle(title_, layer->id, next_parent_id))
+                        next_parent_id.clear();
+
+                    layer->parent_id = next_parent_id;
+                    QPointF local_pos = world_pos;
+                    if (!next_parent_id.empty()) {
+                        if (const Layer *parent = editor_layer_by_id_for_parenting(title_, next_parent_id)) {
+                            bool invertible = false;
+                            QTransform parent_xf = editor_layer_world_transform_for_parenting(title_, *parent, playhead_);
+                            QTransform parent_inv = parent_xf.inverted(&invertible);
+                            if (invertible)
+                                local_pos = parent_inv.map(world_pos);
+                        }
+                    }
+                    set_animated_value(layer->pos_x, lt, local_pos.x());
+                    set_animated_value(layer->pos_y, lt, local_pos.y());
                     on_title_modified();
                 }
             });
@@ -1378,6 +1446,15 @@ void TitleEditor::build_ui()
                 if (auto layer = title_->find_layer(lid)) {
                     layer->mask_source_id = mask_source_id;
                     layer->mask_mode = mask_source_id.empty() ? MaskMode::None : mask_mode;
+                    on_title_modified();
+                }
+            });
+
+    connect(layers_, &LayerStack::layer_blend_mode_changed,
+            this, [this](const std::string &lid, EffectBlendMode blend_mode) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->blend_mode = blend_mode;
                     on_title_modified();
                 }
             });

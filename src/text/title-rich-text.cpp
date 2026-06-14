@@ -155,6 +155,8 @@ RichTextDocument rich_text_document_from_layer_defaults(const Layer &layer)
     doc.default_format = layer_char_format(layer);
     doc.default_paragraph_format = layer_paragraph_format(layer);
     doc.selection = {doc.plain_text.size(), doc.plain_text.size()};
+    doc.typing_format = doc.default_format;
+    doc.has_typing_format = true;
     doc.normalize();
     return doc;
 }
@@ -163,6 +165,8 @@ void rich_text_document_sync_layer_defaults(RichTextDocument &doc, const Layer &
 {
     doc.default_format = layer_char_format(layer);
     doc.default_paragraph_format = layer_paragraph_format(layer);
+    if (!doc.has_typing_format)
+        doc.typing_format = doc.default_format;
     doc.normalize();
 }
 
@@ -184,7 +188,7 @@ void rich_text_document_sync_layer_mirrors(Layer &layer)
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
     layer.rich_text.normalize();
 
-    const RichTextCharFormat &f = layer.rich_text.default_format;
+    const RichTextCharFormat &f = layer.rich_text.has_typing_format ? layer.rich_text.typing_format : layer.rich_text.default_format;
     layer.text_content = layer.rich_text.plain_text;
     layer.font_family = f.font_family;
     layer.font_style = f.font_style;
@@ -288,6 +292,10 @@ void rich_text_document_replace_text(RichTextDocument &doc, const std::string &n
     tr.inserted_text = next_text.substr(prefix, inserted_len);
     tr.before_selection = doc.selection;
     tr.after_selection = {prefix + inserted_len, prefix + inserted_len};
+    if (insertion_format) {
+        doc.typing_format = *insertion_format;
+        doc.has_typing_format = true;
+    }
 
     doc.plain_text = next_text;
     doc.ranges = std::move(next_ranges);

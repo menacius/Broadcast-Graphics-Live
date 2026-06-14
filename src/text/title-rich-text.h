@@ -91,6 +91,11 @@ struct RichTextDocument {
     std::string plain_text;
     RichTextCharFormat default_format;
     RichTextParagraphFormat default_paragraph_format;
+    /* Clean rich-text architecture: this is the only persistent insertion/cursor
+     * format. Layer scalar fields are mirrors for legacy rendering/serialization
+     * only; the properties panel must use this when the text cursor is collapsed. */
+    bool has_typing_format = false;
+    RichTextCharFormat typing_format;
     std::vector<RichTextBlock> blocks;
     std::vector<RichTextRange> ranges;
     RichTextSelection selection;

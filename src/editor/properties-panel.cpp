@@ -610,26 +610,29 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_char_scale_y_->setSuffix("%");
     spn_baseline_shift_ = mk_dspin(-500.0, 500.0, 1.0);
     spn_baseline_shift_->setSuffix(" px");
-    cmb_language_ = mk_combo({"English", "Arabic", "Chinese", "French", "German", "Japanese", "Korean", "Portuguese", "Spanish"}, {});
     btn_text_color_ = new QPushButton(inner);
     btn_text_color_->setFixedHeight(22);
+    btn_kf_font_size_ = mk_kf_button("Toggle Size keyframe");
+    btn_kf_char_scale_x_ = mk_kf_button("Toggle H Scale keyframe");
+    btn_kf_char_scale_y_ = mk_kf_button("Toggle V Scale keyframe");
+    btn_kf_char_tracking_ = mk_kf_button("Toggle Tracking keyframe");
+    btn_kf_baseline_shift_ = mk_kf_button("Toggle Baseline keyframe");
     btn_kf_text_color_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleTextColorKeyframe"));
 
     char_grid->addWidget(grid_label(obsgs_tr("OBSTitles.TextLabel"), text_box_), 0, 0);
     char_grid->addWidget(txt_content_, 0, 1, 1, 3);
     add_full_width_field(char_grid, 1, "Font", cmb_font_);
     add_full_width_field(char_grid, 2, "Style", cmb_font_style_);
-    add_grid_field(char_grid, 3, 0, "Size", spn_size_);
+    add_grid_field(char_grid, 3, 0, "Size", with_kf(spn_size_, btn_kf_font_size_));
     add_grid_field(char_grid, 3, 1, "Leading", spn_text_leading_);
     add_grid_field(char_grid, 4, 0, "Kerning", cmb_kerning_mode_);
     add_grid_field(char_grid, 4, 1, "Value", spn_kerning_value_);
-    add_grid_field(char_grid, 5, 0, "H Scale", spn_char_scale_x_);
-    add_grid_field(char_grid, 5, 1, "V Scale", spn_char_scale_y_);
-    add_grid_field(char_grid, 6, 0, "Tracking", spn_char_tracking_);
-    add_grid_field(char_grid, 6, 1, "Baseline", spn_baseline_shift_);
+    add_grid_field(char_grid, 5, 0, "H Scale", with_kf(spn_char_scale_x_, btn_kf_char_scale_x_));
+    add_grid_field(char_grid, 5, 1, "V Scale", with_kf(spn_char_scale_y_, btn_kf_char_scale_y_));
+    add_grid_field(char_grid, 6, 0, "Tracking", with_kf(spn_char_tracking_, btn_kf_char_tracking_));
+    add_grid_field(char_grid, 6, 1, "Baseline", with_kf(spn_baseline_shift_, btn_kf_baseline_shift_));
     row_text_color_ = with_kf(btn_text_color_, btn_kf_text_color_);
     add_full_width_field(char_grid, 7, "Fill Color", row_text_color_);
-    add_grid_field(char_grid, 8, 0, "Language", cmb_language_);
     vl->addWidget(text_box_);
 
     /* ── Type Options ── */
@@ -759,6 +762,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *paragraph_indent_first_line_field = with_kf(spn_paragraph_indent_first_line_, btn_kf_paragraph_indent_first_line_);
     spn_paragraph_space_before_ = mk_paragraph_spin();
     spn_paragraph_space_after_ = mk_paragraph_spin();
+    btn_kf_paragraph_space_before_ = mk_kf_button("Toggle Space Before Paragraph keyframe");
+    btn_kf_paragraph_space_after_ = mk_kf_button("Toggle Space After Paragraph keyframe");
+    auto *paragraph_space_before_field = with_kf(spn_paragraph_space_before_, btn_kf_paragraph_space_before_);
+    auto *paragraph_space_after_field = with_kf(spn_paragraph_space_after_, btn_kf_paragraph_space_after_);
     auto *metric_grid = new QGridLayout();
     metric_grid->setContentsMargins(0, 0, 0, 0);
     metric_grid->setHorizontalSpacing(8);
@@ -768,8 +775,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_metric_control(metric_grid, 0, 0, "paragraph-indent-left.svg", obsgs_tr("OBSTitles.ParagraphIndentLeft"), spn_paragraph_indent_left_, paragraph_indent_left_field);
     add_metric_control(metric_grid, 0, 1, "paragraph-indent-right.svg", obsgs_tr("OBSTitles.ParagraphIndentRight"), spn_paragraph_indent_right_, paragraph_indent_right_field);
     add_metric_control(metric_grid, 1, 0, "paragraph-indent-first-line.svg", obsgs_tr("OBSTitles.ParagraphIndentFirstLine"), spn_paragraph_indent_first_line_, paragraph_indent_first_line_field);
-    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", obsgs_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_, spn_paragraph_space_before_);
-    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", obsgs_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_, spn_paragraph_space_after_);
+    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", obsgs_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_, paragraph_space_before_field);
+    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", obsgs_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_, paragraph_space_after_field);
     paragraph_layout->addLayout(metric_grid);
 
     chk_paragraph_hyphenate_ = new QCheckBox(obsgs_tr("OBSTitles.Hyphenate"), paragraph_box_);
@@ -1521,6 +1528,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     install_prop_delete_all(btn_kf_paragraph_indent_left_, &Layer::paragraph_indent_left_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_right_, &Layer::paragraph_indent_right_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line_prop);
+    install_prop_delete_all(btn_kf_font_size_, &Layer::font_size_prop);
+    install_prop_delete_all(btn_kf_char_scale_x_, &Layer::char_scale_x_prop);
+    install_prop_delete_all(btn_kf_char_scale_y_, &Layer::char_scale_y_prop);
+    install_prop_delete_all(btn_kf_char_tracking_, &Layer::char_tracking_prop);
+    install_prop_delete_all(btn_kf_baseline_shift_, &Layer::baseline_shift_prop);
+    install_prop_delete_all(btn_kf_paragraph_space_before_, &Layer::paragraph_space_before_prop);
+    install_prop_delete_all(btn_kf_paragraph_space_after_, &Layer::paragraph_space_after_prop);
     install_group_delete_all(btn_kf_width_, {&Layer::box_width, &Layer::box_height});
     install_group_delete_all(btn_kf_text_color_, {&Layer::text_color_a, &Layer::text_color_r,
                                                   &Layer::text_color_g, &Layer::text_color_b});
@@ -1699,8 +1713,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(spn_size_, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](int v){
-                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.font_size = v; apply_text_char_format(fmt, RichTextCharFontSize); emit_change(); }
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format](int v){
+                if (!can_edit()) return;
+                layer_->font_size = v;
+                set_animated_value(layer_->font_size_prop, local_time(), v);
+                RichTextCharFormat fmt = current_text_char_format();
+                fmt.font_size = v;
+                apply_text_char_format(fmt, RichTextCharFontSize);
+                emit_change();
             });
     connect(chk_bold_, &QToolButton::toggled,
             this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](bool v){
@@ -1738,24 +1758,32 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
             });
     connect(spn_char_tracking_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
-                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.tracking = (float)v; apply_text_char_format(fmt, RichTextCharTracking); emit_change(); }
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (!can_edit()) return;
+                layer_->char_tracking = (float)v;
+                set_animated_value(layer_->char_tracking_prop, local_time(), v);
+                RichTextCharFormat fmt = current_text_char_format();
+                fmt.tracking = (float)v;
+                apply_text_char_format(fmt, RichTextCharTracking);
+                emit_change();
             });
     connect(spn_char_scale_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
-                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.scale_x = (float)(v / 100.0); apply_text_char_format(fmt, RichTextCharScaleX); emit_change(); }
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (can_edit()) { layer_->char_scale_x = (float)(v / 100.0); set_animated_value(layer_->char_scale_x_prop, local_time(), v / 100.0); RichTextCharFormat fmt = current_text_char_format(); fmt.scale_x = (float)(v / 100.0); apply_text_char_format(fmt, RichTextCharScaleX); emit_change(); }
             });
     connect(spn_char_scale_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
-                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.scale_y = (float)(v / 100.0); apply_text_char_format(fmt, RichTextCharScaleY); emit_change(); }
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (can_edit()) { layer_->char_scale_y = (float)(v / 100.0); set_animated_value(layer_->char_scale_y_prop, local_time(), v / 100.0); RichTextCharFormat fmt = current_text_char_format(); fmt.scale_y = (float)(v / 100.0); apply_text_char_format(fmt, RichTextCharScaleY); emit_change(); }
             });
     connect(spn_baseline_shift_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](double v){
-                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.baseline_shift = (float)v; apply_text_char_format(fmt, RichTextCharBaselineShift); emit_change(); }
-            });
-    connect(cmb_language_, &QComboBox::currentTextChanged,
-            this, [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](const QString &s){
-                if (can_edit()) { RichTextCharFormat fmt = current_text_char_format(); fmt.language = s.toStdString(); apply_text_char_format(fmt, RichTextCharLanguage); emit_change(); }
+            this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format](double v){
+                if (!can_edit()) return;
+                layer_->baseline_shift = (float)v;
+                set_animated_value(layer_->baseline_shift_prop, local_time(), v);
+                RichTextCharFormat fmt = current_text_char_format();
+                fmt.baseline_shift = (float)v;
+                apply_text_char_format(fmt, RichTextCharBaselineShift);
+                emit_change();
             });
     auto set_exclusive_text_style = [this, can_edit, emit_change, apply_text_char_format, current_text_char_format](int style, bool checked) {
         if (!can_edit()) return;
@@ -2030,6 +2058,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                             fmt.indent_right = (float)value;
                         else if (field == &Layer::paragraph_indent_first_line)
                             fmt.indent_first_line = (float)value;
+                        else if (field == &Layer::paragraph_space_before)
+                            fmt.space_before = (float)value;
+                        else if (field == &Layer::paragraph_space_after)
+                            fmt.space_after = (float)value;
                         apply_rich_text_paragraph_format_to_layer(*layer_, fmt);
                         set_animated_value(layer_.get()->*prop, local_time(), value);
                         emit_change();
@@ -2039,8 +2071,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect_keyframed_paragraph_spin(spn_paragraph_indent_left_, &Layer::paragraph_indent_left, &Layer::paragraph_indent_left_prop);
     connect_keyframed_paragraph_spin(spn_paragraph_indent_right_, &Layer::paragraph_indent_right, &Layer::paragraph_indent_right_prop);
     connect_keyframed_paragraph_spin(spn_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line, &Layer::paragraph_indent_first_line_prop);
-    connect_paragraph_spin(spn_paragraph_space_before_, &Layer::paragraph_space_before);
-    connect_paragraph_spin(spn_paragraph_space_after_, &Layer::paragraph_space_after);
+    connect_keyframed_paragraph_spin(spn_paragraph_space_before_, &Layer::paragraph_space_before, &Layer::paragraph_space_before_prop);
+    connect_keyframed_paragraph_spin(spn_paragraph_space_after_, &Layer::paragraph_space_after, &Layer::paragraph_space_after_prop);
     connect(chk_paragraph_hyphenate_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v) {
                 if (!can_edit()) return;
@@ -3540,6 +3572,48 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
+    connect(btn_kf_font_size_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->font_size_prop, local_time(), spn_size_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_char_scale_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->char_scale_x_prop, local_time(), spn_char_scale_x_->value() / 100.0);
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_char_scale_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->char_scale_y_prop, local_time(), spn_char_scale_y_->value() / 100.0);
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_char_tracking_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->char_tracking_prop, local_time(), spn_char_tracking_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_baseline_shift_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->baseline_shift_prop, local_time(), spn_baseline_shift_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_paragraph_space_before_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->paragraph_space_before_prop, local_time(), spn_paragraph_space_before_->value());
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_paragraph_space_after_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit()) return;
+        toggle_keyframe(layer_->paragraph_space_after_prop, local_time(), spn_paragraph_space_after_->value());
+        load_values();
+        emit_change();
+    });
     connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
         toggle_vec2_keyframe(layer_->box_width, layer_->box_height, local_time(),
@@ -3792,7 +3866,6 @@ void PropertiesPanel::load_values()
         if (spn_char_scale_x_) spn_char_scale_x_->setValue(100.0);
         if (spn_char_scale_y_) spn_char_scale_y_->setValue(100.0);
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(0.0);
-        if (cmb_language_) cmb_language_->setCurrentIndex(0);
         for (auto *b : {btn_all_caps_, btn_small_caps_, btn_superscript_, btn_subscript_, btn_underline_,
                         btn_strikethrough_, btn_ligatures_, btn_stylistic_alternates_, btn_fractions_, btn_opentype_features_})
             if (b) b->setChecked(false);
@@ -4239,6 +4312,13 @@ void PropertiesPanel::load_values()
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_first_line_, layer_->paragraph_indent_first_line_prop);
+    set_prop_kf_icon(btn_kf_font_size_, layer_->font_size_prop);
+    set_prop_kf_icon(btn_kf_char_scale_x_, layer_->char_scale_x_prop);
+    set_prop_kf_icon(btn_kf_char_scale_y_, layer_->char_scale_y_prop);
+    set_prop_kf_icon(btn_kf_char_tracking_, layer_->char_tracking_prop);
+    set_prop_kf_icon(btn_kf_baseline_shift_, layer_->baseline_shift_prop);
+    set_prop_kf_icon(btn_kf_paragraph_space_before_, layer_->paragraph_space_before_prop);
+    set_prop_kf_icon(btn_kf_paragraph_space_after_, layer_->paragraph_space_after_prop);
     set_group_kf_icon(btn_kf_width_, {&layer_->box_width, &layer_->box_height});
     set_group_kf_icon(btn_kf_text_color_, {&layer_->text_color_a, &layer_->text_color_r,
                                            &layer_->text_color_g, &layer_->text_color_b});
@@ -4284,7 +4364,7 @@ void PropertiesPanel::load_values()
     int fi = cmb_font_->findText(QString::fromStdString(layer_->font_family));
     if (fi >= 0) cmb_font_->setCurrentIndex(fi);
     populate_font_style_combo(cmb_font_style_, QString::fromStdString(layer_->font_family), QString::fromStdString(layer_->font_style));
-    spn_size_->setValue(layer_->font_size);
+    spn_size_->setValue((int)std::clamp(std::round(layer_->font_size_prop.is_animated() ? layer_->font_size_prop.evaluate(lt) : (double)layer_->font_size), 1.0, 512.0));
     chk_bold_->setChecked(layer_->font_bold);
     chk_italic_->setChecked(layer_->font_italic);
     if (chk_font_kerning_) chk_font_kerning_->setChecked(layer_->font_kerning);
@@ -4297,14 +4377,10 @@ void PropertiesPanel::load_values()
         spn_kerning_value_->setEnabled(layer_->kerning_mode == 2);
     }
     if (spn_text_leading_) spn_text_leading_->setValue(layer_->text_leading);
-    if (spn_char_tracking_) spn_char_tracking_->setValue(layer_->char_tracking);
-    if (spn_char_scale_x_) spn_char_scale_x_->setValue(layer_->char_scale_x * 100.0);
-    if (spn_char_scale_y_) spn_char_scale_y_->setValue(layer_->char_scale_y * 100.0);
-    if (spn_baseline_shift_) spn_baseline_shift_->setValue(layer_->baseline_shift);
-    if (cmb_language_) {
-        int li = cmb_language_->findText(QString::fromStdString(layer_->text_language));
-        cmb_language_->setCurrentIndex(li >= 0 ? li : 0);
-    }
+    if (spn_char_tracking_) spn_char_tracking_->setValue(layer_->char_tracking_prop.is_animated() ? layer_->char_tracking_prop.evaluate(lt) : (double)layer_->char_tracking);
+    if (spn_char_scale_x_) spn_char_scale_x_->setValue((layer_->char_scale_x_prop.is_animated() ? layer_->char_scale_x_prop.evaluate(lt) : (double)layer_->char_scale_x) * 100.0);
+    if (spn_char_scale_y_) spn_char_scale_y_->setValue((layer_->char_scale_y_prop.is_animated() ? layer_->char_scale_y_prop.evaluate(lt) : (double)layer_->char_scale_y) * 100.0);
+    if (spn_baseline_shift_) spn_baseline_shift_->setValue(layer_->baseline_shift_prop.is_animated() ? layer_->baseline_shift_prop.evaluate(lt) : (double)layer_->baseline_shift);
     if (btn_all_caps_) btn_all_caps_->setChecked(layer_->text_style == 1);
     if (btn_small_caps_) btn_small_caps_->setChecked(layer_->text_style == 2);
     if (btn_superscript_) btn_superscript_->setChecked(layer_->text_style == 3);
@@ -4338,10 +4414,6 @@ void PropertiesPanel::load_values()
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(fmt.baseline_shift);
         if (btn_underline_) btn_underline_->setChecked(fmt.underline);
         if (btn_strikethrough_) btn_strikethrough_->setChecked(fmt.strikethrough);
-        if (cmb_language_) {
-            int rich_language_i = cmb_language_->findText(QString::fromStdString(fmt.language));
-            cmb_language_->setCurrentIndex(rich_language_i >= 0 ? rich_language_i : 0);
-        }
         if (btn_all_caps_) btn_all_caps_->setChecked(fmt.text_style == 1);
         if (btn_small_caps_) btn_small_caps_->setChecked(fmt.text_style == 2);
         if (btn_superscript_) btn_superscript_->setChecked(fmt.text_style == 3);
@@ -4395,7 +4467,6 @@ void PropertiesPanel::load_values()
         set_spin_mixed(spn_baseline_shift_, summary.mixed & RichTextCharBaselineShift);
         set_button_mixed(btn_underline_, summary.mixed & RichTextCharUnderline);
         set_button_mixed(btn_strikethrough_, summary.mixed & RichTextCharStrikethrough);
-        set_combo_mixed(cmb_language_, summary.mixed & RichTextCharLanguage);
         set_button_mixed(btn_all_caps_, summary.mixed & RichTextCharTextStyle);
         set_button_mixed(btn_small_caps_, summary.mixed & RichTextCharTextStyle);
         set_button_mixed(btn_superscript_, summary.mixed & RichTextCharTextStyle);
@@ -4462,8 +4533,8 @@ void PropertiesPanel::load_values()
     if (spn_paragraph_indent_left_) spn_paragraph_indent_left_->setValue(eval_paragraph_indent_left(*layer_, lt));
     if (spn_paragraph_indent_right_) spn_paragraph_indent_right_->setValue(eval_paragraph_indent_right(*layer_, lt));
     if (spn_paragraph_indent_first_line_) spn_paragraph_indent_first_line_->setValue(eval_paragraph_indent_first_line(*layer_, lt));
-    if (spn_paragraph_space_before_) spn_paragraph_space_before_->setValue(layer_->paragraph_space_before);
-    if (spn_paragraph_space_after_) spn_paragraph_space_after_->setValue(layer_->paragraph_space_after);
+    if (spn_paragraph_space_before_) spn_paragraph_space_before_->setValue(layer_->paragraph_space_before_prop.is_animated() ? layer_->paragraph_space_before_prop.evaluate(lt) : (double)layer_->paragraph_space_before);
+    if (spn_paragraph_space_after_) spn_paragraph_space_after_->setValue(layer_->paragraph_space_after_prop.is_animated() ? layer_->paragraph_space_after_prop.evaluate(lt) : (double)layer_->paragraph_space_after);
     if (chk_paragraph_hyphenate_) chk_paragraph_hyphenate_->setChecked(layer_->paragraph_hyphenate);
 
     chk_shadow_enabled_->setChecked(eval_shadow_enabled(*layer_, lt));

@@ -25,6 +25,7 @@ static QString obsgs_effects_panel_style()
         "QToolButton{color:@buttonText@;background:@button@;border:1px solid @mid@;border-radius:2px;padding:2px;}"
         "QToolButton:hover{background:@hover@;border-color:@mid@;}"
         "QToolButton:pressed{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}"
+        "QToolButton:checked{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}"
         "QScrollArea{background:@window@;border:none;}"
         "QWidget#OBSGraphicsStudioProEffectsSettingsContainer{background:@window@;}"
         "QMenu{color:@windowText@;background:@window@;border:1px solid @mid@;}"
@@ -118,6 +119,9 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     btn_duplicate_ = add_button("duplicate.svg", QStringLiteral("Duplicate Effect"));
     btn_move_up_ = add_button("move-up.svg", QStringLiteral("Move Effect Up"));
     btn_move_down_ = add_button("move-down.svg", QStringLiteral("Move Effect Down"));
+    btn_respect_masks_ = add_button("timeline-mask.svg", QStringLiteral("Apply Effect Stack After Mask"));
+    btn_respect_masks_->setCheckable(true);
+    btn_respect_masks_->setToolTip(QStringLiteral("Toggle whether this layer's effect stack respects track mattes/masks. When enabled, effects are applied after the mask."));
     button_layout->addStretch(1);
     layout->addWidget(button_bar);
 
@@ -258,6 +262,12 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         emit_effect_changed();
     });
 
+    connect(btn_respect_masks_, &QToolButton::toggled, this, [this](bool checked) {
+        if (loading_values_ || !layer_) return;
+        layer_->effect_stack_respects_masks = checked;
+        emit_effect_changed();
+    });
+
     rebuild_stack();
 }
 
@@ -328,6 +338,11 @@ void EffectsPanel::rebuild_stack()
     if (btn_duplicate_) btn_duplicate_->setEnabled(has_selection);
     if (btn_move_up_) btn_move_up_->setEnabled(has_selection && selected_index_ > 0);
     if (btn_move_down_) btn_move_down_->setEnabled(has_selection && layer_ && selected_index_ + 1 < (int)layer_->effects.size());
+    if (btn_respect_masks_) {
+        QSignalBlocker blocker(btn_respect_masks_);
+        btn_respect_masks_->setEnabled(layer_ != nullptr);
+        btn_respect_masks_->setChecked(layer_ && layer_->effect_stack_respects_masks);
+    }
 
     load_settings();
 }

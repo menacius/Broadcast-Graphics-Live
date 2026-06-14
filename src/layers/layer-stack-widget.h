@@ -67,6 +67,7 @@ signals:
     void layer_expand_changed(const std::string &layer_id, bool expanded);
     void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
     void layer_mask_changed(const std::string &layer_id, const std::string &mask_source_id, MaskMode mask_mode);
+    void layer_blend_mode_changed(const std::string &layer_id, EffectBlendMode blend_mode);
     void layer_name_changed(const std::string &layer_id, const std::string &name);
     void layer_order_changed();
     void add_layer_requested(LayerType type);

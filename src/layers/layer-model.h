@@ -65,7 +65,9 @@ struct Layer {
     std::string parent_id;
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;
+    EffectBlendMode blend_mode = EffectBlendMode::Normal; /* AE-style layer mode */
     bool        use_as_scene_mask = false;
+    bool        effect_stack_respects_masks = false; /* When true, stackable effects are applied after the layer track matte/mask. */
     std::vector<LayerEffect> effects;
 
     /* Timeline in/out (seconds) within parent title clip */
@@ -94,6 +96,7 @@ struct Layer {
     std::string font_family   = "Helvetica Neue";
     std::string font_style    = "Regular";
     int         font_size     = 72;
+    AnimatedProperty font_size_prop { "font_size", 72.0 };
     bool        font_bold     = false;
     bool        font_italic   = false;
     bool        font_kerning  = true;
@@ -101,9 +104,13 @@ struct Layer {
     float       manual_kerning = 0.0f;
     float       text_leading  = 0.0f;
     float       char_tracking = 0.0f;
+    AnimatedProperty char_tracking_prop { "char_tracking", 0.0 };
     float       char_scale_x  = 1.0f;
+    AnimatedProperty char_scale_x_prop { "char_scale_x", 1.0 };
     float       char_scale_y  = 1.0f;
+    AnimatedProperty char_scale_y_prop { "char_scale_y", 1.0 };
     float       baseline_shift = 0.0f;
+    AnimatedProperty baseline_shift_prop { "baseline_shift", 0.0 };
     int         text_style    = 0;  /* 0=normal, 1=all caps, 2=small caps, 3=superscript, 4=subscript */
     bool        text_underline = false;
     bool        text_strikethrough = false;
@@ -164,7 +171,9 @@ struct Layer {
     AnimatedProperty paragraph_indent_right_prop { "paragraph_indent_right", 0.0 };
     AnimatedProperty paragraph_indent_first_line_prop { "paragraph_indent_first_line", 0.0 };
     float       paragraph_space_before = 0.0f;
+    AnimatedProperty paragraph_space_before_prop { "paragraph_space_before", 0.0 };
     float       paragraph_space_after = 0.0f;
+    AnimatedProperty paragraph_space_after_prop { "paragraph_space_after", 0.0 };
     bool        paragraph_hyphenate = false;
 
     /* ----- Solid / shape ----- */

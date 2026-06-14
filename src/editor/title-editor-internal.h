@@ -1403,9 +1403,16 @@ static RichTextDocument rich_text_document_from_qtext_document(const QTextDocume
     if (!text_cursor.isNull()) {
         model.selection.anchor = (size_t)std::max(0, text_cursor.anchor());
         model.selection.head = (size_t)std::max(0, text_cursor.position());
+        if (!text_cursor.hasSelection()) {
+            model.typing_format = rich_text_format_from_qtext_format(text_cursor.charFormat(), model.default_format, visual_scale);
+            model.has_typing_format = true;
+        } else {
+            model.has_typing_format = false;
+        }
     } else {
         model.selection.anchor = 0;
         model.selection.head = 0;
+        model.has_typing_format = false;
     }
     model.normalize();
     return model;
@@ -1501,6 +1508,17 @@ static RichTextCharFormat format_at_offset(const RichTextDocument &doc, size_t o
     return f;
 }
 
+static RichTextCharFormat rich_text_cursor_format(const RichTextDocument &doc)
+{
+    if (doc.has_typing_format)
+        return doc.typing_format;
+    if (doc.plain_text.empty())
+        return doc.default_format;
+    const size_t pos = std::min(doc.selection.head, doc.plain_text.size());
+    const size_t sample = pos < doc.plain_text.size() ? pos : (pos > 0 ? pos - 1 : 0);
+    return format_at_offset(doc, sample);
+}
+
 static RichTextCharFormat insertion_format_for_text_replace(const RichTextDocument &doc)
 {
     if (doc.plain_text.empty())
@@ -1532,12 +1550,12 @@ static RichTextCharFormatSummary summarize_rich_text_char_format(const Layer &la
     start = std::min(doc.selection.anchor, doc.selection.head);
     end = std::max(doc.selection.anchor, doc.selection.head);
     if (start == end) {
-        summary.format = doc.default_format;
+        summary.format = rich_text_cursor_format(doc);
         summary.valid = true;
         return summary;
     }
     if (text_len == 0) {
-        summary.format = doc.default_format;
+        summary.format = doc.has_typing_format ? doc.typing_format : doc.default_format;
         summary.valid = true;
         return summary;
     }
@@ -1623,10 +1641,19 @@ static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCh
     size_t end = active_selection ? std::max(doc.selection.anchor, doc.selection.head) : 0;
     start = std::min(start, text_len);
     end = std::min(end, text_len);
-    if (!active_selection || start == end) {
-        if (active_selection)
-            materialize_rich_text_default_spans(doc);
+    if (!active_selection) {
         merge_format_bits(doc.default_format, format, mask);
+        doc.has_typing_format = false;
+        doc.normalize();
+        layer.rich_text_html.clear();
+        rich_text_document_sync_layer_mirrors(layer);
+        return;
+    }
+    if (start == end) {
+        RichTextCharFormat cursor_format = rich_text_cursor_format(doc);
+        merge_format_bits(cursor_format, format, mask);
+        doc.typing_format = cursor_format;
+        doc.has_typing_format = true;
         doc.normalize();
         layer.rich_text_html.clear();
         rich_text_document_sync_layer_mirrors(layer);
@@ -1665,6 +1692,7 @@ static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCh
         append_range(cursor, end - cursor, changed);
     }
     doc.ranges = std::move(next);
+    doc.has_typing_format = false;
     doc.normalize();
     layer.rich_text_html.clear();
     rich_text_document_sync_layer_mirrors(layer);
@@ -2453,31 +2481,39 @@ static void apply_text_style_to_font(QFont &font, const Layer &layer)
         font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
 }
 
-static QFont font_for_layer(const Layer &layer)
+static double eval_text_font_size(const Layer &layer, double t);
+static double eval_char_tracking(const Layer &layer, double t);
+static double eval_char_scale_x(const Layer &layer, double t);
+static double eval_char_scale_y(const Layer &layer, double t);
+static double eval_baseline_shift(const Layer &layer, double t);
+static double eval_paragraph_space_before(const Layer &layer, double t);
+static double eval_paragraph_space_after(const Layer &layer, double t);
+
+static QFont font_for_layer(const Layer &layer, double t = 0.0)
 {
     const QString family = QString::fromStdString(layer.font_family);
     const QString style = QString::fromStdString(layer.font_style);
     QFontDatabase fdb;
     QFont font = !style.isEmpty()
-        ? fdb.font(family, style, layer.font_size)
+        ? fdb.font(family, style, (int)std::round(eval_text_font_size(layer, t)))
         : QFont(family);
     font.setFamily(family);
-    font.setPixelSize(layer.font_size);
+    font.setPixelSize((int)std::round(eval_text_font_size(layer, t)));
     if (!style.isEmpty())
         font.setStyleName(style);
     font.setBold(layer.font_bold);
     font.setItalic(layer.font_italic);
     font.setKerning(layer.font_kerning);
-    font.setLetterSpacing(QFont::AbsoluteSpacing, layer.char_tracking);
-    font.setStretch(std::clamp((int)std::round(layer.char_scale_x * 100.0f), 1, 4000));
+    font.setLetterSpacing(QFont::AbsoluteSpacing, eval_char_tracking(layer, t));
+    font.setStretch(std::clamp((int)std::round(eval_char_scale_x(layer, t) * 100.0), 1, 4000));
     apply_text_style_to_font(font, layer);
     return font;
 }
 
 static QPainterPath apply_vertical_character_scale(const QPainterPath &path, const QRectF &rect,
-                                                   Qt::Alignment alignment, const Layer &layer)
+                                                   Qt::Alignment alignment, const Layer &layer, double t = 0.0)
 {
-    double scale_y = std::clamp((double)layer.char_scale_y, 0.1, 5.0);
+    double scale_y = std::clamp(eval_char_scale_y(layer, t), 0.1, 5.0);
     if (std::abs(scale_y - 1.0) < 0.0001)
         return path;
 
@@ -2515,6 +2551,62 @@ static QString overflow_layout_text(const QString &text, const Layer &layer)
         return single;
     }
     return text;
+}
+
+static double eval_text_font_size(const Layer &layer, double t)
+{
+    return std::clamp(layer.font_size_prop.is_animated()
+                          ? layer.font_size_prop.evaluate(t)
+                          : (double)layer.font_size,
+                      1.0, 512.0);
+}
+
+static double eval_char_tracking(const Layer &layer, double t)
+{
+    return std::clamp(layer.char_tracking_prop.is_animated()
+                          ? layer.char_tracking_prop.evaluate(t)
+                          : (double)layer.char_tracking,
+                      -1000.0, 1000.0);
+}
+
+static double eval_char_scale_x(const Layer &layer, double t)
+{
+    return std::clamp(layer.char_scale_x_prop.is_animated()
+                          ? layer.char_scale_x_prop.evaluate(t)
+                          : (double)layer.char_scale_x,
+                      0.01, 100.0);
+}
+
+static double eval_char_scale_y(const Layer &layer, double t)
+{
+    return std::clamp(layer.char_scale_y_prop.is_animated()
+                          ? layer.char_scale_y_prop.evaluate(t)
+                          : (double)layer.char_scale_y,
+                      0.01, 100.0);
+}
+
+static double eval_baseline_shift(const Layer &layer, double t)
+{
+    return std::clamp(layer.baseline_shift_prop.is_animated()
+                          ? layer.baseline_shift_prop.evaluate(t)
+                          : (double)layer.baseline_shift,
+                      -1000.0, 1000.0);
+}
+
+static double eval_paragraph_space_before(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_space_before_prop.is_animated()
+                          ? layer.paragraph_space_before_prop.evaluate(t)
+                          : (double)layer.paragraph_space_before,
+                      -10000.0, 10000.0);
+}
+
+static double eval_paragraph_space_after(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_space_after_prop.is_animated()
+                          ? layer.paragraph_space_after_prop.evaluate(t)
+                          : (double)layer.paragraph_space_after,
+                      -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_left(const Layer &layer, double t)
@@ -2563,8 +2655,8 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
     const double indent_left = eval_paragraph_indent_left(layer, t);
     const double indent_right = eval_paragraph_indent_right(layer, t);
     const double first_indent = eval_paragraph_indent_first_line(layer, t);
-    const double space_before = std::clamp((double)layer.paragraph_space_before, -10000.0, 10000.0);
-    const double space_after = std::clamp((double)layer.paragraph_space_after, -10000.0, 10000.0);
+    const double space_before = eval_paragraph_space_before(layer, t);
+    const double space_after = eval_paragraph_space_after(layer, t);
     const double paragraph_left = rect.left() + indent_left;
     const double paragraph_right = rect.right() - indent_right;
     const double paragraph_width = std::max(1.0, paragraph_right - paragraph_left);
@@ -2778,7 +2870,7 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
 static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRectF &local_rect, double local_time)
 {
     if (layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker) {
-        QFont font = font_for_layer(layer);
+        QFont font = font_for_layer(layer, local_time);
         QRectF text_rect = text_rect_for_style(local_rect, layer);
         Qt::Alignment align = Qt::AlignLeft;
         if (layer.align_h == 1 || layer.align_h == 4) align = Qt::AlignHCenter;
@@ -2797,9 +2889,9 @@ static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRect
         QPainterPath text_path = layer.type == LayerType::Ticker
             ? ticker_text_path(font, text_rect, align, text, layer)
             : text_overflow_path(font, text_rect, align, text, layer, local_time);
-        text_path = apply_vertical_character_scale(text_path, text_rect, align, layer);
-        if (std::abs(layer.baseline_shift) > 0.0001)
-            text_path.translate(0.0, -layer.baseline_shift);
+        text_path = apply_vertical_character_scale(text_path, text_rect, align, layer, local_time);
+        if (std::abs(eval_baseline_shift(layer, local_time)) > 0.0001)
+            text_path.translate(0.0, -eval_baseline_shift(layer, local_time));
         if (!text_path.isEmpty())
             return text_path;
     }
@@ -3592,6 +3684,9 @@ static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
             &layer.origin_x_prop,
             &layer.paragraph_indent_left_prop, &layer.paragraph_indent_right_prop,
             &layer.paragraph_indent_first_line_prop,
+            &layer.font_size_prop, &layer.char_scale_x_prop, &layer.char_scale_y_prop,
+            &layer.char_tracking_prop, &layer.baseline_shift_prop,
+            &layer.paragraph_space_before_prop, &layer.paragraph_space_after_prop,
             &layer.text_color_a, &layer.text_color_r,
             &layer.text_color_g, &layer.text_color_b,
             &layer.fill_color_a, &layer.fill_color_r,
@@ -3617,6 +3712,13 @@ static QString property_label(const std::string &name)
     if (name == "paragraph_indent_left") return obsgs_tr("OBSTitles.ParagraphIndentLeft");
     if (name == "paragraph_indent_right") return obsgs_tr("OBSTitles.ParagraphIndentRight");
     if (name == "paragraph_indent_first_line") return obsgs_tr("OBSTitles.ParagraphIndentFirstLine");
+    if (name == "font_size") return QStringLiteral("Size");
+    if (name == "char_scale_x") return QStringLiteral("H Scale");
+    if (name == "char_scale_y") return QStringLiteral("V Scale");
+    if (name == "char_tracking") return obsgs_tr("OBSTitles.Tracking");
+    if (name == "baseline_shift") return QStringLiteral("Baseline");
+    if (name == "paragraph_space_before") return obsgs_tr("OBSTitles.ParagraphSpaceBefore");
+    if (name == "paragraph_space_after") return obsgs_tr("OBSTitles.ParagraphSpaceAfter");
     if (name == "text_color_a" || name == "text_color_r" ||
         name == "text_color_g" || name == "text_color_b") return obsgs_tr("OBSTitles.TextColor");
     if (name == "fill_color_a" || name == "fill_color_r" ||
@@ -3656,6 +3758,7 @@ static QString property_value_text(const AnimatedProperty &prop, const Layer &la
     if (prop.name == "origin_x")
         return QString("%1,%2").arg(layer.origin_x_prop.static_value, 0, 'f', 2)
                                 .arg(layer.origin_y_prop.static_value, 0, 'f', 2);
+    if (prop.name == "char_scale_x" || prop.name == "char_scale_y") value *= 100.0;
     if (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") value *= 100.0;
     if (prop.name == "shadow_enabled" || prop.name == "background_enabled") return value >= 0.5 ? obsgs_tr("OBSTitles.On") : obsgs_tr("OBSTitles.Off");
     return QString::number(value, 'f', (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") ? 1 : 2);

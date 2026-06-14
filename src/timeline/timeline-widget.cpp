@@ -413,6 +413,36 @@ void TimelineWidget::begin_keyframe_drag(const std::string &layer_id, const std:
     }
 }
 
+
+static QString timeline_blend_mode_short(EffectBlendMode mode)
+{
+    switch (mode) {
+    case EffectBlendMode::Multiply: return QStringLiteral("Mul");
+    case EffectBlendMode::Additive: return QStringLiteral("Add");
+    case EffectBlendMode::Screen: return QStringLiteral("Scr");
+    case EffectBlendMode::Overlay: return QStringLiteral("Ovr");
+    case EffectBlendMode::Color: return QStringLiteral("Clr");
+    case EffectBlendMode::Normal:
+    default: return QStringLiteral("Nor");
+    }
+}
+
+static QString timeline_layer_switches_text(const Title &title, const Layer &layer)
+{
+    QStringList tags;
+    if (layer.mask_mode != MaskMode::None && !layer.mask_source_id.empty())
+        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? QStringLiteral("TrkMat -α") : QStringLiteral("TrkMat α"));
+    if (!layer.parent_id.empty()) {
+        QString parent_name = QStringLiteral("Parent");
+        if (auto parent = title.find_layer(layer.parent_id))
+            parent_name = QString::fromStdString(parent->name);
+        tags << QStringLiteral("Parent: %1").arg(parent_name);
+    }
+    if (layer.blend_mode != EffectBlendMode::Normal)
+        tags << QStringLiteral("Mode: %1").arg(timeline_blend_mode_short(layer.blend_mode));
+    return tags.join(QStringLiteral("  ·  "));
+}
+
 void TimelineWidget::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -450,9 +480,12 @@ void TimelineWidget::paintEvent(QPaintEvent *)
     /* Background */
     p.fillRect(0, 0, W, H, window);
 
-    /* Ruler */
+    /* Compact ruler/header.  Keep this height matched with LayerStack's
+     * column header so the first layer row starts at the same Y position
+     * in both panes. */
     p.fillRect(0, 0, W, rh, ruler_bg);
     p.setPen(border);
+    p.drawLine(0, rh - 1, W, rh - 1);
 
     double dur = title_ ? title_->duration : 10.0;
     double fps = obs_frame_rate();
@@ -558,8 +591,12 @@ void TimelineWidget::paintEvent(QPaintEvent *)
             }
 
             p.setPen(layer->visible ? text : disabled_text);
+            const QString switches = title_ ? timeline_layer_switches_text(*title_, *layer) : QString();
+            const QString layer_label = switches.isEmpty()
+                ? QString::fromStdString(layer->name)
+                : QStringLiteral("%1    [%2]").arg(QString::fromStdString(layer->name), switches);
             p.drawText(std::max(strip_rect.left(), 0) + 6, y, std::max(1, strip_rect.width() - 12), rowh,
-                       Qt::AlignVCenter, QString::fromStdString(layer->name));
+                       Qt::AlignVCenter, layer_label);
         } else {
             p.fillRect(x0, y + rowh / 2 - 1, x1 - x0, 2, border);
             p.setPen(disabled_text.isValid() ? disabled_text : with_alpha(text, 150));

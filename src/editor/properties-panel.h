@@ -95,7 +95,6 @@ private:
     QDoubleSpinBox  *spn_char_scale_x_ = nullptr;
     QDoubleSpinBox  *spn_char_scale_y_ = nullptr;
     QDoubleSpinBox  *spn_baseline_shift_ = nullptr;
-    QComboBox       *cmb_language_ = nullptr;
     QComboBox       *cmb_text_style_ = nullptr;
     QWidget         *row_text_color_ = nullptr;
     QToolButton     *btn_all_caps_ = nullptr;
@@ -279,6 +278,13 @@ private:
     QPushButton     *btn_kf_paragraph_indent_left_ = nullptr;
     QPushButton     *btn_kf_paragraph_indent_right_ = nullptr;
     QPushButton     *btn_kf_paragraph_indent_first_line_ = nullptr;
+    QPushButton     *btn_kf_font_size_ = nullptr;
+    QPushButton     *btn_kf_char_scale_x_ = nullptr;
+    QPushButton     *btn_kf_char_scale_y_ = nullptr;
+    QPushButton     *btn_kf_char_tracking_ = nullptr;
+    QPushButton     *btn_kf_baseline_shift_ = nullptr;
+    QPushButton     *btn_kf_paragraph_space_before_ = nullptr;
+    QPushButton     *btn_kf_paragraph_space_after_ = nullptr;
     QPushButton     *btn_kf_width_ = nullptr;
     QPushButton     *btn_kf_text_color_ = nullptr;
     QPushButton     *btn_kf_fill_color_ = nullptr;

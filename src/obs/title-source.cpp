@@ -329,6 +329,13 @@ static bool layer_has_animation(const Layer &layer)
            layer.paragraph_indent_left_prop.is_animated() ||
            layer.paragraph_indent_right_prop.is_animated() ||
            layer.paragraph_indent_first_line_prop.is_animated() ||
+           layer.font_size_prop.is_animated() ||
+           layer.char_scale_x_prop.is_animated() ||
+           layer.char_scale_y_prop.is_animated() ||
+           layer.char_tracking_prop.is_animated() ||
+           layer.baseline_shift_prop.is_animated() ||
+           layer.paragraph_space_before_prop.is_animated() ||
+           layer.paragraph_space_after_prop.is_animated() ||
            layer.shadow_enabled_prop.is_animated() ||
            layer.shadow_opacity_prop.is_animated() ||
            layer.shadow_distance_prop.is_animated() ||
@@ -383,6 +390,13 @@ static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_ti
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_left_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_right_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_first_line_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.font_size_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.char_scale_x_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.char_scale_y_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.char_tracking_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.baseline_shift_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.paragraph_space_before_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.paragraph_space_after_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.shadow_enabled_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.shadow_opacity_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.shadow_distance_prop, first_time, last_time);
@@ -652,7 +666,15 @@ static void unpack_color(uint32_t c,
 }
 
 
-static QFont font_for_layer(const Layer &layer);
+static double eval_text_font_size(const Layer &layer, double t);
+static double eval_char_tracking(const Layer &layer, double t);
+static double eval_char_scale_x(const Layer &layer, double t);
+static double eval_char_scale_y(const Layer &layer, double t);
+static double eval_baseline_shift(const Layer &layer, double t);
+static double eval_paragraph_space_before(const Layer &layer, double t);
+static double eval_paragraph_space_after(const Layer &layer, double t);
+
+static QFont font_for_layer(const Layer &layer, double t = 0.0);
 static QString display_text_for_style(const Layer &layer);
 static QString overflow_layout_text(const QString &text, const Layer &layer);
 
@@ -757,6 +779,29 @@ static bool layer_chain_visible(const Title &title, const Layer &layer, double t
         return true;
     const Layer *parent = find_layer_by_id(title, layer.parent_id);
     return parent ? layer_chain_visible(title, *parent, title_time, depth + 1) : true;
+}
+
+static bool layer_is_track_matte_source(const Title &title, const Layer &layer)
+{
+    if (layer.id.empty())
+        return false;
+    for (const auto &candidate : title.layers) {
+        if (!candidate || candidate.get() == &layer)
+            continue;
+        if (candidate->mask_mode != MaskMode::None && candidate->mask_source_id == layer.id)
+            return true;
+    }
+    return false;
+}
+
+static bool layer_should_render_as_visible_content(const Title &title, const Layer &layer)
+{
+    /*
+     * After Effects-style track mattes: a layer selected as another layer's
+     * mask is not composited as normal visible artwork, but it is still
+     * rendered into the matte surface by render_layer_with_mask().
+     */
+    return !layer.use_as_scene_mask && !layer_is_track_matte_source(title, layer);
 }
 
 static void apply_layer_world_transform(cairo_t *cr, const Title &title, const Layer &layer,
@@ -1706,16 +1751,16 @@ static void apply_text_style_to_font(QFont &font, const Layer &layer)
         font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * 0.65)));
 }
 
-static QFont font_for_layer(const Layer &layer)
+static QFont font_for_layer(const Layer &layer, double t)
 {
     const QString family = QString::fromStdString(layer.font_family);
     const QString style = QString::fromStdString(layer.font_style);
     QFontDatabase fdb;
     QFont font = !style.isEmpty()
-        ? fdb.font(family, style, layer.font_size)
+        ? fdb.font(family, style, (int)std::round(eval_text_font_size(layer, t)))
         : QFont(family);
     font.setFamily(family);
-    font.setPixelSize(layer.font_size);
+    font.setPixelSize((int)std::round(eval_text_font_size(layer, t)));
     if (!style.isEmpty())
         font.setStyleName(style);
     font.setBold(layer.font_bold);
@@ -1723,17 +1768,17 @@ static QFont font_for_layer(const Layer &layer)
     font.setUnderline(layer.text_underline);
     font.setStrikeOut(layer.text_strikethrough);
     font.setKerning(layer.kerning_mode != 2 && layer.font_kerning);
-    const float effective_tracking = layer.char_tracking + (layer.kerning_mode == 2 ? layer.manual_kerning : 0.0f);
+    const float effective_tracking = (float)eval_char_tracking(layer, t) + (layer.kerning_mode == 2 ? layer.manual_kerning : 0.0f);
     font.setLetterSpacing(QFont::AbsoluteSpacing, effective_tracking);
-    font.setStretch(std::clamp((int)std::round(layer.char_scale_x * 100.0f), 1, 4000));
+    font.setStretch(std::clamp((int)std::round(eval_char_scale_x(layer, t) * 100.0), 1, 4000));
     apply_text_style_to_font(font, layer);
     return font;
 }
 
 static QPainterPath apply_vertical_character_scale(const QPainterPath &path, const QRectF &rect,
-                                                   Qt::Alignment alignment, const Layer &layer)
+                                                   Qt::Alignment alignment, const Layer &layer, double t = 0.0)
 {
-    double scale_y = std::clamp((double)layer.char_scale_y, 0.1, 5.0);
+    double scale_y = std::clamp(eval_char_scale_y(layer, t), 0.1, 5.0);
     if (std::abs(scale_y - 1.0) < 0.0001)
         return path;
 
@@ -1771,6 +1816,62 @@ static QString overflow_layout_text(const QString &text, const Layer &layer)
         return single;
     }
     return text;
+}
+
+static double eval_text_font_size(const Layer &layer, double t)
+{
+    return std::clamp(layer.font_size_prop.is_animated()
+                          ? layer.font_size_prop.evaluate(t)
+                          : (double)layer.font_size,
+                      1.0, 512.0);
+}
+
+static double eval_char_tracking(const Layer &layer, double t)
+{
+    return std::clamp(layer.char_tracking_prop.is_animated()
+                          ? layer.char_tracking_prop.evaluate(t)
+                          : (double)layer.char_tracking,
+                      -1000.0, 1000.0);
+}
+
+static double eval_char_scale_x(const Layer &layer, double t)
+{
+    return std::clamp(layer.char_scale_x_prop.is_animated()
+                          ? layer.char_scale_x_prop.evaluate(t)
+                          : (double)layer.char_scale_x,
+                      0.01, 100.0);
+}
+
+static double eval_char_scale_y(const Layer &layer, double t)
+{
+    return std::clamp(layer.char_scale_y_prop.is_animated()
+                          ? layer.char_scale_y_prop.evaluate(t)
+                          : (double)layer.char_scale_y,
+                      0.01, 100.0);
+}
+
+static double eval_baseline_shift(const Layer &layer, double t)
+{
+    return std::clamp(layer.baseline_shift_prop.is_animated()
+                          ? layer.baseline_shift_prop.evaluate(t)
+                          : (double)layer.baseline_shift,
+                      -1000.0, 1000.0);
+}
+
+static double eval_paragraph_space_before(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_space_before_prop.is_animated()
+                          ? layer.paragraph_space_before_prop.evaluate(t)
+                          : (double)layer.paragraph_space_before,
+                      -10000.0, 10000.0);
+}
+
+static double eval_paragraph_space_after(const Layer &layer, double t)
+{
+    return std::clamp(layer.paragraph_space_after_prop.is_animated()
+                          ? layer.paragraph_space_after_prop.evaluate(t)
+                          : (double)layer.paragraph_space_after,
+                      -10000.0, 10000.0);
 }
 
 static double eval_paragraph_indent_left(const Layer &layer, double t)
@@ -1819,8 +1920,8 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
     const double indent_left = eval_paragraph_indent_left(layer, t);
     const double indent_right = eval_paragraph_indent_right(layer, t);
     const double first_indent = eval_paragraph_indent_first_line(layer, t);
-    const double space_before = std::clamp((double)layer.paragraph_space_before, -10000.0, 10000.0);
-    const double space_after = std::clamp((double)layer.paragraph_space_after, -10000.0, 10000.0);
+    const double space_before = eval_paragraph_space_before(layer, t);
+    const double space_after = eval_paragraph_space_after(layer, t);
     const double paragraph_left = rect.left() + indent_left;
     const double paragraph_right = rect.right() - indent_right;
     const double paragraph_width = std::max(1.0, paragraph_right - paragraph_left);
@@ -2283,8 +2384,8 @@ static void draw_rich_text_document(QPainter &painter, const Layer &layer, const
         origin.setY(text_rect.top() + (text_rect.height() - doc_size.height()) / 2.0);
     else if (layer.align_v == 2)
         origin.setY(text_rect.bottom() - doc_size.height());
-    if (std::abs(layer.baseline_shift) > 0.0001)
-        origin.setY(origin.y() - layer.baseline_shift);
+    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
+        origin.setY(origin.y() - eval_baseline_shift(layer, t));
     if (layer.text_overflow_mode == 2 && doc_size.width() > text_rect.width()) {
         const double scale = std::clamp(text_rect.width() / std::max(1.0, doc_size.width()),
                                         std::clamp((double)layer.text_fit_min_scale, 0.05, 1.0), 1.0);
@@ -2331,7 +2432,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
 
-    QFont font = font_for_layer(layer);
+    QFont font = font_for_layer(layer, t);
     painter.setFont(font);
 
     QRectF base_rect(pad, pad, box_w, box_h);
@@ -2364,9 +2465,9 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         text_path = layer.type == LayerType::Ticker
             ? ticker_text_path(font, text_rect, align, text, layer)
             : text_overflow_path(font, text_rect, align, text, layer, t);
-        text_path = apply_vertical_character_scale(text_path, text_rect, align, layer);
-        if (std::abs(layer.baseline_shift) > 0.0001)
-            text_path.translate(0.0, -layer.baseline_shift);
+        text_path = apply_vertical_character_scale(text_path, text_rect, align, layer, t);
+        if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
+            text_path.translate(0.0, -eval_baseline_shift(layer, t));
     }
 
     if (render_shadow) {
@@ -3201,6 +3302,13 @@ static bool layer_has_non_transform_animation(const Layer &layer)
            layer.paragraph_indent_left_prop.is_animated() ||
            layer.paragraph_indent_right_prop.is_animated() ||
            layer.paragraph_indent_first_line_prop.is_animated() ||
+           layer.font_size_prop.is_animated() ||
+           layer.char_scale_x_prop.is_animated() ||
+           layer.char_scale_y_prop.is_animated() ||
+           layer.char_tracking_prop.is_animated() ||
+           layer.baseline_shift_prop.is_animated() ||
+           layer.paragraph_space_before_prop.is_animated() ||
+           layer.paragraph_space_after_prop.is_animated() ||
            layer.shadow_enabled_prop.is_animated() ||
            layer.shadow_opacity_prop.is_animated() ||
            layer.shadow_distance_prop.is_animated() ||
@@ -3523,6 +3631,36 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
     cairo_paint(cr);
 }
 
+
+static cairo_operator_t cairo_operator_for_layer_blend_mode(EffectBlendMode mode)
+{
+#if defined(CAIRO_VERSION) && CAIRO_VERSION >= CAIRO_VERSION_ENCODE(1, 10, 0)
+    switch (mode) {
+    case EffectBlendMode::Multiply: return CAIRO_OPERATOR_MULTIPLY;
+    case EffectBlendMode::Additive: return CAIRO_OPERATOR_ADD;
+    case EffectBlendMode::Screen: return CAIRO_OPERATOR_SCREEN;
+    case EffectBlendMode::Overlay: return CAIRO_OPERATOR_OVERLAY;
+    case EffectBlendMode::Color: return CAIRO_OPERATOR_HSL_COLOR;
+    case EffectBlendMode::Normal:
+    default: return CAIRO_OPERATOR_OVER;
+    }
+#else
+    (void)mode;
+    return CAIRO_OPERATOR_OVER;
+#endif
+}
+
+static void composite_layer_surface_with_mode(cairo_t *cr, cairo_surface_t *surface, EffectBlendMode mode)
+{
+    if (!cr || !surface)
+        return;
+    cairo_save(cr);
+    cairo_set_operator(cr, cairo_operator_for_layer_blend_mode(mode));
+    cairo_set_source_surface(cr, surface, 0, 0);
+    cairo_paint(cr);
+    cairo_restore(cr);
+}
+
 static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                    double title_time, int canvas_w, int canvas_h)
 {
@@ -3556,12 +3694,30 @@ static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Tit
     cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_CLEAR);
     cairo_paint(mask_cr.get());
     cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_OVER);
-    render_layer_unmasked_with_stackable_effects(layer_cr.get(), data, title, layer, title_time, canvas_w, canvas_h);
+    const bool effects_after_mask = layer.effect_stack_respects_masks && layer_has_stackable_pixel_effects(layer);
+    if (effects_after_mask) {
+        Layer base_layer = layer_without_stackable_pixel_effects(layer);
+        render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
+    } else {
+        render_layer_unmasked_with_stackable_effects(layer_cr.get(), data, title, layer, title_time, canvas_w, canvas_h);
+    }
     render_layer_unmasked(mask_cr.get(), title, *mask, title_time, canvas_w, canvas_h);
     layer_cr.reset();
     mask_cr.reset();
 
-    if (layer.mask_mode == MaskMode::Alpha) {
+    if (effects_after_mask) {
+        auto tmp_cr = make_cairo_context(layer_surface.get());
+        if (!tmp_cr) return;
+        cairo_set_operator(tmp_cr.get(), layer.mask_mode == MaskMode::Alpha ? CAIRO_OPERATOR_DEST_IN : CAIRO_OPERATOR_DEST_OUT);
+        cairo_set_source_rgba(tmp_cr.get(), 0, 0, 0, 1);
+        cairo_mask_surface(tmp_cr.get(), mask_surface.get(), 0, 0);
+        tmp_cr.reset();
+
+        const double lt = std::max(0.0, title_time - layer.in_time);
+        apply_stackable_pixel_effects_to_surface(layer_surface.get(), layer, lt);
+        cairo_set_source_surface(cr, layer_surface.get(), 0, 0);
+        cairo_paint(cr);
+    } else if (layer.mask_mode == MaskMode::Alpha) {
         cairo_set_source_surface(cr, layer_surface.get(), 0, 0);
         cairo_mask_surface(cr, mask_surface.get(), 0, 0);
     } else {
@@ -3653,8 +3809,24 @@ static void render_title_frame(TitleSourceData *data,
         }
 
         if (!layer_chain_visible(title, *layer, layer_time)) continue;
+        if (!layer_should_render_as_visible_content(title, *layer)) continue;
 
-        render_layer_with_mask(cr.get(), data, title, *layer, layer_time, (int)w, (int)h);
+        if (layer->blend_mode == EffectBlendMode::Normal) {
+            render_layer_with_mask(cr.get(), data, title, *layer, layer_time, (int)w, (int)h);
+        } else {
+            CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, (int)w, (int)h));
+            auto layer_cr = make_cairo_context(layer_surface.get());
+            if (layer_surface && cairo_surface_status(layer_surface.get()) == CAIRO_STATUS_SUCCESS && layer_cr) {
+                cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
+                cairo_paint(layer_cr.get());
+                cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+                render_layer_with_mask(layer_cr.get(), data, title, *layer, layer_time, (int)w, (int)h);
+                layer_cr.reset();
+                composite_layer_surface_with_mode(cr.get(), layer_surface.get(), layer->blend_mode);
+            } else {
+                render_layer_with_mask(cr.get(), data, title, *layer, layer_time, (int)w, (int)h);
+            }
+        }
     }
 
     cr.reset();
@@ -3711,8 +3883,24 @@ QImage render_title_to_image(const Title &title, double t)
     const double clamped_time = std::clamp(t, 0.0, std::max(0.0, title.duration));
     for (auto &layer : title.layers) {
         if (!layer || !layer_chain_visible(title, *layer, clamped_time)) continue;
+        if (!layer_should_render_as_visible_content(title, *layer)) continue;
 
-        render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
+        if (layer->blend_mode == EffectBlendMode::Normal) {
+            render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
+        } else {
+            CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h));
+            auto layer_cr = make_cairo_context(layer_surface.get());
+            if (layer_surface && cairo_surface_status(layer_surface.get()) == CAIRO_STATUS_SUCCESS && layer_cr) {
+                cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
+                cairo_paint(layer_cr.get());
+                cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+                render_layer_with_mask(layer_cr.get(), nullptr, title, *layer, clamped_time, w, h);
+                layer_cr.reset();
+                composite_layer_surface_with_mode(cr.get(), layer_surface.get(), layer->blend_mode);
+            } else {
+                render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
+            }
+        }
     }
 
     cr.reset();

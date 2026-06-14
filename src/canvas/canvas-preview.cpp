@@ -148,6 +148,15 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
     cursor.mergeCharFormat(qfmt);
     inline_text_editor_->mergeCurrentCharFormat(qfmt);
     inline_text_editor_->setTextCursor(cursor);
+    if (layer) {
+        layer->rich_text.selection = {(size_t)std::max(0, cursor.anchor()), (size_t)std::max(0, cursor.position())};
+        if (!cursor.hasSelection()) {
+            layer->rich_text.typing_format = rich_text_format_from_qtext_format(cursor.charFormat(),
+                                                                               layer->rich_text.default_format,
+                                                                               visual_scale);
+            layer->rich_text.has_typing_format = true;
+        }
+    }
     refresh_inline_text_edit(true, true);
 }
 
@@ -1217,9 +1226,26 @@ bool CanvasPreview::nudge_selected_layers(double dx, double dy)
     auto layers = selected_layers();
     if (!title_ || layers.empty()) return false;
 
+    auto selected_contains = [&](const std::string &id) {
+        return std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), id) != selected_layer_ids_.end();
+    };
+    auto has_selected_parent = [&](const Layer &layer) {
+        std::string parent_id = layer.parent_id;
+        int guard = 0;
+        while (!parent_id.empty() && guard++ < 64) {
+            if (selected_contains(parent_id))
+                return true;
+            const Layer *parent = editor_find_layer_by_id(title_, parent_id);
+            if (!parent)
+                break;
+            parent_id = parent->parent_id;
+        }
+        return false;
+    };
+
     bool changed = false;
     for (const auto &layer : layers) {
-        if (!layer || layer->locked) continue;
+        if (!layer || layer->locked || has_selected_parent(*layer)) continue;
         double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                std::max(0.0, layer->out_time - layer->in_time));
         set_animated_value(layer->pos_x, lt, layer->pos_x.evaluate(lt) + dx);
@@ -1464,6 +1490,23 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         return true;
     };
 
+    auto selected_contains = [&](const std::string &id) {
+        return std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), id) != selected_layer_ids_.end();
+    };
+    auto has_selected_parent = [&](const Layer &layer) {
+        std::string parent_id = layer.parent_id;
+        int guard = 0;
+        while (!parent_id.empty() && guard++ < 64) {
+            if (selected_contains(parent_id))
+                return true;
+            const Layer *parent = editor_find_layer_by_id(title_, parent_id);
+            if (!parent)
+                break;
+            parent_id = parent->parent_id;
+        }
+        return false;
+    };
+
     if (drag_mode_ == DragMode::Rotate) {
         clear_snap_feedback();
         QPointF pivot_view = canvas_to_view(drag_rotation_pivot_canvas_);
@@ -1501,7 +1544,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             delta = snap_delta_for_bounds(drag_start_selection_bounds_, delta, true, true, allow_snap);
             for (const auto &state : drag_layer_states_) {
                 auto layer = title_->find_layer(state.id);
-                if (!layer || layer->locked) continue;
+                if (!layer || layer->locked || has_selected_parent(*layer)) continue;
                 double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                        std::max(0.0, layer->out_time - layer->in_time));
                 set_animated_value(layer->pos_x, lt, state.x + delta.x());
@@ -2673,7 +2716,7 @@ static bool inline_document_has_style_overrides(const QTextDocument *doc, const 
 {
     if (!doc) return false;
 
-    QFont expected_font = font_for_layer(layer);
+    QFont expected_font = font_for_layer(layer, t);
     if (expected_font.pixelSize() > 0)
         expected_font.setPixelSize(std::max(1, (int)std::round(expected_font.pixelSize() * visual_scale)));
     const QColor expected_color = color_from_argb(eval_text_color(layer, t));
@@ -2723,7 +2766,7 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
 
     const double local_time = std::max(0.0, playhead_ - layer.in_time);
     const double visual_scale = inline_text_visual_scale(layer);
-    QFont font = font_for_layer(layer);
+    QFont font = font_for_layer(layer, local_time);
     if (font.pixelSize() > 0)
         font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * visual_scale)));
     inline_text_editor_->setFont(font);
@@ -2764,8 +2807,8 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
     block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
     block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
     block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
-    block_format.setTopMargin(std::max(0.0f, layer.paragraph_space_before) * visual_scale);
-    block_format.setBottomMargin(std::max(0.0f, layer.paragraph_space_after) * visual_scale);
+    block_format.setTopMargin(std::max(0.0, eval_paragraph_space_before(layer, local_time)) * visual_scale);
+    block_format.setBottomMargin(std::max(0.0, eval_paragraph_space_after(layer, local_time)) * visual_scale);
 
     const bool has_structured_rich_text = !layer.rich_text.plain_text.empty() || !layer.rich_text.ranges.empty();
     QTextCharFormat char_format;
@@ -2822,7 +2865,17 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
                                        layer->rich_text.selection.head != selection.head;
         if (selection_changed)
             layer->rich_text.selection = selection;
-        return false;
+        if (!cursor.hasSelection()) {
+            const double visual_scale = inline_text_visual_scale(*layer);
+            layer->rich_text.typing_format = rich_text_format_from_qtext_format(cursor.charFormat(),
+                                                                               layer->rich_text.default_format,
+                                                                               visual_scale);
+            layer->rich_text.has_typing_format = true;
+            rich_text_document_sync_layer_mirrors(*layer);
+        } else {
+            layer->rich_text.has_typing_format = false;
+        }
+        return selection_changed;
     }
 
     const double visual_scale = inline_text_visual_scale(*layer);
@@ -2840,6 +2893,8 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
                          std::abs(layer->rich_text.default_paragraph_format.space_before - next_model.default_paragraph_format.space_before) >= 0.0001f ||
                          std::abs(layer->rich_text.default_paragraph_format.space_after - next_model.default_paragraph_format.space_after) >= 0.0001f ||
                          layer->rich_text.default_paragraph_format.hyphenate != next_model.default_paragraph_format.hyphenate ||
+                         layer->rich_text.has_typing_format != next_model.has_typing_format ||
+                         (layer->rich_text.has_typing_format && !rich_text_char_formats_equal(layer->rich_text.typing_format, next_model.typing_format)) ||
                          !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
     if (!changed) {
         if (selection_changed)
@@ -2866,6 +2921,40 @@ void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
     refreshing_inline_text_ = true;
     const std::string layer_id = inline_text_layer_id_;
     const bool model_changed = sync_inline_text_layer(mark_dirty);
+
+    if (auto layer = title_ ? title_->find_layer(layer_id) : nullptr) {
+        if ((layer->text_box_width_to_text || layer->text_box_height_to_text) && inline_text_editor_) {
+            QTextDocument *doc = inline_text_editor_->document();
+            const double visual_scale = std::max(0.0001, inline_text_visual_scale(*layer));
+            QSizeF doc_size;
+            if (doc) {
+                if (auto *layout = doc->documentLayout())
+                    doc_size = layout->documentSize();
+                if (!doc_size.isValid() || doc_size.isEmpty())
+                    doc_size = doc->size();
+            }
+            QFontMetricsF metrics(inline_text_editor_->currentFont());
+            const double min_w = std::max(24.0, metrics.horizontalAdvance(QStringLiteral("M")) / visual_scale);
+            const double min_h = std::max(12.0, metrics.lineSpacing() / visual_scale);
+            if (layer->text_box_width_to_text) {
+                const double ideal = doc ? std::max(doc->idealWidth(), doc_size.width()) : 0.0;
+                const double next_w = std::clamp(ideal / visual_scale + 2.0, min_w, (double)std::max(1.0f, layer->max_text_box_width));
+                if (std::abs(layer->rect_width - next_w) > 0.5) {
+                    layer->rect_width = (float)next_w;
+                    layer->box_width.static_value = next_w;
+                    dirty_ = true;
+                }
+            }
+            if (layer->text_box_height_to_text) {
+                const double next_h = std::clamp(doc_size.height() / visual_scale + 2.0, min_h, (double)std::max(1.0f, layer->max_text_box_height));
+                if (std::abs(layer->rect_height - next_h) > 0.5) {
+                    layer->rect_height = (float)next_h;
+                    layer->box_height.static_value = next_h;
+                    dirty_ = true;
+                }
+            }
+        }
+    }
 
     if (mark_dirty || model_changed)
         dirty_ = true;
@@ -2898,7 +2987,7 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
 
     const double visual_scale = inline_text_visual_scale(layer);
     const double local_time = std::max(0.0, playhead_ - layer.in_time);
-    QFont font = font_for_layer(layer);
+    QFont font = font_for_layer(layer, local_time);
     if (font.pixelSize() > 0)
         font.setPixelSize(std::max(1, (int)std::round(font.pixelSize() * visual_scale)));
 
@@ -2939,8 +3028,8 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
     block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
     block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
     block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
-    block_format.setTopMargin(std::max(0.0f, layer.paragraph_space_before) * visual_scale);
-    block_format.setBottomMargin(std::max(0.0f, layer.paragraph_space_after) * visual_scale);
+    block_format.setTopMargin(std::max(0.0, eval_paragraph_space_before(layer, local_time)) * visual_scale);
+    block_format.setBottomMargin(std::max(0.0, eval_paragraph_space_after(layer, local_time)) * visual_scale);
     QTextCursor format_cursor(&measure_doc);
     format_cursor.select(QTextCursor::Document);
     format_cursor.mergeBlockFormat(block_format);
@@ -2964,7 +3053,7 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
         y = text_rect.top() + (text_rect.height() - doc_height) / 2.0;
     else if (layer.align_v == 2)
         y = text_rect.bottom() - doc_height;
-    y -= layer.baseline_shift;
+    y -= eval_baseline_shift(layer, local_time);
 
     double x = text_rect.left();
     if (layer.text_overflow_mode == 2 && doc_width < text_rect.width()) {

@@ -860,6 +860,8 @@ static json rich_doc_to_json(const RichTextDocument &doc)
     return {{"version", doc.version}, {"plain_text", doc.plain_text},
             {"default_format", rich_char_format_to_json(doc.default_format)},
             {"default_paragraph_format", rich_paragraph_format_to_json(doc.default_paragraph_format)},
+            {"has_typing_format", doc.has_typing_format},
+            {"typing_format", rich_char_format_to_json(doc.has_typing_format ? doc.typing_format : doc.default_format)},
             {"blocks", blocks}, {"ranges", ranges},
             {"selection", {{"anchor", doc.selection.anchor}, {"head", doc.selection.head}}},
             {"transactions", transactions}};
@@ -873,6 +875,8 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
     doc.plain_text = bounded_string(j, "plain_text", doc.plain_text, kMaxTextLength);
     if (j.contains("default_format")) doc.default_format = rich_char_format_from_json(j["default_format"], doc.default_format);
     if (j.contains("default_paragraph_format")) doc.default_paragraph_format = rich_paragraph_format_from_json(j["default_paragraph_format"], doc.default_paragraph_format);
+    doc.has_typing_format = json_bool(j, "has_typing_format", false);
+    doc.typing_format = j.contains("typing_format") ? rich_char_format_from_json(j["typing_format"], doc.default_format) : doc.default_format;
     doc.ranges.clear();
     if (j.contains("ranges") && j["ranges"].is_array()) {
         for (size_t i = 0; i < std::min(j["ranges"].size(), kMaxTextLength); ++i) {
@@ -929,7 +933,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["parent_id"] = l.parent_id;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
+    j["blend_mode"] = (int)l.blend_mode;
     j["use_as_scene_mask"] = l.use_as_scene_mask;
+    j["effect_stack_respects_masks"] = l.effect_stack_respects_masks;
     json effects = json::array();
     for (const auto &effect : l.effects) {
         effects.push_back({{"type", (int)effect.type},
@@ -974,6 +980,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["font_family"]   = l.font_family;
     j["font_style"]    = l.font_style;
     j["font_size"]     = l.font_size;
+    j["font_size_prop"] = aprop_to_json(l.font_size_prop);
     j["font_bold"]     = l.font_bold;
     j["font_italic"]   = l.font_italic;
     j["font_kerning"]  = l.font_kerning;
@@ -981,9 +988,13 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["manual_kerning"] = l.manual_kerning;
     j["text_leading"]  = l.text_leading;
     j["char_tracking"] = l.char_tracking;
+    j["char_tracking_prop"] = aprop_to_json(l.char_tracking_prop);
     j["char_scale_x"]  = l.char_scale_x;
+    j["char_scale_x_prop"] = aprop_to_json(l.char_scale_x_prop);
     j["char_scale_y"]  = l.char_scale_y;
+    j["char_scale_y_prop"] = aprop_to_json(l.char_scale_y_prop);
     j["baseline_shift"] = l.baseline_shift;
+    j["baseline_shift_prop"] = aprop_to_json(l.baseline_shift_prop);
     j["text_style"]    = l.text_style;
     j["text_underline"] = l.text_underline;
     j["text_strikethrough"] = l.text_strikethrough;
@@ -1034,7 +1045,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["paragraph_indent_right_prop"] = aprop_to_json(l.paragraph_indent_right_prop);
     j["paragraph_indent_first_line_prop"] = aprop_to_json(l.paragraph_indent_first_line_prop);
     j["paragraph_space_before"] = l.paragraph_space_before;
+    j["paragraph_space_before_prop"] = aprop_to_json(l.paragraph_space_before_prop);
     j["paragraph_space_after"] = l.paragraph_space_after;
+    j["paragraph_space_after_prop"] = aprop_to_json(l.paragraph_space_after_prop);
     j["paragraph_hyphenate"] = l.paragraph_hyphenate;
 
     j["fill_color"]    = l.fill_color;
@@ -1169,7 +1182,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedAlpha);
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
+    l->blend_mode = (EffectBlendMode)std::clamp(json_int(j, "blend_mode", (int)EffectBlendMode::Normal), 0, (int)EffectBlendMode::Color);
     l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false);
+    l->effect_stack_respects_masks = json_bool(j, "effect_stack_respects_masks", false);
     if (j.contains("effects") && j["effects"].is_array()) {
         const size_t count = std::min(j["effects"].size(), (size_t)64);
         l->effects.reserve(count);
@@ -1252,6 +1267,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->font_family   = bounded_string(j, "font_family", "Helvetica Neue", kMaxNameLength);
     l->font_style    = bounded_string(j, "font_style", "Regular", kMaxNameLength);
     l->font_size     = std::clamp(json_int(j, "font_size", 72), 1, 512);
+    l->font_size_prop.static_value = l->font_size;
+    if (j.contains("font_size_prop")) l->font_size_prop = aprop_from_json(j["font_size_prop"], "font_size");
+    l->font_size_prop.static_value = std::clamp(l->font_size_prop.static_value, 1.0, 512.0);
     l->font_bold     = json_bool(j, "font_bold", false);
     l->font_italic   = json_bool(j, "font_italic", false);
     l->font_kerning  = json_bool(j, "font_kerning", true);
@@ -1259,9 +1277,21 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->manual_kerning = (float)std::clamp(finite_or(json_double(j, "manual_kerning", 0.0), 0.0), -1000.0, 1000.0);
     l->text_leading  = (float)std::clamp(finite_or(json_double(j, "text_leading", 0.0), 0.0), -1000.0, 1000.0);
     l->char_tracking = (float)std::clamp(finite_or(json_double(j, "char_tracking", 0.0), 0.0), -1000.0, 1000.0);
+    l->char_tracking_prop.static_value = l->char_tracking;
+    if (j.contains("char_tracking_prop")) l->char_tracking_prop = aprop_from_json(j["char_tracking_prop"], "char_tracking");
+    l->char_tracking_prop.static_value = std::clamp(l->char_tracking_prop.static_value, -1000.0, 1000.0);
     l->char_scale_x  = (float)std::clamp(finite_or(json_double(j, "char_scale_x", 1.0), 1.0), 0.01, 100.0);
+    l->char_scale_x_prop.static_value = l->char_scale_x;
+    if (j.contains("char_scale_x_prop")) l->char_scale_x_prop = aprop_from_json(j["char_scale_x_prop"], "char_scale_x");
+    l->char_scale_x_prop.static_value = std::clamp(l->char_scale_x_prop.static_value, 0.01, 100.0);
     l->char_scale_y  = (float)std::clamp(finite_or(json_double(j, "char_scale_y", 1.0), 1.0), 0.01, 100.0);
+    l->char_scale_y_prop.static_value = l->char_scale_y;
+    if (j.contains("char_scale_y_prop")) l->char_scale_y_prop = aprop_from_json(j["char_scale_y_prop"], "char_scale_y");
+    l->char_scale_y_prop.static_value = std::clamp(l->char_scale_y_prop.static_value, 0.01, 100.0);
     l->baseline_shift = (float)std::clamp(finite_or(json_double(j, "baseline_shift", 0.0), 0.0), -1000.0, 1000.0);
+    l->baseline_shift_prop.static_value = l->baseline_shift;
+    if (j.contains("baseline_shift_prop")) l->baseline_shift_prop = aprop_from_json(j["baseline_shift_prop"], "baseline_shift");
+    l->baseline_shift_prop.static_value = std::clamp(l->baseline_shift_prop.static_value, -1000.0, 1000.0);
     l->text_style    = std::clamp(json_int(j, "text_style", 0), 0, 4);
     l->text_underline = json_bool(j, "text_underline", false);
     l->text_strikethrough = json_bool(j, "text_strikethrough", false);
@@ -1318,7 +1348,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->paragraph_indent_right_prop.static_value = std::clamp(l->paragraph_indent_right_prop.static_value, -10000.0, 10000.0);
     l->paragraph_indent_first_line_prop.static_value = std::clamp(l->paragraph_indent_first_line_prop.static_value, -10000.0, 10000.0);
     l->paragraph_space_before = (float)std::clamp(finite_or(json_double(j, "paragraph_space_before", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_space_before_prop.static_value = l->paragraph_space_before;
+    if (j.contains("paragraph_space_before_prop")) l->paragraph_space_before_prop = aprop_from_json(j["paragraph_space_before_prop"], "paragraph_space_before");
+    l->paragraph_space_before_prop.static_value = std::clamp(l->paragraph_space_before_prop.static_value, -10000.0, 10000.0);
     l->paragraph_space_after = (float)std::clamp(finite_or(json_double(j, "paragraph_space_after", 0.0), 0.0), -10000.0, 10000.0);
+    l->paragraph_space_after_prop.static_value = l->paragraph_space_after;
+    if (j.contains("paragraph_space_after_prop")) l->paragraph_space_after_prop = aprop_from_json(j["paragraph_space_after_prop"], "paragraph_space_after");
+    l->paragraph_space_after_prop.static_value = std::clamp(l->paragraph_space_after_prop.static_value, -10000.0, 10000.0);
     l->paragraph_hyphenate = json_bool(j, "paragraph_hyphenate", false);
 
     l->fill_color    = json_color(j, "fill_color", (uint32_t)0xFF222222);

@@ -21,7 +21,7 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
 
 
     QWidget *columns = new QWidget(this);
-    columns->setFixedHeight(72);
+    columns->setFixedHeight(44);
     columns->setStyleSheet(QStringLiteral("background:%1;border-top:1px solid %2;border-bottom:1px solid %2;")
                                 .arg(window.lightness() < 128 ? window.darker(112).name(QColor::HexRgb)
                                                               : window.darker(104).name(QColor::HexRgb),
@@ -37,16 +37,32 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                                  .arg(disabled_text.name(QColor::HexRgb)));
         ch->addWidget(label);
     };
+    auto add_header_icon = [&](const char *icon_name, int w, const QString &tip = QString()) {
+        QToolButton *icon = new QToolButton(columns);
+        icon->setFixedSize(w, 24);
+        icon->setIcon(obs_icon(icon_name));
+        icon->setIconSize(QSize(14, 14));
+        icon->setAutoRaise(true);
+        icon->setEnabled(false);
+        icon->setToolTip(tip);
+        icon->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:none;color:%1;}")
+                                .arg(disabled_text.name(QColor::HexRgb)));
+        ch->addWidget(icon);
+    };
     add_header("◉", 20);
-    add_header("🔒", 20);
+    add_header_icon("layer-lock.svg", 20, obsgs_tr("OBSTitles.LockLayerTooltip"));
     add_header("", 12);
     add_header("#", 24);
+    add_header("T", 18);
+    add_header("", 24); // FX indicator column
+    add_header("Matte", 44, Qt::AlignLeft | Qt::AlignVCenter);
     QLabel *name = new QLabel(obsgs_tr("OBSTitles.LayerNameHeader"), columns);
     name->setStyleSheet(QStringLiteral("color:%1;font-size:10px;font-weight:bold;")
                             .arg(disabled_text.name(QColor::HexRgb)));
     ch->addWidget(name, 1);
-    add_header(obsgs_tr("OBSTitles.ModeHeader"), 46, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(obsgs_tr("OBSTitles.ParentHeader"), 58, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(obsgs_tr("OBSTitles.ModeHeader"), 110, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(obsgs_tr("OBSTitles.ParentHeader"), 174, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(obsgs_tr("OBSTitles.MaskHeader"), 178, Qt::AlignLeft | Qt::AlignVCenter);
     vl->addWidget(columns);
 
     list_ = new QListWidget(this);
@@ -244,6 +260,12 @@ void LayerStack::populate()
                                          .arg(field_text.name(QColor::HexRgb),
                                               base.name(QColor::HexRgb));
 
+    std::set<std::string> track_matte_source_ids;
+    for (const auto &candidate : title_->layers) {
+        if (candidate && candidate->mask_mode != MaskMode::None && !candidate->mask_source_id.empty())
+            track_matte_source_ids.insert(candidate->mask_source_id);
+    }
+
     int row = 0;
     for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it, ++row) {
         auto &l = *it;
@@ -322,6 +344,44 @@ void LayerStack::populate()
                                      pal.color(QPalette::HighlightedText).name(QColor::HexRgb)));
         hl->addWidget(type);
 
+        const bool has_enabled_effect_stack = std::any_of(l->effects.begin(), l->effects.end(),
+            [](const LayerEffect &effect) { return effect.enabled; });
+        QLabel *fx_indicator = new QLabel(has_enabled_effect_stack ? QStringLiteral("FX") : QString(), row_widget);
+        fx_indicator->setFixedSize(24, 18);
+        fx_indicator->setAlignment(Qt::AlignCenter);
+        fx_indicator->setToolTip(has_enabled_effect_stack
+            ? QStringLiteral("This layer has an active effect stack.")
+            : QString());
+        fx_indicator->setStyleSheet(has_enabled_effect_stack
+            ? QStringLiteral("QLabel{background:%1;border:1px solid %2;border-radius:2px;color:%3;font-size:9px;font-weight:bold;}")
+                  .arg(highlight.name(QColor::HexRgb),
+                       border.name(QColor::HexRgb),
+                       pal.color(QPalette::HighlightedText).name(QColor::HexRgb))
+            : QStringLiteral("QLabel{background:transparent;border:none;}"));
+        hl->addWidget(fx_indicator);
+
+        auto add_matte_indicator = [&](const char *icon, const QString &tip, bool active) {
+            QToolButton *indicator = new QToolButton(row_widget);
+            indicator->setFixedSize(20, 20);
+            indicator->setIconSize(QSize(14, 14));
+            indicator->setAutoRaise(true);
+            indicator->setEnabled(false);
+            indicator->setStyleSheet(button_style);
+            if (active) {
+                indicator->setIcon(obs_icon(icon));
+                indicator->setToolTip(tip);
+            }
+            hl->addWidget(indicator);
+        };
+        const bool used_as_track_matte = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
+        const bool uses_track_matte = l->mask_mode != MaskMode::None && !l->mask_source_id.empty();
+        add_matte_indicator("timeline-mask.svg",
+                            QStringLiteral("This layer is used as a track matte and is hidden from normal compositing."),
+                            used_as_track_matte);
+        add_matte_indicator(l->mask_mode == MaskMode::InvertedAlpha ? "timeline-mask-inverted.svg" : "timeline-mask.svg",
+                            QStringLiteral("This layer is masked by another layer."),
+                            uses_track_matte);
+
         QLineEdit *name = new QLineEdit(QString::fromStdString(l->name), row_widget);
         name->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         name->setFrame(false);
@@ -340,14 +400,37 @@ void LayerStack::populate()
         });
         hl->addWidget(name, 1);
 
-        QLabel *mode = new QLabel(obsgs_tr("OBSTitles.Normal"), row_widget);
-        mode->setFixedWidth(54);
-        mode->setStyleSheet(label_chip_style);
+        QComboBox *mode = new QComboBox(row_widget);
+        mode->setFixedWidth(110);
+        mode->setStyleSheet(combo_style);
+        mode->setToolTip(obsgs_tr("OBSTitles.LayerModesTooltip"));
+        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
+        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
+        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
+        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
+        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
+        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
+        int mode_idx = mode->findData((int)l->blend_mode);
+        mode->setCurrentIndex(mode_idx >= 0 ? mode_idx : 0);
+        connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this, id = l->id, mode](int index) {
+                    emit layer_blend_mode_changed(id, (EffectBlendMode)mode->itemData(index).toInt());
+                });
         hl->addWidget(mode);
 
+        QToolButton *pick_whip = new QToolButton(row_widget);
+        pick_whip->setIcon(obs_icon("timeline-pick-whip.svg"));
+        pick_whip->setToolTip(obsgs_tr("OBSTitles.ParentPickWhipTooltip"));
+        pick_whip->setFixedSize(20, 20);
+        pick_whip->setIconSize(QSize(14, 14));
+        pick_whip->setAutoRaise(true);
+        pick_whip->setStyleSheet(button_style);
+        hl->addWidget(pick_whip);
+
         QComboBox *parent = new QComboBox(row_widget);
-        parent->setFixedWidth(86);
+        parent->setFixedWidth(150);
         parent->setStyleSheet(combo_style);
+        parent->setToolTip(obsgs_tr("OBSTitles.ParentLayerTooltip"));
         parent->addItem(obsgs_tr("OBSTitles.None"), "");
         for (const auto &candidate : title_->layers) {
             if (candidate->id == l->id) continue;
@@ -362,14 +445,15 @@ void LayerStack::populate()
         hl->addWidget(parent);
 
         QComboBox *mask = new QComboBox(row_widget);
-        mask->setFixedWidth(112);
+        mask->setFixedWidth(178);
         mask->setStyleSheet(combo_style);
-        mask->addItem("No Mask", QVariant(QStringLiteral("|0")));
+        mask->setToolTip(obsgs_tr("OBSTitles.TrackMatteTooltip"));
+        mask->addItem(obs_icon("timeline-mask.svg"), obsgs_tr("OBSTitles.NoMask"), QVariant(QStringLiteral("|0")));
         for (const auto &candidate : title_->layers) {
             if (candidate->id == l->id) continue;
-            mask->addItem(QString::fromStdString(candidate->name + " α"),
+            mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " α"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Alpha)));
-            mask->addItem(QString::fromStdString(candidate->name + " -α"),
+            mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -α"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedAlpha)));
         }
         QString mask_value = QString::fromStdString(l->mask_source_id + "|" + std::to_string((int)l->mask_mode));
