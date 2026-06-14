@@ -53,6 +53,11 @@ public:
     void set_title(std::shared_ptr<Title> t);
     void set_active_text_edit_layer(const std::string &layer_id);
 
+public slots:
+    void open_foreground_color_selector();
+    void open_background_color_selector();
+    void swap_foreground_background_colors();
+
 signals:
     void property_changed(bool push_undo_snapshot = true);
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);

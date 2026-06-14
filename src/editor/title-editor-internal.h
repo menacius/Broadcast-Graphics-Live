@@ -1739,7 +1739,7 @@ static void materialize_rich_text_default_spans(RichTextDocument &doc)
 
 static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCharFormat &format, uint32_t mask, bool active_selection)
 {
-    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker) return;
+    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker && layer.type != LayerType::Clock) return;
     if (layer.rich_text.empty())
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
     RichTextDocument &doc = layer.rich_text;
@@ -1808,7 +1808,7 @@ static void apply_rich_text_format_to_layer_range(Layer &layer, const RichTextCh
 
 static void apply_rich_text_paragraph_format_to_layer(Layer &layer, const RichTextParagraphFormat &format)
 {
-    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker) return;
+    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker && layer.type != LayerType::Clock) return;
     if (layer.rich_text.empty())
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
     layer.rich_text.default_paragraph_format = format;

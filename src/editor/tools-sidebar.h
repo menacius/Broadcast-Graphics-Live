@@ -27,6 +27,7 @@
 #include <QRectF>
 #include <QColor>
 #include <QPixmap>
+#include <QLinearGradient>
 #include <QElapsedTimer>
 #include <memory>
 #include <string>
@@ -42,6 +43,43 @@ class QResizeEvent;
 class QPaintEvent;
 class QPainter;
 class QScrollBar;
+
+class ForegroundBackgroundSwatch : public QWidget {
+    Q_OBJECT
+public:
+    explicit ForegroundBackgroundSwatch(QWidget *parent = nullptr);
+    void set_foreground_color(const QColor &color);
+    void set_background_color(const QColor &color);
+    void set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
+    void set_background_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
+    QColor foreground_color() const { return foreground_color_; }
+    QColor background_color() const { return background_color_; }
+
+signals:
+    void foreground_requested();
+    void background_requested();
+    void swap_requested();
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+
+private:
+    QRect foreground_rect() const;
+    QRect background_rect() const;
+    QRect swap_rect() const;
+    struct SwatchFill {
+        int type = 0; // 0=solid, 1=gradient
+        QColor color = QColor(34, 34, 34);
+        QColor start = QColor(34, 34, 34);
+        QColor end = QColor(255, 255, 255);
+        int gradient_type = 0;
+    };
+    SwatchFill foreground_fill_;
+    SwatchFill background_fill_;
+    QColor foreground_color_ = QColor(34, 34, 34);
+    QColor background_color_ = QColor(255, 255, 255);
+};
 /* ══════════════════════════════════════════════════════════════════
  *  ToolsSidebar – Photoshop-style icon-only tool palette
  * ══════════════════════════════════════════════════════════════════ */
@@ -54,6 +92,10 @@ public:
     ShapeType selected_shape() const { return selected_shape_; }
     void set_selected_text_layer_type(LayerType type);
     LayerType selected_text_layer_type() const { return selected_text_layer_type_; }
+    void set_foreground_color(const QColor &color);
+    void set_background_color(const QColor &color);
+    void set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
+    void set_background_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
 
 signals:
     void selection_tool_requested();
@@ -61,6 +103,9 @@ signals:
     void text_tool_requested(LayerType type);
     void color_picker_tool_requested();
     void gradient_tool_requested();
+    void foreground_color_requested();
+    void background_color_requested();
+    void foreground_background_swap_requested();
 
 private:
     void rebuild_shape_menu();
@@ -73,6 +118,7 @@ private:
     QActionGroup *tool_group_ = nullptr;
     QMenu *shape_menu_ = nullptr;
     QMenu *text_menu_ = nullptr;
+    ForegroundBackgroundSwatch *foreground_background_swatch_ = nullptr;
     ShapeType selected_shape_ = ShapeType::Rectangle;
     LayerType selected_text_layer_type_ = LayerType::Text;
 };

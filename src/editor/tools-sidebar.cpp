@@ -1,5 +1,162 @@
 #include "title-editor-internal.h"
 
+
+ForegroundBackgroundSwatch::ForegroundBackgroundSwatch(QWidget *parent) : QWidget(parent)
+{
+    setFixedSize(42, 42);
+    setCursor(Qt::PointingHandCursor);
+    setToolTip(QStringLiteral("Foreground / Background color/gradient. Click a swatch to edit; click the corner switcher to swap."));
+    foreground_fill_.type = 0;
+    foreground_fill_.color = foreground_color_;
+    foreground_fill_.start = foreground_color_;
+    foreground_fill_.end = foreground_color_;
+    background_fill_.type = 0;
+    background_fill_.color = background_color_;
+    background_fill_.start = background_color_;
+    background_fill_.end = background_color_;
+}
+
+void ForegroundBackgroundSwatch::set_foreground_color(const QColor &color)
+{
+    if (!color.isValid()) return;
+    foreground_color_ = color;
+    foreground_fill_.type = 0;
+    foreground_fill_.color = color;
+    foreground_fill_.start = color;
+    foreground_fill_.end = color;
+    update();
+}
+
+void ForegroundBackgroundSwatch::set_background_color(const QColor &color)
+{
+    if (!color.isValid()) return;
+    background_color_ = color;
+    background_fill_.type = 0;
+    background_fill_.color = color;
+    background_fill_.start = color;
+    background_fill_.end = color;
+    update();
+}
+
+void ForegroundBackgroundSwatch::set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type)
+{
+    if (!start.isValid() || !end.isValid()) return;
+    foreground_color_ = start;
+    foreground_fill_.type = 1;
+    foreground_fill_.start = start;
+    foreground_fill_.end = end;
+    foreground_fill_.gradient_type = gradient_type;
+    update();
+}
+
+void ForegroundBackgroundSwatch::set_background_gradient(const QColor &start, const QColor &end, int gradient_type)
+{
+    if (!start.isValid() || !end.isValid()) return;
+    background_color_ = start;
+    background_fill_.type = 1;
+    background_fill_.start = start;
+    background_fill_.end = end;
+    background_fill_.gradient_type = gradient_type;
+    update();
+}
+
+QRect ForegroundBackgroundSwatch::foreground_rect() const
+{
+    return QRect(4, 14, 24, 24);
+}
+
+QRect ForegroundBackgroundSwatch::background_rect() const
+{
+    return QRect(14, 4, 24, 24);
+}
+
+QRect ForegroundBackgroundSwatch::swap_rect() const
+{
+    return QRect(width() - 17, 0, 17, 17);
+}
+
+void ForegroundBackgroundSwatch::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QPalette pal = qApp->palette();
+    const QColor border = pal.color(QPalette::Mid);
+    const QColor text = pal.color(QPalette::WindowText);
+
+    auto draw_swatch = [&](const QRect &r, const SwatchFill &fill) {
+        const QRect inner = r.adjusted(1, 1, -1, -1);
+        if (fill.type == 1) {
+            QBrush brush;
+            switch (fill.gradient_type) {
+            case 1: { // radial
+                QRadialGradient grad(inner.center(), std::max(inner.width(), inner.height()) / 2.0);
+                grad.setColorAt(0.0, fill.start);
+                grad.setColorAt(1.0, fill.end);
+                brush = QBrush(grad);
+                break;
+            }
+            case 3: { // reflected
+                QLinearGradient grad(inner.left(), inner.center().y(), inner.right(), inner.center().y());
+                grad.setColorAt(0.0, fill.end);
+                grad.setColorAt(0.5, fill.start);
+                grad.setColorAt(1.0, fill.end);
+                brush = QBrush(grad);
+                break;
+            }
+            case 4: { // diamond-style preview approximation
+                QRadialGradient grad(inner.center(), std::max(inner.width(), inner.height()) / 2.0);
+                grad.setColorAt(0.0, fill.start);
+                grad.setColorAt(0.55, fill.start);
+                grad.setColorAt(1.0, fill.end);
+                brush = QBrush(grad);
+                break;
+            }
+            case 2: // angle: compact diagonal preview
+            default: {
+                QLinearGradient grad(inner.topLeft(), inner.bottomRight());
+                grad.setColorAt(0.0, fill.start);
+                grad.setColorAt(1.0, fill.end);
+                brush = QBrush(grad);
+                break;
+            }
+            }
+            p.fillRect(inner, brush);
+        } else {
+            p.fillRect(inner, fill.color);
+        }
+        p.setPen(QPen(border, 1));
+        p.drawRect(r.adjusted(0, 0, -1, -1));
+        const QColor marker = (fill.type == 1) ? fill.end : fill.color;
+        if (marker.alpha() < 255) {
+            p.setPen(QPen(text, 1));
+            p.drawLine(r.topLeft() + QPoint(2, 2), r.bottomRight() - QPoint(2, 2));
+        }
+    };
+
+    draw_swatch(background_rect(), background_fill_);
+    draw_swatch(foreground_rect(), foreground_fill_);
+
+    p.setPen(QPen(text, 1));
+    QFont f = p.font();
+    f.setPixelSize(11);
+    f.setBold(true);
+    p.setFont(f);
+    p.drawText(swap_rect(), Qt::AlignCenter, QStringLiteral("⇄"));
+}
+
+void ForegroundBackgroundSwatch::mousePressEvent(QMouseEvent *event)
+{
+    const QPoint pos = event->pos();
+    if (swap_rect().contains(pos)) {
+        emit swap_requested();
+    } else if (foreground_rect().contains(pos)) {
+        emit foreground_requested();
+    } else if (background_rect().contains(pos)) {
+        emit background_requested();
+    }
+    QWidget::mousePressEvent(event);
+}
+
 ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
 {
     constexpr int kSidebarIconSize = 22;
@@ -43,11 +200,22 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 6, 4, 6);
     layout->setSpacing(4);
+    auto *tools_section = new QWidget(this);
+    auto *tools_layout = new QVBoxLayout(tools_section);
+    tools_layout->setContentsMargins(0, 0, 0, 0);
+    tools_layout->setSpacing(4);
+    auto *swatch_section = new QWidget(this);
+    auto *swatch_layout = new QVBoxLayout(swatch_section);
+    swatch_layout->setContentsMargins(0, 0, 0, 0);
+    swatch_layout->setSpacing(0);
+    layout->addWidget(tools_section, 0, Qt::AlignHCenter);
+    layout->addWidget(swatch_section, 0, Qt::AlignHCenter);
+    layout->addStretch(1);
 
     tool_group_ = new QActionGroup(this);
     tool_group_->setExclusive(true);
 
-    auto make_tool_button = [this, layout](const QString &text, const QIcon &icon, const QString &tip) {
+    auto make_tool_button = [this, tools_layout](const QString &text, const QIcon &icon, const QString &tip) {
         auto *button = new HoldMenuToolButton(this);
         button->setText(text);
         button->setAccessibleName(text);
@@ -59,7 +227,7 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
         button->setAutoRaise(false);
         button->setFocusPolicy(Qt::StrongFocus);
         button->setFixedSize(kSidebarButtonSize, kSidebarButtonSize);
-        layout->addWidget(button, 0, Qt::AlignHCenter);
+        tools_layout->addWidget(button, 0, Qt::AlignHCenter);
         return button;
     };
 
@@ -119,7 +287,14 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
         emit gradient_tool_requested();
     });
 
-    layout->addStretch(1);
+    foreground_background_swatch_ = new ForegroundBackgroundSwatch(this);
+    swatch_layout->addWidget(foreground_background_swatch_, 0, Qt::AlignHCenter);
+    connect(foreground_background_swatch_, &ForegroundBackgroundSwatch::foreground_requested,
+            this, &ToolsSidebar::foreground_color_requested);
+    connect(foreground_background_swatch_, &ForegroundBackgroundSwatch::background_requested,
+            this, &ToolsSidebar::background_color_requested);
+    connect(foreground_background_swatch_, &ForegroundBackgroundSwatch::swap_requested,
+            this, &ToolsSidebar::foreground_background_swap_requested);
 }
 
 void ToolsSidebar::set_selected_shape(ShapeType shape_type)
@@ -196,3 +371,24 @@ void ToolsSidebar::rebuild_text_menu()
 }
 
 
+
+void ToolsSidebar::set_foreground_color(const QColor &color)
+{
+    if (foreground_background_swatch_) foreground_background_swatch_->set_foreground_color(color);
+}
+
+void ToolsSidebar::set_background_color(const QColor &color)
+{
+    if (foreground_background_swatch_) foreground_background_swatch_->set_background_color(color);
+}
+
+
+void ToolsSidebar::set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type)
+{
+    if (foreground_background_swatch_) foreground_background_swatch_->set_foreground_gradient(start, end, gradient_type);
+}
+
+void ToolsSidebar::set_background_gradient(const QColor &start, const QColor &end, int gradient_type)
+{
+    if (foreground_background_swatch_) foreground_background_swatch_->set_background_gradient(start, end, gradient_type);
+}

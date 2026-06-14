@@ -45,6 +45,16 @@ bool editor_parenting_would_cycle(const std::shared_ptr<Title> &title,
     return false;
 }
 
+// Editor-session-only defaults. These intentionally live only in process memory:
+// closing/reopening the editor window within the same OBS run keeps the user's
+// last foreground/background and new-layer style, but restarting OBS resets them
+// to the compiled/project defaults instead of reading/writing QSettings.
+bool g_editor_session_sidebar_colors_initialized = false;
+QColor g_editor_session_foreground_color;
+QColor g_editor_session_background_color;
+bool g_editor_session_new_layer_defaults_initialized = false;
+Layer g_editor_session_new_layer_style;
+
 } // namespace
 
 TitleEditor::TitleEditor(QWidget *parent)
@@ -73,6 +83,9 @@ TitleEditor::TitleEditor(QWidget *parent)
                    QMainWindow::GroupedDragging);
 
     build_ui();
+    load_sidebar_default_colors();
+    load_new_layer_defaults();
+    update_sidebar_color_swatches(nullptr);
 
     play_timer_ = new QTimer(this);
     play_timer_->setInterval(std::max(1, (int)std::round(obs_frame_duration() * 1000.0)));
@@ -91,6 +104,8 @@ TitleEditor::TitleEditor(QWidget *parent)
 
 TitleEditor::~TitleEditor()
 {
+    save_sidebar_default_colors();
+    save_new_layer_defaults();
     save_editor_layout();
     if (qApp)
         qApp->removeEventFilter(this);
@@ -605,6 +620,7 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     l->box_height.static_value = l->rect_height;
     l->origin_x_prop.static_value = l->origin_x;
     l->origin_y_prop.static_value = l->origin_y;
+    apply_new_layer_defaults(*l);
     set_channel_statics(*l, true, l->text_color);
     set_channel_statics(*l, false, l->fill_color);
     l->out_time = title_->duration;
@@ -1584,6 +1600,32 @@ void TitleEditor::build_ui()
         });
         connect(tools_sidebar_, &ToolsSidebar::gradient_tool_requested, this, [this]() {
             if (canvas_) canvas_->set_gradient_tool_active();
+        });
+        connect(tools_sidebar_, &ToolsSidebar::foreground_color_requested, this, [this]() {
+            if (title_ && !sel_layer_id_.empty()) {
+                if (props_) props_->open_foreground_color_selector();
+            } else {
+                open_default_sidebar_color_popup(true);
+            }
+        });
+        connect(tools_sidebar_, &ToolsSidebar::background_color_requested, this, [this]() {
+            if (title_ && !sel_layer_id_.empty()) {
+                if (props_) props_->open_background_color_selector();
+            } else {
+                open_default_sidebar_color_popup(false);
+            }
+        });
+        connect(tools_sidebar_, &ToolsSidebar::foreground_background_swap_requested, this, [this]() {
+            if (title_ && !sel_layer_id_.empty()) {
+                if (props_) props_->swap_foreground_background_colors();
+                auto layer = title_->find_layer(sel_layer_id_);
+                if (layer) set_default_sidebar_colors_from_layer(*layer);
+                update_layer_panels(layer, playhead_);
+            } else {
+                std::swap(default_foreground_color_, default_background_color_);
+                save_sidebar_default_colors();
+                update_sidebar_color_swatches(nullptr);
+            }
         });
     }
 }
@@ -3250,6 +3292,386 @@ void TitleEditor::reject()
 }
 
 /* ── Signal handlers ─────────────────────────────────────────────── */
+
+
+
+static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
+{
+    dst.font_family = src.font_family;
+    dst.font_style = src.font_style;
+    dst.font_size = src.font_size;
+    dst.font_size_prop.static_value = src.font_size_prop.static_value;
+    dst.font_bold = src.font_bold;
+    dst.font_italic = src.font_italic;
+    dst.font_kerning = src.font_kerning;
+    dst.kerning_mode = src.kerning_mode;
+    dst.manual_kerning = src.manual_kerning;
+    dst.text_leading = src.text_leading;
+    dst.char_tracking = src.char_tracking;
+    dst.char_tracking_prop.static_value = src.char_tracking_prop.static_value;
+    dst.char_scale_x = src.char_scale_x;
+    dst.char_scale_y = src.char_scale_y;
+    dst.char_scale_x_prop.static_value = src.char_scale_x_prop.static_value;
+    dst.char_scale_y_prop.static_value = src.char_scale_y_prop.static_value;
+    dst.baseline_shift = src.baseline_shift;
+    dst.baseline_shift_prop.static_value = src.baseline_shift_prop.static_value;
+    dst.text_style = src.text_style;
+    dst.text_underline = src.text_underline;
+    dst.text_strikethrough = src.text_strikethrough;
+    dst.text_ligatures = src.text_ligatures;
+    dst.text_stylistic_alternates = src.text_stylistic_alternates;
+    dst.text_fractions = src.text_fractions;
+    dst.text_opentype_features = src.text_opentype_features;
+    dst.text_overflow_mode = src.text_overflow_mode;
+    dst.text_fit_min_scale = src.text_fit_min_scale;
+    dst.text_box_width_to_text = src.text_box_width_to_text;
+    dst.text_box_height_to_text = src.text_box_height_to_text;
+    dst.max_text_box_width = src.max_text_box_width;
+    dst.max_text_box_height = src.max_text_box_height;
+
+    dst.text_color = src.text_color;
+    dst.fill_color = src.fill_color;
+    dst.fill_type = src.fill_type;
+    dst.gradient_type = src.gradient_type;
+    dst.gradient_start_color = src.gradient_start_color;
+    dst.gradient_end_color = src.gradient_end_color;
+    dst.gradient_start_pos = src.gradient_start_pos;
+    dst.gradient_end_pos = src.gradient_end_pos;
+    dst.gradient_start_opacity = src.gradient_start_opacity;
+    dst.gradient_end_opacity = src.gradient_end_opacity;
+    dst.gradient_opacity = src.gradient_opacity;
+    dst.gradient_angle = src.gradient_angle;
+    dst.gradient_center_x = src.gradient_center_x;
+    dst.gradient_center_y = src.gradient_center_y;
+    dst.gradient_scale = src.gradient_scale;
+    dst.gradient_focal_x = src.gradient_focal_x;
+    dst.gradient_focal_y = src.gradient_focal_y;
+    dst.gradient_stops = src.gradient_stops;
+
+    dst.outline_enabled = src.outline_enabled;
+    dst.stroke_fill_type = src.stroke_fill_type;
+    dst.stroke_color = src.stroke_color;
+    dst.stroke_width = src.stroke_width;
+    dst.outline_opacity = src.outline_opacity;
+    dst.outline_join_style = src.outline_join_style;
+    dst.outline_on_front = src.outline_on_front;
+    dst.outline_antialias = src.outline_antialias;
+    dst.stroke_gradient_type = src.stroke_gradient_type;
+    dst.stroke_gradient_start_color = src.stroke_gradient_start_color;
+    dst.stroke_gradient_end_color = src.stroke_gradient_end_color;
+    dst.stroke_gradient_start_pos = src.stroke_gradient_start_pos;
+    dst.stroke_gradient_end_pos = src.stroke_gradient_end_pos;
+    dst.stroke_gradient_start_opacity = src.stroke_gradient_start_opacity;
+    dst.stroke_gradient_end_opacity = src.stroke_gradient_end_opacity;
+    dst.stroke_gradient_opacity = src.stroke_gradient_opacity;
+    dst.stroke_gradient_angle = src.stroke_gradient_angle;
+    dst.stroke_gradient_center_x = src.stroke_gradient_center_x;
+    dst.stroke_gradient_center_y = src.stroke_gradient_center_y;
+    dst.stroke_gradient_scale = src.stroke_gradient_scale;
+    dst.stroke_gradient_focal_x = src.stroke_gradient_focal_x;
+    dst.stroke_gradient_focal_y = src.stroke_gradient_focal_y;
+    dst.stroke_gradient_stops = src.stroke_gradient_stops;
+
+    dst.background_enabled = src.background_enabled;
+    dst.background_color = src.background_color;
+    dst.background_opacity = src.background_opacity;
+    dst.background_padding_x = src.background_padding_x;
+    dst.background_padding_y = src.background_padding_y;
+    dst.background_corner_radius = src.background_corner_radius;
+    dst.background_fill_type = src.background_fill_type;
+    dst.background_gradient_type = src.background_gradient_type;
+    dst.background_gradient_start_color = src.background_gradient_start_color;
+    dst.background_gradient_end_color = src.background_gradient_end_color;
+    dst.background_gradient_start_opacity = src.background_gradient_start_opacity;
+    dst.background_gradient_end_opacity = src.background_gradient_end_opacity;
+    dst.background_gradient_opacity = src.background_gradient_opacity;
+
+    dst.align_h = src.align_h;
+    dst.align_v = src.align_v;
+    dst.paragraph_indent_left = src.paragraph_indent_left;
+    dst.paragraph_indent_right = src.paragraph_indent_right;
+    dst.paragraph_indent_first_line = src.paragraph_indent_first_line;
+    dst.paragraph_space_before = src.paragraph_space_before;
+    dst.paragraph_space_after = src.paragraph_space_after;
+    dst.paragraph_hyphenate = src.paragraph_hyphenate;
+    dst.paragraph_indent_left_prop.static_value = src.paragraph_indent_left_prop.static_value;
+    dst.paragraph_indent_right_prop.static_value = src.paragraph_indent_right_prop.static_value;
+    dst.paragraph_indent_first_line_prop.static_value = src.paragraph_indent_first_line_prop.static_value;
+    dst.paragraph_space_before_prop.static_value = src.paragraph_space_before_prop.static_value;
+    dst.paragraph_space_after_prop.static_value = src.paragraph_space_after_prop.static_value;
+}
+
+void TitleEditor::load_sidebar_default_colors()
+{
+    if (g_editor_session_sidebar_colors_initialized) {
+        default_foreground_color_ = g_editor_session_foreground_color;
+        default_background_color_ = g_editor_session_background_color;
+        return;
+    }
+
+    g_editor_session_foreground_color = default_foreground_color_;
+    g_editor_session_background_color = default_background_color_;
+    g_editor_session_sidebar_colors_initialized = true;
+}
+
+void TitleEditor::save_sidebar_default_colors() const
+{
+    g_editor_session_foreground_color = default_foreground_color_;
+    g_editor_session_background_color = default_background_color_;
+    g_editor_session_sidebar_colors_initialized = true;
+}
+
+
+
+void TitleEditor::copy_layer_style_to_new_layer_defaults(const Layer &layer)
+{
+    copy_editor_layer_style_fields(default_new_layer_style_, layer);
+    save_new_layer_defaults();
+}
+
+void TitleEditor::apply_new_layer_defaults(Layer &layer) const
+{
+    copy_editor_layer_style_fields(layer, default_new_layer_style_);
+    const uint32_t fg_argb = argb_from_color(default_foreground_color_);
+    const uint32_t bg_argb = argb_from_color(default_background_color_);
+    const bool text_like = layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker;
+    if (text_like) {
+        // Text, Clock and Ticker layers use text_color for solid fill rendering,
+        // but they also share the generic fill_type / gradient fields with shape
+        // layers. Keep those generic fill defaults intact so the sidebar
+        // foreground swatch behaves like Photoshop/Illustrator for every new
+        // drawable object, not only shapes.
+        layer.fill_type = default_new_layer_style_.fill_type;
+
+        const uint32_t default_solid_fill =
+            (default_new_layer_style_.fill_color != 0) ? default_new_layer_style_.fill_color :
+            ((default_new_layer_style_.text_color != 0) ? default_new_layer_style_.text_color : fg_argb);
+
+        if (layer.fill_type == 1) {
+            // Gradient text still needs a valid solid fallback/selection color.
+            layer.text_color = (default_new_layer_style_.text_color != 0)
+                ? default_new_layer_style_.text_color
+                : default_new_layer_style_.gradient_start_color;
+            if (layer.text_color == 0)
+                layer.text_color = fg_argb;
+        } else {
+            layer.fill_type = 0;
+            layer.text_color = default_solid_fill;
+            layer.fill_color = default_solid_fill;
+        }
+
+        layer.stroke_color = (default_new_layer_style_.stroke_color != 0)
+            ? default_new_layer_style_.stroke_color
+            : bg_argb;
+
+        RichTextCharFormat fmt = layer_char_format_for_editor(layer);
+        layer.rich_text.default_format = fmt;
+        layer.rich_text.default_paragraph_format.align_h = layer.align_h;
+        layer.rich_text.default_paragraph_format.align_v = layer.align_v;
+        apply_rich_text_format_to_layer_range(layer, fmt, (RichTextCharFontFamily | RichTextCharFontStyle | RichTextCharFontSize | RichTextCharBold | RichTextCharItalic | RichTextCharUnderline | RichTextCharStrikethrough | RichTextCharTracking | RichTextCharScaleX | RichTextCharScaleY | RichTextCharBaselineShift | RichTextCharFillColor | RichTextCharKerning | RichTextCharTextStyle | RichTextCharLigatures | RichTextCharStylisticAlternates | RichTextCharFractions | RichTextCharOpenTypeFeatures | RichTextCharLanguage), false);
+    } else if (layer.type == LayerType::Shape || layer.type == LayerType::SolidRect) {
+        layer.fill_color = (default_new_layer_style_.fill_color != 0) ? default_new_layer_style_.fill_color : fg_argb;
+        layer.stroke_color = (default_new_layer_style_.stroke_color != 0) ? default_new_layer_style_.stroke_color : bg_argb;
+    }
+}
+
+void TitleEditor::load_new_layer_defaults()
+{
+    if (g_editor_session_new_layer_defaults_initialized) {
+        default_new_layer_style_ = g_editor_session_new_layer_style;
+        return;
+    }
+
+    g_editor_session_new_layer_style = default_new_layer_style_;
+    g_editor_session_new_layer_defaults_initialized = true;
+}
+
+
+void TitleEditor::save_new_layer_defaults() const
+{
+    g_editor_session_new_layer_style = default_new_layer_style_;
+    g_editor_session_new_layer_defaults_initialized = true;
+}
+
+
+void TitleEditor::set_default_sidebar_colors_from_layer(const Layer &layer)
+{
+    const double lt = std::clamp(playhead_ - layer.in_time, 0.0,
+                                 std::max(0.0, layer.out_time - layer.in_time));
+    const bool is_text_like = layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+                              layer.type == LayerType::Ticker;
+    default_foreground_color_ = color_from_argb(is_text_like ? eval_text_color(layer, lt) : eval_fill_color(layer, lt));
+    default_background_color_ = color_from_argb(eval_outline_color(layer, lt));
+    copy_layer_style_to_new_layer_defaults(layer);
+
+    // For text-like layers the visible fill color lives in text_color, while
+    // shape-like layers use fill_color. Mirror the solid text fill into the
+    // generic fill default so the next Shape/Text/Clock/Ticker starts with the
+    // same foreground fill regardless of which layer type changed it.
+    if (is_text_like) {
+        default_new_layer_style_.fill_type = layer.fill_type;
+        if (layer.fill_type == 0)
+            default_new_layer_style_.fill_color = is_text_like ? eval_text_color(layer, lt) : eval_fill_color(layer, lt);
+        default_new_layer_style_.text_color = eval_text_color(layer, lt);
+    } else {
+        default_new_layer_style_.text_color = eval_fill_color(layer, lt);
+    }
+
+    save_sidebar_default_colors();
+    save_new_layer_defaults();
+}
+
+void TitleEditor::update_sidebar_color_swatches(std::shared_ptr<Layer> layer)
+{
+    if (!tools_sidebar_) return;
+    if (layer) {
+        const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                     std::max(0.0, layer->out_time - layer->in_time));
+        const bool is_text_like = layer->type == LayerType::Text || layer->type == LayerType::Clock ||
+                                  layer->type == LayerType::Ticker;
+        const uint32_t fg = is_text_like ? eval_text_color(*layer, lt) : eval_fill_color(*layer, lt);
+        const uint32_t bg = eval_outline_color(*layer, lt);
+        // Show the actual active fill in the sidebar swatch for every layer type that
+        // supports gradients, including Text / Clock / Ticker. Previously text-like
+        // layers were forced to a solid color fallback, so their gradient state was
+        // stored on the layer but never visible in the sidebar swatch.
+        if (layer->fill_type == 1) {
+            tools_sidebar_->set_foreground_gradient(color_from_argb(layer->gradient_start_color),
+                                                    color_from_argb(layer->gradient_end_color),
+                                                    layer->gradient_type);
+        } else {
+            tools_sidebar_->set_foreground_color(color_from_argb(fg));
+        }
+        if (layer->stroke_fill_type == 2) {
+            tools_sidebar_->set_background_gradient(color_from_argb(layer->stroke_gradient_start_color),
+                                                    color_from_argb(layer->stroke_gradient_end_color),
+                                                    layer->stroke_gradient_type);
+        } else {
+            tools_sidebar_->set_background_color(color_from_argb(bg));
+        }
+    } else {
+        if (default_new_layer_style_.fill_type == 1) {
+            tools_sidebar_->set_foreground_gradient(color_from_argb(default_new_layer_style_.gradient_start_color),
+                                                    color_from_argb(default_new_layer_style_.gradient_end_color),
+                                                    default_new_layer_style_.gradient_type);
+        } else {
+            tools_sidebar_->set_foreground_color(default_foreground_color_);
+        }
+        if (default_new_layer_style_.stroke_fill_type == 2) {
+            tools_sidebar_->set_background_gradient(color_from_argb(default_new_layer_style_.stroke_gradient_start_color),
+                                                    color_from_argb(default_new_layer_style_.stroke_gradient_end_color),
+                                                    default_new_layer_style_.stroke_gradient_type);
+        } else {
+            tools_sidebar_->set_background_color(default_background_color_);
+        }
+    }
+}
+
+
+void TitleEditor::open_default_sidebar_color_popup(bool foreground)
+{
+    QColor &target = foreground ? default_foreground_color_ : default_background_color_;
+
+    QDialog popup(this, Qt::Popup | Qt::FramelessWindowHint);
+    popup.setModal(true);
+    popup.setMinimumWidth(320);
+    popup.setStyleSheet(QStringLiteral(
+        "QDialog{background:%1;border:1px solid %2;}"
+        "QTabWidget::pane{border:1px solid %2;background:%1;}"
+        "QTabBar::tab{color:%3;background:%4;border:1px solid %2;padding:5px 10px;}"
+        "QTabBar::tab:selected{background:%5;color:%6;}"
+        "QLabel{color:%3;background:transparent;}"
+        "QLineEdit{color:%3;background:%7;border:1px solid %2;border-radius:2px;padding:3px 5px;}"
+        "QPushButton{color:%3;background:%4;border:1px solid %2;border-radius:2px;padding:4px 8px;}"
+        "QPushButton:hover{background:%8;}"
+    ).arg(qApp->palette().color(QPalette::Window).name(QColor::HexRgb),
+          qApp->palette().color(QPalette::Mid).name(QColor::HexRgb),
+          qApp->palette().color(QPalette::WindowText).name(QColor::HexRgb),
+          qApp->palette().color(QPalette::Button).name(QColor::HexRgb),
+          qApp->palette().color(QPalette::Highlight).name(QColor::HexRgb),
+          qApp->palette().color(QPalette::HighlightedText).name(QColor::HexRgb),
+          qApp->palette().color(QPalette::Base).name(QColor::HexRgb),
+          (qApp->palette().color(QPalette::Button).lightness() < 128
+              ? qApp->palette().color(QPalette::Button).lighter(125)
+              : qApp->palette().color(QPalette::Button).darker(108)).name(QColor::HexRgb)));
+
+    auto *root = new QVBoxLayout(&popup);
+    root->setContentsMargins(8, 8, 8, 8);
+    auto *tabs = new QTabWidget(&popup);
+    root->addWidget(tabs);
+
+    auto *color_tab = new QWidget(tabs);
+    auto *color_layout = new QVBoxLayout(color_tab);
+    color_layout->setContentsMargins(8, 8, 8, 8);
+    color_layout->setSpacing(8);
+    auto *label = new QLabel(foreground ? QStringLiteral("Default foreground color")
+                                         : QStringLiteral("Default background color"), color_tab);
+    auto *swatch = new QPushButton(color_tab);
+    swatch->setFixedSize(90, 52);
+    auto *hex = new QLineEdit(color_tab);
+    auto update_controls = [&]() {
+        swatch->setStyleSheet(QStringLiteral("QPushButton{background:%1;border:1px solid %2;border-radius:2px;}")
+            .arg(target.name(QColor::HexArgb), qApp->palette().color(QPalette::Mid).name(QColor::HexRgb)));
+        hex->setText(target.alpha() < 255 ? target.name(QColor::HexArgb).toUpper()
+                                          : target.name(QColor::HexRgb).toUpper());
+        update_sidebar_color_swatches(nullptr);
+    };
+    auto apply_color = [&](const QColor &color) {
+        if (!color.isValid()) return;
+        target = color;
+        const uint32_t argb = argb_from_color(color);
+        if (foreground) {
+            default_new_layer_style_.fill_type = 0;
+            default_new_layer_style_.fill_color = argb;
+            default_new_layer_style_.text_color = argb;
+        } else {
+            default_new_layer_style_.stroke_fill_type = 1;
+            default_new_layer_style_.stroke_color = argb;
+        }
+        save_sidebar_default_colors();
+        save_new_layer_defaults();
+        update_controls();
+    };
+    connect(swatch, &QPushButton::clicked, &popup, [&]() {
+        QColor picked = QColorDialog::getColor(target, &popup,
+            foreground ? QStringLiteral("Foreground Color") : QStringLiteral("Background Color"),
+            QColorDialog::ShowAlphaChannel);
+        apply_color(picked);
+    });
+    connect(hex, &QLineEdit::editingFinished, &popup, [&]() {
+        QColor parsed(hex->text().trimmed());
+        if (parsed.isValid()) apply_color(parsed);
+        else update_controls();
+    });
+    color_layout->addWidget(label);
+    color_layout->addWidget(swatch, 0, Qt::AlignLeft);
+    color_layout->addWidget(hex);
+    tabs->addTab(color_tab, QStringLiteral("Color"));
+
+    auto *gradient_tab = new QWidget(tabs);
+    auto *gradient_layout = new QVBoxLayout(gradient_tab);
+    auto *gradient_label = new QLabel(QStringLiteral("Gradient defaults will use the main layer selector when a layer is selected."), gradient_tab);
+    gradient_label->setWordWrap(true);
+    gradient_layout->addWidget(gradient_label);
+    gradient_layout->addStretch(1);
+    tabs->addTab(gradient_tab, QStringLiteral("Gradient"));
+
+    auto *swatches_tab = new QWidget(tabs);
+    auto *swatches_layout = new QVBoxLayout(swatches_tab);
+    auto *swatches_label = new QLabel(QStringLiteral("Saved foreground/background defaults are used for new objects."), swatches_tab);
+    swatches_label->setWordWrap(true);
+    swatches_layout->addWidget(swatches_label);
+    swatches_layout->addStretch(1);
+    tabs->addTab(swatches_tab, QStringLiteral("Swatches"));
+
+    update_controls();
+    popup.adjustSize();
+    const QPoint cursor_pos = QCursor::pos();
+    const QPoint desired_pos(cursor_pos.x() + 14, cursor_pos.y() - popup.height() / 2);
+    popup.move(clamp_popup_position_to_screen(desired_pos, popup.size(), this));
+    popup.exec();
+}
+
 void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playhead)
 {
     if (layer_props_dock_) {
@@ -3258,6 +3680,7 @@ void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playh
             : QStringLiteral("Properties: No selection"));
     }
     if (props_) props_->set_layer(layer, playhead);
+    update_sidebar_color_swatches(layer);
     if (effects_panel_) effects_panel_->set_layer(layer, playhead);
 }
 
@@ -3298,6 +3721,14 @@ void TitleEditor::on_title_modified(bool push_undo)
     canvas_->refresh_preview();
     if (title_props_) title_props_->set_title(title_);
     if (timeline_) timeline_->set_title(title_);
+    if (title_ && !sel_layer_id_.empty()) {
+        if (auto layer = title_->find_layer(sel_layer_id_)) {
+            set_default_sidebar_colors_from_layer(*layer);
+            update_sidebar_color_swatches(layer);
+        }
+    } else {
+        update_sidebar_color_swatches(nullptr);
+    }
     if (push_undo)
         push_undo_snapshot();
     save_live_edit();

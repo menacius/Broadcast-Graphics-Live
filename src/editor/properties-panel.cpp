@@ -3040,9 +3040,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         emit gradient_editor_active_changed(is_gradient_value);
         auto *source_button = stroke ? btn_appearance_stroke_color_ : btn_appearance_fill_color_;
         popup.adjustSize();
-        const QPoint button_center = source_button->mapToGlobal(QPoint(source_button->width() / 2,
-                                                                        source_button->height() + 2));
-        const QPoint desired_pos(button_center.x() - popup.width() / 2, button_center.y());
+        const QPoint cursor_pos = QCursor::pos();
+        QPoint desired_pos(cursor_pos.x() + 14, cursor_pos.y() - popup.height() / 2);
+        if (source_button && source_button->rect().contains(source_button->mapFromGlobal(cursor_pos))) {
+            const QPoint button_right = source_button->mapToGlobal(QPoint(source_button->width() + 4, 0));
+            desired_pos = QPoint(button_right.x(), button_right.y());
+        }
         popup.move(clamp_popup_position_to_screen(desired_pos, popup.size(), source_button));
         popup.exec();
         emit gradient_editor_active_changed(false);
@@ -4471,7 +4474,7 @@ void PropertiesPanel::load_values()
     if (btn_superscript_) btn_superscript_->setChecked(layer_->text_style == 3);
     if (btn_subscript_) btn_subscript_->setChecked(layer_->text_style == 4);
     if (btn_underline_) btn_underline_->setChecked(layer_->text_underline);
-    const bool use_rich_char_summary = (layer_->type == LayerType::Text || layer_->type == LayerType::Ticker) && !is_clock;
+    const bool use_rich_char_summary = is_text_like;
     if (use_rich_char_summary) {
         const bool active = active_text_edit_layer_id_ == layer_->id;
         RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer_, active);
@@ -4654,3 +4657,48 @@ void PropertiesPanel::load_values()
     loading_values_ = false;
 }
 
+
+void PropertiesPanel::open_foreground_color_selector()
+{
+    if (btn_appearance_fill_color_ && btn_appearance_fill_color_->isEnabled())
+        btn_appearance_fill_color_->click();
+}
+
+void PropertiesPanel::open_background_color_selector()
+{
+    if (btn_appearance_stroke_color_ && btn_appearance_stroke_color_->isEnabled())
+        btn_appearance_stroke_color_->click();
+}
+
+void PropertiesPanel::swap_foreground_background_colors()
+{
+    if (!layer_ || loading_values_) return;
+    const double t = std::clamp(playhead_ - layer_->in_time, 0.0,
+                                std::max(0.0, layer_->out_time - layer_->in_time));
+    const uint32_t old_fill = (layer_->type == LayerType::Text || layer_->type == LayerType::Clock || layer_->type == LayerType::Ticker)
+                                  ? eval_text_color(*layer_, t)
+                                  : eval_fill_color(*layer_, t);
+    const uint32_t old_stroke = eval_outline_color(*layer_, t);
+
+    layer_->fill_type = 0;
+    layer_->stroke_fill_type = 1;
+    layer_->outline_enabled = true;
+    if (layer_->type == LayerType::Text || layer_->type == LayerType::Clock || layer_->type == LayerType::Ticker) {
+        layer_->text_color = old_stroke;
+        set_color_channels_at(*layer_, true, t, old_stroke);
+        const bool active = active_text_edit_layer_id_ == layer_->id;
+        RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer_, active);
+        RichTextCharFormat fmt = summary.valid ? summary.format : RichTextCharFormat();
+        fmt.fill.type = 0;
+        fmt.fill.color = old_stroke;
+        apply_rich_text_format_to_layer_range(*layer_, fmt, RichTextCharFillColor, active);
+        emit text_char_format_changed(layer_->id, fmt, RichTextCharFillColor);
+    } else {
+        layer_->fill_color = old_stroke;
+        set_color_channels_at(*layer_, false, t, old_stroke);
+    }
+    layer_->stroke_color = old_fill;
+
+    load_values();
+    emit property_changed(true);
+}

@@ -182,7 +182,7 @@ static void set_static_argb_channels(AnimatedProperty &a, AnimatedProperty &r,
 
 void rich_text_document_sync_layer_mirrors(Layer &layer)
 {
-    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker)
+    if (layer.type != LayerType::Text && layer.type != LayerType::Ticker && layer.type != LayerType::Clock)
         return;
     if (layer.rich_text.empty())
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
@@ -242,6 +242,8 @@ void rich_text_document_sync_layer_mirrors(Layer &layer)
     layer.paragraph_indent_left_prop.static_value = p.indent_left;
     layer.paragraph_indent_right_prop.static_value = p.indent_right;
     layer.paragraph_indent_first_line_prop.static_value = p.indent_first_line;
+    layer.paragraph_space_before_prop.static_value = p.space_before;
+    layer.paragraph_space_after_prop.static_value = p.space_after;
 }
 
 #endif

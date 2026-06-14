@@ -164,6 +164,15 @@ private:
     QWidget *create_styles_panel();
     QWidget *create_color_swatches_panel();
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
+    void update_sidebar_color_swatches(std::shared_ptr<Layer> layer);
+    void set_default_sidebar_colors_from_layer(const Layer &layer);
+    void load_sidebar_default_colors();
+    void save_sidebar_default_colors() const;
+    void copy_layer_style_to_new_layer_defaults(const Layer &layer);
+    void apply_new_layer_defaults(Layer &layer) const;
+    void load_new_layer_defaults();
+    void save_new_layer_defaults() const;
+    void open_default_sidebar_color_popup(bool foreground);
     void load_editor_layout();
     void save_editor_layout() const;
     void reset_default_layout();
@@ -198,6 +207,9 @@ private:
     QDockWidget     *timeline_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
     ToolsSidebar    *tools_sidebar_ = nullptr;
+    QColor           default_foreground_color_ = QColor(34, 34, 34);
+    QColor           default_background_color_ = QColor(255, 255, 255);
+    Layer            default_new_layer_style_;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
     QLineEdit       *title_name_edit_ = nullptr;

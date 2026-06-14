@@ -2107,6 +2107,8 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
                                      Qt::Alignment alignment, const QString &text,
                                      const Layer &layer)
 {
+    struct TickerCache { QString key; QPainterPath path; QRectF bounds; };
+    static TickerCache cache;
     QPainterPath path;
     QFontMetricsF metrics(font);
     const double speed = std::max(1.0, layer.ticker_speed);
