@@ -29,6 +29,93 @@ std::vector<double> guide_values_from_strings(const QStringList &values)
     }
     return out;
 }
+
+bool layer_is_shape_sized(const Layer &layer)
+{
+    return layer.type == LayerType::Shape || layer.type == LayerType::SolidRect;
+}
+
+double shape_resize_metric_factor(double old_w, double old_h, double new_w, double new_h)
+{
+    constexpr double kEpsilon = 1e-6;
+    if (old_w <= kEpsilon || old_h <= kEpsilon || new_w <= kEpsilon || new_h <= kEpsilon)
+        return 1.0;
+    const double sx = new_w / old_w;
+    const double sy = new_h / old_h;
+    const bool changed_x = std::abs(new_w - old_w) > kEpsilon;
+    const bool changed_y = std::abs(new_h - old_h) > kEpsilon;
+    if (changed_x && changed_y)
+        return std::sqrt(std::max(0.0, sx * sy));
+    if (changed_x)
+        return sx;
+    if (changed_y)
+        return sy;
+    return 1.0;
+}
+
+void apply_shape_resize_metrics_from_state(Layer &layer, double old_w, double old_h,
+                                           float start_stroke_width,
+                                           float start_corner_radius_tl,
+                                           float start_corner_radius_tr,
+                                           float start_corner_radius_br,
+                                           float start_corner_radius_bl,
+                                           double new_w, double new_h)
+{
+    if (!layer_is_shape_sized(layer))
+        return;
+    const double factor = shape_resize_metric_factor(old_w, old_h, new_w, new_h);
+    if (!std::isfinite(factor) || factor <= 0.0)
+        return;
+    if (layer.scale_stroke_with_shape &&
+        layer.outline_enabled &&
+        layer.stroke_fill_type != 0 &&
+        start_stroke_width > 0.0f) {
+        layer.stroke_width = (float)std::clamp((double)start_stroke_width * factor, 0.0, 512.0);
+    }
+    if (layer.scale_corners_with_shape) {
+        set_layer_corner_radii(layer,
+                               (float)std::clamp((double)start_corner_radius_tl * factor, 0.0, 9999.0),
+                               (float)std::clamp((double)start_corner_radius_tr * factor, 0.0, 9999.0),
+                               (float)std::clamp((double)start_corner_radius_br * factor, 0.0, 9999.0),
+                               (float)std::clamp((double)start_corner_radius_bl * factor, 0.0, 9999.0));
+    }
+}
+
+std::string unique_canvas_layer_name(const Title &title, const std::string &base_name,
+                                     const std::set<std::string> &exclude_ids,
+                                     std::set<std::string> *reserved_names)
+{
+    std::string base = QString::fromStdString(base_name).trimmed().toStdString();
+    if (base.empty())
+        base = editor_text_std("OBSTitles.Layer");
+
+    std::set<std::string> used;
+    for (const auto &layer : title.layers) {
+        if (!layer || exclude_ids.find(layer->id) != exclude_ids.end()) continue;
+        used.insert(layer->name);
+    }
+    if (reserved_names)
+        used.insert(reserved_names->begin(), reserved_names->end());
+
+    if (used.find(base) == used.end()) {
+        if (reserved_names) reserved_names->insert(base);
+        return base;
+    }
+
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        const std::string candidate = QStringLiteral("%1 %2")
+            .arg(QString::fromStdString(base))
+            .arg(suffix, 2, 10, QChar('0'))
+            .toStdString();
+        if (used.find(candidate) != used.end()) continue;
+        if (reserved_names) reserved_names->insert(candidate);
+        return candidate;
+    }
+
+    const std::string fallback = base + " " + TitleDataStore::make_uuid().substr(0, 8);
+    if (reserved_names) reserved_names->insert(fallback);
+    return fallback;
+}
 }
 
 CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
@@ -924,6 +1011,57 @@ QPointF CanvasPreview::corner_radius_handle_local_pos(const Layer &layer, const 
     }
 }
 
+QPointF CanvasPreview::corner_radius_visual_offset_view(const Layer &layer, const QRectF &box, DragMode mode) const
+{
+    constexpr double kCornerRadiusHandleOffsetPx = 20.0;
+    const double max_radius = std::max(0.0, std::min(box.width(), box.height()) / 2.0);
+    auto radius = [max_radius](float value) {
+        return std::clamp((double)value, 0.0, max_radius);
+    };
+    QPointF corner;
+    QPointF inward;
+    double current_radius = 0.0;
+    switch (mode) {
+    case DragMode::CornerRadiusTL:
+        corner = box.topLeft();
+        inward = corner + QPointF(1.0, 1.0);
+        current_radius = radius(layer.corner_radius_tl);
+        break;
+    case DragMode::CornerRadiusTR:
+        corner = box.topRight();
+        inward = corner + QPointF(-1.0, 1.0);
+        current_radius = radius(layer.corner_radius_tr);
+        break;
+    case DragMode::CornerRadiusBR:
+        corner = box.bottomRight();
+        inward = corner + QPointF(-1.0, -1.0);
+        current_radius = radius(layer.corner_radius_br);
+        break;
+    case DragMode::CornerRadiusBL:
+        corner = box.bottomLeft();
+        inward = corner + QPointF(1.0, -1.0);
+        current_radius = radius(layer.corner_radius_bl);
+        break;
+    default:
+        return QPointF();
+    }
+
+    const QPointF corner_view = canvas_to_view(layer_to_canvas(layer, corner));
+    const QPointF inward_view = canvas_to_view(layer_to_canvas(layer, inward));
+    const QLineF direction(corner_view, inward_view);
+    if (direction.length() <= 0.001)
+        return QPointF();
+    const double t = max_radius > 0.0 ? std::clamp(current_radius / max_radius, 0.0, 1.0) : 0.0;
+    const double offset_px = kCornerRadiusHandleOffsetPx * (1.0 - 2.0 * t);
+    return (inward_view - corner_view) / direction.length() * offset_px;
+}
+
+QPointF CanvasPreview::corner_radius_handle_view_pos(const Layer &layer, const QRectF &box, DragMode mode) const
+{
+    return canvas_to_view(layer_to_canvas(layer, corner_radius_handle_local_pos(layer, box, mode))) +
+           corner_radius_visual_offset_view(layer, box, mode);
+}
+
 CanvasPreview::DragMode CanvasPreview::hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const
 {
     if (!layer_supports_corner_radius_handles(layer))
@@ -933,7 +1071,7 @@ CanvasPreview::DragMode CanvasPreview::hit_test_corner_radius_handles(const Laye
         return DragMode::None;
     for (DragMode mode : {DragMode::CornerRadiusTL, DragMode::CornerRadiusTR,
                           DragMode::CornerRadiusBR, DragMode::CornerRadiusBL}) {
-        const QPointF view = canvas_to_view(layer_to_canvas(layer, corner_radius_handle_local_pos(layer, box, mode)));
+        const QPointF view = corner_radius_handle_view_pos(layer, box, mode);
         if (QLineF(view_pt, view).length() <= CANVAS_CONTROL_HIT_RADIUS_PX * 1.25)
             return mode;
     }
@@ -959,17 +1097,16 @@ void CanvasPreview::draw_corner_radius_handles(QPainter &p, const Layer &layer)
         return canvas_to_view(layer_to_canvas(layer, local));
     };
     auto draw_handle = [&](DragMode mode) {
-        const QPointF handle = corner_radius_handle_local_pos(layer, box, mode);
         QPointF corner;
         switch (mode) {
         case DragMode::CornerRadiusTL: corner = box.topLeft(); break;
         case DragMode::CornerRadiusTR: corner = box.topRight(); break;
         case DragMode::CornerRadiusBR: corner = box.bottomRight(); break;
         case DragMode::CornerRadiusBL: corner = box.bottomLeft(); break;
-        default: return;
+            default: return;
         }
-        p.drawLine(to_view(corner), to_view(handle));
-        const QPointF view = to_view(handle);
+        const QPointF view = corner_radius_handle_view_pos(layer, box, mode);
+        p.drawLine(to_view(corner), view);
         p.setPen(QPen(QColor(25, 25, 25, 230), 3.0));
         p.setBrush(QColor(255, 255, 255, 245));
         p.drawEllipse(view, 5.0, 5.0);
@@ -1014,26 +1151,38 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
         return false;
 
     const QRectF box = corner_radius_drag_.local_rect;
-    const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
-    double radius = 0.0;
-    switch (drag_mode_) {
-    case DragMode::CornerRadiusTL:
-        radius = std::min(local.x() - box.left(), local.y() - box.top());
-        break;
-    case DragMode::CornerRadiusTR:
-        radius = std::min(box.right() - local.x(), local.y() - box.top());
-        break;
-    case DragMode::CornerRadiusBR:
-        radius = std::min(box.right() - local.x(), box.bottom() - local.y());
-        break;
-    case DragMode::CornerRadiusBL:
-        radius = std::min(local.x() - box.left(), box.bottom() - local.y());
-        break;
-    default:
-        return false;
-    }
     const double max_radius = std::max(0.0, std::min(box.width(), box.height()) / 2.0);
-    radius = std::clamp(radius, 0.0, max_radius);
+    auto radius_from_local = [&](const QPointF &local) {
+        switch (drag_mode_) {
+        case DragMode::CornerRadiusTL:
+            return std::min(local.x() - box.left(), local.y() - box.top());
+        case DragMode::CornerRadiusTR:
+            return std::min(box.right() - local.x(), local.y() - box.top());
+        case DragMode::CornerRadiusBR:
+            return std::min(box.right() - local.x(), box.bottom() - local.y());
+        case DragMode::CornerRadiusBL:
+            return std::min(local.x() - box.left(), box.bottom() - local.y());
+        default:
+            return 0.0;
+        }
+    };
+    auto set_preview_radius = [&](double value) {
+        switch (drag_mode_) {
+        case DragMode::CornerRadiusTL: layer->corner_radius_tl = (float)value; break;
+        case DragMode::CornerRadiusTR: layer->corner_radius_tr = (float)value; break;
+        case DragMode::CornerRadiusBR: layer->corner_radius_br = (float)value; break;
+        case DragMode::CornerRadiusBL: layer->corner_radius_bl = (float)value; break;
+        default: break;
+        }
+    };
+
+    double radius = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        set_preview_radius(radius);
+        const QPointF local = canvas_to_layer(*layer, view_to_canvas(
+            view_pt - corner_radius_visual_offset_view(*layer, box, drag_mode_)));
+        radius = std::clamp(radius_from_local(local), 0.0, max_radius);
+    }
     if (modifiers.testFlag(Qt::ShiftModifier))
         radius = std::round(radius);
 
@@ -1222,6 +1371,7 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
     std::map<std::string, std::string> cloned_ids_by_original;
     std::map<std::string, std::shared_ptr<Layer>> clones_by_original;
     std::vector<std::shared_ptr<Layer>> clones;
+    std::set<std::string> reserved_names;
 
     for (const auto &layer : title_->layers) {
         if (!layer || layer->locked || selected_ids.find(layer->id) == selected_ids.end())
@@ -1231,6 +1381,7 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
         clone->id = TitleDataStore::make_uuid();
         clone->name = clone->name.empty() ? editor_text_std("OBSTitles.LayerCopy") :
                                             clone->name + editor_text_std("OBSTitles.CopySuffix");
+        clone->name = unique_canvas_layer_name(*title_, clone->name, {}, &reserved_names);
         cloned_ids_by_original[layer->id] = clone->id;
         clones_by_original[layer->id] = clone;
         clones.push_back(clone);
@@ -1279,7 +1430,12 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
                                       (float)eval_box_height(*clone, lt),
                                       clone->scale_x.evaluate(lt),
                                       clone->scale_y.evaluate(lt),
-                                      clone->rotation.evaluate(lt)});
+                                      clone->rotation.evaluate(lt),
+                                      clone->stroke_width,
+                                      clone->corner_radius_tl,
+                                      clone->corner_radius_tr,
+                                      clone->corner_radius_br,
+                                      clone->corner_radius_bl});
     }
     sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
     drag_start_selection_bounds_ = selected_canvas_bounds();
@@ -1680,6 +1836,14 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                     layer->rect_height = std::max(0.0f, (float)(state.h * sy));
                     set_animated_value(layer->box_width, lt, layer->rect_width);
                     set_animated_value(layer->box_height, lt, layer->rect_height);
+                    apply_shape_resize_metrics_from_state(*layer, state.w, state.h,
+                                                          state.stroke_width,
+                                                          state.corner_radius_tl,
+                                                          state.corner_radius_tr,
+                                                          state.corner_radius_br,
+                                                          state.corner_radius_bl,
+                                                          layer->rect_width,
+                                                          layer->rect_height);
                 }
             }
         }
@@ -1736,7 +1900,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             return start_xf.inverted().map(canvas_pt);
         };
         const bool alt_resize = modifiers.testFlag(Qt::AltModifier);
-        const bool lock_aspect_resize = layer->type == LayerType::Image &&
+        const bool lock_aspect_resize = (layer->type == LayerType::Image || layer_is_shape_sized(*layer)) &&
                                         layer->lock_aspect_ratio &&
                                         drag_start_h_ > 0.0f;
         Qt::KeyboardModifiers resize_modifiers = modifiers;
@@ -1851,6 +2015,16 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             layer->rect_height = (float)new_h;
             set_animated_value(layer->box_width, lt, new_w);
             set_animated_value(layer->box_height, lt, new_h);
+            if (start_state) {
+                apply_shape_resize_metrics_from_state(*layer, start_state->w, start_state->h,
+                                                      start_state->stroke_width,
+                                                      start_state->corner_radius_tl,
+                                                      start_state->corner_radius_tr,
+                                                      start_state->corner_radius_br,
+                                                      start_state->corner_radius_bl,
+                                                      new_w,
+                                                      new_h);
+            }
             if (start_state) {
                 const QRectF actual_rect(-drag_start_origin_x_ * new_w,
                                          -drag_start_origin_y_ * new_h,
@@ -3534,7 +3708,12 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                                       (float)eval_box_height(*selected, lt),
                                       selected->scale_x.evaluate(lt),
                                       selected->scale_y.evaluate(lt),
-                                      selected->rotation.evaluate(lt)});
+                                      selected->rotation.evaluate(lt),
+                                      selected->stroke_width,
+                                      selected->corner_radius_tl,
+                                      selected->corner_radius_tr,
+                                      selected->corner_radius_br,
+                                      selected->corner_radius_bl});
     }
 
     double lt = std::clamp(playhead_ - layer->in_time, 0.0,
@@ -3859,19 +4038,45 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
 
 void CanvasPreview::wheelEvent(QWheelEvent *ev)
 {
-    if (!title_) return;
-    QPointF anchor_canvas = view_to_canvas(ev->position());
-    int next = zoom_percent_;
-    if (ev->angleDelta().y() > 0)
-        next = (int)std::round(next * 1.1);
-    else
-        next = (int)std::round(next / 1.1);
-    zoom_percent_ = std::clamp(next, 5, 1600);
-    fit_zoom_active_ = false;
-    QPointF origin_without_pan = centered_view_origin();
-    double scale = view_scale();
-    pan_offset_ = ev->position() - origin_without_pan - QPointF(anchor_canvas.x() * scale, anchor_canvas.y() * scale);
-    emit zoom_percent_changed(zoom_percent_);
+    if (!title_) {
+        ev->ignore();
+        return;
+    }
+
+    QPointF wheel_delta = ev->pixelDelta();
+    if (wheel_delta.isNull()) {
+        constexpr double kWheelPanStepPx = 80.0;
+        wheel_delta = QPointF(ev->angleDelta()) / 120.0 * kWheelPanStepPx;
+    }
+
+    const Qt::KeyboardModifiers mods = ev->modifiers();
+    if (mods.testFlag(Qt::AltModifier)) {
+        const double zoom_delta = !qFuzzyIsNull(wheel_delta.y()) ? wheel_delta.y() : wheel_delta.x();
+        if (qFuzzyIsNull(zoom_delta)) {
+            ev->accept();
+            return;
+        }
+
+        const QPointF anchor_canvas = view_to_canvas(ev->position());
+        const double factor = std::pow(1.1, zoom_delta / 80.0);
+        const int next = (int)std::round((double)zoom_percent_ * factor);
+        zoom_percent_ = std::clamp(next, 5, 1600);
+        fit_zoom_active_ = false;
+        const QPointF origin_without_pan = centered_view_origin();
+        const double scale = view_scale();
+        pan_offset_ = ev->position() - origin_without_pan -
+                      QPointF(anchor_canvas.x() * scale, anchor_canvas.y() * scale);
+        emit zoom_percent_changed(zoom_percent_);
+    } else if (mods.testFlag(Qt::ControlModifier)) {
+        const double horizontal_delta = !qFuzzyIsNull(wheel_delta.y()) ? wheel_delta.y() : wheel_delta.x();
+        pan_offset_.rx() += horizontal_delta;
+        fit_zoom_active_ = false;
+    } else {
+        const double vertical_delta = !qFuzzyIsNull(wheel_delta.y()) ? wheel_delta.y() : wheel_delta.x();
+        pan_offset_.ry() += vertical_delta;
+        fit_zoom_active_ = false;
+    }
+
     position_text_editor();
     update();
     ev->accept();
@@ -3887,4 +4092,3 @@ void CanvasPreview::resizeEvent(QResizeEvent *)
 /* ══════════════════════════════════════════════════════════════════
  *  LayerStack
  * ══════════════════════════════════════════════════════════════════ */
-

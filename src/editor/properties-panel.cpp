@@ -197,13 +197,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_scale_y_ = mk_dspin(-10000.0, 10000.0, 1.0);
     spn_scale_x_->setSuffix("%");
     spn_scale_y_->setSuffix("%");
+    spn_transform_size_w_ = mk_dspin(0.0, 9999.0, 10.0);
+    spn_transform_size_h_ = mk_dspin(0.0, 9999.0, 10.0);
     chk_scale_lock_ = new TransformLockCheckBox(inner);
     chk_scale_lock_->setChecked(true);
+    chk_transform_size_lock_ = new TransformLockCheckBox(inner);
+    chk_transform_size_lock_->setChecked(true);
     spn_rot_     = mk_dspin(-9999,  9999,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
     chk_scene_mask_ = new QCheckBox(QStringLiteral("Use as Scene Mask"), inner);
     chk_scene_mask_->setToolTip(QStringLiteral("Render a configured OBS scene through this layer shape when the title source is used in OBS."));
     style_checkbox(chk_scene_mask_);
+    chk_shape_scale_stroke_ = new QCheckBox(QStringLiteral("Scale Stroke"), inner);
+    chk_shape_scale_stroke_->setToolTip(QStringLiteral("Scale the Appearance stroke width when shape size changes."));
+    style_checkbox(chk_shape_scale_stroke_);
+    chk_shape_scale_corners_ = new QCheckBox(QStringLiteral("Scale Corners"), inner);
+    chk_shape_scale_corners_->setToolTip(QStringLiteral("Scale shape corner radii when shape size changes."));
+    style_checkbox(chk_shape_scale_corners_);
     spn_origin_x_ = mk_dspin(0.0, 1.0, 0.05);
     spn_origin_y_ = mk_dspin(0.0, 1.0, 0.05);
     spn_origin_x_->setDecimals(2);
@@ -221,6 +231,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_kf_pos_y_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleYKeyframe"));
     btn_kf_scale_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleScaleXKeyframe"));
     btn_kf_scale_y_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleScaleYKeyframe"));
+    btn_kf_transform_size_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleWidthKeyframe"));
+    btn_kf_transform_size_->setToolTip(QStringLiteral("Toggle size keyframe"));
     btn_kf_rotation_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleRotationKeyframe"));
     btn_kf_opacity_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOpacityKeyframe"));
     btn_kf_origin_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOriginXKeyframe"));
@@ -283,6 +295,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_transform_spin(spn_py_);
     style_transform_spin(spn_scale_x_);
     style_transform_spin(spn_scale_y_);
+    style_transform_spin(spn_transform_size_w_);
+    style_transform_spin(spn_transform_size_h_);
     style_transform_spin(spn_origin_x_);
     style_transform_spin(spn_origin_y_);
     style_transform_spin(spn_rot_);
@@ -320,6 +334,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     QWidget *field_pos_y = make_transform_field(QStringLiteral("Y"), spn_py_);
     QWidget *field_scale_x = make_transform_field(QStringLiteral("W"), spn_scale_x_);
     QWidget *field_scale_y = make_transform_field(QStringLiteral("H"), spn_scale_y_);
+    QWidget *field_transform_size_w = make_transform_field(QStringLiteral("W"), spn_transform_size_w_);
+    QWidget *field_transform_size_h = make_transform_field(QStringLiteral("H"), spn_transform_size_h_);
     QWidget *field_origin_x = make_transform_field(QStringLiteral("X"), spn_origin_x_);
     QWidget *field_origin_y = make_transform_field(QStringLiteral("Y"), spn_origin_y_);
     QWidget *field_rotation = make_transform_field(QStringLiteral("R"), spn_rot_);
@@ -336,6 +352,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_scale_lock_->setText(QString());
     chk_scale_lock_->setToolTip(obsgs_tr("OBSTitles.ScaleLock"));
     chk_scale_lock_->setFixedSize(24, 24);
+    chk_transform_size_lock_->setText(QString());
+    chk_transform_size_lock_->setToolTip(obsgs_tr("OBSTitles.LockAspectRatio"));
+    chk_transform_size_lock_->setFixedSize(24, 24);
 
     const QString transform_label_style = QStringLiteral("color:%1;font-size:12px;background:transparent;").arg(panel_text_name);
     auto add_transform_row = [&](int row, QPushButton *kf, const QString &label, QWidget *drag_field, QWidget *first,
@@ -357,10 +376,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         transform_grid->addWidget(first, row, 2, Qt::AlignLeft);
         if (middle) transform_grid->addWidget(middle, row, 3, Qt::AlignCenter);
         if (second) transform_grid->addWidget(second, row, 4, Qt::AlignLeft);
+        return text;
     };
 
     add_transform_row(0, btn_kf_pos_x_, QStringLiteral("Location"), field_pos_x, field_pos_x, nullptr, field_pos_y);
-    add_transform_row(1, btn_kf_scale_x_, QStringLiteral("Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
+    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, QStringLiteral("Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
+    transform_scale_field_x_ = field_scale_x;
+    transform_scale_field_y_ = field_scale_y;
+    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, QStringLiteral("Size"), field_transform_size_w,
+                                              field_transform_size_w, chk_transform_size_lock_, field_transform_size_h);
+    transform_size_field_w_ = field_transform_size_w;
+    transform_size_field_h_ = field_transform_size_h;
     auto *anchor_label = new NumericDragLabel(QStringLiteral("Anchor"), field_origin_x, transform_box_,
                                               [this]() {
                                                   if (loading_values_) return;
@@ -378,6 +404,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_grid->addWidget(field_origin_x, 2, 2, Qt::AlignLeft);
     transform_grid->addWidget(field_origin_y, 2, 4, Qt::AlignLeft);
     add_transform_row(3, btn_kf_rotation_, QStringLiteral("Rotation"), field_rotation, field_rotation, nullptr, btn_anchor_grid_);
+    row_shape_scale_options_ = new QWidget(transform_box_);
+    row_shape_scale_options_->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *shape_scale_options_layout = new QHBoxLayout(row_shape_scale_options_);
+    shape_scale_options_layout->setContentsMargins(0, 0, 0, 0);
+    shape_scale_options_layout->setSpacing(10);
+    shape_scale_options_layout->addWidget(chk_shape_scale_stroke_);
+    shape_scale_options_layout->addWidget(chk_shape_scale_corners_);
+    shape_scale_options_layout->addStretch(1);
+    transform_grid->addWidget(row_shape_scale_options_, 4, 1, 1, 4);
 
     cmb_anchor_->hide();
     tform_layout->addLayout(transform_grid);
@@ -1032,6 +1067,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *size_label = new QLabel(QStringLiteral("Size"), rect_box_);
     size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
+    shape_size_label_ = size_label;
+    shape_size_field_w_ = field_width;
+    shape_size_field_h_ = field_height;
     shape_grid->addWidget(btn_kf_width_, 0, 0, Qt::AlignCenter);
     shape_grid->addWidget(size_label, 0, 1);
     shape_grid->addWidget(field_width, 0, 2);
@@ -1164,141 +1202,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     vl->addWidget(gradient_box_);
     make_collapsible(gradient_box_);
 
-    /* ── Background Gradient Properties ── */
-    background_gradient_box_ = new QGroupBox(obsgs_tr("OBSTitles.BackgroundGradientProperties"), inner);
-    background_gradient_box_->setStyleSheet(section_style);
-    auto *bgfl = new QFormLayout(background_gradient_box_);
-    style_form(bgfl);
-    cmb_background_gradient_type_ = new QComboBox(inner);
-    cmb_background_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
-    cmb_background_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-    cmb_background_gradient_type_->addItem(QStringLiteral("Angle"), 2);
-    cmb_background_gradient_type_->addItem(QStringLiteral("Reflected"), 3);
-    cmb_background_gradient_type_->addItem(QStringLiteral("Diamond"), 4);
-    cmb_background_gradient_type_->setFixedHeight(22);
-    cmb_background_gradient_type_->setStyleSheet(control_style);
-    btn_background_gradient_start_color_ = new QPushButton(inner);
-    btn_background_gradient_end_color_ = new QPushButton(inner);
-    spn_background_gradient_start_pos_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_end_pos_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_start_opacity_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_end_opacity_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_opacity_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_background_gradient_angle_ = mk_dspin(-360.0, 360.0, 1.0);
-    spn_background_gradient_center_x_ = mk_dspin(-100.0, 100.0, 0.01);
-    spn_background_gradient_center_y_ = mk_dspin(-100.0, 100.0, 0.01);
-    spn_background_gradient_scale_ = mk_dspin(0.01, 100.0, 0.05);
-    spn_background_gradient_focal_x_ = mk_dspin(-100.0, 100.0, 0.01);
-    spn_background_gradient_focal_y_ = mk_dspin(-100.0, 100.0, 0.01);
-    for (auto *spin : std::initializer_list<QDoubleSpinBox *>{spn_background_gradient_start_pos_, spn_background_gradient_end_pos_,
-                                                               spn_background_gradient_start_opacity_, spn_background_gradient_end_opacity_,
-                                                               spn_background_gradient_opacity_, spn_background_gradient_center_x_,
-                                                               spn_background_gradient_center_y_, spn_background_gradient_scale_,
-                                                               spn_background_gradient_focal_x_, spn_background_gradient_focal_y_})
-        spin->setDecimals(2);
-    spn_background_gradient_angle_->setSuffix("°");
-    add_form_row(bgfl, obsgs_tr("OBSTitles.GradientTypeLabel"), cmb_background_gradient_type_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.StartColorLabel"), btn_background_gradient_start_color_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.StartStopLabel"), spn_background_gradient_start_pos_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.StartOpacityLabel"), spn_background_gradient_start_opacity_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.EndColorLabel"), btn_background_gradient_end_color_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.EndStopLabel"), spn_background_gradient_end_pos_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.EndOpacityLabel"), spn_background_gradient_end_opacity_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.OpacityLabel"), spn_background_gradient_opacity_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.AngleLabel"), spn_background_gradient_angle_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.CenterXLabel"), spn_background_gradient_center_x_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.CenterYLabel"), spn_background_gradient_center_y_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.ScaleLabel"), spn_background_gradient_scale_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.FocalXLabel"), spn_background_gradient_focal_x_);
-    add_form_row(bgfl, obsgs_tr("OBSTitles.FocalYLabel"), spn_background_gradient_focal_y_);
-    make_collapsible(background_gradient_box_);
-    background_gradient_box_->setVisible(false);
-
-    /* ── Outline ── */
-    outline_box_ = new QGroupBox(obsgs_tr("OBSTitles.Outline"), inner);
-    outline_box_->setStyleSheet(section_style);
-    auto *outline_form = new QFormLayout(outline_box_);
-    style_form(outline_form);
-    chk_outline_enabled_ = new QCheckBox(obsgs_tr("OBSTitles.EnableOutline"), inner);
-    style_checkbox(chk_outline_enabled_);
-    cmb_stroke_fill_type_ = new QComboBox(inner);
-    cmb_stroke_fill_type_->addItem(obsgs_tr("OBSTitles.None"), 0);
-    cmb_stroke_fill_type_->addItem(obsgs_tr("OBSTitles.Color"), 1);
-    cmb_stroke_fill_type_->addItem(obsgs_tr("OBSTitles.Gradient"), 2);
-    cmb_stroke_fill_type_->setFixedHeight(22);
-    cmb_stroke_fill_type_->setStyleSheet(control_style);
-    spn_outline_width_ = mk_dspin(0.0, 200.0, 1.0);
-    spn_outline_width_->setToolTip(obsgs_tr("OBSTitles.OutlineThicknessTooltip"));
-    btn_outline_color_ = new QPushButton(inner);
-    row_outline_color_ = btn_outline_color_;
-    spn_outline_opacity_ = mk_dspin(0.0, 1.0, 0.05);
-    spn_outline_opacity_->setDecimals(2);
-    cmb_outline_join_ = new QComboBox(inner);
-    cmb_outline_join_->addItem(obsgs_tr("OBSTitles.Miter"), 0);
-    cmb_outline_join_->addItem(obsgs_tr("OBSTitles.Round"), 1);
-    cmb_outline_join_->addItem(obsgs_tr("OBSTitles.Bevel"), 2);
-    cmb_outline_join_->setFixedHeight(22);
-    cmb_outline_join_->setStyleSheet(control_style);
-    cmb_outline_position_ = new QComboBox(inner);
-    cmb_outline_position_->addItem(obsgs_tr("OBSTitles.Back"), 0);
-    cmb_outline_position_->addItem(obsgs_tr("OBSTitles.Front"), 1);
-    cmb_outline_position_->setFixedHeight(22);
-    cmb_outline_position_->setStyleSheet(control_style);
-    chk_outline_antialias_ = new QCheckBox(obsgs_tr("OBSTitles.AntialiasOutline"), inner);
-    style_checkbox(chk_outline_antialias_);
-    cmb_stroke_gradient_type_ = new QComboBox(inner);
-    cmb_stroke_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
-    cmb_stroke_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-    cmb_stroke_gradient_type_->addItem(QStringLiteral("Angle"), 2);
-    cmb_stroke_gradient_type_->addItem(QStringLiteral("Reflected"), 3);
-    cmb_stroke_gradient_type_->addItem(QStringLiteral("Diamond"), 4);
-    cmb_stroke_gradient_type_->setFixedHeight(22);
-    cmb_stroke_gradient_type_->setStyleSheet(control_style);
-    btn_stroke_gradient_start_color_ = new QPushButton(inner);
-    btn_stroke_gradient_end_color_ = new QPushButton(inner);
-    spn_stroke_gradient_start_pos_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_end_pos_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_start_opacity_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_end_opacity_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_opacity_ = mk_dspin(0.0, 1.0, 0.01);
-    spn_stroke_gradient_angle_ = mk_dspin(-360.0, 360.0, 1.0);
-    spn_stroke_gradient_center_x_ = mk_dspin(-100.0, 100.0, 0.01);
-    spn_stroke_gradient_center_y_ = mk_dspin(-100.0, 100.0, 0.01);
-    spn_stroke_gradient_scale_ = mk_dspin(0.01, 100.0, 0.05);
-    spn_stroke_gradient_focal_x_ = mk_dspin(-100.0, 100.0, 0.01);
-    spn_stroke_gradient_focal_y_ = mk_dspin(-100.0, 100.0, 0.01);
-    for (auto *spin : std::initializer_list<QDoubleSpinBox *>{spn_stroke_gradient_start_pos_, spn_stroke_gradient_end_pos_,
-                                                               spn_stroke_gradient_start_opacity_, spn_stroke_gradient_end_opacity_,
-                                                               spn_stroke_gradient_opacity_, spn_stroke_gradient_center_x_,
-                                                               spn_stroke_gradient_center_y_, spn_stroke_gradient_scale_,
-                                                               spn_stroke_gradient_focal_x_, spn_stroke_gradient_focal_y_})
-        spin->setDecimals(2);
-    spn_stroke_gradient_angle_->setSuffix("°");
-    add_form_row(outline_form, "", chk_outline_enabled_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.StrokeFillLabel"), cmb_stroke_fill_type_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.ColorLabel"), row_outline_color_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.ThicknessLabel"), spn_outline_width_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.OpacityLabel"), spn_outline_opacity_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.JoinLabel"), cmb_outline_join_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.PositionLabelIndented"), cmb_outline_position_);
-    add_form_row(outline_form, "", chk_outline_antialias_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.GradientTypeLabel"), cmb_stroke_gradient_type_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.StartColorLabel"), btn_stroke_gradient_start_color_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.StartStopLabel"), spn_stroke_gradient_start_pos_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.StartOpacityLabel"), spn_stroke_gradient_start_opacity_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.EndColorLabel"), btn_stroke_gradient_end_color_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.EndStopLabel"), spn_stroke_gradient_end_pos_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.EndOpacityLabel"), spn_stroke_gradient_end_opacity_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.OpacityLabel"), spn_stroke_gradient_opacity_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.AngleLabel"), spn_stroke_gradient_angle_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.CenterXLabel"), spn_stroke_gradient_center_x_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.CenterYLabel"), spn_stroke_gradient_center_y_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.ScaleLabel"), spn_stroke_gradient_scale_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.FocalXLabel"), spn_stroke_gradient_focal_x_);
-    add_form_row(outline_form, obsgs_tr("OBSTitles.FocalYLabel"), spn_stroke_gradient_focal_y_);
-    make_collapsible(outline_box_);
-    outline_box_->setVisible(false);
-
     /* ── Image ── */
     image_box_ = new QWidget(inner);
     image_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
@@ -1359,71 +1262,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         vl->insertWidget(image_size_index, image_box_);
     else
         vl->addWidget(image_box_);
-
-    shadow_box_ = new QGroupBox(obsgs_tr("OBSTitles.DropShadow"), inner);
-    shadow_box_->setStyleSheet(section_style);
-    auto *sfl = new QFormLayout(shadow_box_);
-    style_form(sfl);
-    chk_shadow_enabled_ = new QCheckBox(obsgs_tr("OBSTitles.EnableShadow"), inner);
-    style_checkbox(chk_shadow_enabled_);
-    cmb_shadow_preset_ = new QComboBox(inner);
-    cmb_shadow_preset_->addItems({obsgs_tr("OBSTitles.Custom"), obsgs_tr("OBSTitles.Soft"), obsgs_tr("OBSTitles.Medium"), obsgs_tr("OBSTitles.Strong"), obsgs_tr("OBSTitles.Broadcast")});
-    cmb_shadow_preset_->setFixedHeight(22);
-    cmb_shadow_preset_->setStyleSheet(control_style);
-    cmb_shadow_blur_type_ = new QComboBox(inner);
-    add_shadow_blur_items(cmb_shadow_blur_type_);
-    cmb_shadow_blur_type_->setFixedHeight(22);
-    cmb_shadow_blur_type_->setStyleSheet(control_style);
-    btn_shadow_color_ = new QPushButton(inner);
-    spn_shadow_opacity_ = mk_dspin(0.0, 1.0, 0.05);
-    spn_shadow_opacity_->setDecimals(2);
-    spn_shadow_distance_ = mk_dspin(0.0, 200.0, 1.0);
-    spn_shadow_angle_ = mk_dspin(-360.0, 360.0, 5.0);
-    spn_shadow_blur_ = mk_dspin(0.0, 100.0, 1.0);
-    spn_shadow_spread_ = mk_dspin(0.0, 100.0, 1.0);
-    chk_long_shadow_enabled_ = new QCheckBox(obsgs_tr("OBSTitles.EnableLongShadow"), inner);
-    style_checkbox(chk_long_shadow_enabled_);
-    btn_long_shadow_color_ = new QPushButton(inner);
-    spn_long_shadow_opacity_ = mk_dspin(0.0, 1.0, 0.05);
-    spn_long_shadow_opacity_->setDecimals(2);
-    spn_long_shadow_length_ = mk_dspin(0.0, 1000.0, 5.0);
-    spn_long_shadow_angle_ = mk_dspin(-360.0, 360.0, 5.0);
-    spn_long_shadow_falloff_ = mk_dspin(0.0, 4.0, 0.1);
-    spn_long_shadow_falloff_->setDecimals(2);
-    cmb_long_shadow_blur_type_ = new QComboBox(inner);
-    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.NoBlur"), (int)LongShadowBlurType::None);
-    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.BoxBlur"), (int)LongShadowBlurType::Box);
-    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.GaussianBlur"), (int)LongShadowBlurType::Gaussian);
-    cmb_long_shadow_blur_type_->addItem(obsgs_tr("OBSTitles.StackFastBlur"), (int)LongShadowBlurType::StackFast);
-    cmb_long_shadow_blur_type_->setFixedHeight(22);
-    cmb_long_shadow_blur_type_->setStyleSheet(control_style);
-    spn_long_shadow_blur_ = mk_dspin(0.0, 100.0, 1.0);
-    btn_kf_shadow_enabled_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowEnabledKeyframe"));
-    btn_kf_shadow_color_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowColorKeyframe"));
-    btn_kf_shadow_opacity_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowOpacityKeyframe"));
-    btn_kf_shadow_distance_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowDistanceKeyframe"));
-    btn_kf_shadow_angle_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowAngleKeyframe"));
-    btn_kf_shadow_blur_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowBlurKeyframe"));
-    btn_kf_shadow_spread_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleShadowSpreadKeyframe"));
-    add_form_row(sfl, "", with_kf(chk_shadow_enabled_, btn_kf_shadow_enabled_));
-    add_form_row(sfl, obsgs_tr("OBSTitles.PresetLabel"), cmb_shadow_preset_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.ColorLabel"), with_kf(btn_shadow_color_, btn_kf_shadow_color_));
-    add_form_row(sfl, obsgs_tr("OBSTitles.OpacityLabel"), with_kf(spn_shadow_opacity_, btn_kf_shadow_opacity_));
-    add_form_row(sfl, obsgs_tr("OBSTitles.DistanceLabel"), with_kf(spn_shadow_distance_, btn_kf_shadow_distance_));
-    add_form_row(sfl, obsgs_tr("OBSTitles.AngleLabel"), with_kf(spn_shadow_angle_, btn_kf_shadow_angle_));
-    add_form_row(sfl, obsgs_tr("OBSTitles.BlurTypeLabel"), cmb_shadow_blur_type_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.BlurLabel"), with_kf(spn_shadow_blur_, btn_kf_shadow_blur_));
-    add_form_row(sfl, obsgs_tr("OBSTitles.SpreadLabel"), with_kf(spn_shadow_spread_, btn_kf_shadow_spread_));
-    add_form_row(sfl, "", chk_long_shadow_enabled_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowColor"), btn_long_shadow_color_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowOpacity"), spn_long_shadow_opacity_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowLength"), spn_long_shadow_length_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowAngle"), spn_long_shadow_angle_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowFalloff"), spn_long_shadow_falloff_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowBlurType"), cmb_long_shadow_blur_type_);
-    add_form_row(sfl, obsgs_tr("OBSTitles.LongShadowBlur"), spn_long_shadow_blur_);
-    make_collapsible(shadow_box_);
-    shadow_box_->setVisible(false);
 
     vl->addStretch();
     setWidget(inner);
@@ -1532,6 +1370,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     install_group_delete_all(btn_kf_pos_y_, {&Layer::pos_x, &Layer::pos_y});
     install_group_delete_all(btn_kf_scale_x_, {&Layer::scale_x, &Layer::scale_y});
     install_group_delete_all(btn_kf_scale_y_, {&Layer::scale_x, &Layer::scale_y});
+    install_group_delete_all(btn_kf_transform_size_, {&Layer::box_width, &Layer::box_height});
     install_prop_delete_all(btn_kf_rotation_, &Layer::rotation);
     install_prop_delete_all(btn_kf_opacity_, &Layer::opacity);
     install_group_delete_all(btn_kf_origin_x_, {&Layer::origin_x_prop, &Layer::origin_y_prop});
@@ -1551,14 +1390,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                   &Layer::text_color_g, &Layer::text_color_b});
     install_group_delete_all(btn_kf_fill_color_, {&Layer::fill_color_a, &Layer::fill_color_r,
                                                   &Layer::fill_color_g, &Layer::fill_color_b});
-    install_prop_delete_all(btn_kf_shadow_enabled_, &Layer::shadow_enabled_prop);
-    install_group_delete_all(btn_kf_shadow_color_, {&Layer::shadow_color_a, &Layer::shadow_color_r,
-                                                    &Layer::shadow_color_g, &Layer::shadow_color_b});
-    install_prop_delete_all(btn_kf_shadow_opacity_, &Layer::shadow_opacity_prop);
-    install_prop_delete_all(btn_kf_shadow_distance_, &Layer::shadow_distance_prop);
-    install_prop_delete_all(btn_kf_shadow_angle_, &Layer::shadow_angle_prop);
-    install_prop_delete_all(btn_kf_shadow_blur_, &Layer::shadow_blur_prop);
-    install_prop_delete_all(btn_kf_shadow_spread_, &Layer::shadow_spread_prop);
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
@@ -1849,181 +1680,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(chk_scene_mask_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
                 if (can_edit()) { layer_->use_as_scene_mask = v; load_values(); emit_change(); }
-            });
-    connect(stroke_options_trigger, &QPushButton::clicked,
-            this, [this, can_edit, emit_change, control_style, checkbox_style, themed_dialog_style]() {
-                if (!can_edit()) return;
-
-                QDialog popup(this, Qt::Popup | Qt::FramelessWindowHint);
-                popup.setModal(true);
-                popup.setStyleSheet(themed_dialog_style);
-                auto *root = new QVBoxLayout(&popup);
-                root->setContentsMargins(8, 8, 8, 8);
-                root->setSpacing(6);
-
-                auto *weight_row = new QWidget(&popup);
-                auto *weight_layout = new QHBoxLayout(weight_row);
-                weight_layout->setContentsMargins(0, 0, 0, 0);
-                weight_layout->setSpacing(6);
-                auto *weight_label = new QLabel(QStringLiteral("Weight:"), weight_row);
-                auto *weight = new QDoubleSpinBox(weight_row);
-                weight->setRange(0.0, 200.0);
-                weight->setDecimals(0);
-                weight->setSingleStep(1.0);
-                weight->setSuffix(QStringLiteral(" px"));
-                weight->setFixedWidth(82);
-                weight->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
-                weight->setStyleSheet(control_style);
-                weight->setValue(layer_->stroke_width);
-                weight_layout->addWidget(weight_label);
-                weight_layout->addWidget(weight);
-                weight_layout->addStretch();
-                root->addWidget(weight_row);
-
-                auto make_button = [](const QString &text, const QString &tip, QWidget *parent) {
-                    auto *button = new QToolButton(parent);
-                    button->setText(text);
-                    button->setToolTip(tip);
-                    button->setCheckable(true);
-                    button->setFixedSize(28, 22);
-                    return button;
-                };
-                auto add_button_group_row = [&](const QString &label_text, const QList<QToolButton *> &buttons,
-                                                QWidget *extra = nullptr) {
-                    auto *row = new QWidget(&popup);
-                    auto *layout = new QHBoxLayout(row);
-                    layout->setContentsMargins(0, 0, 0, 0);
-                    layout->setSpacing(4);
-                    auto *label = new QLabel(label_text, row);
-                    label->setFixedWidth(46);
-                    layout->addWidget(label);
-                    for (auto *button : buttons)
-                        layout->addWidget(button);
-                    if (extra) {
-                        layout->addSpacing(8);
-                        layout->addWidget(extra);
-                    }
-                    layout->addStretch();
-                    root->addWidget(row);
-                };
-
-                auto *cap_butt = make_button(QStringLiteral("Butt"), QStringLiteral("Cap style is not supported yet"), &popup);
-                auto *cap_round = make_button(QStringLiteral("Rnd"), QStringLiteral("Cap style is not supported yet"), &popup);
-                auto *cap_square = make_button(QStringLiteral("Sqr"), QStringLiteral("Cap style is not supported yet"), &popup);
-                for (auto *button : {cap_butt, cap_round, cap_square})
-                    button->setEnabled(false);
-                add_button_group_row(QStringLiteral("Cap:"), {cap_butt, cap_round, cap_square});
-
-                auto *corner_group = new QButtonGroup(&popup);
-                corner_group->setExclusive(true);
-                auto *corner_miter = make_button(QStringLiteral("M"), obsgs_tr("OBSTitles.Miter"), &popup);
-                auto *corner_round = make_button(QStringLiteral("R"), obsgs_tr("OBSTitles.Round"), &popup);
-                auto *corner_bevel = make_button(QStringLiteral("B"), obsgs_tr("OBSTitles.Bevel"), &popup);
-                corner_group->addButton(corner_miter, 0);
-                corner_group->addButton(corner_round, 1);
-                corner_group->addButton(corner_bevel, 2);
-                if (auto *button = corner_group->button(std::clamp(layer_->outline_join_style, 0, 2)))
-                    button->setChecked(true);
-                auto *limit = new QSpinBox(&popup);
-                limit->setRange(1, 100);
-                limit->setValue(10);
-                limit->setFixedWidth(52);
-                limit->setEnabled(false);
-                limit->setStyleSheet(control_style);
-                auto *limit_wrap = new QWidget(&popup);
-                auto *limit_layout = new QHBoxLayout(limit_wrap);
-                limit_layout->setContentsMargins(0, 0, 0, 0);
-                limit_layout->setSpacing(4);
-                limit_layout->addWidget(new QLabel(QStringLiteral("Limit:"), limit_wrap));
-                limit_layout->addWidget(limit);
-                add_button_group_row(QStringLiteral("Corner:"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
-
-                auto *align_group = new QButtonGroup(&popup);
-                align_group->setExclusive(true);
-                auto *align_back = make_button(QStringLiteral("Back"), obsgs_tr("OBSTitles.Back"), &popup);
-                auto *align_front = make_button(QStringLiteral("Front"), obsgs_tr("OBSTitles.Front"), &popup);
-                align_group->addButton(align_back, 0);
-                align_group->addButton(align_front, 1);
-                if (auto *button = align_group->button(layer_->outline_on_front ? 1 : 0))
-                    button->setChecked(true);
-                add_button_group_row(QStringLiteral("Align Stroke:"), {align_back, align_front});
-
-                auto *dash_row = new QWidget(&popup);
-                auto *dash_layout = new QHBoxLayout(dash_row);
-                dash_layout->setContentsMargins(0, 0, 0, 0);
-                dash_layout->setSpacing(4);
-                auto *dashed = new QCheckBox(QStringLiteral("Dashed Line"), dash_row);
-                dashed->setEnabled(false);
-                dashed->setStyleSheet(checkbox_style);
-                dashed->setToolTip(QStringLiteral("Dashed strokes are not supported yet"));
-                dash_layout->addWidget(dashed);
-                dash_layout->addStretch();
-                root->addWidget(dash_row);
-
-                auto *dash_values = new QWidget(&popup);
-                auto *dash_values_layout = new QHBoxLayout(dash_values);
-                dash_values_layout->setContentsMargins(0, 0, 0, 0);
-                dash_values_layout->setSpacing(4);
-                for (const QString &label : {QStringLiteral("dash"), QStringLiteral("gap"),
-                                             QStringLiteral("dash"), QStringLiteral("gap"),
-                                             QStringLiteral("dash"), QStringLiteral("gap")}) {
-                    auto *field = new QSpinBox(dash_values);
-                    field->setRange(0, 999);
-                    field->setValue(label == QStringLiteral("dash") ? 12 : 0);
-                    if (label == QStringLiteral("dash"))
-                        field->setSuffix(QStringLiteral(" pt"));
-                    field->setFixedWidth(48);
-                    field->setEnabled(false);
-                    field->setStyleSheet(control_style);
-                    dash_values_layout->addWidget(field);
-                }
-                root->addWidget(dash_values);
-
-                connect(weight, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                        &popup, [this, emit_change](double v) {
-                            if (!layer_ || loading_values_) return;
-                            layer_->stroke_width = (float)v;
-                            layer_->outline_enabled = v > 0.0;
-                            if (v > 0.0 && layer_->stroke_fill_type == 0)
-                                layer_->stroke_fill_type = 1;
-                            if (spn_appearance_stroke_width_) {
-                                QSignalBlocker block(spn_appearance_stroke_width_);
-                                spn_appearance_stroke_width_->setValue(v);
-                            }
-                            if (spn_outline_width_) {
-                                QSignalBlocker block(spn_outline_width_);
-                                spn_outline_width_->setValue(v);
-                            }
-                            emit_change();
-                        });
-                connect(corner_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
-                        &popup, [this, corner_group, emit_change](QAbstractButton *button) {
-                            if (!layer_ || loading_values_) return;
-                            layer_->outline_join_style = corner_group->id(button);
-                            if (cmb_outline_join_) {
-                                QSignalBlocker block(cmb_outline_join_);
-                                int idx = cmb_outline_join_->findData(layer_->outline_join_style);
-                                cmb_outline_join_->setCurrentIndex(idx >= 0 ? idx : layer_->outline_join_style);
-                            }
-                            emit_change();
-                        });
-                connect(align_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
-                        &popup, [this, align_group, emit_change](QAbstractButton *button) {
-                            if (!layer_ || loading_values_) return;
-                            layer_->outline_on_front = align_group->id(button) == 1;
-                            if (cmb_outline_position_) {
-                                QSignalBlocker block(cmb_outline_position_);
-                                int idx = cmb_outline_position_->findData(layer_->outline_on_front ? 1 : 0);
-                                cmb_outline_position_->setCurrentIndex(idx >= 0 ? idx : (layer_->outline_on_front ? 1 : 0));
-                            }
-                            emit_change();
-                        });
-
-                const QPoint popup_pos = btn_appearance_stroke_label_->mapToGlobal(
-                    QPoint(0, btn_appearance_stroke_label_->height() + 2));
-                popup.adjustSize();
-                popup.move(clamp_popup_position_to_screen(popup_pos, popup.size(), btn_appearance_stroke_label_));
-                popup.exec();
             });
     auto connect_alignment_group = [this, can_edit, emit_change](QButtonGroup *group, bool horizontal) {
         if (!group) return;
@@ -3104,17 +2760,186 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [open_color_selector]() { open_color_selector(false); });
     connect(btn_appearance_stroke_color_, &QPushButton::clicked,
             this, [open_color_selector]() { open_color_selector(true); });
+    connect(stroke_options_trigger, &QPushButton::clicked,
+            this, [this, can_edit, emit_change, control_style, checkbox_style, themed_dialog_style]() {
+                if (!can_edit()) return;
+
+                QDialog popup(this, Qt::Popup | Qt::FramelessWindowHint);
+                popup.setModal(true);
+                popup.setStyleSheet(themed_dialog_style);
+                auto *root = new QVBoxLayout(&popup);
+                root->setContentsMargins(8, 8, 8, 8);
+                root->setSpacing(6);
+
+                auto *weight_row = new QWidget(&popup);
+                auto *weight_layout = new QHBoxLayout(weight_row);
+                weight_layout->setContentsMargins(0, 0, 0, 0);
+                weight_layout->setSpacing(6);
+                auto *weight_label = new QLabel(QStringLiteral("Weight:"), weight_row);
+                auto *weight = new QDoubleSpinBox(weight_row);
+                weight->setRange(0.0, 200.0);
+                weight->setDecimals(0);
+                weight->setSingleStep(1.0);
+                weight->setSuffix(QStringLiteral(" px"));
+                weight->setFixedWidth(82);
+                weight->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+                weight->setStyleSheet(control_style);
+                weight->setValue(layer_->stroke_width);
+                weight_layout->addWidget(weight_label);
+                weight_layout->addWidget(weight);
+                weight_layout->addStretch();
+                root->addWidget(weight_row);
+
+                auto make_button = [](const QString &text, const QString &tip, QWidget *parent) {
+                    auto *button = new QToolButton(parent);
+                    button->setText(text);
+                    button->setToolTip(tip);
+                    button->setCheckable(true);
+                    button->setFixedSize(28, 22);
+                    return button;
+                };
+                auto add_button_group_row = [&](const QString &label_text, const QList<QToolButton *> &buttons,
+                                                QWidget *extra = nullptr) {
+                    auto *row = new QWidget(&popup);
+                    auto *layout = new QHBoxLayout(row);
+                    layout->setContentsMargins(0, 0, 0, 0);
+                    layout->setSpacing(4);
+                    auto *label = new QLabel(label_text, row);
+                    label->setFixedWidth(46);
+                    layout->addWidget(label);
+                    for (auto *button : buttons)
+                        layout->addWidget(button);
+                    if (extra) {
+                        layout->addSpacing(8);
+                        layout->addWidget(extra);
+                    }
+                    layout->addStretch();
+                    root->addWidget(row);
+                };
+
+                auto *cap_butt = make_button(QStringLiteral("Butt"), QStringLiteral("Cap style is not supported yet"), &popup);
+                auto *cap_round = make_button(QStringLiteral("Rnd"), QStringLiteral("Cap style is not supported yet"), &popup);
+                auto *cap_square = make_button(QStringLiteral("Sqr"), QStringLiteral("Cap style is not supported yet"), &popup);
+                for (auto *button : {cap_butt, cap_round, cap_square})
+                    button->setEnabled(false);
+                add_button_group_row(QStringLiteral("Cap:"), {cap_butt, cap_round, cap_square});
+
+                auto *corner_group = new QButtonGroup(&popup);
+                corner_group->setExclusive(true);
+                auto *corner_miter = make_button(QStringLiteral("M"), obsgs_tr("OBSTitles.Miter"), &popup);
+                auto *corner_round = make_button(QStringLiteral("R"), obsgs_tr("OBSTitles.Round"), &popup);
+                auto *corner_bevel = make_button(QStringLiteral("B"), obsgs_tr("OBSTitles.Bevel"), &popup);
+                corner_group->addButton(corner_miter, 0);
+                corner_group->addButton(corner_round, 1);
+                corner_group->addButton(corner_bevel, 2);
+                if (auto *button = corner_group->button(std::clamp(layer_->outline_join_style, 0, 2)))
+                    button->setChecked(true);
+                auto *limit = new QSpinBox(&popup);
+                limit->setRange(1, 100);
+                limit->setValue(10);
+                limit->setFixedWidth(52);
+                limit->setEnabled(false);
+                limit->setStyleSheet(control_style);
+                auto *limit_wrap = new QWidget(&popup);
+                auto *limit_layout = new QHBoxLayout(limit_wrap);
+                limit_layout->setContentsMargins(0, 0, 0, 0);
+                limit_layout->setSpacing(4);
+                limit_layout->addWidget(new QLabel(QStringLiteral("Limit:"), limit_wrap));
+                limit_layout->addWidget(limit);
+                add_button_group_row(QStringLiteral("Corner:"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
+
+                auto *align_group = new QButtonGroup(&popup);
+                align_group->setExclusive(true);
+                auto *align_back = make_button(QStringLiteral("Back"), obsgs_tr("OBSTitles.Back"), &popup);
+                auto *align_front = make_button(QStringLiteral("Front"), obsgs_tr("OBSTitles.Front"), &popup);
+                align_group->addButton(align_back, 0);
+                align_group->addButton(align_front, 1);
+                if (auto *button = align_group->button(layer_->outline_on_front ? 1 : 0))
+                    button->setChecked(true);
+                add_button_group_row(QStringLiteral("Align Stroke:"), {align_back, align_front});
+
+                auto *dash_row = new QWidget(&popup);
+                auto *dash_layout = new QHBoxLayout(dash_row);
+                dash_layout->setContentsMargins(0, 0, 0, 0);
+                dash_layout->setSpacing(4);
+                auto *dashed = new QCheckBox(QStringLiteral("Dashed Line"), dash_row);
+                dashed->setEnabled(false);
+                dashed->setStyleSheet(checkbox_style);
+                dashed->setToolTip(QStringLiteral("Dashed strokes are not supported yet"));
+                dash_layout->addWidget(dashed);
+                dash_layout->addStretch();
+                root->addWidget(dash_row);
+
+                auto *dash_values = new QWidget(&popup);
+                auto *dash_values_layout = new QHBoxLayout(dash_values);
+                dash_values_layout->setContentsMargins(0, 0, 0, 0);
+                dash_values_layout->setSpacing(4);
+                for (const QString &label : {QStringLiteral("dash"), QStringLiteral("gap"),
+                                             QStringLiteral("dash"), QStringLiteral("gap"),
+                                             QStringLiteral("dash"), QStringLiteral("gap")}) {
+                    auto *field = new QSpinBox(dash_values);
+                    field->setRange(0, 999);
+                    field->setValue(label == QStringLiteral("dash") ? 12 : 0);
+                    if (label == QStringLiteral("dash"))
+                        field->setSuffix(QStringLiteral(" pt"));
+                    field->setFixedWidth(48);
+                    field->setEnabled(false);
+                    field->setStyleSheet(control_style);
+                    dash_values_layout->addWidget(field);
+                }
+                root->addWidget(dash_values);
+
+                connect(weight, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                        &popup, [this, emit_change](double v) {
+                            if (!layer_ || loading_values_) return;
+                            layer_->stroke_width = (float)v;
+                            layer_->outline_enabled = v > 0.0;
+                            if (v > 0.0 && layer_->stroke_fill_type == 0)
+                                layer_->stroke_fill_type = 1;
+                            if (spn_appearance_stroke_width_) {
+                                QSignalBlocker block(spn_appearance_stroke_width_);
+                                spn_appearance_stroke_width_->setValue(v);
+                            }
+                            if (spn_outline_width_) {
+                                QSignalBlocker block(spn_outline_width_);
+                                spn_outline_width_->setValue(v);
+                            }
+                            emit_change();
+                        });
+                connect(corner_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
+                        &popup, [this, corner_group, emit_change](QAbstractButton *button) {
+                            if (!layer_ || loading_values_) return;
+                            layer_->outline_join_style = corner_group->id(button);
+                            if (cmb_outline_join_) {
+                                QSignalBlocker block(cmb_outline_join_);
+                                int idx = cmb_outline_join_->findData(layer_->outline_join_style);
+                                cmb_outline_join_->setCurrentIndex(idx >= 0 ? idx : layer_->outline_join_style);
+                            }
+                            emit_change();
+                        });
+                connect(align_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
+                        &popup, [this, align_group, emit_change](QAbstractButton *button) {
+                            if (!layer_ || loading_values_) return;
+                            layer_->outline_on_front = align_group->id(button) == 1;
+                            if (cmb_outline_position_) {
+                                QSignalBlocker block(cmb_outline_position_);
+                                int idx = cmb_outline_position_->findData(layer_->outline_on_front ? 1 : 0);
+                                cmb_outline_position_->setCurrentIndex(idx >= 0 ? idx : (layer_->outline_on_front ? 1 : 0));
+                            }
+                            emit_change();
+                        });
+
+                const QPoint popup_pos = btn_appearance_stroke_label_->mapToGlobal(
+                    QPoint(0, btn_appearance_stroke_label_->height() + 2));
+                popup.adjustSize();
+                popup.move(clamp_popup_position_to_screen(popup_pos, popup.size(), btn_appearance_stroke_label_));
+                popup.exec();
+            });
     connect(spn_appearance_stroke_width_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change](double v) {
                 if (!can_edit()) return;
                 layer_->stroke_width = (float)v;
-                layer_->outline_enabled = v > 0.0;
-                if (v > 0.0 && layer_->stroke_fill_type == 0)
-                    layer_->stroke_fill_type = 1;
-                if (spn_outline_width_) {
-                    QSignalBlocker block(spn_outline_width_);
-                    spn_outline_width_->setValue(v);
-                }
+                layer_->outline_enabled = v > 0.0 && layer_->stroke_fill_type != 0;
                 emit_change();
             });
     connect(spn_appearance_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -3128,133 +2953,72 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 }
                 emit_change();
             });
-    connect(chk_shadow_enabled_, &QCheckBox::toggled, this, [this, can_edit, local_time, emit_change](bool v) {
-        if (can_edit()) {
-            layer_->shadow_enabled = v;
-            set_animated_value(layer_->shadow_enabled_prop, local_time(), v ? 1.0 : 0.0);
-            emit_change();
-        }
-    });
-    connect(cmb_shadow_preset_, QOverload<int>::of(&QComboBox::activated), this, [this, can_edit, local_time, emit_change](int idx) {
-        if (!can_edit() || idx <= 0) return;
-        static const struct { float opacity, distance, blur, spread, angle; uint32_t color; } presets[] = {
-            {0.35f, 5.0f, 8.0f, 1.0f, 135.0f, 0x99000000}, {0.55f, 8.0f, 5.0f, 2.0f, 135.0f, 0xAA000000},
-            {0.75f, 12.0f, 3.0f, 3.0f, 135.0f, 0xCC000000}, {0.65f, 10.0f, 4.0f, 4.0f, 135.0f, 0xCC001428},
-        };
-        const auto &p = presets[std::clamp(idx - 1, 0, 3)];
-        double t = local_time();
-        layer_->shadow_enabled = true;
-        layer_->shadow_opacity = p.opacity;
-        layer_->shadow_distance = p.distance;
-        layer_->shadow_blur = p.blur;
-        layer_->shadow_spread = p.spread;
-        layer_->shadow_angle = p.angle;
-        layer_->shadow_color = p.color;
-        set_animated_value(layer_->shadow_enabled_prop, t, 1.0);
-        set_animated_value(layer_->shadow_opacity_prop, t, p.opacity);
-        set_animated_value(layer_->shadow_distance_prop, t, p.distance);
-        set_animated_value(layer_->shadow_blur_prop, t, p.blur);
-        set_animated_value(layer_->shadow_spread_prop, t, p.spread);
-        set_animated_value(layer_->shadow_angle_prop, t, p.angle);
-        set_shadow_color_channels_at(*layer_, t, p.color);
-        load_values(); emit_change();
-    });
-    connect(btn_shadow_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        QColor picked = QColorDialog::getColor(color_from_argb(eval_shadow_color(*layer_, local_time())), this, obsgs_tr("OBSTitles.ShadowColor"), QColorDialog::ShowAlphaChannel);
-        if (!picked.isValid()) return;
-        layer_->shadow_color = argb_from_color(picked);
-        set_shadow_color_channels_at(*layer_, local_time(), layer_->shadow_color);
-        style_color_button(btn_shadow_color_, layer_->shadow_color);
-        emit_change();
-    });
-    connect(spn_shadow_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v) {
-                if (!can_edit()) return;
-                layer_->shadow_opacity = (float)v;
-                set_animated_value(layer_->shadow_opacity_prop, local_time(), v);
-                emit_change();
-            });
-    connect(spn_shadow_distance_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v) {
-                if (!can_edit()) return;
-                layer_->shadow_distance = (float)v;
-                set_animated_value(layer_->shadow_distance_prop, local_time(), v);
-                emit_change();
-            });
-    connect(spn_shadow_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v) {
-                if (!can_edit()) return;
-                layer_->shadow_angle = (float)v;
-                set_animated_value(layer_->shadow_angle_prop, local_time(), v);
-                emit_change();
-            });
-    connect(spn_shadow_blur_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v) {
-                if (!can_edit()) return;
-                layer_->shadow_blur = (float)v;
-                set_animated_value(layer_->shadow_blur_prop, local_time(), v);
-                emit_change();
-            });
-    connect(spn_shadow_spread_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v) {
-                if (!can_edit()) return;
-                layer_->shadow_spread = (float)v;
-                set_animated_value(layer_->shadow_spread_prop, local_time(), v);
-                emit_change();
-            });
-    connect(cmb_shadow_blur_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (!can_edit()) return;
-                layer_->shadow_blur_type = (ShadowBlurType)cmb_shadow_blur_type_->itemData(idx).toInt();
-                emit_change();
-            });
-    connect(chk_long_shadow_enabled_, &QCheckBox::toggled, this, [this, can_edit, emit_change](bool v) {
-        if (!can_edit()) return;
-        layer_->long_shadow_enabled = v;
-        if (v && layer_->long_shadow_length <= 0.0f) {
-            layer_->long_shadow_length = 120.0f;
-            if (spn_long_shadow_length_) spn_long_shadow_length_->setValue(layer_->long_shadow_length);
-        }
-        if (v && layer_->long_shadow_opacity <= 0.0f) {
-            layer_->long_shadow_opacity = 0.45f;
-            if (spn_long_shadow_opacity_) spn_long_shadow_opacity_->setValue(layer_->long_shadow_opacity);
-        }
-        emit_change();
-    });
-    connect(btn_long_shadow_color_, &QPushButton::clicked, this, [this, can_edit, emit_change]() {
-        if (!can_edit()) return;
-        QColor picked = QColorDialog::getColor(color_from_argb(layer_->long_shadow_color), this, obsgs_tr("OBSTitles.LongShadowColor"), QColorDialog::ShowAlphaChannel);
-        if (!picked.isValid()) return;
-        layer_->long_shadow_color = argb_from_color(picked);
-        style_color_button(btn_long_shadow_color_, layer_->long_shadow_color);
-        emit_change();
-    });
-    connect(spn_long_shadow_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_opacity = (float)v; emit_change(); } });
-    connect(spn_long_shadow_length_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_length = (float)v; emit_change(); } });
-    connect(spn_long_shadow_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_angle = (float)v; emit_change(); } });
-    connect(spn_long_shadow_falloff_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_falloff = (float)v; emit_change(); } });
-    connect(cmb_long_shadow_blur_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (!can_edit()) return;
-                layer_->long_shadow_blur_type = (LongShadowBlurType)cmb_long_shadow_blur_type_->itemData(idx).toInt();
-                emit_change();
-            });
-    connect(spn_long_shadow_blur_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->long_shadow_blur = (float)v; emit_change(); } });
+    auto shape_resize_factor = [](double old_w, double old_h, double new_w, double new_h) {
+        constexpr double kEpsilon = 1e-6;
+        if (old_w <= kEpsilon || old_h <= kEpsilon || new_w <= kEpsilon || new_h <= kEpsilon)
+            return 1.0;
+        const double sx = new_w / old_w;
+        const double sy = new_h / old_h;
+        const bool changed_x = std::abs(new_w - old_w) > kEpsilon;
+        const bool changed_y = std::abs(new_h - old_h) > kEpsilon;
+        if (changed_x && changed_y)
+            return std::sqrt(std::max(0.0, sx * sy));
+        if (changed_x)
+            return sx;
+        if (changed_y)
+            return sy;
+        return 1.0;
+    };
+    auto apply_shape_size_metric_scaling = [this, shape_resize_factor](double old_w, double old_h, double new_w, double new_h) {
+        if (!layer_ || (layer_->type != LayerType::Shape && layer_->type != LayerType::SolidRect))
+            return;
+        const double factor = shape_resize_factor(old_w, old_h, new_w, new_h);
+        if (!std::isfinite(factor) || factor <= 0.0 || std::abs(factor - 1.0) < 1e-6)
+            return;
 
+        if (layer_->scale_stroke_with_shape &&
+            layer_->outline_enabled &&
+            layer_->stroke_fill_type != 0 &&
+            layer_->stroke_width > 0.0f) {
+            layer_->stroke_width = (float)std::clamp((double)layer_->stroke_width * factor, 0.0, 512.0);
+            if (spn_appearance_stroke_width_) {
+                QSignalBlocker block(spn_appearance_stroke_width_);
+                spn_appearance_stroke_width_->setValue(layer_->stroke_width);
+            }
+            if (spn_outline_width_) {
+                QSignalBlocker block(spn_outline_width_);
+                spn_outline_width_->setValue(layer_->stroke_width);
+            }
+        }
+
+        if (layer_->scale_corners_with_shape) {
+            const float tl = (float)std::clamp((double)layer_->corner_radius_tl * factor, 0.0, 9999.0);
+            const float tr = (float)std::clamp((double)layer_->corner_radius_tr * factor, 0.0, 9999.0);
+            const float br = (float)std::clamp((double)layer_->corner_radius_br * factor, 0.0, 9999.0);
+            const float bl = (float)std::clamp((double)layer_->corner_radius_bl * factor, 0.0, 9999.0);
+            set_layer_corner_radii(*layer_, tl, tr, br, bl);
+            if (spn_rect_corner_tl_) { QSignalBlocker block(spn_rect_corner_tl_); spn_rect_corner_tl_->setValue(layer_->corner_radius_tl); }
+            if (spn_rect_corner_tr_) { QSignalBlocker block(spn_rect_corner_tr_); spn_rect_corner_tr_->setValue(layer_->corner_radius_tr); }
+            if (spn_rect_corner_br_) { QSignalBlocker block(spn_rect_corner_br_); spn_rect_corner_br_->setValue(layer_->corner_radius_br); }
+            if (spn_rect_corner_bl_) { QSignalBlocker block(spn_rect_corner_bl_); spn_rect_corner_bl_->setValue(layer_->corner_radius_bl); }
+            if (spn_shape_roundness_) {
+                QSignalBlocker block(spn_shape_roundness_);
+                spn_shape_roundness_->setValue(layer_->shape_roundness);
+            }
+        }
+    };
     connect(spn_layer_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v){
+            this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
                 if (!can_edit()) return;
                 double t = local_time();
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_width = (float)v;
                 set_animated_value(layer_->box_width, t, v);
+                if (spn_transform_size_w_) {
+                    QSignalBlocker block(spn_transform_size_w_);
+                    spn_transform_size_w_->setValue(v);
+                }
                 const bool lock_size = layer_->lock_aspect_ratio &&
                                        (layer_->type == LayerType::Image ||
                                         layer_->type == LayerType::Shape ||
@@ -3264,17 +3028,26 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     set_animated_value(layer_->box_height, t, layer_->rect_height);
                     QSignalBlocker block(spn_layer_h_);
                     spn_layer_h_->setValue(layer_->rect_height);
+                    if (spn_transform_size_h_) {
+                        QSignalBlocker transform_block(spn_transform_size_h_);
+                        spn_transform_size_h_->setValue(layer_->rect_height);
+                    }
                 }
+                apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
                 emit_change();
             });
     connect(spn_layer_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, local_time, emit_change](double v){
+            this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
                 if (!can_edit()) return;
                 double t = local_time();
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_height = (float)v;
                 set_animated_value(layer_->box_height, t, v);
+                if (spn_transform_size_h_) {
+                    QSignalBlocker block(spn_transform_size_h_);
+                    spn_transform_size_h_->setValue(v);
+                }
                 const bool lock_size = layer_->lock_aspect_ratio &&
                                        (layer_->type == LayerType::Image ||
                                         layer_->type == LayerType::Shape ||
@@ -3284,7 +3057,72 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     set_animated_value(layer_->box_width, t, layer_->rect_width);
                     QSignalBlocker block(spn_layer_w_);
                     spn_layer_w_->setValue(layer_->rect_width);
+                    if (spn_transform_size_w_) {
+                        QSignalBlocker transform_block(spn_transform_size_w_);
+                        spn_transform_size_w_->setValue(layer_->rect_width);
+                    }
                 }
+                apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
+                emit_change();
+            });
+    connect(spn_transform_size_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
+                if (!can_edit()) return;
+                double t = local_time();
+                double old_w = eval_box_width(*layer_, t);
+                double old_h = eval_box_height(*layer_, t);
+                layer_->rect_width = (float)v;
+                set_animated_value(layer_->box_width, t, v);
+                if (spn_layer_w_) {
+                    QSignalBlocker block(spn_layer_w_);
+                    spn_layer_w_->setValue(v);
+                }
+                const bool lock_size = layer_->lock_aspect_ratio &&
+                                       (layer_->type == LayerType::Shape ||
+                                        layer_->type == LayerType::SolidRect);
+                if (lock_size && old_w > 0.0) {
+                    layer_->rect_height = (float)(v * old_h / old_w);
+                    set_animated_value(layer_->box_height, t, layer_->rect_height);
+                    if (spn_transform_size_h_) {
+                        QSignalBlocker block(spn_transform_size_h_);
+                        spn_transform_size_h_->setValue(layer_->rect_height);
+                    }
+                    if (spn_layer_h_) {
+                        QSignalBlocker block(spn_layer_h_);
+                        spn_layer_h_->setValue(layer_->rect_height);
+                    }
+                }
+                apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
+                emit_change();
+            });
+    connect(spn_transform_size_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
+                if (!can_edit()) return;
+                double t = local_time();
+                double old_w = eval_box_width(*layer_, t);
+                double old_h = eval_box_height(*layer_, t);
+                layer_->rect_height = (float)v;
+                set_animated_value(layer_->box_height, t, v);
+                if (spn_layer_h_) {
+                    QSignalBlocker block(spn_layer_h_);
+                    spn_layer_h_->setValue(v);
+                }
+                const bool lock_size = layer_->lock_aspect_ratio &&
+                                       (layer_->type == LayerType::Shape ||
+                                        layer_->type == LayerType::SolidRect);
+                if (lock_size && old_h > 0.0) {
+                    layer_->rect_width = (float)(v * old_w / old_h);
+                    set_animated_value(layer_->box_width, t, layer_->rect_width);
+                    if (spn_transform_size_w_) {
+                        QSignalBlocker block(spn_transform_size_w_);
+                        spn_transform_size_w_->setValue(layer_->rect_width);
+                    }
+                    if (spn_layer_w_) {
+                        QSignalBlocker block(spn_layer_w_);
+                        spn_layer_w_->setValue(layer_->rect_width);
+                    }
+                }
+                apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
                 emit_change();
             });
     auto set_corner_spin_values = [this](double tl, double tr, double br, double bl, QDoubleSpinBox *except = nullptr) {
@@ -3372,6 +3210,35 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change](bool locked) {
                 if (can_edit()) {
                     layer_->lock_aspect_ratio = locked;
+                    if (chk_transform_size_lock_) {
+                        QSignalBlocker block(chk_transform_size_lock_);
+                        chk_transform_size_lock_->setChecked(locked);
+                    }
+                    emit_change();
+                }
+            });
+    connect(chk_transform_size_lock_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool locked) {
+                if (can_edit()) {
+                    layer_->lock_aspect_ratio = locked;
+                    if (chk_size_lock_) {
+                        QSignalBlocker block(chk_size_lock_);
+                        chk_size_lock_->setChecked(locked);
+                    }
+                    emit_change();
+                }
+            });
+    connect(chk_shape_scale_stroke_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool enabled) {
+                if (can_edit()) {
+                    layer_->scale_stroke_with_shape = enabled;
+                    emit_change();
+                }
+            });
+    connect(chk_shape_scale_corners_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool enabled) {
+                if (can_edit()) {
+                    layer_->scale_corners_with_shape = enabled;
                     emit_change();
                 }
             });
@@ -3394,7 +3261,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->shape_inner_radius = 0.20f;
                 layer_->shape_outer_radius = 0.5f;
                 layer_->shape_roundness = 0.0f;
-                layer_->lock_aspect_ratio = true;
+                layer_->lock_aspect_ratio = false;
+                layer_->scale_stroke_with_shape = false;
+                layer_->scale_corners_with_shape = false;
                 load_values();
                 emit_change();
             });
@@ -3457,8 +3326,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     };
     connect_gradient_color(btn_gradient_start_color_, &Layer::gradient_start_color, "OBSTitles.StartColorLabel", true);
     connect_gradient_color(btn_gradient_end_color_, &Layer::gradient_end_color, "OBSTitles.EndColorLabel", true);
-    connect_gradient_color(btn_background_gradient_start_color_, &Layer::background_gradient_start_color, "OBSTitles.StartColorLabel", false);
-    connect_gradient_color(btn_background_gradient_end_color_, &Layer::background_gradient_end_color, "OBSTitles.EndColorLabel", false);
     connect(spn_gradient_start_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_start_pos = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_end_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -3481,121 +3348,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_focal_x = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_focal_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_focal_y = (float)v; apply_text_fill_format(); emit_change(); } });
-    connect(cmb_background_gradient_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->background_gradient_type = cmb_background_gradient_type_->itemData(idx).toInt(); emit_change(); }
-            });
-    connect(spn_background_gradient_start_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_start_pos = (float)v; emit_change(); } });
-    connect(spn_background_gradient_end_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_end_pos = (float)v; emit_change(); } });
-    connect(spn_background_gradient_start_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_start_opacity = (float)v; emit_change(); } });
-    connect(spn_background_gradient_end_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_end_opacity = (float)v; emit_change(); } });
-    connect(spn_background_gradient_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_opacity = (float)v; emit_change(); } });
-    connect(spn_background_gradient_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_angle = (float)v; emit_change(); } });
-    connect(spn_background_gradient_center_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_center_x = (float)v; emit_change(); } });
-    connect(spn_background_gradient_center_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_center_y = (float)v; emit_change(); } });
-    connect(spn_background_gradient_scale_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_scale = (float)v; emit_change(); } });
-    connect(spn_background_gradient_focal_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_focal_x = (float)v; emit_change(); } });
-    connect(spn_background_gradient_focal_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->background_gradient_focal_y = (float)v; emit_change(); } });
-    connect(chk_outline_enabled_, &QCheckBox::toggled,
-            this, [this, can_edit, emit_change](bool v) {
-                if (can_edit()) { layer_->outline_enabled = v; load_values(); emit_change(); }
-            });
-    connect(cmb_stroke_fill_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (!can_edit() || idx < 0) return;
-                layer_->stroke_fill_type = cmb_stroke_fill_type_->itemData(idx).toInt();
-                layer_->outline_enabled = layer_->stroke_fill_type != 0;
-                load_values();
-                emit_change();
-            });
-    connect(spn_outline_width_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) {
-                if (can_edit()) { layer_->stroke_width = (float)v; emit_change(); }
-            });
-    connect(spn_outline_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) {
-                if (can_edit()) { layer_->outline_opacity = (float)v; emit_change(); }
-            });
-    connect(cmb_outline_join_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->outline_join_style = cmb_outline_join_->itemData(idx).toInt(); emit_change(); }
-            });
-    connect(cmb_outline_position_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit()) { layer_->outline_on_front = cmb_outline_position_->itemData(idx).toInt() != 0; emit_change(); }
-            });
-    connect(chk_outline_antialias_, &QCheckBox::toggled,
-            this, [this, can_edit, emit_change](bool v) {
-                if (can_edit()) { layer_->outline_antialias = v; emit_change(); }
-            });
-    connect(btn_outline_color_, &QPushButton::clicked,
-            this, [this, can_edit, emit_change]() {
-                if (!can_edit()) return;
-                QColor initial = color_from_argb(layer_->stroke_color);
-                QColor picked = QColorDialog::getColor(initial, this, obsgs_tr("OBSTitles.OutlineColor"),
-                                                        QColorDialog::ShowAlphaChannel);
-                if (!picked.isValid()) return;
-                layer_->stroke_color = argb_from_color(picked);
-                style_color_button(btn_outline_color_, layer_->stroke_color);
-                emit_change();
-            });
-    connect(cmb_stroke_gradient_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this, can_edit, emit_change](int idx) {
-                if (can_edit() && idx >= 0) { layer_->stroke_gradient_type = cmb_stroke_gradient_type_->itemData(idx).toInt(); emit_change(); }
-            });
-    connect(btn_stroke_gradient_start_color_, &QPushButton::clicked,
-            this, [this, can_edit, emit_change]() {
-                if (!can_edit()) return;
-                QColor picked = QColorDialog::getColor(color_from_argb(layer_->stroke_gradient_start_color), this,
-                                                        obsgs_tr("OBSTitles.OutlineColor"), QColorDialog::ShowAlphaChannel);
-                if (!picked.isValid()) return;
-                layer_->stroke_gradient_start_color = argb_from_color(picked);
-                style_color_button(btn_stroke_gradient_start_color_, layer_->stroke_gradient_start_color);
-                emit_change();
-            });
-    connect(btn_stroke_gradient_end_color_, &QPushButton::clicked,
-            this, [this, can_edit, emit_change]() {
-                if (!can_edit()) return;
-                QColor picked = QColorDialog::getColor(color_from_argb(layer_->stroke_gradient_end_color), this,
-                                                        obsgs_tr("OBSTitles.OutlineColor"), QColorDialog::ShowAlphaChannel);
-                if (!picked.isValid()) return;
-                layer_->stroke_gradient_end_color = argb_from_color(picked);
-                style_color_button(btn_stroke_gradient_end_color_, layer_->stroke_gradient_end_color);
-                emit_change();
-            });
-    connect(spn_stroke_gradient_start_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_start_pos = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_end_pos_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_end_pos = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_start_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_start_opacity = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_end_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_end_opacity = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_opacity_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_opacity = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_angle_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_angle = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_center_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_center_x = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_center_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_center_y = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_scale_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_scale = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_focal_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_focal_x = (float)v; emit_change(); } });
-    connect(spn_stroke_gradient_focal_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, [this, can_edit, emit_change](double v) { if (can_edit()) { layer_->stroke_gradient_focal_y = (float)v; emit_change(); } });
     connect(edit_image_path_, &QLineEdit::textChanged,
             this, [this, can_edit, emit_change](const QString &path){
                 set_image_preview_label(lbl_image_preview_, path);
@@ -3663,6 +3415,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         if (!can_edit()) return;
         toggle_vec2_keyframe(layer_->scale_x, layer_->scale_y, local_time(),
                              spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_transform_size_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
+        if (!can_edit()) return;
+        toggle_vec2_keyframe(layer_->box_width, layer_->box_height, local_time(),
+                             spn_transform_size_w_->value(), spn_transform_size_h_->value());
         load_values();
         emit_change();
     });
@@ -3779,61 +3538,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         emit_change();
     });
 
-    connect(btn_kf_shadow_enabled_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->shadow_enabled_prop, local_time(), chk_shadow_enabled_->isChecked() ? 1.0 : 0.0);
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_shadow_opacity_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->shadow_opacity_prop, local_time(), spn_shadow_opacity_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_shadow_distance_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->shadow_distance_prop, local_time(), spn_shadow_distance_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_shadow_angle_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->shadow_angle_prop, local_time(), spn_shadow_angle_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_shadow_blur_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->shadow_blur_prop, local_time(), spn_shadow_blur_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_shadow_spread_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        toggle_keyframe(layer_->shadow_spread_prop, local_time(), spn_shadow_spread_->value());
-        load_values();
-        emit_change();
-    });
-    connect(btn_kf_shadow_color_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
-        if (!can_edit()) return;
-        double t = local_time();
-        uint32_t color = eval_shadow_color(*layer_, t);
-        if (any_keyframe_at_time({&layer_->shadow_color_a, &layer_->shadow_color_r,
-                                  &layer_->shadow_color_g, &layer_->shadow_color_b}, t)) {
-            remove_keyframe_at(layer_->shadow_color_a, t);
-            remove_keyframe_at(layer_->shadow_color_r, t);
-            remove_keyframe_at(layer_->shadow_color_g, t);
-            remove_keyframe_at(layer_->shadow_color_b, t);
-        } else {
-            add_or_replace_keyframe(layer_->shadow_color_a, t, (color >> 24) & 0xFF);
-            add_or_replace_keyframe(layer_->shadow_color_r, t, (color >> 16) & 0xFF);
-            add_or_replace_keyframe(layer_->shadow_color_g, t, (color >> 8) & 0xFF);
-            add_or_replace_keyframe(layer_->shadow_color_b, t, color & 0xFF);
-        }
-        load_values();
-        emit_change();
-    });
     connect(btn_kf_appearance_fill_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
         if (!can_edit()) return;
         const bool text_fill = layer_->type == LayerType::Text || layer_->type == LayerType::Clock ||
@@ -3915,6 +3619,7 @@ void PropertiesPanel::load_values()
         rect_box_->setVisible(false);
         if (btn_shape_defaults_) btn_shape_defaults_->setVisible(false);
         if (chk_size_lock_) chk_size_lock_->setVisible(false);
+        if (row_shape_scale_options_) row_shape_scale_options_->setVisible(false);
         if (grp_shape_type_) {
             for (auto *button : grp_shape_type_->buttons())
                 button->setVisible(false);
@@ -3931,6 +3636,8 @@ void PropertiesPanel::load_values()
         spn_opacity_->setValue(1.0);
         spn_origin_x_->setValue(0.5);
         spn_origin_y_->setValue(0.5);
+        if (chk_shape_scale_stroke_) chk_shape_scale_stroke_->setChecked(false);
+        if (chk_shape_scale_corners_) chk_shape_scale_corners_->setChecked(false);
         txt_content_->clear();
         edit_image_path_->clear();
         set_image_preview_label(lbl_image_preview_, QString());
@@ -3947,8 +3654,16 @@ void PropertiesPanel::load_values()
         if (btn_gradient_start_color_) style_color_button(btn_gradient_start_color_, 0xFF4B6EA8);
         if (btn_gradient_end_color_) style_color_button(btn_gradient_end_color_, 0xFF1B1B1B);
         if (btn_appearance_fill_color_) { style_color_button(btn_appearance_fill_color_, 0xFF222222); btn_appearance_fill_color_->setText(QString()); }
-        if (btn_appearance_stroke_color_) { style_color_button(btn_appearance_stroke_color_, 0xFF000000); btn_appearance_stroke_color_->setText(QString()); }
-        if (spn_appearance_stroke_width_) spn_appearance_stroke_width_->setValue(0.0);
+        if (btn_appearance_stroke_color_) {
+            style_color_button(btn_appearance_stroke_color_, 0xFF000000);
+            btn_appearance_stroke_color_->setText(QString());
+            btn_appearance_stroke_color_->setVisible(false);
+        }
+        if (btn_appearance_stroke_label_) btn_appearance_stroke_label_->setVisible(false);
+        if (spn_appearance_stroke_width_) {
+            spn_appearance_stroke_width_->setValue(0.0);
+            spn_appearance_stroke_width_->setVisible(false);
+        }
         if (spn_appearance_opacity_) spn_appearance_opacity_->setValue(100.0);
         if (spn_gradient_start_pos_) spn_gradient_start_pos_->setValue(0.0);
         if (spn_gradient_end_pos_) spn_gradient_end_pos_->setValue(1.0);
@@ -3961,28 +3676,6 @@ void PropertiesPanel::load_values()
         if (spn_gradient_scale_) spn_gradient_scale_->setValue(1.0);
         if (spn_gradient_focal_x_) spn_gradient_focal_x_->setValue(0.5);
         if (spn_gradient_focal_y_) spn_gradient_focal_y_->setValue(0.5);
-        if (chk_outline_enabled_) chk_outline_enabled_->setChecked(false);
-        if (cmb_stroke_fill_type_) cmb_stroke_fill_type_->setCurrentIndex(1);
-        if (btn_outline_color_) style_color_button(btn_outline_color_, 0xFF000000);
-        if (spn_outline_width_) spn_outline_width_->setValue(0.0);
-        if (spn_outline_opacity_) spn_outline_opacity_->setValue(1.0);
-        if (cmb_outline_join_) cmb_outline_join_->setCurrentIndex(1);
-        if (cmb_outline_position_) cmb_outline_position_->setCurrentIndex(1);
-        if (chk_outline_antialias_) chk_outline_antialias_->setChecked(true);
-        if (cmb_stroke_gradient_type_) cmb_stroke_gradient_type_->setCurrentIndex(0);
-        if (btn_stroke_gradient_start_color_) style_color_button(btn_stroke_gradient_start_color_, 0xFFFFFFFF);
-        if (btn_stroke_gradient_end_color_) style_color_button(btn_stroke_gradient_end_color_, 0xFF000000);
-        if (spn_stroke_gradient_start_pos_) spn_stroke_gradient_start_pos_->setValue(0.0);
-        if (spn_stroke_gradient_end_pos_) spn_stroke_gradient_end_pos_->setValue(1.0);
-        if (spn_stroke_gradient_start_opacity_) spn_stroke_gradient_start_opacity_->setValue(1.0);
-        if (spn_stroke_gradient_end_opacity_) spn_stroke_gradient_end_opacity_->setValue(1.0);
-        if (spn_stroke_gradient_opacity_) spn_stroke_gradient_opacity_->setValue(1.0);
-        if (spn_stroke_gradient_angle_) spn_stroke_gradient_angle_->setValue(0.0);
-        if (spn_stroke_gradient_center_x_) spn_stroke_gradient_center_x_->setValue(0.5);
-        if (spn_stroke_gradient_center_y_) spn_stroke_gradient_center_y_->setValue(0.5);
-        if (spn_stroke_gradient_scale_) spn_stroke_gradient_scale_->setValue(1.0);
-        if (spn_stroke_gradient_focal_x_) spn_stroke_gradient_focal_x_->setValue(0.5);
-        if (spn_stroke_gradient_focal_y_) spn_stroke_gradient_focal_y_->setValue(0.5);
         spn_layer_w_->setValue(0.0);
         spn_layer_h_->setValue(0.0);
         if (spn_rect_corner_tl_) spn_rect_corner_tl_->setValue(0.0);
@@ -4000,7 +3693,10 @@ void PropertiesPanel::load_values()
         if (spn_kerning_value_) spn_kerning_value_->setValue(0.0);
         if (spn_scale_x_) spn_scale_x_->setValue(100.0);
         if (spn_scale_y_) spn_scale_y_->setValue(100.0);
+        if (spn_transform_size_w_) spn_transform_size_w_->setValue(0.0);
+        if (spn_transform_size_h_) spn_transform_size_h_->setValue(0.0);
         if (chk_scale_lock_) chk_scale_lock_->setChecked(true);
+        if (chk_transform_size_lock_) chk_transform_size_lock_->setChecked(true);
         if (spn_char_scale_x_) spn_char_scale_x_->setValue(100.0);
         if (spn_char_scale_y_) spn_char_scale_y_->setValue(100.0);
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(0.0);
@@ -4025,31 +3721,12 @@ void PropertiesPanel::load_values()
         if (chk_paragraph_hyphenate_) chk_paragraph_hyphenate_->setChecked(false);
         if (cmb_anchor_) cmb_anchor_->setCurrentIndex(4);
         if (btn_anchor_grid_) { btn_anchor_grid_->setProperty("active_index", 4); btn_anchor_grid_->update(); }
-        if (chk_shadow_enabled_) chk_shadow_enabled_->setChecked(false);
-        if (cmb_shadow_preset_) cmb_shadow_preset_->setCurrentIndex(0);
-        if (cmb_shadow_blur_type_) cmb_shadow_blur_type_->setCurrentIndex(2);
-        if (btn_shadow_color_) style_color_button(btn_shadow_color_, 0x99000000);
-        if (spn_shadow_opacity_) spn_shadow_opacity_->setValue(0.6);
-        if (spn_shadow_distance_) spn_shadow_distance_->setValue(8.0);
-        if (spn_shadow_angle_) spn_shadow_angle_->setValue(135.0);
-        if (spn_shadow_blur_) spn_shadow_blur_->setValue(4.0);
-        if (spn_shadow_spread_) spn_shadow_spread_->setValue(0.0);
-        if (chk_long_shadow_enabled_) chk_long_shadow_enabled_->setChecked(false);
-        if (btn_long_shadow_color_) style_color_button(btn_long_shadow_color_, 0x99000000);
-        if (spn_long_shadow_opacity_) spn_long_shadow_opacity_->setValue(0.45);
-        if (spn_long_shadow_length_) spn_long_shadow_length_->setValue(0.0);
-        if (spn_long_shadow_angle_) spn_long_shadow_angle_->setValue(135.0);
-        if (spn_long_shadow_falloff_) spn_long_shadow_falloff_->setValue(1.0);
-        if (cmb_long_shadow_blur_type_) cmb_long_shadow_blur_type_->setCurrentIndex(0);
-        if (spn_long_shadow_blur_) spn_long_shadow_blur_->setValue(8.0);
         for (auto *b : {btn_kf_pos_x_, btn_kf_pos_y_, btn_kf_scale_x_, btn_kf_scale_y_,
                         btn_kf_rotation_, btn_kf_opacity_, btn_kf_origin_x_, btn_kf_origin_y_,
                         btn_kf_appearance_fill_, btn_kf_appearance_stroke_,
                         btn_kf_paragraph_indent_left_, btn_kf_paragraph_indent_right_, btn_kf_paragraph_indent_first_line_,
-                        btn_kf_width_,
-                        btn_kf_text_color_, btn_kf_fill_color_, btn_kf_shadow_enabled_,
-                        btn_kf_shadow_opacity_, btn_kf_shadow_distance_, btn_kf_shadow_angle_,
-                        btn_kf_shadow_blur_, btn_kf_shadow_spread_, btn_kf_shadow_color_}) {
+                        btn_kf_width_, btn_kf_transform_size_,
+                        btn_kf_text_color_, btn_kf_fill_color_}) {
             if (!b) continue;
             b->setIcon(keyframe_diamond_icon(false));
             b->setProperty("active", false);
@@ -4155,6 +3832,28 @@ void PropertiesPanel::load_values()
     const bool show_star_controls = is_shape_layer && current_shape == ShapeType::Star;
     const bool show_polygon_controls = is_shape_layer && current_shape == ShapeType::Polygon;
     const bool show_roundness = false;
+    const bool show_transform_scale = !is_shape_layer;
+    const bool show_transform_size = is_shape_layer;
+    const bool show_shape_panel_size = !is_shape_layer && (is_text_like || is_image);
+    auto set_visible = [](QWidget *widget, bool visible) {
+        if (widget) widget->setVisible(visible);
+    };
+    set_visible(btn_kf_scale_x_, show_transform_scale);
+    set_visible(transform_scale_label_, show_transform_scale);
+    set_visible(transform_scale_field_x_, show_transform_scale);
+    set_visible(chk_scale_lock_, show_transform_scale);
+    set_visible(transform_scale_field_y_, show_transform_scale);
+    set_visible(btn_kf_transform_size_, show_transform_size);
+    set_visible(transform_size_label_, show_transform_size);
+    set_visible(transform_size_field_w_, show_transform_size);
+    set_visible(chk_transform_size_lock_, show_transform_size);
+    set_visible(transform_size_field_h_, show_transform_size);
+    set_visible(row_shape_scale_options_, is_shape_layer);
+    set_visible(btn_kf_width_, show_shape_panel_size);
+    set_visible(shape_size_label_, show_shape_panel_size);
+    set_visible(shape_size_field_w_, show_shape_panel_size);
+    set_visible(shape_size_field_h_, show_shape_panel_size);
+    set_visible(chk_size_lock_, show_shape_panel_size && is_image);
     if (row_rect_corners_) row_rect_corners_->setVisible(show_corner_radius);
     if (chk_corner_lock_) chk_corner_lock_->setVisible(show_corner_radius);
     if (row_corner_type_) row_corner_type_->setVisible(show_corner_radius);
@@ -4165,7 +3864,6 @@ void PropertiesPanel::load_values()
     if (auto *shape_types_row = rect_box_->findChild<QWidget *>(QStringLiteral("OBSTitlesShapeTypeButtonsRow")))
         shape_types_row->setVisible(is_shape_layer);
     if (btn_shape_defaults_) btn_shape_defaults_->setVisible(is_shape_layer);
-    if (chk_size_lock_) chk_size_lock_->setVisible(is_shape_layer || is_image);
     if (spn_shape_points_) spn_shape_points_->setVisible(show_star_controls);
     if (spn_shape_sides_) spn_shape_sides_->setVisible(show_polygon_controls);
     if (spn_shape_inner_radius_) spn_shape_inner_radius_->setVisible(show_star_controls);
@@ -4195,43 +3893,8 @@ void PropertiesPanel::load_values()
     if (row_fill_color_) row_fill_color_->setEnabled(fill_controls_enabled);
     if (gradient_box_) gradient_box_->setEnabled(fill_controls_enabled);
     if (btn_kf_fill_color_) btn_kf_fill_color_->setEnabled(fill_controls_enabled);
-    if (background_gradient_box_) background_gradient_box_->setVisible(false);
-    const bool stroke_enabled = supports_outline && layer_->outline_enabled && layer_->stroke_fill_type != 0;
-    const bool stroke_color_active = stroke_enabled && layer_->stroke_fill_type == 1;
-    const bool stroke_gradient_active = stroke_enabled && layer_->stroke_fill_type == 2;
     if (outline_box_) outline_box_->setVisible(false);
-    if (auto *outline_form = qobject_cast<QFormLayout *>(outline_box_->layout())) {
-        auto set_row_visible = [&](QWidget *field, bool visible) {
-            if (!field) return;
-            field->setVisible(visible);
-            if (auto *label = outline_form->labelForField(field))
-                label->setVisible(visible);
-        };
-        set_row_visible(chk_outline_enabled_, false);
-        set_row_visible(cmb_stroke_fill_type_, false);
-        set_row_visible(row_outline_color_, false);
-        set_row_visible(spn_outline_width_, false);
-        set_row_visible(spn_outline_opacity_, false);
-        set_row_visible(cmb_outline_join_, false);
-        set_row_visible(cmb_outline_position_, false);
-        set_row_visible(chk_outline_antialias_, false);
-        for (QWidget *field : std::initializer_list<QWidget *>{cmb_stroke_gradient_type_,
-                                                               btn_stroke_gradient_start_color_,
-                                                               spn_stroke_gradient_start_pos_,
-                                                               spn_stroke_gradient_start_opacity_,
-                                                               btn_stroke_gradient_end_color_,
-                                                               spn_stroke_gradient_end_pos_,
-                                                               spn_stroke_gradient_end_opacity_,
-                                                               spn_stroke_gradient_opacity_,
-                                                               spn_stroke_gradient_angle_,
-                                                               spn_stroke_gradient_center_x_,
-                                                               spn_stroke_gradient_center_y_,
-                                                               spn_stroke_gradient_scale_,
-                                                               spn_stroke_gradient_focal_x_,
-                                                               spn_stroke_gradient_focal_y_}) {
-            set_row_visible(field, false);
-        }
-    }
+    if (background_gradient_box_) background_gradient_box_->setVisible(false);
     if (auto *form = rect_box_->findChild<QFormLayout *>()) {
         if (auto *label = form->labelForField(row_rect_corners_)) label->setVisible(show_corner_radius);
         if (auto *label = form->labelForField(row_corner_type_)) label->setVisible(show_corner_radius);
@@ -4266,6 +3929,11 @@ void PropertiesPanel::load_values()
                             ? layer_->scale_y.evaluate(lt)
                             : layer_->scale_y.static_value) * 100.0);
     if (chk_scale_lock_) chk_scale_lock_->setChecked(layer_->scale_lock);
+    if (spn_transform_size_w_) spn_transform_size_w_->setValue(eval_box_width(*layer_, lt));
+    if (spn_transform_size_h_) spn_transform_size_h_->setValue(eval_box_height(*layer_, lt));
+    if (chk_transform_size_lock_) chk_transform_size_lock_->setChecked(layer_->lock_aspect_ratio);
+    if (chk_shape_scale_stroke_) chk_shape_scale_stroke_->setChecked(layer_->scale_stroke_with_shape);
+    if (chk_shape_scale_corners_) chk_shape_scale_corners_->setChecked(layer_->scale_corners_with_shape);
     spn_rot_->setValue(layer_->rotation.is_animated()
                        ? layer_->rotation.evaluate(lt)
                        : layer_->rotation.static_value);
@@ -4294,15 +3962,21 @@ void PropertiesPanel::load_values()
                                   layer_->stroke_gradient_end_color,
                                   layer_->stroke_gradient_type);
         else
-            style_color_button(btn_appearance_stroke_color_, eval_outline_color(*layer_, lt));
+            style_color_button(btn_appearance_stroke_color_, layer_->stroke_color);
         btn_appearance_stroke_color_->setText(QString());
         btn_appearance_stroke_color_->setEnabled(supports_outline);
+        btn_appearance_stroke_color_->setVisible(supports_outline);
     }
+    if (btn_appearance_stroke_label_) btn_appearance_stroke_label_->setVisible(supports_outline);
     if (spn_appearance_stroke_width_) {
-        spn_appearance_stroke_width_->setValue(eval_outline_width(*layer_, lt));
+        spn_appearance_stroke_width_->setValue(layer_->stroke_width);
         spn_appearance_stroke_width_->setEnabled(supports_outline);
+        spn_appearance_stroke_width_->setVisible(supports_outline);
     }
-    if (btn_kf_appearance_stroke_) btn_kf_appearance_stroke_->setEnabled(false);
+    if (btn_kf_appearance_stroke_) {
+        btn_kf_appearance_stroke_->setEnabled(false);
+        btn_kf_appearance_stroke_->setVisible(supports_outline);
+    }
     spn_origin_x_->setValue(eval_origin_x(*layer_, lt));
     spn_origin_y_->setValue(eval_origin_y(*layer_, lt));
     const int anchor_index = anchor_index_from_layer(*layer_);
@@ -4372,57 +4046,6 @@ void PropertiesPanel::load_values()
     if (chk_text_box_height_to_text_) chk_text_box_height_to_text_->setChecked(layer_->text_box_height_to_text);
     if (spn_max_text_box_width_) { spn_max_text_box_width_->setValue(layer_->max_text_box_width); spn_max_text_box_width_->setEnabled(true); }
     if (spn_max_text_box_height_) { spn_max_text_box_height_->setValue(layer_->max_text_box_height); spn_max_text_box_height_->setEnabled(true); }
-    if (cmb_background_gradient_type_) {
-        int background_gradient_idx = cmb_background_gradient_type_->findData(layer_->background_gradient_type);
-        cmb_background_gradient_type_->setCurrentIndex(background_gradient_idx >= 0 ? background_gradient_idx : 0);
-    }
-    if (btn_background_gradient_start_color_) style_color_button(btn_background_gradient_start_color_, layer_->background_gradient_start_color);
-    if (btn_background_gradient_end_color_) style_color_button(btn_background_gradient_end_color_, layer_->background_gradient_end_color);
-    if (spn_background_gradient_start_pos_) spn_background_gradient_start_pos_->setValue(layer_->background_gradient_start_pos);
-    if (spn_background_gradient_end_pos_) spn_background_gradient_end_pos_->setValue(layer_->background_gradient_end_pos);
-    if (spn_background_gradient_start_opacity_) spn_background_gradient_start_opacity_->setValue(layer_->background_gradient_start_opacity);
-    if (spn_background_gradient_end_opacity_) spn_background_gradient_end_opacity_->setValue(layer_->background_gradient_end_opacity);
-    if (spn_background_gradient_opacity_) spn_background_gradient_opacity_->setValue(layer_->background_gradient_opacity);
-    if (spn_background_gradient_angle_) spn_background_gradient_angle_->setValue(layer_->background_gradient_angle);
-    if (spn_background_gradient_center_x_) spn_background_gradient_center_x_->setValue(layer_->background_gradient_center_x);
-    if (spn_background_gradient_center_y_) spn_background_gradient_center_y_->setValue(layer_->background_gradient_center_y);
-    if (spn_background_gradient_scale_) spn_background_gradient_scale_->setValue(layer_->background_gradient_scale);
-    if (spn_background_gradient_focal_x_) spn_background_gradient_focal_x_->setValue(layer_->background_gradient_focal_x);
-    if (spn_background_gradient_focal_y_) spn_background_gradient_focal_y_->setValue(layer_->background_gradient_focal_y);
-    if (chk_outline_enabled_) chk_outline_enabled_->setChecked(layer_->outline_enabled);
-    if (cmb_stroke_fill_type_) {
-        int stroke_fill_idx = cmb_stroke_fill_type_->findData(layer_->stroke_fill_type);
-        cmb_stroke_fill_type_->setCurrentIndex(stroke_fill_idx >= 0 ? stroke_fill_idx : 1);
-    }
-    if (spn_outline_width_) spn_outline_width_->setValue(layer_->stroke_width);
-    if (btn_outline_color_) style_color_button(btn_outline_color_, eval_outline_color(*layer_, lt));
-    if (spn_outline_opacity_) spn_outline_opacity_->setValue(eval_outline_opacity(*layer_, lt));
-    if (cmb_outline_join_) {
-        int join_idx = cmb_outline_join_->findData(layer_->outline_join_style);
-        cmb_outline_join_->setCurrentIndex(join_idx >= 0 ? join_idx : 1);
-    }
-    if (cmb_outline_position_) {
-        int position_idx = cmb_outline_position_->findData(layer_->outline_on_front ? 1 : 0);
-        cmb_outline_position_->setCurrentIndex(position_idx >= 0 ? position_idx : 1);
-    }
-    if (chk_outline_antialias_) chk_outline_antialias_->setChecked(layer_->outline_antialias);
-    if (cmb_stroke_gradient_type_) {
-        int stroke_gradient_idx = cmb_stroke_gradient_type_->findData(layer_->stroke_gradient_type);
-        cmb_stroke_gradient_type_->setCurrentIndex(stroke_gradient_idx >= 0 ? stroke_gradient_idx : 0);
-    }
-    if (btn_stroke_gradient_start_color_) style_color_button(btn_stroke_gradient_start_color_, layer_->stroke_gradient_start_color);
-    if (btn_stroke_gradient_end_color_) style_color_button(btn_stroke_gradient_end_color_, layer_->stroke_gradient_end_color);
-    if (spn_stroke_gradient_start_pos_) spn_stroke_gradient_start_pos_->setValue(layer_->stroke_gradient_start_pos);
-    if (spn_stroke_gradient_end_pos_) spn_stroke_gradient_end_pos_->setValue(layer_->stroke_gradient_end_pos);
-    if (spn_stroke_gradient_start_opacity_) spn_stroke_gradient_start_opacity_->setValue(layer_->stroke_gradient_start_opacity);
-    if (spn_stroke_gradient_end_opacity_) spn_stroke_gradient_end_opacity_->setValue(layer_->stroke_gradient_end_opacity);
-    if (spn_stroke_gradient_opacity_) spn_stroke_gradient_opacity_->setValue(layer_->stroke_gradient_opacity);
-    if (spn_stroke_gradient_angle_) spn_stroke_gradient_angle_->setValue(layer_->stroke_gradient_angle);
-    if (spn_stroke_gradient_center_x_) spn_stroke_gradient_center_x_->setValue(layer_->stroke_gradient_center_x);
-    if (spn_stroke_gradient_center_y_) spn_stroke_gradient_center_y_->setValue(layer_->stroke_gradient_center_y);
-    if (spn_stroke_gradient_scale_) spn_stroke_gradient_scale_->setValue(layer_->stroke_gradient_scale);
-    if (spn_stroke_gradient_focal_x_) spn_stroke_gradient_focal_x_->setValue(layer_->stroke_gradient_focal_x);
-    if (spn_stroke_gradient_focal_y_) spn_stroke_gradient_focal_y_->setValue(layer_->stroke_gradient_focal_y);
 
     auto set_kf_icon = [](QPushButton *button, bool active, bool has_keyframes) {
         if (!button) return;
@@ -4469,14 +4092,6 @@ void PropertiesPanel::load_values()
         set_group_kf_icon(btn_kf_appearance_fill_, {&layer_->fill_color_a, &layer_->fill_color_r,
                                                     &layer_->fill_color_g, &layer_->fill_color_b});
     set_kf_icon(btn_kf_appearance_stroke_, false, false);
-    set_prop_kf_icon(btn_kf_shadow_enabled_, layer_->shadow_enabled_prop);
-    set_prop_kf_icon(btn_kf_shadow_opacity_, layer_->shadow_opacity_prop);
-    set_prop_kf_icon(btn_kf_shadow_distance_, layer_->shadow_distance_prop);
-    set_prop_kf_icon(btn_kf_shadow_angle_, layer_->shadow_angle_prop);
-    set_prop_kf_icon(btn_kf_shadow_blur_, layer_->shadow_blur_prop);
-    set_prop_kf_icon(btn_kf_shadow_spread_, layer_->shadow_spread_prop);
-    set_group_kf_icon(btn_kf_shadow_color_, {&layer_->shadow_color_a, &layer_->shadow_color_r,
-                                             &layer_->shadow_color_g, &layer_->shadow_color_b});
 
     const QString panel_text = is_clock
         ? QString::fromStdString(layer_->clock_format)
@@ -4675,30 +4290,6 @@ void PropertiesPanel::load_values()
     if (spn_paragraph_space_after_) spn_paragraph_space_after_->setValue(layer_->paragraph_space_after_prop.is_animated() ? layer_->paragraph_space_after_prop.evaluate(lt) : (double)layer_->paragraph_space_after);
     if (chk_paragraph_hyphenate_) chk_paragraph_hyphenate_->setChecked(layer_->paragraph_hyphenate);
 
-    chk_shadow_enabled_->setChecked(eval_shadow_enabled(*layer_, lt));
-    cmb_shadow_preset_->setCurrentIndex(0);
-    if (cmb_shadow_blur_type_) {
-        int bi = cmb_shadow_blur_type_->findData((int)layer_->shadow_blur_type);
-        cmb_shadow_blur_type_->setCurrentIndex(bi >= 0 ? bi : 2);
-    }
-    style_color_button(btn_shadow_color_, eval_shadow_color(*layer_, lt));
-    spn_shadow_opacity_->setValue(eval_shadow_opacity(*layer_, lt));
-    spn_shadow_distance_->setValue(eval_shadow_distance(*layer_, lt));
-    spn_shadow_angle_->setValue(eval_shadow_angle(*layer_, lt));
-    spn_shadow_blur_->setValue(eval_shadow_blur(*layer_, lt));
-    spn_shadow_spread_->setValue(eval_shadow_spread(*layer_, lt));
-    if (chk_long_shadow_enabled_) chk_long_shadow_enabled_->setChecked(layer_->long_shadow_enabled);
-    if (btn_long_shadow_color_) style_color_button(btn_long_shadow_color_, layer_->long_shadow_color);
-    if (spn_long_shadow_opacity_) spn_long_shadow_opacity_->setValue(layer_->long_shadow_opacity);
-    if (spn_long_shadow_length_) spn_long_shadow_length_->setValue(layer_->long_shadow_length);
-    if (spn_long_shadow_angle_) spn_long_shadow_angle_->setValue(layer_->long_shadow_angle);
-    if (spn_long_shadow_falloff_) spn_long_shadow_falloff_->setValue(layer_->long_shadow_falloff);
-    if (cmb_long_shadow_blur_type_) {
-        int lbi = cmb_long_shadow_blur_type_->findData((int)layer_->long_shadow_blur_type);
-        cmb_long_shadow_blur_type_->setCurrentIndex(lbi >= 0 ? lbi : 0);
-    }
-    if (spn_long_shadow_blur_) spn_long_shadow_blur_->setValue(layer_->long_shadow_blur);
-
     QFontDatabase fdb;
     cmb_font_->setToolTip(fdb.families().contains(QString::fromStdString(layer_->font_family))
         ? QString()
@@ -4728,33 +4319,5 @@ void PropertiesPanel::open_background_color_selector()
 
 void PropertiesPanel::swap_foreground_background_colors()
 {
-    if (!layer_ || loading_values_) return;
-    const double t = std::clamp(playhead_ - layer_->in_time, 0.0,
-                                std::max(0.0, layer_->out_time - layer_->in_time));
-    const uint32_t old_fill = (layer_->type == LayerType::Text || layer_->type == LayerType::Clock || layer_->type == LayerType::Ticker)
-                                  ? eval_text_color(*layer_, t)
-                                  : eval_fill_color(*layer_, t);
-    const uint32_t old_stroke = eval_outline_color(*layer_, t);
-
-    layer_->fill_type = 0;
-    layer_->stroke_fill_type = 1;
-    layer_->outline_enabled = true;
-    if (layer_->type == LayerType::Text || layer_->type == LayerType::Clock || layer_->type == LayerType::Ticker) {
-        layer_->text_color = old_stroke;
-        set_color_channels_at(*layer_, true, t, old_stroke);
-        const bool active = active_text_edit_layer_id_ == layer_->id;
-        RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer_, active);
-        RichTextCharFormat fmt = summary.valid ? summary.format : RichTextCharFormat();
-        fmt.fill.type = 0;
-        fmt.fill.color = old_stroke;
-        apply_rich_text_format_to_layer_range(*layer_, fmt, RichTextCharFillColor, active);
-        emit text_char_format_changed(layer_->id, fmt, RichTextCharFillColor);
-    } else {
-        layer_->fill_color = old_stroke;
-        set_color_channels_at(*layer_, false, t, old_stroke);
-    }
-    layer_->stroke_color = old_fill;
-
-    load_values();
-    emit property_changed(true);
+    return;
 }

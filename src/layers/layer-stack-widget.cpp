@@ -176,6 +176,7 @@ bool LayerStack::eventFilter(QObject *watched, QEvent *event)
             list_->clearSelection();
             list_->setCurrentItem(nullptr);
             emit layer_selected(std::string());
+            emit layers_selected({});
             event->accept();
             return true;
         }
@@ -283,6 +284,7 @@ void LayerStack::populate()
         auto *hl = new QHBoxLayout(row_widget);
         hl->setContentsMargins(4, 0, 4, 0);
         hl->setSpacing(4);
+        const bool is_mask_object = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
 
         auto make_toggle = [&](const char *on_icon, const char *off_icon, bool checked,
                                const QString &tip) {
@@ -302,7 +304,12 @@ void LayerStack::populate()
             return btn;
         };
 
-        QToolButton *vis = make_toggle("layer-visible.svg", "layer-hidden.svg", l->visible, obsgs_tr("OBSTitles.LayerVisibilityTooltip"));
+        QToolButton *vis = make_toggle(is_mask_object ? "layer-mask-object.svg" : "layer-visible.svg",
+                                       is_mask_object ? "layer-mask-object.svg" : "layer-hidden.svg",
+                                       l->visible,
+                                       is_mask_object
+                                           ? QStringLiteral("This layer is used as a mask object.")
+                                           : obsgs_tr("OBSTitles.LayerVisibilityTooltip"));
         QToolButton *lock = make_toggle("layer-lock.svg", "layer-unlock.svg", l->locked, obsgs_tr("OBSTitles.LockLayerTooltip"));
         connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
             list_->setCurrentItem(item);
@@ -373,7 +380,7 @@ void LayerStack::populate()
             }
             hl->addWidget(indicator);
         };
-        const bool used_as_track_matte = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
+        const bool used_as_track_matte = is_mask_object;
         const bool uses_track_matte = l->mask_mode != MaskMode::None && !l->mask_source_id.empty();
         add_matte_indicator("timeline-mask.svg",
                             QStringLiteral("This layer is used as a track matte and is hidden from normal compositing."),
@@ -593,8 +600,10 @@ void LayerStack::on_selection_changed()
         if (selected.size() <= 1)
             emit layer_selected(id);
     }
-    if (!has_layer)
+    if (!has_layer) {
         emit layer_selected(std::string());
+        emit layers_selected({});
+    }
 
     if (btn_move_up_) btn_move_up_->setEnabled(can_move_up);
     if (btn_move_down_) btn_move_down_->setEnabled(can_move_down);
@@ -694,4 +703,3 @@ void LayerStack::on_item_changed(QListWidgetItem *item)
 /* ══════════════════════════════════════════════════════════════════
  *  TimelineWidget
  * ══════════════════════════════════════════════════════════════════ */
-

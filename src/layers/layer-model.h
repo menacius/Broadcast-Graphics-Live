@@ -279,6 +279,8 @@ struct Layer {
     float       shape_inner_radius = 0.20f;
     float       shape_outer_radius = 0.5f;
     float       shape_roundness = 0.0f;
+    bool        scale_stroke_with_shape = false;
+    bool        scale_corners_with_shape = false;
 
     /* Keyframable geometry mirrors the static fields above so older saved
      * titles remain readable while new titles can animate size/origin.
@@ -338,4 +340,3 @@ struct Layer {
     bool        lock_aspect_ratio = true;
     ImageScaleFilter scale_filter = ImageScaleFilter::Bilinear;
 };
-

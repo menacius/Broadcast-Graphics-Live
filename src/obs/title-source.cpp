@@ -316,9 +316,44 @@ struct TitleSourceData {
 };
 
 
+static bool effect_has_animation(const LayerEffect &effect)
+{
+    return effect.enabled_prop.is_animated() ||
+           effect.opacity_prop.is_animated() ||
+           effect.size_prop.is_animated() ||
+           effect.distance_prop.is_animated() ||
+           effect.angle_prop.is_animated() ||
+           effect.spread_prop.is_animated() ||
+           effect.falloff_prop.is_animated() ||
+           effect.stroke_width_prop.is_animated() ||
+           effect.stroke_opacity_prop.is_animated() ||
+           effect.padding_left_prop.is_animated() ||
+           effect.padding_right_prop.is_animated() ||
+           effect.padding_top_prop.is_animated() ||
+           effect.padding_bottom_prop.is_animated() ||
+           effect.corner_radius_tl_prop.is_animated() ||
+           effect.corner_radius_tr_prop.is_animated() ||
+           effect.corner_radius_br_prop.is_animated() ||
+           effect.corner_radius_bl_prop.is_animated() ||
+           effect.color_a.is_animated() ||
+           effect.color_r.is_animated() ||
+           effect.color_g.is_animated() ||
+           effect.color_b.is_animated() ||
+           effect.stroke_color_a.is_animated() ||
+           effect.stroke_color_r.is_animated() ||
+           effect.stroke_color_g.is_animated() ||
+           effect.stroke_color_b.is_animated();
+}
+
+static bool layer_has_effect_animation(const Layer &layer)
+{
+    return std::any_of(layer.effects.begin(), layer.effects.end(), effect_has_animation);
+}
+
 static bool layer_has_animation(const Layer &layer)
 {
-    return layer.pos_x.is_animated() ||
+    return layer_has_effect_animation(layer) ||
+           layer.pos_x.is_animated() ||
            layer.pos_y.is_animated() ||
            layer.scale_x.is_animated() ||
            layer.scale_y.is_animated() ||
@@ -338,39 +373,6 @@ static bool layer_has_animation(const Layer &layer)
            layer.baseline_shift_prop.is_animated() ||
            layer.paragraph_space_before_prop.is_animated() ||
            layer.paragraph_space_after_prop.is_animated() ||
-           layer.shadow_enabled_prop.is_animated() ||
-           layer.shadow_opacity_prop.is_animated() ||
-           layer.shadow_distance_prop.is_animated() ||
-           layer.shadow_angle_prop.is_animated() ||
-           layer.shadow_blur_prop.is_animated() ||
-           layer.shadow_spread_prop.is_animated() ||
-           layer.shadow_color_a.is_animated() ||
-           layer.shadow_color_r.is_animated() ||
-           layer.shadow_color_g.is_animated() ||
-           layer.shadow_color_b.is_animated() ||
-           layer.background_enabled_prop.is_animated() ||
-           layer.background_opacity_prop.is_animated() ||
-           layer.background_padding_x_prop.is_animated() ||
-           layer.background_padding_y_prop.is_animated() ||
-           layer.background_padding_left_prop.is_animated() ||
-           layer.background_padding_right_prop.is_animated() ||
-           layer.background_padding_top_prop.is_animated() ||
-           layer.background_padding_bottom_prop.is_animated() ||
-           layer.background_corner_radius_prop.is_animated() ||
-           layer.background_corner_radius_tl_prop.is_animated() ||
-           layer.background_corner_radius_tr_prop.is_animated() ||
-           layer.background_corner_radius_br_prop.is_animated() ||
-           layer.background_corner_radius_bl_prop.is_animated() ||
-           layer.background_stroke_width_prop.is_animated() ||
-           layer.background_stroke_opacity_prop.is_animated() ||
-           layer.background_color_a.is_animated() ||
-           layer.background_color_r.is_animated() ||
-           layer.background_color_g.is_animated() ||
-           layer.background_color_b.is_animated() ||
-           layer.background_stroke_color_a.is_animated() ||
-           layer.background_stroke_color_r.is_animated() ||
-           layer.background_stroke_color_g.is_animated() ||
-           layer.background_stroke_color_b.is_animated() ||
            layer.text_color_a.is_animated() ||
            layer.text_color_r.is_animated() ||
            layer.text_color_g.is_animated() ||
@@ -388,6 +390,38 @@ static bool include_property_bounds(const Layer &layer, const AnimatedProperty &
     first_time = std::min(first_time, layer.in_time + prop.keyframes.front().time);
     last_time = std::max(last_time, layer.in_time + prop.keyframes.back().time);
     return true;
+}
+
+static bool include_effect_property_bounds(const Layer &layer, const LayerEffect &effect,
+                                           double &first_time, double &last_time)
+{
+    bool has_bounds = false;
+    has_bounds |= include_property_bounds(layer, effect.enabled_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.opacity_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.size_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.distance_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.angle_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.spread_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.falloff_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.stroke_width_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.stroke_opacity_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.padding_left_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.padding_right_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.padding_top_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.padding_bottom_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.corner_radius_tl_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.corner_radius_tr_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.corner_radius_br_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.corner_radius_bl_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.color_a, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.color_r, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.color_g, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.color_b, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.stroke_color_a, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.stroke_color_r, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.stroke_color_g, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, effect.stroke_color_b, first_time, last_time);
+    return has_bounds;
 }
 
 static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_time, double &last_time)
@@ -413,39 +447,8 @@ static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_ti
     has_bounds |= include_property_bounds(layer, layer.baseline_shift_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_space_before_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_space_after_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_enabled_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_opacity_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_distance_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_angle_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_blur_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_spread_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_color_a, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_color_r, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_color_g, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.shadow_color_b, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_enabled_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_opacity_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_padding_x_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_padding_y_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_padding_left_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_padding_right_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_padding_top_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_padding_bottom_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_corner_radius_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_corner_radius_tl_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_corner_radius_tr_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_corner_radius_br_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_corner_radius_bl_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_stroke_width_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_stroke_opacity_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_color_a, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_color_r, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_color_g, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_color_b, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_stroke_color_a, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_stroke_color_r, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_stroke_color_g, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.background_stroke_color_b, first_time, last_time);
+    for (const LayerEffect &effect : layer.effects)
+        has_bounds |= include_effect_property_bounds(layer, effect, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.text_color_a, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.text_color_r, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.text_color_g, first_time, last_time);
@@ -1222,18 +1225,22 @@ static QBrush gradient_fill_brush(const Layer &layer, const QRectF &box, double 
                                layer.gradient_stops);
 }
 
+static const LayerEffect *find_layer_effect(const Layer &layer, LayerEffectType type);
+
 static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
 {
-    return make_gradient_brush(layer.background_gradient_type, box,
-                               std::clamp((double)layer.background_gradient_opacity * layer_opacity, 0.0, 1.0),
-                               layer.background_gradient_center_x, layer.background_gradient_center_y,
-                               layer.background_gradient_focal_x, layer.background_gradient_focal_y,
-                               layer.background_gradient_scale, layer.background_gradient_angle,
-                               std::clamp((double)layer.background_gradient_start_pos, 0.0, 1.0),
-                               layer.background_gradient_start_color, layer.background_gradient_start_opacity,
-                               std::clamp((double)layer.background_gradient_end_pos, 0.0, 1.0),
-                               layer.background_gradient_end_color, layer.background_gradient_end_opacity,
-                               layer.background_gradient_stops);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    if (!effect) return QBrush(Qt::NoBrush);
+    return make_gradient_brush(effect->effect_gradient_type, box,
+                               std::clamp((double)effect->effect_gradient_opacity * layer_opacity, 0.0, 1.0),
+                               effect->effect_gradient_center_x, effect->effect_gradient_center_y,
+                               effect->effect_gradient_focal_x, effect->effect_gradient_focal_y,
+                               effect->effect_gradient_scale, effect->effect_gradient_angle,
+                               std::clamp((double)effect->effect_gradient_start_pos, 0.0, 1.0),
+                               effect->effect_gradient_start_color, effect->effect_gradient_start_opacity,
+                               std::clamp((double)effect->effect_gradient_end_pos, 0.0, 1.0),
+                               effect->effect_gradient_end_color, effect->effect_gradient_end_opacity,
+                               {});
 }
 
 static QBrush stroke_gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
@@ -1318,21 +1325,23 @@ static cairo_pattern_t *create_stroke_gradient_pattern(const Layer &layer, doubl
 
 static cairo_pattern_t *create_background_gradient_pattern(const Layer &layer, double x, double y, double w, double h, double layer_alpha)
 {
-    const double opacity = std::clamp((double)layer.background_gradient_opacity * layer_alpha, 0.0, 1.0);
-    const double cx = x + (double)layer.background_gradient_center_x * w;
-    const double cy = y + (double)layer.background_gradient_center_y * h;
-    const double scale = std::clamp((double)layer.background_gradient_scale, 0.01, 100.0);
-    const double start_pos = std::clamp((double)layer.background_gradient_start_pos, 0.0, 1.0);
-    const double end_pos = std::clamp((double)layer.background_gradient_end_pos, 0.0, 1.0);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    if (!effect) return nullptr;
+    const double opacity = std::clamp((double)effect->effect_gradient_opacity * layer_alpha, 0.0, 1.0);
+    const double cx = x + (double)effect->effect_gradient_center_x * w;
+    const double cy = y + (double)effect->effect_gradient_center_y * h;
+    const double scale = std::clamp((double)effect->effect_gradient_scale, 0.01, 100.0);
+    const double start_pos = std::clamp((double)effect->effect_gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)effect->effect_gradient_end_pos, 0.0, 1.0);
     cairo_pattern_t *pattern = nullptr;
-    if (layer.background_gradient_type == 1 || layer.background_gradient_type == 4) {
+    if (effect->effect_gradient_type == 1 || effect->effect_gradient_type == 4) {
         const double radius = std::max(w, h) * 0.5 * scale;
-        const double fx = x + (double)layer.background_gradient_focal_x * w;
-        const double fy = y + (double)layer.background_gradient_focal_y * h;
+        const double fx = x + (double)effect->effect_gradient_focal_x * w;
+        const double fy = y + (double)effect->effect_gradient_focal_y * h;
         pattern = cairo_pattern_create_radial(fx, fy, 0.0, cx, cy, std::max(1.0, radius));
     } else {
         const double length = std::hypot(w, h) * 0.5 * scale;
-        const double angle = layer.background_gradient_angle * kPi / 180.0;
+        const double angle = effect->effect_gradient_angle * kPi / 180.0;
         const double dx = std::cos(angle) * length;
         const double dy = std::sin(angle) * length;
         pattern = cairo_pattern_create_linear(cx - dx, cy - dy, cx + dx, cy + dy);
@@ -1341,64 +1350,112 @@ static cairo_pattern_t *create_background_gradient_pattern(const Layer &layer, d
         QColor color = gradient_color_with_opacity(argb, opacity, stop_opacity);
         cairo_pattern_add_color_stop_rgba(pattern, pos, color.redF(), color.greenF(), color.blueF(), color.alphaF());
     };
-    add_stop(start_pos, layer.background_gradient_start_color, layer.background_gradient_start_opacity);
-    add_stop(end_pos, layer.background_gradient_end_color, layer.background_gradient_end_opacity);
-    for (const auto &stop : layer.background_gradient_stops)
-        add_stop(stop.position, stop.color, stop.opacity);
-    cairo_pattern_set_extend(pattern, layer.background_gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
+    add_stop(start_pos, effect->effect_gradient_start_color, effect->effect_gradient_start_opacity);
+    add_stop(end_pos, effect->effect_gradient_end_color, effect->effect_gradient_end_opacity);
+    cairo_pattern_set_extend(pattern, effect->effect_gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
     return pattern;
 }
 
-static bool layer_effect_enabled(const Layer &layer, LayerEffectType type, bool legacy_enabled)
+static const LayerEffect *find_layer_effect(const Layer &layer, LayerEffectType type)
 {
-    if (layer.effects.empty())
-        return legacy_enabled;
     for (const auto &effect : layer.effects) {
-        if (effect.type == type && effect.enabled)
-            return true;
+        if (effect.type == type)
+            return &effect;
     }
-    return false;
+    return nullptr;
 }
 
-static bool eval_outline_enabled(const Layer &layer, double)
+static bool eval_effect_enabled(const LayerEffect &effect, double t)
 {
-    return layer.stroke_fill_type != 0 &&
-           layer_effect_enabled(layer, LayerEffectType::Outline, layer.outline_enabled);
+    return effect.enabled && (!effect.enabled_prop.is_animated() || effect.enabled_prop.evaluate(t) >= 0.5);
 }
 
-static uint32_t eval_outline_color(const Layer &layer, double)
+static uint32_t eval_effect_color(const LayerEffect &effect, double t)
 {
-    return layer.stroke_color;
+    return ((uint32_t)eval_channel(effect.color_a, (effect.effect_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.color_r, (effect.effect_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.color_g, (effect.effect_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.color_b, effect.effect_color & 0xFF, t);
 }
 
-static double eval_outline_width(const Layer &layer, double)
+static uint32_t eval_effect_stroke_color(const LayerEffect &effect, double t)
 {
-    return eval_outline_enabled(layer, 0.0) ? std::max(0.0f, layer.stroke_width) : 0.0;
+    return ((uint32_t)eval_channel(effect.stroke_color_a, (effect.effect_stroke_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.stroke_color_r, (effect.effect_stroke_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.stroke_color_g, (effect.effect_stroke_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.stroke_color_b, effect.effect_stroke_color & 0xFF, t);
 }
 
-static double eval_outline_opacity(const Layer &layer, double)
+static bool eval_outline_enabled(const Layer &layer, double t)
 {
-    return std::clamp((double)layer.outline_opacity, 0.0, 1.0);
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return true;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return effect && effect->effect_fill_type != 0 && eval_effect_enabled(*effect, t);
+}
+
+static uint32_t eval_outline_color(const Layer &layer, double t)
+{
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return layer.stroke_color;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return effect ? eval_effect_color(*effect, t) : 0x00000000;
+}
+
+static double eval_outline_width(const Layer &layer, double t)
+{
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return std::max(0.0f, layer.stroke_width);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return effect && eval_outline_enabled(layer, t)
+               ? std::max(0.0, effect->size_prop.is_animated() ? effect->size_prop.evaluate(t) : (double)effect->effect_size)
+               : 0.0;
+}
+
+static double eval_outline_opacity(const Layer &layer, double t)
+{
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return std::clamp((double)layer.outline_opacity, 0.0, 1.0);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return effect ? std::clamp(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(t) : (double)effect->effect_opacity, 0.0, 1.0) : 1.0;
 }
 
 static bool eval_outline_on_front(const Layer &layer, double)
 {
-    return layer.outline_on_front;
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return layer.outline_on_front;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return effect ? effect->effect_on_front : true;
 }
 
 static bool eval_outline_antialias(const Layer &layer, double)
 {
-    return layer.outline_antialias;
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return layer.outline_antialias;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return effect ? effect->effect_antialias : true;
 }
 
 static cairo_antialias_t outline_cairo_antialias(const Layer &layer)
 {
-    return layer.outline_antialias ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE;
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return layer.outline_antialias ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    return (!effect || effect->effect_antialias) ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE;
 }
 
 static cairo_line_join_t outline_cairo_join_style(const Layer &layer)
 {
-    switch (layer.outline_join_style) {
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f) {
+        switch (layer.outline_join_style) {
+        case 0: return CAIRO_LINE_JOIN_MITER;
+        case 2: return CAIRO_LINE_JOIN_BEVEL;
+        case 1:
+        default: return CAIRO_LINE_JOIN_ROUND;
+        }
+    }
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    switch (effect ? effect->effect_join_style : 1) {
     case 0: return CAIRO_LINE_JOIN_MITER;
     case 2: return CAIRO_LINE_JOIN_BEVEL;
     case 1:
@@ -1408,7 +1465,8 @@ static cairo_line_join_t outline_cairo_join_style(const Layer &layer)
 
 static Qt::PenJoinStyle outline_pen_join_style(const Layer &layer)
 {
-    switch (layer.outline_join_style) {
+    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
+    switch (effect ? effect->effect_join_style : 1) {
     case 0: return Qt::MiterJoin;
     case 2: return Qt::BevelJoin;
     case 1:
@@ -1418,48 +1476,50 @@ static Qt::PenJoinStyle outline_pen_join_style(const Layer &layer)
 
 static bool eval_shadow_enabled(const Layer &layer, double t)
 {
-    const bool legacy = layer.shadow_enabled_prop.is_animated()
-        ? layer.shadow_enabled_prop.evaluate(t) >= 0.5
-        : layer.shadow_enabled;
-    return layer_effect_enabled(layer, LayerEffectType::DropShadow, legacy);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect && eval_effect_enabled(*effect, t);
 }
 
-static bool eval_long_shadow_enabled(const Layer &layer, double)
+static bool eval_long_shadow_enabled(const Layer &layer, double t)
 {
-    return layer_effect_enabled(layer, LayerEffectType::LongShadow, layer.long_shadow_enabled);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::LongShadow);
+    return effect && eval_effect_enabled(*effect, t);
 }
 
 static double eval_shadow_opacity(const Layer &layer, double t)
 {
-    return std::clamp(layer.shadow_opacity_prop.is_animated() ? layer.shadow_opacity_prop.evaluate(t) : (double)layer.shadow_opacity, 0.0, 1.0);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect ? std::clamp(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(t) : (double)effect->effect_opacity, 0.0, 1.0) : 0.0;
 }
 
 static double eval_shadow_distance(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.shadow_distance_prop.is_animated() ? layer.shadow_distance_prop.evaluate(t) : (double)layer.shadow_distance);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect ? std::max(0.0, effect->distance_prop.is_animated() ? effect->distance_prop.evaluate(t) : (double)effect->effect_distance) : 0.0;
 }
 
 static double eval_shadow_angle(const Layer &layer, double t)
 {
-    return layer.shadow_angle_prop.is_animated() ? layer.shadow_angle_prop.evaluate(t) : (double)layer.shadow_angle;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect ? (effect->angle_prop.is_animated() ? effect->angle_prop.evaluate(t) : (double)effect->effect_angle) : 0.0;
 }
 
 static double eval_shadow_blur(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.shadow_blur_prop.is_animated() ? layer.shadow_blur_prop.evaluate(t) : (double)layer.shadow_blur);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect ? std::max(0.0, effect->size_prop.is_animated() ? effect->size_prop.evaluate(t) : (double)effect->effect_size) : 0.0;
 }
 
 static double eval_shadow_spread(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.shadow_spread_prop.is_animated() ? layer.shadow_spread_prop.evaluate(t) : (double)layer.shadow_spread);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect ? std::max(0.0, effect->spread_prop.is_animated() ? effect->spread_prop.evaluate(t) : (double)effect->effect_spread) : 0.0;
 }
 
 static uint32_t eval_shadow_color(const Layer &layer, double t)
 {
-    return ((uint32_t)eval_channel(layer.shadow_color_a, (layer.shadow_color >> 24) & 0xFF, t) << 24) |
-           ((uint32_t)eval_channel(layer.shadow_color_r, (layer.shadow_color >> 16) & 0xFF, t) << 16) |
-           ((uint32_t)eval_channel(layer.shadow_color_g, (layer.shadow_color >> 8) & 0xFF, t) << 8) |
-           (uint32_t)eval_channel(layer.shadow_color_b, layer.shadow_color & 0xFF, t);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow);
+    return effect ? eval_effect_color(*effect, t) : 0x00000000;
 }
 
 static QPointF shadow_offset(const Layer &layer, double t)
@@ -1525,21 +1585,25 @@ static ShadowRenderParams evaluated_shadow_params(const Layer &layer, double t)
         p.dy = off.y();
         p.blur = eval_shadow_blur(layer, t);
         p.spread = eval_shadow_spread(layer, t);
-        p.blur_type = (int)layer.shadow_blur_type;
+        if (const auto *effect = find_layer_effect(layer, LayerEffectType::DropShadow))
+            p.blur_type = effect->effect_blur_type;
         p.color = eval_shadow_color(layer, t);
         p.opacity = eval_shadow_opacity(layer, t) * (((p.color >> 24) & 0xFF) / 255.0);
     }
-    p.long_enabled = eval_long_shadow_enabled(layer, t) && layer.long_shadow_length > 0.0f && layer.long_shadow_opacity > 0.0f;
+    const auto *long_effect = find_layer_effect(layer, LayerEffectType::LongShadow);
+    const double long_length = long_effect ? std::max(0.0, long_effect->distance_prop.is_animated() ? long_effect->distance_prop.evaluate(t) : (double)long_effect->effect_distance) : 0.0;
+    const double long_opacity = long_effect ? std::clamp(long_effect->opacity_prop.is_animated() ? long_effect->opacity_prop.evaluate(t) : (double)long_effect->effect_opacity, 0.0, 1.0) : 0.0;
+    p.long_enabled = long_effect && eval_effect_enabled(*long_effect, t) && long_length > 0.0 && long_opacity > 0.0;
     if (p.long_enabled) {
-        p.long_color = layer.long_shadow_color;
-        p.long_opacity = std::clamp((double)layer.long_shadow_opacity, 0.0, 1.0) * (((p.long_color >> 24) & 0xFF) / 255.0);
-        p.long_length = std::max(0.0, (double)layer.long_shadow_length);
-        p.long_angle = layer.long_shadow_angle;
-        p.long_falloff = std::clamp((double)layer.long_shadow_falloff, 0.0, 4.0);
-        p.long_blur_type = (int)layer.long_shadow_blur_type;
+        p.long_color = eval_effect_color(*long_effect, t);
+        p.long_opacity = long_opacity * (((p.long_color >> 24) & 0xFF) / 255.0);
+        p.long_length = long_length;
+        p.long_angle = long_effect->angle_prop.is_animated() ? long_effect->angle_prop.evaluate(t) : (double)long_effect->effect_angle;
+        p.long_falloff = std::clamp(long_effect->falloff_prop.is_animated() ? long_effect->falloff_prop.evaluate(t) : (double)long_effect->effect_falloff, 0.0, 8.0);
+        p.long_blur_type = long_effect->effect_blur_type;
         p.long_blur = p.long_blur_type == (int)LongShadowBlurType::None
                           ? 0.0
-                          : std::max(0.0, (double)layer.long_shadow_blur);
+                          : std::max(0.0, long_effect->size_prop.is_animated() ? long_effect->size_prop.evaluate(t) : (double)long_effect->effect_size);
     }
     return p;
 }
@@ -2206,126 +2270,101 @@ static QColor color_from_argb(uint32_t argb)
 
 static bool eval_background_enabled(const Layer &layer, double t)
 {
-    const bool legacy = layer.background_enabled_prop.is_animated()
-        ? layer.background_enabled_prop.evaluate(t) >= 0.5
-        : layer.background_enabled;
-    return layer_effect_enabled(layer, LayerEffectType::BackgroundColor, legacy);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect && eval_effect_enabled(*effect, t);
 }
 
 static double eval_background_opacity(const Layer &layer, double t)
 {
-    return std::clamp(layer.background_opacity_prop.is_animated()
-                          ? layer.background_opacity_prop.evaluate(t)
-                          : (double)layer.background_opacity,
-                      0.0, 1.0);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::clamp(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(t) : (double)effect->effect_opacity, 0.0, 1.0) : 0.0;
 }
 
 static double eval_background_padding_x(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_padding_x_prop.is_animated()
-                             ? layer.background_padding_x_prop.evaluate(t)
-                             : (double)layer.background_padding_x);
+    return 0.0;
 }
 
 static double eval_background_padding_y(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_padding_y_prop.is_animated()
-                             ? layer.background_padding_y_prop.evaluate(t)
-                             : (double)layer.background_padding_y);
+    return 0.0;
 }
 
 static double eval_background_padding_left(const Layer &layer, double t)
 {
-    return layer.background_padding_left_prop.is_animated()
-               ? layer.background_padding_left_prop.evaluate(t)
-               : (double)layer.background_padding_left;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? (effect->padding_left_prop.is_animated() ? effect->padding_left_prop.evaluate(t) : (double)effect->effect_padding_left) : 0.0;
 }
 
 static double eval_background_padding_right(const Layer &layer, double t)
 {
-    return layer.background_padding_right_prop.is_animated()
-               ? layer.background_padding_right_prop.evaluate(t)
-               : (double)layer.background_padding_right;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? (effect->padding_right_prop.is_animated() ? effect->padding_right_prop.evaluate(t) : (double)effect->effect_padding_right) : 0.0;
 }
 
 static double eval_background_padding_top(const Layer &layer, double t)
 {
-    return layer.background_padding_top_prop.is_animated()
-               ? layer.background_padding_top_prop.evaluate(t)
-               : (double)layer.background_padding_top;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? (effect->padding_top_prop.is_animated() ? effect->padding_top_prop.evaluate(t) : (double)effect->effect_padding_top) : 0.0;
 }
 
 static double eval_background_padding_bottom(const Layer &layer, double t)
 {
-    return layer.background_padding_bottom_prop.is_animated()
-               ? layer.background_padding_bottom_prop.evaluate(t)
-               : (double)layer.background_padding_bottom;
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? (effect->padding_bottom_prop.is_animated() ? effect->padding_bottom_prop.evaluate(t) : (double)effect->effect_padding_bottom) : 0.0;
 }
 
 static double eval_background_corner_radius(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_corner_radius_prop.is_animated()
-                             ? layer.background_corner_radius_prop.evaluate(t)
-                             : (double)layer.background_corner_radius);
+    return 0.0;
 }
 
 static double eval_background_corner_radius_tl(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_corner_radius_tl_prop.is_animated()
-                             ? layer.background_corner_radius_tl_prop.evaluate(t)
-                             : (double)layer.background_corner_radius_tl);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::max(0.0, effect->corner_radius_tl_prop.is_animated() ? effect->corner_radius_tl_prop.evaluate(t) : (double)effect->effect_corner_radius_tl) : 0.0;
 }
 
 static double eval_background_corner_radius_tr(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_corner_radius_tr_prop.is_animated()
-                             ? layer.background_corner_radius_tr_prop.evaluate(t)
-                             : (double)layer.background_corner_radius_tr);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::max(0.0, effect->corner_radius_tr_prop.is_animated() ? effect->corner_radius_tr_prop.evaluate(t) : (double)effect->effect_corner_radius_tr) : 0.0;
 }
 
 static double eval_background_corner_radius_br(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_corner_radius_br_prop.is_animated()
-                             ? layer.background_corner_radius_br_prop.evaluate(t)
-                             : (double)layer.background_corner_radius_br);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::max(0.0, effect->corner_radius_br_prop.is_animated() ? effect->corner_radius_br_prop.evaluate(t) : (double)effect->effect_corner_radius_br) : 0.0;
 }
 
 static double eval_background_corner_radius_bl(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_corner_radius_bl_prop.is_animated()
-                             ? layer.background_corner_radius_bl_prop.evaluate(t)
-                             : (double)layer.background_corner_radius_bl);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::max(0.0, effect->corner_radius_bl_prop.is_animated() ? effect->corner_radius_bl_prop.evaluate(t) : (double)effect->effect_corner_radius_bl) : 0.0;
 }
 
 static double eval_background_stroke_width(const Layer &layer, double t)
 {
-    return std::max(0.0, layer.background_stroke_width_prop.is_animated()
-                             ? layer.background_stroke_width_prop.evaluate(t)
-                             : (double)layer.background_stroke_width);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::max(0.0, effect->stroke_width_prop.is_animated() ? effect->stroke_width_prop.evaluate(t) : (double)effect->effect_stroke_width) : 0.0;
 }
 
 static double eval_background_stroke_opacity(const Layer &layer, double t)
 {
-    return std::clamp(layer.background_stroke_opacity_prop.is_animated()
-                          ? layer.background_stroke_opacity_prop.evaluate(t)
-                          : (double)layer.background_stroke_opacity,
-                      0.0, 1.0);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? std::clamp(effect->stroke_opacity_prop.is_animated() ? effect->stroke_opacity_prop.evaluate(t) : (double)effect->effect_stroke_opacity, 0.0, 1.0) : 1.0;
 }
 
 static uint32_t eval_background_color(const Layer &layer, double t)
 {
-    return ((uint32_t)eval_channel(layer.background_color_a, (layer.background_color >> 24) & 0xFF, t) << 24) |
-           ((uint32_t)eval_channel(layer.background_color_r, (layer.background_color >> 16) & 0xFF, t) << 16) |
-           ((uint32_t)eval_channel(layer.background_color_g, (layer.background_color >> 8) & 0xFF, t) << 8) |
-           (uint32_t)eval_channel(layer.background_color_b, layer.background_color & 0xFF, t);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? eval_effect_color(*effect, t) : 0x00000000;
 }
 
 static uint32_t eval_background_stroke_color(const Layer &layer, double t)
 {
-    return ((uint32_t)eval_channel(layer.background_stroke_color_a, (layer.background_stroke_color >> 24) & 0xFF, t) << 24) |
-           ((uint32_t)eval_channel(layer.background_stroke_color_r, (layer.background_stroke_color >> 16) & 0xFF, t) << 16) |
-           ((uint32_t)eval_channel(layer.background_stroke_color_g, (layer.background_stroke_color >> 8) & 0xFF, t) << 8) |
-           (uint32_t)eval_channel(layer.background_stroke_color_b, layer.background_stroke_color & 0xFF, t);
+    const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+    return effect ? eval_effect_stroke_color(*effect, t) : 0x00000000;
 }
 
 static QColor evaluated_background_color(const Layer &layer, double t)
@@ -2564,6 +2603,8 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
 
     QRectF base_rect(pad, pad, box_w, box_h);
     if (eval_background_enabled(layer, t)) {
+        const auto *background_effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+        const bool background_gradient = background_effect && background_effect->effect_fill_type == 1;
         const double bg_left = eval_background_padding_left(layer, t);
         const double bg_right = eval_background_padding_right(layer, t);
         const double bg_top = eval_background_padding_top(layer, t);
@@ -2571,14 +2612,14 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         QRectF bg_rect = base_rect.adjusted(-bg_left, -bg_top, bg_right, bg_bottom);
         if (bg_rect.width() <= 0.0 || bg_rect.height() <= 0.0) bg_rect = base_rect;
         QColor bg = evaluated_background_color(layer, t);
-        if (bg.alpha() > 0 || layer.background_fill_type == 1 || eval_background_stroke_width(layer, t) > 0.0) {
+        if (bg.alpha() > 0 || background_gradient || eval_background_stroke_width(layer, t) > 0.0) {
             QPainterPath bg_path = painter_rounded_rect_corners(bg_rect,
                 eval_background_corner_radius_tl(layer, t), eval_background_corner_radius_tr(layer, t),
                 eval_background_corner_radius_br(layer, t), eval_background_corner_radius_bl(layer, t),
-                layer.background_corner_type);
+                (CornerType)(background_effect ? background_effect->effect_corner_type : 0));
             painter.setPen(Qt::NoPen);
-            painter.setBrush(layer.background_fill_type == 1 ? background_gradient_fill_brush(layer, bg_rect, eval_background_opacity(layer, t)) : QBrush(bg));
-            if (bg.alpha() > 0 || layer.background_fill_type == 1)
+            painter.setBrush(background_gradient ? background_gradient_fill_brush(layer, bg_rect, eval_background_opacity(layer, t)) : QBrush(bg));
+            if (bg.alpha() > 0 || background_gradient)
                 painter.fillPath(bg_path, painter.brush());
             const double stroke_w = eval_background_stroke_width(layer, t);
             if (stroke_w > 0.0) {
@@ -2835,6 +2876,8 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
         paint_qimage(cr, shadow.image, -origin_x * w + shadow.origin.x(), -origin_y * h + shadow.origin.y(), alpha);
     }
     if (eval_background_enabled(layer, t)) {
+        const auto *background_effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
+        const bool background_gradient = background_effect && background_effect->effect_fill_type == 1;
         const double bg_left = eval_background_padding_left(layer, t);
         const double bg_right = eval_background_padding_right(layer, t);
         const double bg_top = eval_background_padding_top(layer, t);
@@ -2843,7 +2886,7 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
         double br, bgc, bb, ba;
         br = bg.redF(); bgc = bg.greenF(); bb = bg.blueF(); ba = bg.alphaF();
         const double stroke_w = eval_background_stroke_width(layer, t);
-        if (ba > 0.0 || layer.background_fill_type == 1 || stroke_w > 0.0) {
+        if (ba > 0.0 || background_gradient || stroke_w > 0.0) {
             const double x = -origin_x * w - bg_left;
             const double y = -origin_y * h - bg_top;
             const double bw = std::max(1.0, w + bg_left + bg_right);
@@ -2851,10 +2894,10 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
             cairo_add_rounded_rect_corners(cr, x, y, bw, bh,
                 eval_background_corner_radius_tl(layer, t), eval_background_corner_radius_tr(layer, t),
                 eval_background_corner_radius_br(layer, t), eval_background_corner_radius_bl(layer, t),
-                layer.background_corner_type);
+                (CornerType)(background_effect ? background_effect->effect_corner_type : 0));
             cairo_pattern_t *gradient_pattern = nullptr;
-            if (ba > 0.0 || layer.background_fill_type == 1) {
-                if (layer.background_fill_type == 1) {
+            if (ba > 0.0 || background_gradient) {
+                if (background_gradient) {
                     gradient_pattern = create_background_gradient_pattern(layer, x, y, bw, bh, alpha * eval_background_opacity(layer, t));
                     cairo_set_source(cr, gradient_pattern);
                 } else {
@@ -3354,88 +3397,96 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
         return;
 
     for (const auto &effect : layer.effects) {
-        if (!effect.enabled) continue;
+        if (!eval_effect_enabled(effect, t)) continue;
+        LayerEffect resolved = effect;
+        resolved.effect_color = eval_effect_color(effect, t);
+        resolved.effect_opacity = (float)std::clamp(effect.opacity_prop.is_animated() ? effect.opacity_prop.evaluate(t) : (double)effect.effect_opacity, 0.0, 1.0);
+        resolved.effect_size = (float)std::max(0.0, effect.size_prop.is_animated() ? effect.size_prop.evaluate(t) : (double)effect.effect_size);
+        resolved.effect_distance = (float)std::max(0.0, effect.distance_prop.is_animated() ? effect.distance_prop.evaluate(t) : (double)effect.effect_distance);
+        resolved.effect_angle = (float)(effect.angle_prop.is_animated() ? effect.angle_prop.evaluate(t) : (double)effect.effect_angle);
+        resolved.effect_spread = (float)std::max(0.0, effect.spread_prop.is_animated() ? effect.spread_prop.evaluate(t) : (double)effect.effect_spread);
+        resolved.effect_falloff = (float)std::max(0.0, effect.falloff_prop.is_animated() ? effect.falloff_prop.evaluate(t) : (double)effect.effect_falloff);
         const int width = cairo_image_surface_get_width(surface);
         const int height = cairo_image_surface_get_height(surface);
         if (width <= 0 || height <= 0) return;
         std::vector<uint8_t> alpha;
-        switch (effect.type) {
+        switch (resolved.type) {
         case LayerEffectType::BrightnessContrast:
         case LayerEffectType::Saturation:
-            apply_color_adjustment(surface, effect);
+            apply_color_adjustment(surface, resolved);
             break;
         case LayerEffectType::ColorOverlay:
             alpha = surface_alpha(surface);
-            composite_solid_alpha(surface, alpha, effect.effect_color, effect.effect_opacity, effect.blend_mode, true);
+            composite_solid_alpha(surface, alpha, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, true);
             break;
         case LayerEffectType::Blur:
-            blur_surface_for_type(surface, effect.effect_size, effect.effect_blur_type, effect.effect_opacity);
+            blur_surface_for_type(surface, resolved.effect_size, resolved.effect_blur_type, resolved.effect_opacity);
             break;
         case LayerEffectType::MotionBlur:
-            apply_directional_motion_blur(surface, effect);
+            apply_directional_motion_blur(surface, resolved);
             break;
         case LayerEffectType::Glow: {
             alpha = surface_alpha(surface);
             std::vector<uint8_t> glow = alpha;
-            blur_alpha_for_type(glow, width, height, effect.effect_size, effect.effect_blur_type);
+            blur_alpha_for_type(glow, width, height, resolved.effect_size, resolved.effect_blur_type);
             for (size_t i = 0; i < glow.size(); ++i)
                 glow[i] = (uint8_t)std::max(0, (int)glow[i] - (int)alpha[i]);
-            composite_solid_alpha(surface, glow, effect.effect_color, effect.effect_opacity, effect.blend_mode, false);
+            composite_solid_alpha(surface, glow, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, false);
             break;
         }
         case LayerEffectType::InnerGlow: {
             alpha = surface_alpha(surface);
             std::vector<uint8_t> inv(alpha.size());
             for (size_t i = 0; i < alpha.size(); ++i) inv[i] = 255 - alpha[i];
-            blur_alpha_for_type(inv, width, height, effect.effect_size, effect.effect_blur_type);
+            blur_alpha_for_type(inv, width, height, resolved.effect_size, resolved.effect_blur_type);
             for (size_t i = 0; i < inv.size(); ++i)
                 inv[i] = (uint8_t)(((int)inv[i] * (int)alpha[i]) / 255);
-            composite_solid_alpha(surface, inv, effect.effect_color, effect.effect_opacity, effect.blend_mode, true);
+            composite_solid_alpha(surface, inv, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, true);
             break;
         }
         case LayerEffectType::InnerShadow: {
             alpha = surface_alpha(surface);
             std::vector<uint8_t> shifted(alpha.size(), 0);
-            const double rad = effect.effect_angle * kPi / 180.0;
-            offset_alpha(alpha, shifted, width, height, std::cos(rad) * effect.effect_distance,
-                         std::sin(rad) * effect.effect_distance, 1.0);
-            blur_alpha_for_type(shifted, width, height, effect.effect_size, effect.effect_blur_type);
+            const double rad = resolved.effect_angle * kPi / 180.0;
+            offset_alpha(alpha, shifted, width, height, std::cos(rad) * resolved.effect_distance,
+                         std::sin(rad) * resolved.effect_distance, 1.0);
+            blur_alpha_for_type(shifted, width, height, resolved.effect_size, resolved.effect_blur_type);
             for (size_t i = 0; i < shifted.size(); ++i)
                 shifted[i] = (uint8_t)(((255 - (int)shifted[i]) * (int)alpha[i]) / 255);
-            composite_solid_alpha(surface, shifted, effect.effect_color, effect.effect_opacity, effect.blend_mode, true);
+            composite_solid_alpha(surface, shifted, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, true);
             break;
         }
         case LayerEffectType::DropShadow: {
-            if (effect.effect_opacity <= 0.0f) break;
+            if (resolved.effect_opacity <= 0.0f) break;
             alpha = surface_alpha(surface);
             std::vector<uint8_t> shadow(alpha.size(), 0);
-            const double rad = effect.effect_angle * kPi / 180.0;
+            const double rad = resolved.effect_angle * kPi / 180.0;
             offset_alpha(alpha, shadow, width, height,
-                         std::cos(rad) * effect.effect_distance,
-                         std::sin(rad) * effect.effect_distance, 1.0);
-            if (effect.effect_spread > 0.0f)
-                blur_alpha_for_type(shadow, width, height, effect.effect_spread, (int)ShadowBlurType::AlphaMask);
-            blur_alpha_for_type(shadow, width, height, effect.effect_size, effect.effect_blur_type);
-            composite_solid_alpha_behind(surface, shadow, effect.effect_color, effect.effect_opacity);
+                         std::cos(rad) * resolved.effect_distance,
+                         std::sin(rad) * resolved.effect_distance, 1.0);
+            if (resolved.effect_spread > 0.0f)
+                blur_alpha_for_type(shadow, width, height, resolved.effect_spread, (int)ShadowBlurType::AlphaMask);
+            blur_alpha_for_type(shadow, width, height, resolved.effect_size, resolved.effect_blur_type);
+            composite_solid_alpha_behind(surface, shadow, resolved.effect_color, resolved.effect_opacity);
             break;
         }
         case LayerEffectType::LongShadow: {
-            if (effect.effect_opacity <= 0.0f || effect.effect_distance <= 0.0f) break;
+            if (resolved.effect_opacity <= 0.0f || resolved.effect_distance <= 0.0f) break;
             alpha = surface_alpha(surface);
             std::vector<uint8_t> long_shadow(alpha.size(), 0);
-            const double rad = effect.effect_angle * kPi / 180.0;
-            const double dx = std::cos(rad) * effect.effect_distance;
-            const double dy = std::sin(rad) * effect.effect_distance;
-            const int steps = std::clamp((int)std::ceil(effect.effect_distance / 16.0f), 1, 64);
+            const double rad = resolved.effect_angle * kPi / 180.0;
+            const double dx = std::cos(rad) * resolved.effect_distance;
+            const double dy = std::sin(rad) * resolved.effect_distance;
+            const int steps = std::clamp((int)std::ceil(resolved.effect_distance / 16.0f), 1, 64);
             for (int i = steps; i >= 1; --i) {
                 const double u = (double)i / steps;
-                const double fade = std::pow(1.0 - u, std::max(0.0f, effect.effect_falloff));
+                const double fade = std::pow(1.0 - u, std::max(0.0f, resolved.effect_falloff));
                 offset_alpha(alpha, long_shadow, width, height, dx * u, dy * u, fade);
             }
-            const int mapped_long_blur = shadow_blur_type_for_long_shadow(effect.effect_blur_type);
-            if (mapped_long_blur >= 0 && effect.effect_size > 0.0f)
-                blur_alpha_for_type(long_shadow, width, height, effect.effect_size, mapped_long_blur);
-            composite_solid_alpha_behind(surface, long_shadow, effect.effect_color, effect.effect_opacity);
+            const int mapped_long_blur = shadow_blur_type_for_long_shadow(resolved.effect_blur_type);
+            if (mapped_long_blur >= 0 && resolved.effect_size > 0.0f)
+                blur_alpha_for_type(long_shadow, width, height, resolved.effect_size, mapped_long_blur);
+            composite_solid_alpha_behind(surface, long_shadow, resolved.effect_color, resolved.effect_opacity);
             break;
         }
         default:
@@ -3447,7 +3498,8 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
 
 static bool layer_has_non_transform_animation(const Layer &layer)
 {
-    return layer.box_width.is_animated() ||
+    return layer_has_effect_animation(layer) ||
+           layer.box_width.is_animated() ||
            layer.box_height.is_animated() ||
            layer.origin_x_prop.is_animated() ||
            layer.origin_y_prop.is_animated() ||
@@ -3461,39 +3513,6 @@ static bool layer_has_non_transform_animation(const Layer &layer)
            layer.baseline_shift_prop.is_animated() ||
            layer.paragraph_space_before_prop.is_animated() ||
            layer.paragraph_space_after_prop.is_animated() ||
-           layer.shadow_enabled_prop.is_animated() ||
-           layer.shadow_opacity_prop.is_animated() ||
-           layer.shadow_distance_prop.is_animated() ||
-           layer.shadow_angle_prop.is_animated() ||
-           layer.shadow_blur_prop.is_animated() ||
-           layer.shadow_spread_prop.is_animated() ||
-           layer.shadow_color_a.is_animated() ||
-           layer.shadow_color_r.is_animated() ||
-           layer.shadow_color_g.is_animated() ||
-           layer.shadow_color_b.is_animated() ||
-           layer.background_enabled_prop.is_animated() ||
-           layer.background_opacity_prop.is_animated() ||
-           layer.background_padding_x_prop.is_animated() ||
-           layer.background_padding_y_prop.is_animated() ||
-           layer.background_padding_left_prop.is_animated() ||
-           layer.background_padding_right_prop.is_animated() ||
-           layer.background_padding_top_prop.is_animated() ||
-           layer.background_padding_bottom_prop.is_animated() ||
-           layer.background_corner_radius_prop.is_animated() ||
-           layer.background_corner_radius_tl_prop.is_animated() ||
-           layer.background_corner_radius_tr_prop.is_animated() ||
-           layer.background_corner_radius_br_prop.is_animated() ||
-           layer.background_corner_radius_bl_prop.is_animated() ||
-           layer.background_stroke_width_prop.is_animated() ||
-           layer.background_stroke_opacity_prop.is_animated() ||
-           layer.background_color_a.is_animated() ||
-           layer.background_color_r.is_animated() ||
-           layer.background_color_g.is_animated() ||
-           layer.background_color_b.is_animated() ||
-           layer.background_stroke_color_a.is_animated() ||
-           layer.background_stroke_color_r.is_animated() ||
-           layer.background_stroke_color_g.is_animated() ||
-           layer.background_stroke_color_b.is_animated() ||
            layer.text_color_a.is_animated() ||
            layer.text_color_r.is_animated() ||
            layer.text_color_g.is_animated() ||

@@ -140,6 +140,9 @@ private:
     void rotate_selected_layers(double degrees);
     std::shared_ptr<Title> clone_title(const Title &title) const;
     std::shared_ptr<Layer> clone_layer_for_insert(const Layer &layer, bool suffix_name) const;
+    std::string unique_layer_name(const std::string &base_name,
+                                  const std::set<std::string> &exclude_ids = {},
+                                  std::set<std::string> *reserved_names = nullptr) const;
     void insert_layer_above(const std::string &anchor_id, std::shared_ptr<Layer> layer);
     void select_after_layer_list_mutation(const std::string &layer_id);
     std::vector<std::string> selected_layer_ids_for_operation() const;
@@ -250,6 +253,5 @@ private:
     bool             restoring_editor_layout_ = false;
     bool             editor_layout_save_suppressed_ = false;
     std::vector<std::shared_ptr<Layer>> layer_clipboard_;
+    std::set<std::string> pending_text_layer_auto_names_;
 };
-
-

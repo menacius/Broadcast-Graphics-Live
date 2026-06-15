@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
+
+#include "animation.h"
 
 /* ══════════════════════════════════════════════════════════════════
  *  Stackable layer effects
@@ -66,4 +69,65 @@ struct LayerEffect {
     int effect_samples = 8;
     bool effect_centered = true;
     EffectBlendMode blend_mode = EffectBlendMode::Normal;
+
+    /* Effect-owned style data. Legacy layer fields may still be read while
+     * loading old projects, but active editor/render state belongs here.
+     */
+    int effect_fill_type = 0; /* background: 0=solid, 1=gradient; outline: 0=none, 1=color, 2=gradient */
+    int effect_join_style = 1;
+    bool effect_on_front = true;
+    bool effect_antialias = true;
+    bool effect_owned_style_loaded = false;
+    uint32_t effect_stroke_color = 0x00000000;
+    float effect_stroke_width = 0.0f;
+    float effect_stroke_opacity = 1.0f;
+    float effect_padding_left = 0.0f;
+    float effect_padding_right = 0.0f;
+    float effect_padding_top = 0.0f;
+    float effect_padding_bottom = 0.0f;
+    float effect_corner_radius_tl = 0.0f;
+    float effect_corner_radius_tr = 0.0f;
+    float effect_corner_radius_br = 0.0f;
+    float effect_corner_radius_bl = 0.0f;
+    int effect_corner_type = 0;
+    int effect_gradient_type = 0;
+    uint32_t effect_gradient_start_color = 0xFF4B6EA8;
+    uint32_t effect_gradient_end_color = 0xFF1B1B1B;
+    float effect_gradient_start_pos = 0.0f;
+    float effect_gradient_end_pos = 1.0f;
+    float effect_gradient_start_opacity = 1.0f;
+    float effect_gradient_end_opacity = 1.0f;
+    float effect_gradient_opacity = 1.0f;
+    float effect_gradient_angle = 0.0f;
+    float effect_gradient_center_x = 0.5f;
+    float effect_gradient_center_y = 0.5f;
+    float effect_gradient_scale = 1.0f;
+    float effect_gradient_focal_x = 0.5f;
+    float effect_gradient_focal_y = 0.5f;
+
+    AnimatedProperty enabled_prop { "effect_enabled", 1.0 };
+    AnimatedProperty opacity_prop { "effect_opacity", 1.0 };
+    AnimatedProperty size_prop { "effect_size", 16.0 };
+    AnimatedProperty distance_prop { "effect_distance", 8.0 };
+    AnimatedProperty angle_prop { "effect_angle", 135.0 };
+    AnimatedProperty spread_prop { "effect_spread", 0.0 };
+    AnimatedProperty falloff_prop { "effect_falloff", 1.0 };
+    AnimatedProperty stroke_width_prop { "effect_stroke_width", 0.0 };
+    AnimatedProperty stroke_opacity_prop { "effect_stroke_opacity", 1.0 };
+    AnimatedProperty padding_left_prop { "effect_padding_left", 0.0 };
+    AnimatedProperty padding_right_prop { "effect_padding_right", 0.0 };
+    AnimatedProperty padding_top_prop { "effect_padding_top", 0.0 };
+    AnimatedProperty padding_bottom_prop { "effect_padding_bottom", 0.0 };
+    AnimatedProperty corner_radius_tl_prop { "effect_corner_radius_tl", 0.0 };
+    AnimatedProperty corner_radius_tr_prop { "effect_corner_radius_tr", 0.0 };
+    AnimatedProperty corner_radius_br_prop { "effect_corner_radius_br", 0.0 };
+    AnimatedProperty corner_radius_bl_prop { "effect_corner_radius_bl", 0.0 };
+    AnimatedProperty color_a { "effect_color_a", 255.0 };
+    AnimatedProperty color_r { "effect_color_r", 255.0 };
+    AnimatedProperty color_g { "effect_color_g", 255.0 };
+    AnimatedProperty color_b { "effect_color_b", 255.0 };
+    AnimatedProperty stroke_color_a { "effect_stroke_color_a", 0.0 };
+    AnimatedProperty stroke_color_r { "effect_stroke_color_r", 0.0 };
+    AnimatedProperty stroke_color_g { "effect_stroke_color_g", 0.0 };
+    AnimatedProperty stroke_color_b { "effect_stroke_color_b", 0.0 };
 };

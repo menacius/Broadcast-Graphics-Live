@@ -53,6 +53,7 @@ public:
 
     void set_title(std::shared_ptr<Title> t);
     void set_selected_layer(const std::string &lid);
+    void set_selected_layers(const std::vector<std::string> &layer_ids);
     void set_playhead(double t);
     void set_vertical_scroll(int scroll_y);
     void set_zoom_percent(int percent);
@@ -75,6 +76,7 @@ signals:
     void vertical_scroll_delta_requested(int delta);
     void zoom_percent_changed(int percent);
     void layer_selected(const std::string &layer_id);
+    void layers_selected(const std::vector<std::string> &layer_ids);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
@@ -113,6 +115,19 @@ private:
         Keyframe keyframe;
         double offset = 0.0;
     };
+    struct DraggedLayerStrip {
+        struct KeyframeTime {
+            std::string prop_name;
+            int index = -1;
+            double start_time = 0.0;
+        };
+        std::string layer_id;
+        double start_in = 0.0;
+        double start_out = 0.0;
+        std::vector<KeyframeTime> keyframes;
+    };
+    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, LoopStart, LoopEnd, PauseMarker };
+
     void   clear_keyframe_selection();
     void   prune_keyframe_selection();
     bool   is_keyframe_selected(const std::string &layer_id, const std::string &prop_name, int kf_idx) const;
@@ -127,11 +142,14 @@ private:
     AnimatedProperty *find_timeline_property(Layer &layer, const std::string &prop_name) const;
     bool   keep_playhead_visible();
     void   set_pixels_per_sec(double pixels_per_sec, double anchor_time, int anchor_x);
-
-    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, LoopStart, LoopEnd, PauseMarker };
+    bool   is_layer_selected(const std::string &layer_id) const;
+    void   select_layer_from_mouse(const std::string &layer_id, Qt::KeyboardModifiers modifiers);
+    void   begin_layer_strip_drag(const std::string &layer_id, DragMode mode, double start_time);
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
+    std::vector<std::string> selected_layer_ids_;
+    std::string selection_anchor_layer_id_;
     bool fit_on_next_resize_ = false;
     double playhead_  = 0.0;
     DragMode drag_mode_ = DragMode::None;
@@ -143,6 +161,7 @@ private:
     double drag_start_out_ = 0.0;
     std::set<KeyframeRef> selected_keyframes_;
     std::vector<DraggedKeyframe> dragged_keyframes_;
+    std::vector<DraggedLayerStrip> dragged_layer_strips_;
     std::vector<ClipboardKeyframe> keyframe_clipboard_;
     QPoint marquee_start_;
     QPoint marquee_current_;
@@ -152,5 +171,3 @@ private:
     int    scroll_x_       = 0;
     int    scroll_y_       = 0;
 };
-
-

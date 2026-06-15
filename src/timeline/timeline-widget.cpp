@@ -32,7 +32,31 @@ void TimelineWidget::set_title(std::shared_ptr<Title> t)
 
 void TimelineWidget::set_selected_layer(const std::string &lid)
 {
-    sel_layer_id_ = lid; update();
+    set_selected_layers(lid.empty() ? std::vector<std::string>()
+                                    : std::vector<std::string>{lid});
+}
+
+void TimelineWidget::set_selected_layers(const std::vector<std::string> &layer_ids)
+{
+    selected_layer_ids_.clear();
+    if (!title_) {
+        sel_layer_id_.clear();
+        update();
+        return;
+    }
+
+    std::set<std::string> seen;
+    for (const auto &id : layer_ids) {
+        if (id.empty() || !seen.insert(id).second) continue;
+        if (title_->find_layer(id))
+            selected_layer_ids_.push_back(id);
+    }
+    sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+    if (!sel_layer_id_.empty())
+        selection_anchor_layer_id_ = sel_layer_id_;
+    else
+        selection_anchor_layer_id_.clear();
+    update();
 }
 
 void TimelineWidget::set_playhead(double t)
@@ -413,6 +437,110 @@ void TimelineWidget::begin_keyframe_drag(const std::string &layer_id, const std:
     }
 }
 
+bool TimelineWidget::is_layer_selected(const std::string &layer_id) const
+{
+    return std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), layer_id) != selected_layer_ids_.end();
+}
+
+void TimelineWidget::select_layer_from_mouse(const std::string &layer_id, Qt::KeyboardModifiers modifiers)
+{
+    if (!title_ || layer_id.empty()) return;
+
+    auto display_order = [&]() {
+        std::vector<std::string> ids;
+        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+            if (*it) ids.push_back((*it)->id);
+        }
+        return ids;
+    };
+    auto ordered_from_set = [&](const std::set<std::string> &selected) {
+        std::vector<std::string> ids;
+        for (const auto &layer : title_->layers) {
+            if (layer && selected.find(layer->id) != selected.end())
+                ids.push_back(layer->id);
+        }
+        return ids;
+    };
+
+    std::vector<std::string> next_ids;
+    if (modifiers & Qt::ShiftModifier) {
+        std::set<std::string> selected;
+        if (modifiers & Qt::ControlModifier)
+            selected.insert(selected_layer_ids_.begin(), selected_layer_ids_.end());
+
+        const std::string anchor = selection_anchor_layer_id_.empty()
+            ? (selected_layer_ids_.empty() ? layer_id : selected_layer_ids_.back())
+            : selection_anchor_layer_id_;
+        const auto order = display_order();
+        auto anchor_it = std::find(order.begin(), order.end(), anchor);
+        auto clicked_it = std::find(order.begin(), order.end(), layer_id);
+        if (anchor_it != order.end() && clicked_it != order.end()) {
+            const int a = (int)std::distance(order.begin(), anchor_it);
+            const int b = (int)std::distance(order.begin(), clicked_it);
+            const int first = std::min(a, b);
+            const int last = std::max(a, b);
+            for (int i = first; i <= last; ++i)
+                selected.insert(order[(size_t)i]);
+        } else {
+            selected.insert(layer_id);
+        }
+        next_ids = ordered_from_set(selected);
+    } else if (modifiers & Qt::ControlModifier) {
+        next_ids = selected_layer_ids_;
+        auto existing = std::find(next_ids.begin(), next_ids.end(), layer_id);
+        if (existing == next_ids.end())
+            next_ids.push_back(layer_id);
+        else
+            next_ids.erase(existing);
+        selection_anchor_layer_id_ = layer_id;
+    } else if (is_layer_selected(layer_id) && selected_layer_ids_.size() > 1) {
+        next_ids = selected_layer_ids_;
+    } else {
+        next_ids.push_back(layer_id);
+        selection_anchor_layer_id_ = layer_id;
+    }
+
+    selected_layer_ids_ = next_ids;
+    sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+    if (selected_layer_ids_.empty())
+        selection_anchor_layer_id_.clear();
+    update();
+    emit layers_selected(selected_layer_ids_);
+}
+
+void TimelineWidget::begin_layer_strip_drag(const std::string &layer_id, DragMode mode, double start_time)
+{
+    if (!title_) return;
+    drag_mode_ = mode;
+    drag_layer_id_ = layer_id;
+    drag_start_time_ = start_time;
+    dragged_layer_strips_.clear();
+
+    std::set<std::string> ids;
+    if (is_layer_selected(layer_id))
+        ids.insert(selected_layer_ids_.begin(), selected_layer_ids_.end());
+    ids.insert(layer_id);
+
+    for (const auto &layer : title_->layers) {
+        if (!layer || layer->locked || ids.find(layer->id) == ids.end()) continue;
+        DraggedLayerStrip dragged;
+        dragged.layer_id = layer->id;
+        dragged.start_in = layer->in_time;
+        dragged.start_out = layer->out_time;
+        for (auto *prop : timeline_properties(*layer)) {
+            if (!prop) continue;
+            for (int i = 0; i < (int)prop->keyframes.size(); ++i)
+                dragged.keyframes.push_back({prop->name, i, prop->keyframes[(size_t)i].time});
+        }
+        dragged_layer_strips_.push_back(std::move(dragged));
+    }
+
+    if (auto primary = title_->find_layer(layer_id)) {
+        drag_start_in_ = primary->in_time;
+        drag_start_out_ = primary->out_time;
+    }
+}
+
 
 static QString timeline_blend_mode_short(EffectBlendMode mode)
 {
@@ -556,7 +684,7 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         int y = rh + row * rowh - scroll_y_;
         if (y > H) break;
         if (y + rowh < rh) continue;
-        bool sel = (layer->id == sel_layer_id_);
+        bool sel = is_layer_selected(layer->id);
 
         p.fillRect(0, y, W, rowh,
                    entry.is_property ? property_bg :
@@ -945,6 +1073,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     drag_start_in_ = 0.0;
     drag_start_out_ = 0.0;
     dragged_keyframes_.clear();
+    dragged_layer_strips_.clear();
     marquee_moved_ = false;
 
     if (ev->pos().y() < ruler_height()) {
@@ -988,7 +1117,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
             ev->accept();
             return;
         }
-        if (hit_layer) emit layer_selected(hit_layer->id);
+        if (hit_layer) select_layer_from_mouse(hit_layer->id, ev->modifiers());
         const bool shift = ev->modifiers() & Qt::ShiftModifier;
         if (shift) {
             select_keyframe(hit_layer->id, hit_prop->name, hit_idx, true, true);
@@ -1021,27 +1150,21 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
             ev->accept();
             return;
         }
-        if (hit_strip) emit layer_selected(layer->id);
+        if (hit_strip) select_layer_from_mouse(layer->id, ev->modifiers());
         if (std::abs(ev->pos().x() - x0) <= kTrimHit) {
-            drag_mode_ = DragMode::TrimIn;
-            drag_layer_id_ = layer->id;
+            begin_layer_strip_drag(layer->id, DragMode::TrimIn, x_to_time(ev->pos().x()));
             setCursor(Qt::SizeHorCursor);
             ev->accept();
             return;
         }
         if (std::abs(ev->pos().x() - x1) <= kTrimHit) {
-            drag_mode_ = DragMode::TrimOut;
-            drag_layer_id_ = layer->id;
+            begin_layer_strip_drag(layer->id, DragMode::TrimOut, x_to_time(ev->pos().x()));
             setCursor(Qt::SizeHorCursor);
             ev->accept();
             return;
         }
         if (ev->pos().x() >= std::min(x0, x1) && ev->pos().x() <= std::max(x0, x1)) {
-            drag_mode_ = DragMode::Layer;
-            drag_layer_id_ = layer->id;
-            drag_start_time_ = x_to_time(ev->pos().x());
-            drag_start_in_ = layer->in_time;
-            drag_start_out_ = layer->out_time;
+            begin_layer_strip_drag(layer->id, DragMode::Layer, x_to_time(ev->pos().x()));
             setCursor(Qt::ClosedHandCursor);
             ev->accept();
             return;
@@ -1049,6 +1172,10 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     }
 
     if (ev->button() == Qt::LeftButton && ev->pos().y() >= ruler_height()) {
+        if (!selected_layer_ids_.empty()) {
+            set_selected_layers({});
+            emit layers_selected({});
+        }
         drag_mode_ = DragMode::Marquee;
         marquee_start_ = ev->pos();
         marquee_current_ = ev->pos();
@@ -1061,7 +1188,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
-    emit layer_selected(std::string());
+    set_selected_layers({});
+    emit layers_selected({});
     ev->accept();
 }
 
@@ -1116,24 +1244,80 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
     }
 
     if (drag_mode_ == DragMode::TrimIn || drag_mode_ == DragMode::TrimOut) {
-        auto layer = title_->find_layer(drag_layer_id_);
-        if (!layer || layer->locked) return;
-        if (drag_mode_ == DragMode::TrimIn)
-            layer->in_time = std::clamp(t, 0.0, std::max(0.0, layer->out_time - obs_frame_duration()));
-        else
-            layer->out_time = std::clamp(t, layer->in_time + obs_frame_duration(), title_->duration);
+        const double delta = t - drag_start_time_;
+        if (dragged_layer_strips_.empty()) {
+            if (auto layer = title_->find_layer(drag_layer_id_)) {
+                DraggedLayerStrip dragged;
+                dragged.layer_id = layer->id;
+                dragged.start_in = layer->in_time;
+                dragged.start_out = layer->out_time;
+                for (auto *prop : timeline_properties(*layer)) {
+                    if (!prop) continue;
+                    for (int i = 0; i < (int)prop->keyframes.size(); ++i)
+                        dragged.keyframes.push_back({prop->name, i, prop->keyframes[(size_t)i].time});
+                }
+                dragged_layer_strips_.push_back(std::move(dragged));
+            }
+        }
+        for (const auto &dragged : dragged_layer_strips_) {
+            auto layer = title_->find_layer(dragged.layer_id);
+            if (!layer || layer->locked) continue;
+            if (drag_mode_ == DragMode::TrimIn) {
+                const double new_in = std::clamp(dragged.start_in + delta,
+                                                 0.0,
+                                                 std::max(0.0, dragged.start_out - obs_frame_duration()));
+                const double keyframe_offset = dragged.start_in - new_in;
+                layer->in_time = new_in;
+                layer->out_time = dragged.start_out;
+                for (const auto &keyframe : dragged.keyframes) {
+                    AnimatedProperty *prop = find_timeline_property(*layer, keyframe.prop_name);
+                    if (!prop || keyframe.index < 0 || keyframe.index >= (int)prop->keyframes.size()) continue;
+                    prop->keyframes[(size_t)keyframe.index].time =
+                        std::clamp(keyframe.start_time + keyframe_offset,
+                                   0.0,
+                                   std::max(0.0, layer->out_time - layer->in_time));
+                }
+            } else {
+                layer->in_time = dragged.start_in;
+                layer->out_time = std::clamp(dragged.start_out + delta,
+                                             dragged.start_in + obs_frame_duration(),
+                                             title_->duration);
+            }
+        }
         update();
         return;
     }
 
     if (drag_mode_ == DragMode::Layer) {
-        auto layer = title_->find_layer(drag_layer_id_);
-        if (!layer || layer->locked) return;
-        double duration = std::max(obs_frame_duration(), drag_start_out_ - drag_start_in_);
-        double new_in = drag_start_in_ + (t - drag_start_time_);
-        new_in = std::clamp(new_in, 0.0, std::max(0.0, title_->duration - duration));
-        layer->in_time = new_in;
-        layer->out_time = std::min(title_->duration, new_in + duration);
+        double delta = t - drag_start_time_;
+        if (dragged_layer_strips_.empty()) {
+            if (auto layer = title_->find_layer(drag_layer_id_)) {
+                DraggedLayerStrip dragged;
+                dragged.layer_id = layer->id;
+                dragged.start_in = layer->in_time;
+                dragged.start_out = layer->out_time;
+                dragged_layer_strips_.push_back(std::move(dragged));
+            }
+        }
+        double min_delta = -std::numeric_limits<double>::max();
+        double max_delta = std::numeric_limits<double>::max();
+        for (const auto &dragged : dragged_layer_strips_) {
+            const double duration = std::max(obs_frame_duration(), dragged.start_out - dragged.start_in);
+            min_delta = std::max(min_delta, -dragged.start_in);
+            max_delta = std::min(max_delta, std::max(0.0, title_->duration - duration) - dragged.start_in);
+        }
+        if (std::isfinite(min_delta) && std::isfinite(max_delta))
+            delta = std::clamp(delta, min_delta, max_delta);
+        for (const auto &dragged : dragged_layer_strips_) {
+            auto layer = title_->find_layer(dragged.layer_id);
+            if (!layer || layer->locked) continue;
+            const double duration = std::max(obs_frame_duration(), dragged.start_out - dragged.start_in);
+            const double new_in = std::clamp(dragged.start_in + delta,
+                                             0.0,
+                                             std::max(0.0, title_->duration - duration));
+            layer->in_time = new_in;
+            layer->out_time = std::min(title_->duration, new_in + duration);
+        }
         update();
         return;
     }
@@ -1231,6 +1415,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
     drag_start_in_ = 0.0;
     drag_start_out_ = 0.0;
     dragged_keyframes_.clear();
+    dragged_layer_strips_.clear();
     marquee_additive_ = false;
     marquee_moved_ = false;
     unsetCursor();
@@ -1241,4 +1426,3 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
 /* ══════════════════════════════════════════════════════════════════
  *  TitlePropertiesPanel
  * ══════════════════════════════════════════════════════════════════ */
-

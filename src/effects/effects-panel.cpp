@@ -76,6 +76,38 @@ static void set_color_button_argb(QPushButton *button, uint32_t argb)
                           .arg(text.name(QColor::HexRgb), c.name(QColor::HexRgb), border.name(QColor::HexRgb)));
 }
 
+static uint32_t panel_eval_effect_color(const LayerEffect &effect, double t)
+{
+    return ((uint32_t)eval_channel(effect.color_a, (effect.effect_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.color_r, (effect.effect_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.color_g, (effect.effect_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.color_b, effect.effect_color & 0xFF, t);
+}
+
+static uint32_t panel_eval_effect_stroke_color(const LayerEffect &effect, double t)
+{
+    return ((uint32_t)eval_channel(effect.stroke_color_a, (effect.effect_stroke_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.stroke_color_r, (effect.effect_stroke_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.stroke_color_g, (effect.effect_stroke_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.stroke_color_b, effect.effect_stroke_color & 0xFF, t);
+}
+
+static void set_effect_color_channels_at(LayerEffect &effect, double time, uint32_t argb)
+{
+    set_animated_value(effect.color_a, time, (argb >> 24) & 0xFF);
+    set_animated_value(effect.color_r, time, (argb >> 16) & 0xFF);
+    set_animated_value(effect.color_g, time, (argb >> 8) & 0xFF);
+    set_animated_value(effect.color_b, time, argb & 0xFF);
+}
+
+static void set_effect_stroke_color_channels_at(LayerEffect &effect, double time, uint32_t argb)
+{
+    set_animated_value(effect.stroke_color_a, time, (argb >> 24) & 0xFF);
+    set_animated_value(effect.stroke_color_r, time, (argb >> 16) & 0xFF);
+    set_animated_value(effect.stroke_color_g, time, (argb >> 8) & 0xFF);
+    set_animated_value(effect.stroke_color_b, time, argb & 0xFF);
+}
+
 EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsPanel"));
@@ -146,6 +178,9 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         int row = effect_list_->row(item);
         if (row < 0 || row >= (int)layer_->effects.size()) return;
         layer_->effects[row].enabled = item->checkState() == Qt::Checked;
+        set_animated_value(layer_->effects[row].enabled_prop, std::clamp(playhead_ - layer_->in_time, 0.0,
+                           std::max(0.0, layer_->out_time - layer_->in_time)),
+                           layer_->effects[row].enabled ? 1.0 : 0.0);
         emit_effect_changed();
     });
 
@@ -175,10 +210,30 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         effect.type = (LayerEffectType)chosen->data().toInt();
         effect.enabled = true;
         switch (effect.type) {
+        case LayerEffectType::BackgroundColor:
+            effect.effect_color = 0xFF000000;
+            effect.effect_opacity = 0.35f;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
+            break;
+        case LayerEffectType::Outline:
+            effect.effect_fill_type = 1;
+            effect.effect_color = 0xFF000000;
+            effect.effect_size = 4.0f;
+            effect.effect_opacity = 1.0f;
+            effect.size_prop.static_value = effect.effect_size;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
+            break;
         case LayerEffectType::DropShadow:
         case LayerEffectType::InnerShadow:
             effect.blend_mode = EffectBlendMode::Multiply;
             effect.effect_color = 0x99000000;
+            effect.effect_opacity = 0.6f;
+            effect.effect_size = 4.0f;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            effect.size_prop.static_value = effect.effect_size;
+            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
             break;
         case LayerEffectType::LongShadow:
             effect.blend_mode = EffectBlendMode::Multiply;
@@ -187,6 +242,11 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
             effect.effect_angle = 135.0f;
             effect.effect_size = 0.0f;
             effect.effect_opacity = 0.45f;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            effect.distance_prop.static_value = effect.effect_distance;
+            effect.angle_prop.static_value = effect.effect_angle;
+            effect.size_prop.static_value = effect.effect_size;
+            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
             break;
         case LayerEffectType::ColorOverlay:
             effect.blend_mode = EffectBlendMode::Color;
@@ -214,15 +274,8 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         default:
             break;
         }
+        effect.enabled_prop.static_value = 1.0;
         layer_->effects.push_back(effect);
-        if (effect.type == LayerEffectType::BackgroundColor) { layer_->background_enabled = true; layer_->background_enabled_prop.static_value = 1.0; }
-        if (effect.type == LayerEffectType::Outline) {
-            layer_->outline_enabled = true;
-            if (layer_->stroke_fill_type == 0) layer_->stroke_fill_type = 1;
-            if (layer_->stroke_width <= 0.0f) layer_->stroke_width = 4.0f;
-        }
-        if (effect.type == LayerEffectType::DropShadow) { layer_->shadow_enabled = true; layer_->shadow_enabled_prop.static_value = 1.0; }
-        if (effect.type == LayerEffectType::LongShadow) { layer_->long_shadow_enabled = true; if (layer_->long_shadow_length <= 0.0f) layer_->long_shadow_length = 120.0f; if (layer_->long_shadow_opacity <= 0.0f) layer_->long_shadow_opacity = 0.45f; }
         selected_index_ = (int)layer_->effects.size() - 1;
         rebuild_stack();
         emit_effect_changed();
@@ -293,13 +346,9 @@ const LayerEffect *EffectsPanel::selected_effect() const
 
 void EffectsPanel::sync_legacy_enabled_flags()
 {
-    if (!layer_) return;
-    layer_->background_enabled = layer_effect_enabled(*layer_, LayerEffectType::BackgroundColor, false);
-    layer_->outline_enabled = layer_effect_enabled(*layer_, LayerEffectType::Outline, false);
-    layer_->shadow_enabled = layer_effect_enabled(*layer_, LayerEffectType::DropShadow, false);
-    layer_->long_shadow_enabled = layer_effect_enabled(*layer_, LayerEffectType::LongShadow, false);
-    layer_->background_enabled_prop.static_value = layer_->background_enabled ? 1.0 : 0.0;
-    layer_->shadow_enabled_prop.static_value = layer_->shadow_enabled ? 1.0 : 0.0;
+    /* Effect stack is the only source of truth. Legacy layer flags are kept
+     * only for old project import/export fallback and are not synchronized.
+     */
 }
 
 void EffectsPanel::emit_effect_changed()
@@ -438,6 +487,7 @@ void EffectsPanel::load_settings()
     };
 
     if (selected_effect()->type == LayerEffectType::BackgroundColor) {
+        LayerEffect *effect = selected_effect();
         auto section_label = [box](const QString &text) {
             auto *label = new QLabel(text, box);
             QFont f = label->font();
@@ -448,34 +498,36 @@ void EffectsPanel::load_settings()
         auto *fill = combo();
         fill->addItem(obsgs_tr("OBSTitles.Solid"), 0);
         fill->addItem(obsgs_tr("OBSTitles.Gradient"), 1);
-        fill->setCurrentIndex(fill->findData(layer_->background_fill_type));
-        auto *fill_color = color_button(eval_background_color(*layer_, lt), [this, lt](uint32_t argb){
-            layer_->background_color = argb;
-            set_background_color_channels_at(*layer_, lt, argb);
+        fill->setCurrentIndex(fill->findData(effect->effect_fill_type));
+        auto *fill_color = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb){
+            if (!selected_effect()) return;
+            selected_effect()->effect_color = argb;
+            set_effect_color_channels_at(*selected_effect(), lt, argb);
         });
         auto *opacity = spin(0.0, 1.0, 0.05);
         opacity->setDecimals(2);
-        opacity->setValue(eval_background_opacity(*layer_, lt));
+        opacity->setValue(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(lt) : effect->effect_opacity);
 
-        auto *stroke_color = color_button(eval_background_stroke_color(*layer_, lt), [this, lt](uint32_t argb){
-            layer_->background_stroke_color = argb;
-            set_background_stroke_color_channels_at(*layer_, lt, argb);
+        auto *stroke_color = color_button(panel_eval_effect_stroke_color(*effect, lt), [this, lt](uint32_t argb){
+            if (!selected_effect()) return;
+            selected_effect()->effect_stroke_color = argb;
+            set_effect_stroke_color_channels_at(*selected_effect(), lt, argb);
         });
         auto *stroke_width = spin(0.0, 1000.0, 1.0);
-        stroke_width->setValue(eval_background_stroke_width(*layer_, lt));
+        stroke_width->setValue(effect->stroke_width_prop.is_animated() ? effect->stroke_width_prop.evaluate(lt) : effect->effect_stroke_width);
         auto *stroke_opacity = spin(0.0, 1.0, 0.05);
         stroke_opacity->setDecimals(2);
-        stroke_opacity->setValue(eval_background_stroke_opacity(*layer_, lt));
+        stroke_opacity->setValue(effect->stroke_opacity_prop.is_animated() ? effect->stroke_opacity_prop.evaluate(lt) : effect->effect_stroke_opacity);
 
-        auto *pad_left = spin(-1000.0, 1000.0, 1.0); pad_left->setValue(eval_background_padding_left(*layer_, lt));
-        auto *pad_right = spin(-1000.0, 1000.0, 1.0); pad_right->setValue(eval_background_padding_right(*layer_, lt));
-        auto *pad_top = spin(-1000.0, 1000.0, 1.0); pad_top->setValue(eval_background_padding_top(*layer_, lt));
-        auto *pad_bottom = spin(-1000.0, 1000.0, 1.0); pad_bottom->setValue(eval_background_padding_bottom(*layer_, lt));
+        auto *pad_left = spin(-1000.0, 1000.0, 1.0); pad_left->setValue(effect->padding_left_prop.is_animated() ? effect->padding_left_prop.evaluate(lt) : effect->effect_padding_left);
+        auto *pad_right = spin(-1000.0, 1000.0, 1.0); pad_right->setValue(effect->padding_right_prop.is_animated() ? effect->padding_right_prop.evaluate(lt) : effect->effect_padding_right);
+        auto *pad_top = spin(-1000.0, 1000.0, 1.0); pad_top->setValue(effect->padding_top_prop.is_animated() ? effect->padding_top_prop.evaluate(lt) : effect->effect_padding_top);
+        auto *pad_bottom = spin(-1000.0, 1000.0, 1.0); pad_bottom->setValue(effect->padding_bottom_prop.is_animated() ? effect->padding_bottom_prop.evaluate(lt) : effect->effect_padding_bottom);
 
-        auto *corner_tl = spin(0.0, 1000.0, 1.0); corner_tl->setValue(eval_background_corner_radius_tl(*layer_, lt));
-        auto *corner_tr = spin(0.0, 1000.0, 1.0); corner_tr->setValue(eval_background_corner_radius_tr(*layer_, lt));
-        auto *corner_br = spin(0.0, 1000.0, 1.0); corner_br->setValue(eval_background_corner_radius_br(*layer_, lt));
-        auto *corner_bl = spin(0.0, 1000.0, 1.0); corner_bl->setValue(eval_background_corner_radius_bl(*layer_, lt));
+        auto *corner_tl = spin(0.0, 1000.0, 1.0); corner_tl->setValue(effect->corner_radius_tl_prop.is_animated() ? effect->corner_radius_tl_prop.evaluate(lt) : effect->effect_corner_radius_tl);
+        auto *corner_tr = spin(0.0, 1000.0, 1.0); corner_tr->setValue(effect->corner_radius_tr_prop.is_animated() ? effect->corner_radius_tr_prop.evaluate(lt) : effect->effect_corner_radius_tr);
+        auto *corner_br = spin(0.0, 1000.0, 1.0); corner_br->setValue(effect->corner_radius_br_prop.is_animated() ? effect->corner_radius_br_prop.evaluate(lt) : effect->effect_corner_radius_br);
+        auto *corner_bl = spin(0.0, 1000.0, 1.0); corner_bl->setValue(effect->corner_radius_bl_prop.is_animated() ? effect->corner_radius_bl_prop.evaluate(lt) : effect->effect_corner_radius_bl);
         auto *corner_row = new QWidget(box);
         auto *corner_grid = new QGridLayout(corner_row);
         corner_grid->setContentsMargins(0, 0, 0, 0);
@@ -511,7 +563,7 @@ void EffectsPanel::load_settings()
         make_corner_button(CornerType::Concave, "I", QStringLiteral("Inverse / Concave"));
         make_corner_button(CornerType::Cutout, "C", QStringLiteral("Inset / Cutout"));
         corner_type_layout->addStretch(1);
-        if (auto *button = corner_group->button((int)layer_->background_corner_type))
+        if (auto *button = corner_group->button(effect->effect_corner_type))
             button->setChecked(true);
 
         auto *grad_type = combo();
@@ -520,10 +572,10 @@ void EffectsPanel::load_settings()
         grad_type->addItem(QStringLiteral("Angle"), 2);
         grad_type->addItem(QStringLiteral("Reflected"), 3);
         grad_type->addItem(QStringLiteral("Diamond"), 4);
-        grad_type->setCurrentIndex(grad_type->findData(layer_->background_gradient_type));
-        auto *grad_start = color_button(layer_->background_gradient_start_color, [this](uint32_t argb){ layer_->background_gradient_start_color = argb; });
-        auto *grad_end = color_button(layer_->background_gradient_end_color, [this](uint32_t argb){ layer_->background_gradient_end_color = argb; });
-        auto *grad_angle = spin(-360.0, 360.0, 1.0); grad_angle->setValue(layer_->background_gradient_angle);
+        grad_type->setCurrentIndex(grad_type->findData(effect->effect_gradient_type));
+        auto *grad_start = color_button(effect->effect_gradient_start_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_gradient_start_color = argb; });
+        auto *grad_end = color_button(effect->effect_gradient_end_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_gradient_end_color = argb; });
+        auto *grad_angle = spin(-360.0, 360.0, 1.0); grad_angle->setValue(effect->effect_gradient_angle);
 
         form->addRow(section_label(QStringLiteral("Appearance")));
         add_effect_row(QStringLiteral("Fill"), fill);
@@ -545,54 +597,59 @@ void EffectsPanel::load_settings()
         add_effect_row(QStringLiteral("TL/TR/BL/BR"), corner_row);
         add_effect_row(QStringLiteral("Corner Type"), corner_type_row);
 
-        connect(fill, QOverload<int>::of(&QComboBox::activated), this, [this, fill](int){ layer_->background_fill_type = fill->currentData().toInt(); emit_effect_changed(); });
-        connect(grad_type, QOverload<int>::of(&QComboBox::activated), this, [this, grad_type](int){ layer_->background_gradient_type = grad_type->currentData().toInt(); emit_effect_changed(); });
-        connect(grad_angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_angle = v; emit_effect_changed(); }});
-        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_opacity = v; set_animated_value(layer_->background_opacity_prop, lt, v); emit_effect_changed(); }});
-        connect(stroke_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_stroke_width = v; set_animated_value(layer_->background_stroke_width_prop, lt, v); emit_effect_changed(); }});
-        connect(stroke_opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_stroke_opacity = v; set_animated_value(layer_->background_stroke_opacity_prop, lt, v); emit_effect_changed(); }});
-        connect(pad_left, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_left = v; set_animated_value(layer_->background_padding_left_prop, lt, v); emit_effect_changed(); }});
-        connect(pad_right, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_right = v; set_animated_value(layer_->background_padding_right_prop, lt, v); emit_effect_changed(); }});
-        connect(pad_top, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_top = v; set_animated_value(layer_->background_padding_top_prop, lt, v); emit_effect_changed(); }});
-        connect(pad_bottom, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_bottom = v; set_animated_value(layer_->background_padding_bottom_prop, lt, v); emit_effect_changed(); }});
-        connect(corner_tl, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_tl = v; set_animated_value(layer_->background_corner_radius_tl_prop, lt, v); emit_effect_changed(); }});
-        connect(corner_tr, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_tr = v; set_animated_value(layer_->background_corner_radius_tr_prop, lt, v); emit_effect_changed(); }});
-        connect(corner_br, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_br = v; set_animated_value(layer_->background_corner_radius_br_prop, lt, v); emit_effect_changed(); }});
-        connect(corner_bl, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_bl = v; set_animated_value(layer_->background_corner_radius_bl_prop, lt, v); emit_effect_changed(); }});
+        connect(fill, QOverload<int>::of(&QComboBox::activated), this, [this, fill](int){ if (selected_effect()) { selected_effect()->effect_fill_type = fill->currentData().toInt(); emit_effect_changed(); }});
+        connect(grad_type, QOverload<int>::of(&QComboBox::activated), this, [this, grad_type](int){ if (selected_effect()) { selected_effect()->effect_gradient_type = grad_type->currentData().toInt(); emit_effect_changed(); }});
+        connect(grad_angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_gradient_angle = v; emit_effect_changed(); }});
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(stroke_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_stroke_width = v; set_animated_value(selected_effect()->stroke_width_prop, lt, v); emit_effect_changed(); }});
+        connect(stroke_opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_stroke_opacity = v; set_animated_value(selected_effect()->stroke_opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_left, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_padding_left = v; set_animated_value(selected_effect()->padding_left_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_right, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_padding_right = v; set_animated_value(selected_effect()->padding_right_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_top, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_padding_top = v; set_animated_value(selected_effect()->padding_top_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_bottom, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_padding_bottom = v; set_animated_value(selected_effect()->padding_bottom_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_tl, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_corner_radius_tl = v; set_animated_value(selected_effect()->corner_radius_tl_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_tr, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_corner_radius_tr = v; set_animated_value(selected_effect()->corner_radius_tr_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_br, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_corner_radius_br = v; set_animated_value(selected_effect()->corner_radius_br_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_bl, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_corner_radius_bl = v; set_animated_value(selected_effect()->corner_radius_bl_prop, lt, v); emit_effect_changed(); }});
         connect(corner_group, &QButtonGroup::idClicked, this, [this](int id){
-            if (!loading_values_) {
-                layer_->background_corner_type = (CornerType)std::clamp(id, 0, (int)CornerType::Cutout);
+            if (!loading_values_ && selected_effect()) {
+                selected_effect()->effect_corner_type = std::clamp(id, 0, 3);
                 emit_effect_changed();
             }
         });
     } else if (selected_effect()->type == LayerEffectType::Outline) {
-        auto *color = color_button(layer_->stroke_color, [this](uint32_t argb){ layer_->stroke_color = argb; });
-        auto *width = spin(0.0, 200.0, 1.0); width->setValue(layer_->stroke_width);
-        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(layer_->outline_opacity);
-        auto *join = combo(); join->addItem(obsgs_tr("OBSTitles.Miter"), 0); join->addItem(obsgs_tr("OBSTitles.Round"), 1); join->addItem(obsgs_tr("OBSTitles.Bevel"), 2); join->setCurrentIndex(join->findData(layer_->outline_join_style));
-        auto *position = combo(); position->addItem(obsgs_tr("OBSTitles.Back"), 0); position->addItem(obsgs_tr("OBSTitles.Front"), 1); position->setCurrentIndex(layer_->outline_on_front ? 1 : 0);
-        auto *aa = new QCheckBox(obsgs_tr("OBSTitles.AntialiasOutline"), box); aa->setChecked(layer_->outline_antialias);
+        LayerEffect *effect = selected_effect();
+        auto *color = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb){
+            if (!selected_effect()) return;
+            selected_effect()->effect_color = argb;
+            set_effect_color_channels_at(*selected_effect(), lt, argb);
+        });
+        auto *width = spin(0.0, 200.0, 1.0); width->setValue(effect->size_prop.is_animated() ? effect->size_prop.evaluate(lt) : effect->effect_size);
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(lt) : effect->effect_opacity);
+        auto *join = combo(); join->addItem(obsgs_tr("OBSTitles.Miter"), 0); join->addItem(obsgs_tr("OBSTitles.Round"), 1); join->addItem(obsgs_tr("OBSTitles.Bevel"), 2); join->setCurrentIndex(join->findData(effect->effect_join_style));
+        auto *position = combo(); position->addItem(obsgs_tr("OBSTitles.Back"), 0); position->addItem(obsgs_tr("OBSTitles.Front"), 1); position->setCurrentIndex(effect->effect_on_front ? 1 : 0);
+        auto *aa = new QCheckBox(obsgs_tr("OBSTitles.AntialiasOutline"), box); aa->setChecked(effect->effect_antialias);
         add_effect_row(obsgs_tr("OBSTitles.ColorLabel"), color);
         add_effect_row(obsgs_tr("OBSTitles.ThicknessLabel"), width);
         add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
         add_effect_row(obsgs_tr("OBSTitles.JoinLabel"), join);
         add_effect_row(obsgs_tr("OBSTitles.PositionLabelIndented"), position);
         add_effect_row(QString(), aa);
-        connect(width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->stroke_width = v; emit_effect_changed(); }});
-        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->outline_opacity = v; emit_effect_changed(); }});
-        connect(join, QOverload<int>::of(&QComboBox::activated), this, [this, join](int){ layer_->outline_join_style = join->currentData().toInt(); emit_effect_changed(); });
-        connect(position, QOverload<int>::of(&QComboBox::activated), this, [this, position](int){ layer_->outline_on_front = position->currentData().toInt() == 1; emit_effect_changed(); });
-        connect(aa, &QCheckBox::toggled, this, [this](bool v){ if (!loading_values_) { layer_->outline_antialias = v; emit_effect_changed(); }});
+        connect(width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size = v; set_animated_value(selected_effect()->size_prop, lt, v); emit_effect_changed(); }});
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(join, QOverload<int>::of(&QComboBox::activated), this, [this, join](int){ if (selected_effect()) { selected_effect()->effect_join_style = join->currentData().toInt(); emit_effect_changed(); }});
+        connect(position, QOverload<int>::of(&QComboBox::activated), this, [this, position](int){ if (selected_effect()) { selected_effect()->effect_on_front = position->currentData().toInt() == 1; emit_effect_changed(); }});
+        connect(aa, &QCheckBox::toggled, this, [this](bool v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_antialias = v; emit_effect_changed(); }});
     } else if (selected_effect()->type == LayerEffectType::DropShadow) {
         LayerEffect *effect = selected_effect();
         auto *preset = combo(); preset->addItems({obsgs_tr("OBSTitles.Custom"), obsgs_tr("OBSTitles.Soft"), obsgs_tr("OBSTitles.Medium"), obsgs_tr("OBSTitles.Strong"), obsgs_tr("OBSTitles.Broadcast")});
         auto *blur_type = combo(); add_shadow_blur_items(blur_type); blur_type->setCurrentIndex(blur_type->findData(effect->effect_blur_type));
-        auto *color = color_button(effect->effect_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_color = argb; });
-        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->effect_opacity);
-        auto *dist = spin(0.0, 4096.0, 1.0); dist->setValue(effect->effect_distance);
-        auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(effect->effect_angle);
-        auto *blur = spin(0.0, 512.0, 1.0); blur->setValue(effect->effect_size);
-        auto *spread = spin(0.0, 512.0, 1.0); spread->setValue(effect->effect_spread);
+        auto *color = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb){ if (selected_effect()) { selected_effect()->effect_color = argb; set_effect_color_channels_at(*selected_effect(), lt, argb); } });
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(lt) : effect->effect_opacity);
+        auto *dist = spin(0.0, 4096.0, 1.0); dist->setValue(effect->distance_prop.is_animated() ? effect->distance_prop.evaluate(lt) : effect->effect_distance);
+        auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(effect->angle_prop.is_animated() ? effect->angle_prop.evaluate(lt) : effect->effect_angle);
+        auto *blur = spin(0.0, 512.0, 1.0); blur->setValue(effect->size_prop.is_animated() ? effect->size_prop.evaluate(lt) : effect->effect_size);
+        auto *spread = spin(0.0, 512.0, 1.0); spread->setValue(effect->spread_prop.is_animated() ? effect->spread_prop.evaluate(lt) : effect->effect_spread);
         auto *blend = combo(); add_blend_mode_items(blend); blend->setCurrentIndex(blend->findData((int)effect->blend_mode));
         add_effect_row(obsgs_tr("OBSTitles.PresetLabel"), preset);
         add_effect_row(obsgs_tr("OBSTitles.ColorLabel"), color);
@@ -605,11 +662,11 @@ void EffectsPanel::load_settings()
         add_effect_row(obsgs_tr("OBSTitles.BlendingModeLabel"), blend);
         connect(blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, blur_type](int){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_blur_type = blur_type->currentData().toInt(); emit_effect_changed(); }});
         connect(blend, QOverload<int>::of(&QComboBox::activated), this, [this, blend](int){ if (!loading_values_ && selected_effect()) { selected_effect()->blend_mode = (EffectBlendMode)blend->currentData().toInt(); emit_effect_changed(); }});
-        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = (float)v; emit_effect_changed(); }});
-        connect(dist, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_distance = (float)v; emit_effect_changed(); }});
-        connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_angle = (float)v; emit_effect_changed(); }});
-        connect(blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size = (float)v; emit_effect_changed(); }});
-        connect(spread, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_spread = (float)v; emit_effect_changed(); }});
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = (float)v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(dist, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_distance = (float)v; set_animated_value(selected_effect()->distance_prop, lt, v); emit_effect_changed(); }});
+        connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_angle = (float)v; set_animated_value(selected_effect()->angle_prop, lt, v); emit_effect_changed(); }});
+        connect(blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size = (float)v; set_animated_value(selected_effect()->size_prop, lt, v); emit_effect_changed(); }});
+        connect(spread, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_spread = (float)v; set_animated_value(selected_effect()->spread_prop, lt, v); emit_effect_changed(); }});
         connect(preset, QOverload<int>::of(&QComboBox::activated), this, [this, preset]() {
             auto *effect = selected_effect();
             if (!effect) return;
@@ -620,6 +677,11 @@ void EffectsPanel::load_settings()
             case 4: effect->effect_opacity = 0.6f; effect->effect_distance = 6.0f; effect->effect_size = 3.0f; effect->effect_spread = 2.0f; break;
             default: return;
             }
+            const double t = layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0, std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
+            set_animated_value(effect->opacity_prop, t, effect->effect_opacity);
+            set_animated_value(effect->distance_prop, t, effect->effect_distance);
+            set_animated_value(effect->size_prop, t, effect->effect_size);
+            set_animated_value(effect->spread_prop, t, effect->effect_spread);
             emit_effect_changed();
             load_settings();
         });
@@ -711,13 +773,13 @@ void EffectsPanel::load_settings()
         connect(blend, QOverload<int>::of(&QComboBox::activated), this, [this, blend](int){ if (!loading_values_ && selected_effect()) { selected_effect()->blend_mode = (EffectBlendMode)blend->currentData().toInt(); emit_effect_changed(); }});
     } else if (selected_effect()->type == LayerEffectType::LongShadow) {
         LayerEffect *effect = selected_effect();
-        auto *color = color_button(effect->effect_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_color = argb; });
-        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->effect_opacity);
-        auto *length = spin(0.0, 4096.0, 5.0); length->setValue(effect->effect_distance);
-        auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(effect->effect_angle);
-        auto *falloff = spin(0.0, 8.0, 0.1); falloff->setDecimals(2); falloff->setValue(effect->effect_falloff);
+        auto *color = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb){ if (selected_effect()) { selected_effect()->effect_color = argb; set_effect_color_channels_at(*selected_effect(), lt, argb); } });
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(lt) : effect->effect_opacity);
+        auto *length = spin(0.0, 4096.0, 5.0); length->setValue(effect->distance_prop.is_animated() ? effect->distance_prop.evaluate(lt) : effect->effect_distance);
+        auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(effect->angle_prop.is_animated() ? effect->angle_prop.evaluate(lt) : effect->effect_angle);
+        auto *falloff = spin(0.0, 8.0, 0.1); falloff->setDecimals(2); falloff->setValue(effect->falloff_prop.is_animated() ? effect->falloff_prop.evaluate(lt) : effect->effect_falloff);
         auto *blur_type = combo(); blur_type->addItem(obsgs_tr("OBSTitles.NoBlur"), (int)LongShadowBlurType::None); blur_type->addItem(obsgs_tr("OBSTitles.BoxBlur"), (int)LongShadowBlurType::Box); blur_type->addItem(obsgs_tr("OBSTitles.GaussianBlur"), (int)LongShadowBlurType::Gaussian); blur_type->addItem(obsgs_tr("OBSTitles.StackFastBlur"), (int)LongShadowBlurType::StackFast); blur_type->setCurrentIndex(blur_type->findData(effect->effect_blur_type));
-        auto *blur = spin(0.0, 512.0, 1.0); blur->setValue(effect->effect_size);
+        auto *blur = spin(0.0, 512.0, 1.0); blur->setValue(effect->size_prop.is_animated() ? effect->size_prop.evaluate(lt) : effect->effect_size);
         auto *blend = combo(); add_blend_mode_items(blend); blend->setCurrentIndex(blend->findData((int)effect->blend_mode));
         add_effect_row(obsgs_tr("OBSTitles.LongShadowColor"), color);
         add_effect_row(obsgs_tr("OBSTitles.LongShadowOpacity"), opacity);
@@ -727,17 +789,15 @@ void EffectsPanel::load_settings()
         add_effect_row(obsgs_tr("OBSTitles.LongShadowBlurType"), blur_type);
         add_effect_row(obsgs_tr("OBSTitles.LongShadowBlur"), blur);
         add_effect_row(obsgs_tr("OBSTitles.BlendingModeLabel"), blend);
-        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = (float)v; emit_effect_changed(); }});
-        connect(length, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_distance = (float)v; emit_effect_changed(); }});
-        connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_angle = (float)v; emit_effect_changed(); }});
-        connect(falloff, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_falloff = (float)v; emit_effect_changed(); }});
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = (float)v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(length, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_distance = (float)v; set_animated_value(selected_effect()->distance_prop, lt, v); emit_effect_changed(); }});
+        connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_angle = (float)v; set_animated_value(selected_effect()->angle_prop, lt, v); emit_effect_changed(); }});
+        connect(falloff, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_falloff = (float)v; set_animated_value(selected_effect()->falloff_prop, lt, v); emit_effect_changed(); }});
         connect(blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, blur_type](int){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_blur_type = blur_type->currentData().toInt(); emit_effect_changed(); }});
-        connect(blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size = (float)v; emit_effect_changed(); }});
+        connect(blur, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size = (float)v; set_animated_value(selected_effect()->size_prop, lt, v); emit_effect_changed(); }});
         connect(blend, QOverload<int>::of(&QComboBox::activated), this, [this, blend](int){ if (!loading_values_ && selected_effect()) { selected_effect()->blend_mode = (EffectBlendMode)blend->currentData().toInt(); emit_effect_changed(); }});
     }
     settings_layout_->addWidget(box);
     settings_layout_->addStretch(1);
     loading_values_ = false;
 }
-
-

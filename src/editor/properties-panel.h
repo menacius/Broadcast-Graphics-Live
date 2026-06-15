@@ -233,14 +233,30 @@ private:
     QDoubleSpinBox  *spn_py_       = nullptr;
     QDoubleSpinBox  *spn_scale_x_  = nullptr;
     QDoubleSpinBox  *spn_scale_y_  = nullptr;
+    QDoubleSpinBox  *spn_transform_size_w_ = nullptr;
+    QDoubleSpinBox  *spn_transform_size_h_ = nullptr;
     QDoubleSpinBox  *spn_rot_      = nullptr;
     QDoubleSpinBox  *spn_opacity_  = nullptr;
     QCheckBox       *chk_scene_mask_ = nullptr;
     QDoubleSpinBox  *spn_origin_x_ = nullptr;
     QDoubleSpinBox  *spn_origin_y_ = nullptr;
     QCheckBox       *chk_scale_lock_ = nullptr;
+    QCheckBox       *chk_transform_size_lock_ = nullptr;
+    QCheckBox       *chk_shape_scale_stroke_ = nullptr;
+    QCheckBox       *chk_shape_scale_corners_ = nullptr;
     QComboBox       *cmb_anchor_ = nullptr;
     QWidget         *transform_box_ = nullptr;
+    QWidget         *transform_scale_label_ = nullptr;
+    QWidget         *transform_scale_field_x_ = nullptr;
+    QWidget         *transform_scale_field_y_ = nullptr;
+    QWidget         *transform_size_label_ = nullptr;
+    QWidget         *transform_size_field_w_ = nullptr;
+    QWidget         *transform_size_field_h_ = nullptr;
+    QWidget         *row_shape_scale_options_ = nullptr;
+    QPushButton     *btn_kf_transform_size_ = nullptr;
+    QWidget         *shape_size_label_ = nullptr;
+    QWidget         *shape_size_field_w_ = nullptr;
+    QWidget         *shape_size_field_h_ = nullptr;
     QWidget         *appearance_box_ = nullptr;
     QPushButton     *btn_appearance_fill_color_ = nullptr;
     QPushButton     *btn_appearance_stroke_color_ = nullptr;
@@ -299,4 +315,3 @@ private:
     QPushButton     *btn_kf_text_color_ = nullptr;
     QPushButton     *btn_kf_fill_color_ = nullptr;
 };
-

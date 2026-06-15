@@ -117,7 +117,11 @@ TitleEditor::~TitleEditor()
 QWidget *TitleEditor::create_effects_panel()
 {
     effects_panel_ = new EffectsPanel(this);
-    connect(effects_panel_, &EffectsPanel::property_changed, this, &TitleEditor::on_title_modified);
+    connect(effects_panel_, &EffectsPanel::property_changed,
+            this, [this](bool push_undo_snapshot) {
+                on_title_modified(push_undo_snapshot);
+                if (layers_) layers_->refresh();
+            });
     return effects_panel_;
 }
 
@@ -589,6 +593,22 @@ static void set_new_text_layer_contents_empty(Layer &layer)
     layer.rich_text.selection = {0, 0};
 }
 
+static bool text_has_visible_name_content(const QString &text)
+{
+    for (const QChar ch : text) {
+        if (ch.isSpace()) continue;
+        const QChar::Category category = ch.category();
+        if (category == QChar::Mark_NonSpacing ||
+            category == QChar::Mark_SpacingCombining ||
+            category == QChar::Mark_Enclosing ||
+            category == QChar::Other_Format ||
+            category == QChar::Other_Control)
+            continue;
+        return true;
+    }
+    return false;
+}
+
 std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QString &name_override)
 {
     if (!title_) return nullptr;
@@ -603,6 +623,7 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
                   (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
                   (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") : editor_text_std("OBSTitles.Shape");
     }
+    l->name = unique_layer_name(l->name);
     l->type = type;
     l->text_content = (type == LayerType::Text) ? editor_text_std("OBSTitles.NewText") :
                       (type == LayerType::Ticker) ? editor_text_std("OBSTitles.NewTickerText") : "";
@@ -618,6 +639,8 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
     l->box_width.static_value = l->rect_width;
     l->box_height.static_value = l->rect_height;
+    if (type == LayerType::Shape || type == LayerType::SolidRect)
+        l->lock_aspect_ratio = false;
     l->origin_x_prop.static_value = l->origin_x;
     l->origin_y_prop.static_value = l->origin_y;
     apply_new_layer_defaults(*l);
@@ -676,6 +699,8 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
 
     canvas_created_shape_layer_id_ = layer->id;
     title_->add_layer(layer);
+    if (type == LayerType::Text)
+        pending_text_layer_auto_names_.insert(layer->id);
     layers_->refresh();
     on_layer_selected(layer->id);
 }
@@ -1329,7 +1354,7 @@ void TitleEditor::build_ui()
             this, [this](const std::vector<std::string> &ids) {
                 sel_layer_id_ = ids.size() == 1 ? ids.back() : std::string();
                 canvas_->set_selected_layers(ids);
-                timeline_->set_selected_layer(sel_layer_id_);
+                timeline_->set_selected_layers(ids);
                 if (!title_ || ids.size() != 1) {
                     update_layer_panels(nullptr, playhead_);
                     return;
@@ -1359,6 +1384,8 @@ void TitleEditor::build_ui()
                     }
                 }
                 title_->add_layer(l);
+                if (type == LayerType::Text)
+                    pending_text_layer_auto_names_.insert(l->id);
                 layers_->refresh();
                 on_layer_selected(l->id);
                 on_title_modified();
@@ -1452,6 +1479,7 @@ void TitleEditor::build_ui()
                     }
                     set_animated_value(layer->pos_x, lt, local_pos.x());
                     set_animated_value(layer->pos_y, lt, local_pos.y());
+                    layers_->refresh();
                     on_title_modified();
                 }
             });
@@ -1462,6 +1490,7 @@ void TitleEditor::build_ui()
                 if (auto layer = title_->find_layer(lid)) {
                     layer->mask_source_id = mask_source_id;
                     layer->mask_mode = mask_source_id.empty() ? MaskMode::None : mask_mode;
+                    layers_->refresh();
                     on_title_modified();
                 }
             });
@@ -1479,8 +1508,10 @@ void TitleEditor::build_ui()
             this, [this](const std::string &lid, const std::string &name) {
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
-                    if (layer->name == name) return;
-                    layer->name = name.empty() ? editor_text_std("OBSTitles.Layer") : name;
+                    const std::string next_name = unique_layer_name(name.empty() ? editor_text_std("OBSTitles.Layer") : name,
+                                                                    {lid});
+                    if (layer->name == next_name) return;
+                    layer->name = next_name;
                     timeline_->set_title(title_);
                     on_title_modified();
                     QTimer::singleShot(0, layers_, [this]() {
@@ -1493,11 +1524,26 @@ void TitleEditor::build_ui()
             this, &TitleEditor::on_playhead_changed);
     connect(timeline_, &TimelineWidget::layer_selected,
             this, &TitleEditor::on_layer_selected);
+    connect(timeline_, &TimelineWidget::layers_selected,
+            this, [this](const std::vector<std::string> &ids) {
+                sel_layer_id_ = ids.size() == 1 ? ids.back() : std::string();
+                layers_->set_selected_layers(ids);
+                canvas_->set_selected_layers(ids);
+                if (!title_ || ids.size() != 1) {
+                    update_layer_panels(nullptr, playhead_);
+                    return;
+                }
+                auto layer = title_->find_layer(sel_layer_id_);
+                update_layer_panels(layer, playhead_);
+            });
     connect(timeline_, &TimelineWidget::keyframe_easing_changed,
             this, [this]() { on_title_modified(); });
 
     connect(props_, &PropertiesPanel::property_changed,
-            this, &TitleEditor::on_title_modified);
+            this, [this](bool push_undo_snapshot) {
+                on_title_modified(push_undo_snapshot);
+                if (layers_) layers_->refresh();
+            });
     connect(props_, &PropertiesPanel::text_char_format_changed,
             this, [this](const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask) {
                 if (canvas_) canvas_->apply_active_text_char_format(layer_id, format, mask);
@@ -1534,7 +1580,7 @@ void TitleEditor::build_ui()
                 sel_layer_id_ = ids.size() == 1 ? ids.back() : std::string();
                 layers_->set_selected_layers(ids);
                 canvas_->set_selected_layers(ids);
-                timeline_->set_selected_layer(sel_layer_id_);
+                timeline_->set_selected_layers(ids);
                 if (!title_ || ids.size() != 1) {
                     update_layer_panels(nullptr, playhead_);
                     return;
@@ -1569,7 +1615,26 @@ void TitleEditor::build_ui()
             this, [this](const std::string &layer_id) {
                 if (!title_) return;
                 if (props_) props_->set_active_text_edit_layer(std::string());
+                bool renamed_layer = false;
+                if (auto layer = title_->find_layer(layer_id)) {
+                    if (layer->type == LayerType::Text &&
+                        pending_text_layer_auto_names_.find(layer_id) != pending_text_layer_auto_names_.end()) {
+                        const QString text = !layer->rich_text.empty()
+                            ? QString::fromStdString(layer->rich_text.plain_text)
+                            : QString::fromStdString(layer->text_content);
+                        if (text_has_visible_name_content(text)) {
+                            const std::string next_name = unique_layer_name(text.simplified().toStdString(), {layer_id});
+                            if (layer->name != next_name) {
+                                layer->name = next_name;
+                                renamed_layer = true;
+                            }
+                        }
+                        pending_text_layer_auto_names_.erase(layer_id);
+                    }
+                }
                 on_title_modified();
+                if (renamed_layer && layers_)
+                    layers_->refresh();
                 if (auto layer = title_->find_layer(layer_id))
                     update_layer_panels(layer, playhead_);
             });
@@ -2383,6 +2448,7 @@ std::shared_ptr<Layer> TitleEditor::clone_layer_for_insert(const Layer &layer, b
     clone->id = TitleDataStore::make_uuid();
     if (suffix_name)
         clone->name = clone->name.empty() ? editor_text_std("OBSTitles.LayerCopy") : clone->name + editor_text_std("OBSTitles.CopySuffix");
+    clone->name = unique_layer_name(clone->name);
     if (!clone->parent_id.empty() && (!title_ || !title_->find_layer(clone->parent_id)))
         clone->parent_id.clear();
     if (!clone->mask_source_id.empty() && (!title_ || !title_->find_layer(clone->mask_source_id))) {
@@ -2390,6 +2456,47 @@ std::shared_ptr<Layer> TitleEditor::clone_layer_for_insert(const Layer &layer, b
         clone->mask_mode = MaskMode::None;
     }
     return clone;
+}
+
+std::string TitleEditor::unique_layer_name(const std::string &base_name,
+                                           const std::set<std::string> &exclude_ids,
+                                           std::set<std::string> *reserved_names) const
+{
+    std::string base = QString::fromStdString(base_name).trimmed().toStdString();
+    if (base.empty())
+        base = editor_text_std("OBSTitles.Layer");
+
+    std::set<std::string> used;
+    if (title_) {
+        for (const auto &layer : title_->layers) {
+            if (!layer || exclude_ids.find(layer->id) != exclude_ids.end()) continue;
+            used.insert(layer->name);
+        }
+    }
+    if (reserved_names)
+        used.insert(reserved_names->begin(), reserved_names->end());
+
+    auto available = [&](const std::string &candidate) {
+        return used.find(candidate) == used.end();
+    };
+    if (available(base)) {
+        if (reserved_names) reserved_names->insert(base);
+        return base;
+    }
+
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        const QString candidate = QStringLiteral("%1 %2")
+            .arg(QString::fromStdString(base))
+            .arg(suffix, 2, 10, QChar('0'));
+        const std::string value = candidate.toStdString();
+        if (!available(value)) continue;
+        if (reserved_names) reserved_names->insert(value);
+        return value;
+    }
+
+    const std::string fallback = base + " " + TitleDataStore::make_uuid().substr(0, 8);
+    if (reserved_names) reserved_names->insert(fallback);
+    return fallback;
 }
 
 void TitleEditor::insert_layer_above(const std::string &anchor_id, std::shared_ptr<Layer> layer)
@@ -2437,6 +2544,7 @@ std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const s
     std::map<std::string, std::string> cloned_ids_by_original;
     std::vector<std::shared_ptr<Layer>> clones;
     clones.reserve(layers.size());
+    std::set<std::string> reserved_names;
 
     for (const auto &layer : layers) {
         if (!layer) continue;
@@ -2445,6 +2553,7 @@ std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const s
         if (suffix_name)
             clone->name = clone->name.empty() ? editor_text_std("OBSTitles.LayerCopy")
                                               : clone->name + editor_text_std("OBSTitles.CopySuffix");
+        clone->name = unique_layer_name(clone->name, {}, &reserved_names);
         cloned_ids_by_original[layer->id] = clone->id;
         clones.push_back(clone);
     }
@@ -2550,7 +2659,7 @@ void TitleEditor::duplicate_selected_layers()
     layers_->set_selected_layers(clone_ids);
     canvas_->set_selected_layers(clone_ids);
     timeline_->set_title(title_);
-    timeline_->set_selected_layer(sel_layer_id_);
+    timeline_->set_selected_layers(clone_ids);
     if (!sel_layer_id_.empty()) {
         if (auto layer = title_->find_layer(sel_layer_id_)) update_layer_panels(layer, playhead_);
     }
@@ -2602,7 +2711,7 @@ void TitleEditor::paste_layer_from_clipboard()
     layers_->set_selected_layers(pasted_ids);
     canvas_->set_selected_layers(pasted_ids);
     timeline_->set_title(title_);
-    timeline_->set_selected_layer(sel_layer_id_);
+    timeline_->set_selected_layers(pasted_ids);
     if (!sel_layer_id_.empty()) {
         if (auto layer = title_->find_layer(sel_layer_id_)) update_layer_panels(layer, playhead_);
     }
@@ -2650,7 +2759,7 @@ void TitleEditor::delete_selected_layer()
         layers_->set_selected_layers({});
         canvas_->set_selected_layers({});
         timeline_->set_title(title_);
-        timeline_->set_selected_layer(std::string());
+        timeline_->set_selected_layers({});
         update_layer_panels(nullptr, playhead_);
     }
 
@@ -3367,6 +3476,8 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.outline_join_style = src.outline_join_style;
     dst.outline_on_front = src.outline_on_front;
     dst.outline_antialias = src.outline_antialias;
+    dst.scale_stroke_with_shape = src.scale_stroke_with_shape;
+    dst.scale_corners_with_shape = src.scale_corners_with_shape;
     dst.stroke_gradient_type = src.stroke_gradient_type;
     dst.stroke_gradient_start_color = src.stroke_gradient_start_color;
     dst.stroke_gradient_end_color = src.stroke_gradient_end_color;
@@ -3795,4 +3906,3 @@ void TitleEditor::on_title_modified(bool push_undo)
 /* ══════════════════════════════════════════════════════════════════
  *  CanvasPreview
  * ══════════════════════════════════════════════════════════════════ */
-

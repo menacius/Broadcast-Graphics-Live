@@ -990,7 +990,62 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_blur_type", effect.effect_blur_type},
                            {"effect_samples", effect.effect_samples},
                            {"effect_centered", effect.effect_centered},
-                           {"blend_mode", (int)effect.blend_mode}});
+                           {"blend_mode", (int)effect.blend_mode},
+                           {"effect_fill_type", effect.effect_fill_type},
+                           {"effect_join_style", effect.effect_join_style},
+                           {"effect_on_front", effect.effect_on_front},
+                           {"effect_antialias", effect.effect_antialias},
+                           {"effect_stroke_color", effect.effect_stroke_color},
+                           {"effect_stroke_width", effect.effect_stroke_width},
+                           {"effect_stroke_opacity", effect.effect_stroke_opacity},
+                           {"effect_padding_left", effect.effect_padding_left},
+                           {"effect_padding_right", effect.effect_padding_right},
+                           {"effect_padding_top", effect.effect_padding_top},
+                           {"effect_padding_bottom", effect.effect_padding_bottom},
+                           {"effect_corner_radius_tl", effect.effect_corner_radius_tl},
+                           {"effect_corner_radius_tr", effect.effect_corner_radius_tr},
+                           {"effect_corner_radius_br", effect.effect_corner_radius_br},
+                           {"effect_corner_radius_bl", effect.effect_corner_radius_bl},
+                           {"effect_corner_type", effect.effect_corner_type},
+                           {"effect_gradient_type", effect.effect_gradient_type},
+                           {"effect_gradient_start_color", effect.effect_gradient_start_color},
+                           {"effect_gradient_end_color", effect.effect_gradient_end_color},
+                           {"effect_gradient_start_pos", effect.effect_gradient_start_pos},
+                           {"effect_gradient_end_pos", effect.effect_gradient_end_pos},
+                           {"effect_gradient_start_opacity", effect.effect_gradient_start_opacity},
+                           {"effect_gradient_end_opacity", effect.effect_gradient_end_opacity},
+                           {"effect_gradient_opacity", effect.effect_gradient_opacity},
+                           {"effect_gradient_angle", effect.effect_gradient_angle},
+                           {"effect_gradient_center_x", effect.effect_gradient_center_x},
+                           {"effect_gradient_center_y", effect.effect_gradient_center_y},
+                           {"effect_gradient_scale", effect.effect_gradient_scale},
+                           {"effect_gradient_focal_x", effect.effect_gradient_focal_x},
+                           {"effect_gradient_focal_y", effect.effect_gradient_focal_y},
+                           {"enabled_prop", aprop_to_json(effect.enabled_prop)},
+                           {"opacity_prop", aprop_to_json(effect.opacity_prop)},
+                           {"size_prop", aprop_to_json(effect.size_prop)},
+                           {"distance_prop", aprop_to_json(effect.distance_prop)},
+                           {"angle_prop", aprop_to_json(effect.angle_prop)},
+                           {"spread_prop", aprop_to_json(effect.spread_prop)},
+                           {"falloff_prop", aprop_to_json(effect.falloff_prop)},
+                           {"stroke_width_prop", aprop_to_json(effect.stroke_width_prop)},
+                           {"stroke_opacity_prop", aprop_to_json(effect.stroke_opacity_prop)},
+                           {"padding_left_prop", aprop_to_json(effect.padding_left_prop)},
+                           {"padding_right_prop", aprop_to_json(effect.padding_right_prop)},
+                           {"padding_top_prop", aprop_to_json(effect.padding_top_prop)},
+                           {"padding_bottom_prop", aprop_to_json(effect.padding_bottom_prop)},
+                           {"corner_radius_tl_prop", aprop_to_json(effect.corner_radius_tl_prop)},
+                           {"corner_radius_tr_prop", aprop_to_json(effect.corner_radius_tr_prop)},
+                           {"corner_radius_br_prop", aprop_to_json(effect.corner_radius_br_prop)},
+                           {"corner_radius_bl_prop", aprop_to_json(effect.corner_radius_bl_prop)},
+                           {"color_a", aprop_to_json(effect.color_a)},
+                           {"color_r", aprop_to_json(effect.color_r)},
+                           {"color_g", aprop_to_json(effect.color_g)},
+                           {"color_b", aprop_to_json(effect.color_b)},
+                           {"stroke_color_a", aprop_to_json(effect.stroke_color_a)},
+                           {"stroke_color_r", aprop_to_json(effect.stroke_color_r)},
+                           {"stroke_color_g", aprop_to_json(effect.stroke_color_g)},
+                           {"stroke_color_b", aprop_to_json(effect.stroke_color_b)}});
     }
     j["effects"] = effects;
     j["in_time"]  = l.in_time;
@@ -1177,6 +1232,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["shape_inner_radius"] = l.shape_inner_radius;
     j["shape_outer_radius"] = l.shape_outer_radius;
     j["shape_roundness"] = l.shape_roundness;
+    j["scale_stroke_with_shape"] = l.scale_stroke_with_shape;
+    j["scale_corners_with_shape"] = l.scale_corners_with_shape;
     j["size"]          = vec2_aprop_to_json(l.box_width, l.box_height);
     j["origin"]        = vec2_aprop_to_json(l.origin_x_prop, l.origin_y_prop);
     /* Legacy scalar keys are still written so older builds can open files. */
@@ -1302,6 +1359,83 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_centered = json_bool(effect_json, "effect_centered", true);
             if (effect_json.contains("blend_mode"))
                 effect.blend_mode = (EffectBlendMode)std::clamp(json_int(effect_json, "blend_mode", (int)effect.blend_mode), 0, (int)EffectBlendMode::Color);
+            effect.effect_owned_style_loaded = effect_json.contains("effect_fill_type") ||
+                                               effect_json.contains("enabled_prop") ||
+                                               effect_json.contains("color_a");
+            effect.effect_fill_type = std::clamp(json_int(effect_json, "effect_fill_type", effect.effect_fill_type), 0, 2);
+            effect.effect_join_style = std::clamp(json_int(effect_json, "effect_join_style", effect.effect_join_style), 0, 2);
+            effect.effect_on_front = json_bool(effect_json, "effect_on_front", effect.effect_on_front);
+            effect.effect_antialias = json_bool(effect_json, "effect_antialias", effect.effect_antialias);
+            effect.effect_stroke_color = json_color(effect_json, "effect_stroke_color", effect.effect_stroke_color);
+            effect.effect_stroke_width = (float)std::clamp(finite_or(json_double(effect_json, "effect_stroke_width", effect.effect_stroke_width), effect.effect_stroke_width), 0.0, (double)kMaxCanvasDimension);
+            effect.effect_stroke_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_stroke_opacity", effect.effect_stroke_opacity), effect.effect_stroke_opacity), 0.0, 1.0);
+            effect.effect_padding_left = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_left", effect.effect_padding_left), effect.effect_padding_left), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+            effect.effect_padding_right = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_right", effect.effect_padding_right), effect.effect_padding_right), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+            effect.effect_padding_top = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_top", effect.effect_padding_top), effect.effect_padding_top), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+            effect.effect_padding_bottom = (float)std::clamp(finite_or(json_double(effect_json, "effect_padding_bottom", effect.effect_padding_bottom), effect.effect_padding_bottom), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+            effect.effect_corner_radius_tl = (float)std::clamp(finite_or(json_double(effect_json, "effect_corner_radius_tl", effect.effect_corner_radius_tl), effect.effect_corner_radius_tl), 0.0, (double)kMaxCanvasDimension);
+            effect.effect_corner_radius_tr = (float)std::clamp(finite_or(json_double(effect_json, "effect_corner_radius_tr", effect.effect_corner_radius_tr), effect.effect_corner_radius_tr), 0.0, (double)kMaxCanvasDimension);
+            effect.effect_corner_radius_br = (float)std::clamp(finite_or(json_double(effect_json, "effect_corner_radius_br", effect.effect_corner_radius_br), effect.effect_corner_radius_br), 0.0, (double)kMaxCanvasDimension);
+            effect.effect_corner_radius_bl = (float)std::clamp(finite_or(json_double(effect_json, "effect_corner_radius_bl", effect.effect_corner_radius_bl), effect.effect_corner_radius_bl), 0.0, (double)kMaxCanvasDimension);
+            effect.effect_corner_type = std::clamp(json_int(effect_json, "effect_corner_type", effect.effect_corner_type), 0, 3);
+            effect.effect_gradient_type = std::clamp(json_int(effect_json, "effect_gradient_type", effect.effect_gradient_type), 0, 4);
+            effect.effect_gradient_start_color = json_color(effect_json, "effect_gradient_start_color", effect.effect_gradient_start_color);
+            effect.effect_gradient_end_color = json_color(effect_json, "effect_gradient_end_color", effect.effect_gradient_end_color);
+            effect.effect_gradient_start_pos = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_start_pos", effect.effect_gradient_start_pos), effect.effect_gradient_start_pos), 0.0, 1.0);
+            effect.effect_gradient_end_pos = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_end_pos", effect.effect_gradient_end_pos), effect.effect_gradient_end_pos), 0.0, 1.0);
+            effect.effect_gradient_start_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_start_opacity", effect.effect_gradient_start_opacity), effect.effect_gradient_start_opacity), 0.0, 1.0);
+            effect.effect_gradient_end_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_end_opacity", effect.effect_gradient_end_opacity), effect.effect_gradient_end_opacity), 0.0, 1.0);
+            effect.effect_gradient_opacity = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_opacity", effect.effect_gradient_opacity), effect.effect_gradient_opacity), 0.0, 1.0);
+            effect.effect_gradient_angle = (float)finite_or(json_double(effect_json, "effect_gradient_angle", effect.effect_gradient_angle), effect.effect_gradient_angle);
+            effect.effect_gradient_center_x = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_center_x", effect.effect_gradient_center_x), effect.effect_gradient_center_x), -100.0, 100.0);
+            effect.effect_gradient_center_y = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_center_y", effect.effect_gradient_center_y), effect.effect_gradient_center_y), -100.0, 100.0);
+            effect.effect_gradient_scale = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_scale", effect.effect_gradient_scale), effect.effect_gradient_scale), 0.01, 100.0);
+            effect.effect_gradient_focal_x = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_focal_x", effect.effect_gradient_focal_x), effect.effect_gradient_focal_x), -100.0, 100.0);
+            effect.effect_gradient_focal_y = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_focal_y", effect.effect_gradient_focal_y), effect.effect_gradient_focal_y), -100.0, 100.0);
+            effect.enabled_prop.static_value = effect.enabled ? 1.0 : 0.0;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            effect.size_prop.static_value = effect.effect_size;
+            effect.distance_prop.static_value = effect.effect_distance;
+            effect.angle_prop.static_value = effect.effect_angle;
+            effect.spread_prop.static_value = effect.effect_spread;
+            effect.falloff_prop.static_value = effect.effect_falloff;
+            effect.stroke_width_prop.static_value = effect.effect_stroke_width;
+            effect.stroke_opacity_prop.static_value = effect.effect_stroke_opacity;
+            effect.padding_left_prop.static_value = effect.effect_padding_left;
+            effect.padding_right_prop.static_value = effect.effect_padding_right;
+            effect.padding_top_prop.static_value = effect.effect_padding_top;
+            effect.padding_bottom_prop.static_value = effect.effect_padding_bottom;
+            effect.corner_radius_tl_prop.static_value = effect.effect_corner_radius_tl;
+            effect.corner_radius_tr_prop.static_value = effect.effect_corner_radius_tr;
+            effect.corner_radius_br_prop.static_value = effect.effect_corner_radius_br;
+            effect.corner_radius_bl_prop.static_value = effect.effect_corner_radius_bl;
+            set_argb_channels(effect.color_a, effect.color_r, effect.color_g, effect.color_b, effect.effect_color);
+            set_argb_channels(effect.stroke_color_a, effect.stroke_color_r, effect.stroke_color_g, effect.stroke_color_b, effect.effect_stroke_color);
+            if (effect_json.contains("enabled_prop")) effect.enabled_prop = aprop_from_json(effect_json["enabled_prop"], "effect_enabled");
+            if (effect_json.contains("opacity_prop")) effect.opacity_prop = aprop_from_json(effect_json["opacity_prop"], "effect_opacity");
+            if (effect_json.contains("size_prop")) effect.size_prop = aprop_from_json(effect_json["size_prop"], "effect_size");
+            if (effect_json.contains("distance_prop")) effect.distance_prop = aprop_from_json(effect_json["distance_prop"], "effect_distance");
+            if (effect_json.contains("angle_prop")) effect.angle_prop = aprop_from_json(effect_json["angle_prop"], "effect_angle");
+            if (effect_json.contains("spread_prop")) effect.spread_prop = aprop_from_json(effect_json["spread_prop"], "effect_spread");
+            if (effect_json.contains("falloff_prop")) effect.falloff_prop = aprop_from_json(effect_json["falloff_prop"], "effect_falloff");
+            if (effect_json.contains("stroke_width_prop")) effect.stroke_width_prop = aprop_from_json(effect_json["stroke_width_prop"], "effect_stroke_width");
+            if (effect_json.contains("stroke_opacity_prop")) effect.stroke_opacity_prop = aprop_from_json(effect_json["stroke_opacity_prop"], "effect_stroke_opacity");
+            if (effect_json.contains("padding_left_prop")) effect.padding_left_prop = aprop_from_json(effect_json["padding_left_prop"], "effect_padding_left");
+            if (effect_json.contains("padding_right_prop")) effect.padding_right_prop = aprop_from_json(effect_json["padding_right_prop"], "effect_padding_right");
+            if (effect_json.contains("padding_top_prop")) effect.padding_top_prop = aprop_from_json(effect_json["padding_top_prop"], "effect_padding_top");
+            if (effect_json.contains("padding_bottom_prop")) effect.padding_bottom_prop = aprop_from_json(effect_json["padding_bottom_prop"], "effect_padding_bottom");
+            if (effect_json.contains("corner_radius_tl_prop")) effect.corner_radius_tl_prop = aprop_from_json(effect_json["corner_radius_tl_prop"], "effect_corner_radius_tl");
+            if (effect_json.contains("corner_radius_tr_prop")) effect.corner_radius_tr_prop = aprop_from_json(effect_json["corner_radius_tr_prop"], "effect_corner_radius_tr");
+            if (effect_json.contains("corner_radius_br_prop")) effect.corner_radius_br_prop = aprop_from_json(effect_json["corner_radius_br_prop"], "effect_corner_radius_br");
+            if (effect_json.contains("corner_radius_bl_prop")) effect.corner_radius_bl_prop = aprop_from_json(effect_json["corner_radius_bl_prop"], "effect_corner_radius_bl");
+            if (effect_json.contains("color_a")) effect.color_a = aprop_from_json(effect_json["color_a"], "effect_color_a");
+            if (effect_json.contains("color_r")) effect.color_r = aprop_from_json(effect_json["color_r"], "effect_color_r");
+            if (effect_json.contains("color_g")) effect.color_g = aprop_from_json(effect_json["color_g"], "effect_color_g");
+            if (effect_json.contains("color_b")) effect.color_b = aprop_from_json(effect_json["color_b"], "effect_color_b");
+            if (effect_json.contains("stroke_color_a")) effect.stroke_color_a = aprop_from_json(effect_json["stroke_color_a"], "effect_stroke_color_a");
+            if (effect_json.contains("stroke_color_r")) effect.stroke_color_r = aprop_from_json(effect_json["stroke_color_r"], "effect_stroke_color_r");
+            if (effect_json.contains("stroke_color_g")) effect.stroke_color_g = aprop_from_json(effect_json["stroke_color_g"], "effect_stroke_color_g");
+            if (effect_json.contains("stroke_color_b")) effect.stroke_color_b = aprop_from_json(effect_json["stroke_color_b"], "effect_stroke_color_b");
             if (effect.type == LayerEffectType::ColorOverlay) {
                 effect.tint_color = effect.effect_color;
                 effect.tint_amount = effect.effect_opacity;
@@ -1539,6 +1673,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->shape_inner_radius = (float)std::clamp(finite_or(json_double(j, "shape_inner_radius", 0.20), 0.20), 0.0, 1.0);
     l->shape_outer_radius = (float)std::clamp(finite_or(json_double(j, "shape_outer_radius", 0.5), 0.5), 0.0, 1.0);
     l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, 1.0);
+    l->scale_stroke_with_shape = json_bool(j, "scale_stroke_with_shape", false);
+    l->scale_corners_with_shape = json_bool(j, "scale_corners_with_shape", false);
     l->box_width.static_value = l->rect_width;
     l->box_height.static_value = l->rect_height;
     if (j.contains("size")) vec2_aprop_from_json(j["size"], l->box_width, "box_width", l->box_height, "box_height");
@@ -1591,8 +1727,105 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("shadow_color_r")) l->shadow_color_r = aprop_from_json(j["shadow_color_r"], "shadow_color_r");
     if (j.contains("shadow_color_g")) l->shadow_color_g = aprop_from_json(j["shadow_color_g"], "shadow_color_g");
     if (j.contains("shadow_color_b")) l->shadow_color_b = aprop_from_json(j["shadow_color_b"], "shadow_color_b");
-    auto seed_shadow_effect_from_layer = [l](LayerEffect &effect) {
+    auto seed_effect_from_layer = [l](LayerEffect &effect) {
         switch (effect.type) {
+        case LayerEffectType::BackgroundColor:
+            effect.effect_color = l->background_color;
+            effect.effect_opacity = l->background_opacity;
+            effect.effect_fill_type = l->background_fill_type;
+            effect.effect_stroke_color = l->background_stroke_color;
+            effect.effect_stroke_width = l->background_stroke_width;
+            effect.effect_stroke_opacity = l->background_stroke_opacity;
+            effect.effect_padding_left = l->background_padding_left;
+            effect.effect_padding_right = l->background_padding_right;
+            effect.effect_padding_top = l->background_padding_top;
+            effect.effect_padding_bottom = l->background_padding_bottom;
+            effect.effect_corner_radius_tl = l->background_corner_radius_tl;
+            effect.effect_corner_radius_tr = l->background_corner_radius_tr;
+            effect.effect_corner_radius_br = l->background_corner_radius_br;
+            effect.effect_corner_radius_bl = l->background_corner_radius_bl;
+            effect.effect_corner_type = (int)l->background_corner_type;
+            effect.effect_gradient_type = l->background_gradient_type;
+            effect.effect_gradient_start_color = l->background_gradient_start_color;
+            effect.effect_gradient_end_color = l->background_gradient_end_color;
+            effect.effect_gradient_start_pos = l->background_gradient_start_pos;
+            effect.effect_gradient_end_pos = l->background_gradient_end_pos;
+            effect.effect_gradient_start_opacity = l->background_gradient_start_opacity;
+            effect.effect_gradient_end_opacity = l->background_gradient_end_opacity;
+            effect.effect_gradient_opacity = l->background_gradient_opacity;
+            effect.effect_gradient_angle = l->background_gradient_angle;
+            effect.effect_gradient_center_x = l->background_gradient_center_x;
+            effect.effect_gradient_center_y = l->background_gradient_center_y;
+            effect.effect_gradient_scale = l->background_gradient_scale;
+            effect.effect_gradient_focal_x = l->background_gradient_focal_x;
+            effect.effect_gradient_focal_y = l->background_gradient_focal_y;
+            effect.enabled_prop = l->background_enabled_prop;
+            effect.enabled_prop.name = "effect_enabled";
+            effect.opacity_prop = l->background_opacity_prop;
+            effect.opacity_prop.name = "effect_opacity";
+            effect.stroke_width_prop = l->background_stroke_width_prop;
+            effect.stroke_width_prop.name = "effect_stroke_width";
+            effect.stroke_opacity_prop = l->background_stroke_opacity_prop;
+            effect.stroke_opacity_prop.name = "effect_stroke_opacity";
+            effect.padding_left_prop = l->background_padding_left_prop;
+            effect.padding_left_prop.name = "effect_padding_left";
+            effect.padding_right_prop = l->background_padding_right_prop;
+            effect.padding_right_prop.name = "effect_padding_right";
+            effect.padding_top_prop = l->background_padding_top_prop;
+            effect.padding_top_prop.name = "effect_padding_top";
+            effect.padding_bottom_prop = l->background_padding_bottom_prop;
+            effect.padding_bottom_prop.name = "effect_padding_bottom";
+            effect.corner_radius_tl_prop = l->background_corner_radius_tl_prop;
+            effect.corner_radius_tl_prop.name = "effect_corner_radius_tl";
+            effect.corner_radius_tr_prop = l->background_corner_radius_tr_prop;
+            effect.corner_radius_tr_prop.name = "effect_corner_radius_tr";
+            effect.corner_radius_br_prop = l->background_corner_radius_br_prop;
+            effect.corner_radius_br_prop.name = "effect_corner_radius_br";
+            effect.corner_radius_bl_prop = l->background_corner_radius_bl_prop;
+            effect.corner_radius_bl_prop.name = "effect_corner_radius_bl";
+            effect.color_a = l->background_color_a;
+            effect.color_a.name = "effect_color_a";
+            effect.color_r = l->background_color_r;
+            effect.color_r.name = "effect_color_r";
+            effect.color_g = l->background_color_g;
+            effect.color_g.name = "effect_color_g";
+            effect.color_b = l->background_color_b;
+            effect.color_b.name = "effect_color_b";
+            effect.stroke_color_a = l->background_stroke_color_a;
+            effect.stroke_color_a.name = "effect_stroke_color_a";
+            effect.stroke_color_r = l->background_stroke_color_r;
+            effect.stroke_color_r.name = "effect_stroke_color_r";
+            effect.stroke_color_g = l->background_stroke_color_g;
+            effect.stroke_color_g.name = "effect_stroke_color_g";
+            effect.stroke_color_b = l->background_stroke_color_b;
+            effect.stroke_color_b.name = "effect_stroke_color_b";
+            break;
+        case LayerEffectType::Outline:
+            effect.effect_fill_type = l->stroke_fill_type;
+            effect.effect_color = l->stroke_color;
+            effect.effect_size = l->stroke_width;
+            effect.effect_opacity = l->outline_opacity;
+            effect.effect_join_style = l->outline_join_style;
+            effect.effect_on_front = l->outline_on_front;
+            effect.effect_antialias = l->outline_antialias;
+            effect.effect_gradient_type = l->stroke_gradient_type;
+            effect.effect_gradient_start_color = l->stroke_gradient_start_color;
+            effect.effect_gradient_end_color = l->stroke_gradient_end_color;
+            effect.effect_gradient_start_pos = l->stroke_gradient_start_pos;
+            effect.effect_gradient_end_pos = l->stroke_gradient_end_pos;
+            effect.effect_gradient_start_opacity = l->stroke_gradient_start_opacity;
+            effect.effect_gradient_end_opacity = l->stroke_gradient_end_opacity;
+            effect.effect_gradient_opacity = l->stroke_gradient_opacity;
+            effect.effect_gradient_angle = l->stroke_gradient_angle;
+            effect.effect_gradient_center_x = l->stroke_gradient_center_x;
+            effect.effect_gradient_center_y = l->stroke_gradient_center_y;
+            effect.effect_gradient_scale = l->stroke_gradient_scale;
+            effect.effect_gradient_focal_x = l->stroke_gradient_focal_x;
+            effect.effect_gradient_focal_y = l->stroke_gradient_focal_y;
+            set_argb_channels(effect.color_a, effect.color_r, effect.color_g, effect.color_b, effect.effect_color);
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            effect.size_prop.static_value = effect.effect_size;
+            break;
         case LayerEffectType::DropShadow:
             effect.effect_color = l->shadow_color;
             effect.effect_opacity = l->shadow_opacity;
@@ -1601,6 +1834,26 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_size = l->shadow_blur;
             effect.effect_spread = l->shadow_spread;
             effect.effect_blur_type = (int)l->shadow_blur_type;
+            effect.enabled_prop = l->shadow_enabled_prop;
+            effect.enabled_prop.name = "effect_enabled";
+            effect.opacity_prop = l->shadow_opacity_prop;
+            effect.opacity_prop.name = "effect_opacity";
+            effect.distance_prop = l->shadow_distance_prop;
+            effect.distance_prop.name = "effect_distance";
+            effect.angle_prop = l->shadow_angle_prop;
+            effect.angle_prop.name = "effect_angle";
+            effect.size_prop = l->shadow_blur_prop;
+            effect.size_prop.name = "effect_size";
+            effect.spread_prop = l->shadow_spread_prop;
+            effect.spread_prop.name = "effect_spread";
+            effect.color_a = l->shadow_color_a;
+            effect.color_a.name = "effect_color_a";
+            effect.color_r = l->shadow_color_r;
+            effect.color_r.name = "effect_color_r";
+            effect.color_g = l->shadow_color_g;
+            effect.color_g.name = "effect_color_g";
+            effect.color_b = l->shadow_color_b;
+            effect.color_b.name = "effect_color_b";
             break;
         case LayerEffectType::LongShadow:
             effect.effect_color = l->long_shadow_color;
@@ -1615,17 +1868,19 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             break;
         }
     };
-    auto make_legacy_effect = [seed_shadow_effect_from_layer](LayerEffectType type) {
+    auto make_legacy_effect = [seed_effect_from_layer](LayerEffectType type) {
         LayerEffect effect;
         effect.type = type;
         effect.enabled = true;
         if (type == LayerEffectType::DropShadow || type == LayerEffectType::LongShadow || type == LayerEffectType::InnerShadow) {
             effect.blend_mode = EffectBlendMode::Multiply;
-            seed_shadow_effect_from_layer(effect);
+            seed_effect_from_layer(effect);
         } else if (type == LayerEffectType::ColorOverlay)
             effect.blend_mode = EffectBlendMode::Color;
         else if (type == LayerEffectType::Glow || type == LayerEffectType::InnerGlow)
             effect.blend_mode = EffectBlendMode::Additive;
+        else
+            seed_effect_from_layer(effect);
         return effect;
     };
     if (!j.contains("effects")) {
@@ -1645,10 +1900,12 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             l->effects.push_back(make_legacy_effect(LayerEffectType::LongShadow));
     }
     for (auto &effect : l->effects) {
-        if ((effect.type == LayerEffectType::DropShadow || effect.type == LayerEffectType::LongShadow) &&
-            effect.effect_color == 0xFFFFFFFF) {
-            seed_shadow_effect_from_layer(effect);
-        }
+        if ((!effect.effect_owned_style_loaded &&
+             (effect.type == LayerEffectType::BackgroundColor ||
+              effect.type == LayerEffectType::Outline)) ||
+            ((effect.type == LayerEffectType::DropShadow || effect.type == LayerEffectType::LongShadow) &&
+             effect.effect_color == 0xFFFFFFFF))
+            seed_effect_from_layer(effect);
     }
     set_color_channels(*l, true, l->text_color);
     set_color_channels(*l, false, l->fill_color);
@@ -1665,7 +1922,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (object_member(j, "embedded_image") && !restore_embedded_image_asset(j, l->image_path) && require_embedded_assets) {
         if (error) *error = "Could not restore an embedded image asset from the template file.";
     }
-    l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", true);
+    l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", l->type == LayerType::Image);
     l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
                                                    0, (int)ImageScaleFilter::Area);
     return l;

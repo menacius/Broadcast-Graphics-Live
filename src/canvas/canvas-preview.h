@@ -187,6 +187,8 @@ private:
     bool begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool layer_supports_corner_radius_handles(const Layer &layer) const;
     QPointF corner_radius_handle_local_pos(const Layer &layer, const QRectF &box, DragMode mode) const;
+    QPointF corner_radius_visual_offset_view(const Layer &layer, const QRectF &box, DragMode mode) const;
+    QPointF corner_radius_handle_view_pos(const Layer &layer, const QRectF &box, DragMode mode) const;
     DragMode hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const;
     void draw_corner_radius_handles(QPainter &p, const Layer &layer);
     void begin_corner_radius_drag(const Layer &layer);
@@ -359,8 +361,11 @@ private:
         double scale_x = 1.0;
         double scale_y = 1.0;
         double rotation = 0.0;
+        float stroke_width = 0.0f;
+        float corner_radius_tl = 0.0f;
+        float corner_radius_tr = 0.0f;
+        float corner_radius_br = 0.0f;
+        float corner_radius_bl = 0.0f;
     };
     std::vector<LayerDragState> drag_layer_states_;
 };
-
-
