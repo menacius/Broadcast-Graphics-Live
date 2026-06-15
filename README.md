@@ -1,85 +1,104 @@
-#OBS Graphics Studio Pro
+# OBS Graphics Studio Pro
 
-OBS Graphics Studio Pro is an advanced native graphics plugin for OBS Studio that transforms OBS from a streaming application into a complete real-time graphics and motion design system. Designed for broadcasters, live productions, journalists, content creators, podcasts, esports, and sports productions, it enables the creation, management, and playback of professional broadcast graphics directly inside OBS.
+OBS Graphics Studio Pro is a native C++/Qt graphics plugin for OBS Studio. It adds a dockable graphics manager, an After Effects-inspired editor, a layered canvas, timeline animation, live text cueing, and native OBS source playback so broadcast graphics can be created and played directly inside OBS without browser sources or external titling software.
 
-Built as a fully native C++/Qt plugin, OBS Graphics Studio Pro integrates seamlessly with OBS Studio, providing a dedicated graphics editor, timeline-based animation system, and real-time compositing without requiring browser sources or external graphics applications.
+The project is currently an active **alpha**. Core title creation, editing, serialization, OBS source playback, template import/export, and many editor workflows are implemented, while the codebase is still being modularized and hardened for production use.
 
-Key Features
-Native C++/Qt integration with OBS Studio.
-Dedicated dockable graphics management panel.
-Built-in graphics editor with timeline, layers, and keyframes.
-Creation of lower thirds, titles, overlays, scoreboards, tickers, and animated graphics.
-Real-time graphics compositing using the OBS rendering pipeline.
-Support for text, images, shapes, gradients, and visual effects.
-Advanced animation system with keyframes, easing, looping, and timeline controls.
-Live data integration for dynamic and automatically updated graphics.
-Multi-style text editing with professional typography controls.
-GPU-accelerated rendering architecture designed for advanced visual effects.
-Support for shadows, glows, blur effects, motion graphics, and future 3D transformations.
-Object-based masking system, allowing shapes, text, images, and other graphic elements to be used as masks.
-Scene masking support, enabling OBS scenes to be displayed and animated inside custom masks created with graphics objects.
-Real-time mask animation, allowing scenes to follow animated mask position, scale, and transformations through the compositing system.
-Direct use of graphics as native OBS sources.
-Vision
+---
 
-The goal of OBS Graphics Studio Pro is to provide a professional graphics workflow directly inside OBS Studio, eliminating the need for external titling applications while offering a modern motion graphics environment tailored for live production.
+## Current Capabilities
 
-By combining graphics creation, animation, compositing, and live data workflows into a single integrated system, OBS Graphics Studio Pro aims to become a complete graphics solution for OBS users.
+### OBS integration
 
-#Current Status
+- Native OBS input source: **OBS Graphics Studio Pro Title**.
+- Dockable **OBS Graphics Studio Pro** panel for title/template management.
+- One-click add-to-scene workflow for the selected title.
+- Scene-collection/profile persistence through `titles.json`.
+- Scene-mask support for mapping OBS scenes into animated graphics masks.
+- Runtime live-text cueing with foreground/background persistence options.
 
-Alpha 0.1
+### Editor and canvas
 
-The project is currently in active development. Core graphics creation, editing, and playback functionality is operational, while many advanced features and workflow refinements are still being implemented.
+- Non-modal Qt editor with canvas preview, layers, properties, tools, and timeline.
+- Text, clock, ticker, image, solid rectangle, and vector shape layers.
+- Shape primitives: rectangle, rounded rectangle, ellipse, triangle, star, polygon, diamond, and line.
+- Direct canvas interaction for selection, movement, resize handles, origin/anchor editing, and multi-select transforms.
+- Photoshop-style rulers, draggable guides, safe guides, snapping, zoom, and pan.
+- Layer visibility, locking, duplication, parent/child transforms, and track-matte style masks.
 
-Planned and Ongoing Development
-Shapes and vector drawing tools.
-Advanced masking workflows.
-Gradient fills and outlines.
-Effects stack system.
-Additional animation controls.
-GPU rendering optimizations.
-Improved editor usability and workflow.
-Advanced typography features.
-Enhanced performance for complex graphics and animations.
-Additional compositing and visual effects capabilities.
+### Text and typography
+
+- Rich text model with structured inline formatting and HTML fallback compatibility.
+- On-canvas text editing for text-like layers.
+- Font family/style/size, bold, italic, underline, strikethrough, kerning/tracking, character scale, baseline shift, leading, paragraph spacing, indents, alignment, and overflow controls.
+- Clock layers with configurable time formats.
+- Ticker layers with horizontal scrolling, vertical line-by-line, and vertical smooth modes.
+- Exposed text columns for live data/cue workflows.
+
+### Styling, gradients, effects, and masks
+
+- Solid and gradient fills for supported layer/background/stroke paths.
+- Gradient modes: linear, radial, angle, reflected, and diamond.
+- Intermediate gradient stops with stored opacity/position data.
+- Per-side text/background padding and per-corner radii/corner types.
+- Outlines/strokes for text and shape-oriented layers.
+- Drop shadows and long shadows with multiple blur modes.
+- Stackable layer effects including background color, outline, drop shadow, long shadow, brightness/contrast, saturation, color overlay, glow, inner glow, inner shadow, blur, and motion blur.
+- Blend modes including normal, multiply, additive, screen, overlay, and color.
+- Alpha, inverted alpha, luma, and inverted luma masks.
+
+### Timeline and animation
+
+- Timeline with in/out ranges, playhead, transport controls, layer rows, switches/modes, parenting, and mask indicators.
+- Keyframed properties for transform, opacity, text styling, color channels, background, shadow, shape/box size, and origin-related controls.
+- Easing modes: linear, ease in, ease out, ease in/out, cubic Bezier, and hold.
+- Title playback modes: play once, loop in/out, and pause at position; loop type supports restart and ping-pong.
+
+### Templates and persistence
+
+- Built-in starter templates for lower thirds, centered titles, ticker/strap graphics, and clocks.
+- Template import/export through `.ogspt` files with metadata and preview screenshots.
+- Manual title preview screenshot capture for the dock/template list.
+- Editor preferences for colors, guides, and default styles.
 
 ---
 
 ## Architecture
 
-```
+```text
 OBS-Graphics-Studio-Pro/
 ├── CMakeLists.txt
+├── build-windows.ps1
 ├── data/
-│   └── locale/
-│       └── en-US.ini
-├── docs/
-│   └── module-architecture.md ← Incremental ownership map and migration phases
+│   ├── icons/        # SVG icons used by the editor/dock
+│   └── locale/       # OBS/Qt localization strings
+├── docs/             # Architecture notes and feature/fix notes
+├── tests/            # Lightweight C++ model tests
 └── src/
-    ├── core/        ← Data model, serialization, metadata, localization, global state contracts
-    ├── text/        ← Rich-text model and text serialization helpers
-    ├── obs/         ← OBS module entry point, source lifecycle, OBS-facing render entry points
-    ├── editor/      ← Qt dock/editor UI, hotkeys, panels, toolbars, icons
-    ├── rendering/   ← Target module for GPU/Cairo render paths, textures, caches, blending
-    ├── layers/      ← Target module for layer hierarchy, transforms, masks, visibility, locking
-    ├── effects/     ← Target module for stackable effects, blend modes, effect caches
-    ├── canvas/      ← Target module for selection, tools, snapping, guides, zoom/pan
-    ├── timeline/    ← Target module for playback, timecode, keyframes, curves, easing
-    └── performance/ ← Target module for profiling, stability audits, regression plans
+    ├── core/         # Title data, serialization, preferences, localization
+    ├── text/         # Rich-text document/model helpers
+    ├── layers/       # Layer model and layer stack UI
+    ├── effects/      # Effect model and effects panel
+    ├── timeline/     # Keyframes, easing, timeline widget
+    ├── canvas/       # Canvas preview, tools, guides, snapping, inline editing
+    ├── editor/       # Dock, title editor, properties, hotkeys, assets
+    ├── rendering/    # GPU/filter pipeline helpers
+    ├── obs/          # OBS module entry point and source renderer
+    └── performance/  # Performance/stability planning area
 ```
 
-See [`docs/module-architecture.md`](docs/module-architecture.md) for module ownership,
-dependency direction, and the phased migration plan.
+See [`docs/module-architecture.md`](docs/module-architecture.md) for the current module ownership map, dependency direction, and migration plan.
 
 ### Component Map
 
-| Component | OBS Integration | Purpose |
+| Component | Integration | Purpose |
 |---|---|---|
-| `TitleSource` | `obs_source_type INPUT` | Renders a title to the OBS video mix per-frame via Cairo → `gs_texture` |
-| `TitleDock` | `obs_frontend_add_dock()` | Floating/dockable title list with blank-title creation, Graphics Studio-style templates, and scene-add button |
-| `TitleEditor` | `QDialog` (non-modal) | Full AE-style editor with canvas, layer stack, timeline, properties |
-| `TitleDataStore` | Singleton | Owns all `Title` objects; serialises to `obs-graphics-studio-pro/titles.json` |
+| `TitleSource` | OBS `INPUT` source | Renders a selected title into OBS and exposes scene-mask/live-cue source settings. |
+| `TitleDock` | `obs_frontend_add_dock()` | Manages titles, templates, live text rows, screenshots, import/export, and add-to-scene actions. |
+| `TitleEditor` | Qt non-modal editor | Hosts the canvas, layer stack, timeline, tools, preferences, and properties workflow. |
+| `CanvasPreview` | Qt canvas widget | Handles preview rendering, selection, transforms, rulers/guides, snapping, masks, and inline text editing. |
+| `PropertiesPanel` | Qt inspector | Edits transform, style, typography, image, shape, effects, masks, and live-text properties. |
+| `TitleDataStore` | Singleton data store | Owns all titles and serializes them to the active OBS configuration path. |
 
 ---
 
@@ -87,11 +106,11 @@ dependency direction, and the phased migration plan.
 
 | Library | Purpose |
 |---|---|
-| **OBS Studio** (libobs + obs-frontend-api) | Plugin API, graphics, frontend dock |
-| **Qt 5.15+ or Qt 6** | All UI widgets |
-| **Cairo** | CPU-side 2D compositing for source rendering |
-| **Pango + PangoCairo** | Font layout and text rendering |
-| **nlohmann/json** | JSON serialisation (fetched automatically by CMake) |
+| **OBS Studio** (`libobs` + `obs-frontend-api`) | Plugin API, rendering, frontend dock integration. |
+| **Qt 5.15+ or Qt 6** | Editor, dock, canvas, icons, and widgets. |
+| **Cairo** | CPU-side 2D compositing path used by source rendering. |
+| **Pango + PangoCairo** | Font layout and text rendering support. |
+| **nlohmann/json** | JSON serialization; fetched automatically by CMake if not already available. |
 
 ---
 
@@ -100,31 +119,24 @@ dependency direction, and the phased migration plan.
 ### Linux (Ubuntu 22.04+)
 
 ```bash
-# 1. Install dependencies
 sudo apt install \
-  cmake ninja-build \
+  cmake ninja-build pkg-config \
   libobs-dev obs-frontend-api-dev \
-  qtbase5-dev libqt5widgets5 \
+  qtbase5-dev libqt5widgets5 libqt5svg5-dev \
   libcairo2-dev libpango1.0-dev
 
-# 2. Configure
-cmake -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo
-
-# 3. Build
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
 
-# 4. Install to OBS' per-user plugin folder
 cmake --install build --prefix ~/.config/obs-studio/plugins
-# or copy/symlink the staged build tree:
-mkdir -p ~/.config/obs-studio/plugins
-cp -R build/obs-graphics-studio-pro ~/.config/obs-studio/plugins/
 ```
+
+The build also stages a copyable OBS plugin layout at `build/obs-graphics-studio-pro`.
 
 ### macOS
 
 ```bash
-brew install cmake cairo pango pkg-config
+brew install cmake cairo pango pkg-config qt
 
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
@@ -133,18 +145,9 @@ cmake -B build \
 cmake --build build
 ```
 
-The standalone build stages a directly copyable plugin folder at
-`build/obs-graphics-studio-pro`, with the binary under `bin/<arch>` and locale files under
-`data/locale`.
-
 ### Windows (Visual Studio / vcpkg)
 
-Install Cairo, Pango, and Qt with vcpkg, then point the build at either an OBS
-plugin dependencies package or an OBS Studio install tree with `OBS_SDK_DIR` (or
-`-DOBS_SDK_DIR=...`). The helper script also accepts `-ObsSdkDir` and honours
-`VCPKG_ROOT`, `OBS_SDK_DIR`, `OBS_STUDIO_DIR`, and `OBS_PLUGINS_PATH`. By
-default, the helper installs to OBS' recommended per-machine plugin root,
-`C:\ProgramData\obs-studio\plugins`.
+Install dependencies with vcpkg, point CMake at an OBS SDK/plugin-deps package or OBS Studio install tree, then build:
 
 ```bat
 vcpkg install cairo pango[fontconfig] qt6-base
@@ -157,16 +160,16 @@ cmake -B build -G "Visual Studio 17 2022" -A x64 ^
 cmake --build build --config Release
 ```
 
-Or run the convenience script. It validates the modular source-tree paths,
-configures CMake, builds the selected configuration, optionally runs the
-lightweight tests, and installs the staged plugin layout:
+Or use the helper script:
 
 ```powershell
 .\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio
 .\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio -Configuration RelWithDebInfo -BuildTests
 ```
 
-After install, OBS should see this structure:
+The helper validates the modular source-tree paths, configures CMake, builds the selected configuration, optionally runs lightweight tests, and installs/stages the plugin layout.
+
+Expected Windows OBS plugin layout:
 
 ```text
 C:\ProgramData\obs-studio\plugins\obs-graphics-studio-pro\
@@ -180,22 +183,18 @@ C:\ProgramData\obs-studio\plugins\obs-graphics-studio-pro\
 └── data\locale\en-US.ini
 ```
 
-Use `-InstallRoot` if you need a portable OBS/custom plugin root instead. If
-OBS reports that `obs-graphics-studio-pro` failed to load, first verify that the dependency
-DLLs above are beside `obs-graphics-studio-pro.dll`; a successful compile is not enough for
-Windows to load the plugin at OBS startup.
+Use `-InstallRoot` for a portable OBS/custom plugin root. If OBS reports that the plugin failed to load on Windows, verify that the required dependency DLLs are beside `obs-graphics-studio-pro.dll`.
 
 ---
 
-## OBS Graphics Studio Pro Workflow
+## Basic Workflow
 
-OBS Graphics Studio Pro by OmniaTV is designed around a Graphics Studio-style flow:
-
-1. Open the **OBS Graphics Studio Pro** dock.
-2. Click **Templates** and choose **Lower Third**, **Centered Title**, or **Ticker / Strap**.
-3. Enter the starter text; the editor opens with editable text and shape layers.
-4. Adjust text/position/style in the editor. Changes auto-save and update the title store.
-5. Click **▶ Scene** in the dock to add the selected title source to the active OBS scene.
+1. Open the **OBS Graphics Studio Pro** dock in OBS.
+2. Create a blank title, choose a starter template, or import an `.ogspt` template.
+3. Edit layers, text, styling, masks, effects, and keyframes in the editor.
+4. Capture/update a preview screenshot if desired.
+5. Use the dock live-text table for exposed text layers and cue transitions when building data-driven graphics.
+6. Click **Add to Scene** / **Scene** to add the selected title as a native OBS source.
 
 ---
 
@@ -203,106 +202,53 @@ OBS Graphics Studio Pro by OmniaTV is designed around a Graphics Studio-style fl
 
 Titles are saved in the OBS profile config directory:
 
-```
-%APPDATA%\obs-studio\plugin_config\obs-graphics-studio-pro\titles.json   (Windows)
-~/.config/obs-studio/plugin_config/obs-graphics-studio-pro/titles.json   (Linux)
-~/Library/Application Support/obs-studio/plugin_config/obs-graphics-studio-pro/titles.json (macOS)
+```text
+%APPDATA%\obs-studio\plugin_config\obs-graphics-studio-pro\titles.json
+~/.config/obs-studio/plugin_config/obs-graphics-studio-pro/titles.json
+~/Library/Application Support/obs-studio/plugin_config/obs-graphics-studio-pro/titles.json
 ```
 
-### Title JSON Schema (abbreviated)
-
-```json
-[
-  {
-    "id": "uuid",
-    "name": "My Lower Third",
-    "duration": 5.0,
-    "bg_color": 0,
-    "width": 1920,
-    "height": 1080,
-    "layers": [
-      {
-        "id": "uuid",
-        "name": "Title Text",
-        "type": 0,
-        "visible": true,
-        "in_time": 0.0,
-        "out_time": 5.0,
-        "pos_x": { "static_value": 960.0, "keyframes": [] },
-        "pos_y": { "static_value": 900.0, "keyframes": [] },
-        "opacity": {
-          "static_value": 1.0,
-          "keyframes": [
-            { "time": 0.0, "value": 0.0, "easing": 2 },
-            { "time": 0.5, "value": 1.0, "easing": 2 }
-          ]
-        },
-        "text_content": "Breaking News",
-        "font_family": "Helvetica Neue",
-        "font_size": 72,
-        "font_bold": true,
-        "text_color": 4294967295
-      }
-    ]
-  }
-]
-```
+A title contains metadata, timeline/playback settings, canvas size, editor defaults, live-text rows, preview screenshot data, and a bottom-to-top layer list. Layers store transform/timing state, rich text, shape/image/ticker/clock-specific fields, masks, effects, gradients, keyframes, and rendering style properties.
 
 ### Easing values
 
 | Value | Easing |
-|---|---|
+|---:|---|
 | 0 | Linear |
 | 1 | Ease In |
 | 2 | Ease Out |
 | 3 | Ease In/Out |
 | 4 | Cubic Bezier |
-| 5 | Hold (jump cut) |
+| 5 | Hold / jump cut |
 
 ---
 
-## Extending the Plugin
+## Developer Notes
 
 ### Adding a new layer type
 
-1. Add a value to `enum class LayerType` in `src/core/title-data.h`
-2. Add rendering logic in `src/obs/title-source.cpp → render_title_frame()` (Cairo)
-3. Add Qt paint logic in `src/editor/title-editor.cpp → CanvasPreview::render_to_pixmap()`
-4. Add UI controls in `PropertiesPanel`
-5. Add JSON serialisation in `layer_to_json()` / `layer_from_json()`
+1. Add the enum value and model fields in `src/layers/layer-model.h`.
+2. Add JSON serialization/deserialization in `src/core/title-data.cpp`.
+3. Add source rendering in `src/obs/title-source.cpp`.
+4. Add editor preview/canvas behavior in `src/canvas/canvas-preview.cpp` and editor wiring in `src/editor/title-editor.cpp`.
+5. Add controls in `src/editor/properties-panel.cpp` / `.h`.
+6. Add localization strings in `data/locale/en-US.ini`.
+7. Add or update focused tests where model behavior is affected.
 
-### Adding keyframe support for a property in the editor
+### Adding animated property support
 
-The `TimelineWidget` already draws keyframe diamonds for all `AnimatedProperty`
-fields. To allow adding keyframes from the Properties panel, add a "◆ Add KF"
-button next to the property spinbox that calls:
-
-```cpp
-Keyframe kf;
-kf.time  = playhead_;
-kf.value = spn_px_->value();
-kf.easing = EasingType::EaseInOut;
-layer_->pos_x.keyframes.push_back(kf);
-std::sort(layer_->pos_x.keyframes.begin(), layer_->pos_x.keyframes.end(),
-          [](auto &a, auto &b){ return a.time < b.time; });
-emit property_changed();
-```
+1. Add an `AnimatedProperty` field to the relevant model.
+2. Persist it in title JSON.
+3. Evaluate it in the OBS renderer and canvas preview at local layer time.
+4. Expose keyframe controls in the properties panel/timeline where appropriate.
 
 ---
 
-## Roadmap / TODO
+## Roadmap / Active Work
 
-- [ ] Image layer type with file picker
-- [ ] Shape (ellipse, polygon) layer type
-- [ ] Gradient fills
-- [ ] Keyframe editor: drag to move keyframes on timeline
-- [ ] Keyframe editor: right-click → set easing
-- [ ] Bezier curve editor overlay (velocity graph)
-- [ ] Template system: save/load title presets
-- [ ] Playlist mode: auto-advance through titles
-- [ ] GPU-accelerated rendering path (replace Cairo with GS effects)
-- [ ] Live preview in dock (thumbnail strip)
-- [ ] Undo/redo stack (Qt QUndoStack)
-- [ ] Multi-select layers
-- [ ] Text drop-shadow property
-- [ ] Export title as PNG sequence
+- Continue stabilizing alpha editor workflows and source rendering parity.
+- Complete modular ownership migration described in `docs/module-architecture.md`.
+- Expand automated tests around serialization, animation, rich text, masks, and effects.
+- Improve GPU rendering/filter integration and performance for complex compositions.
+- Refine template/library workflows and live-data integrations.
+- Continue hardening undo/redo, multi-select editing, effect-stack ordering, and advanced keyframe controls.
