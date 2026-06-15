@@ -436,16 +436,21 @@ static void ensure_unique_title_id(const std::shared_ptr<Title> &title,
 }
 } // namespace
 
+static void set_argb_channels(AnimatedProperty &a, AnimatedProperty &r, AnimatedProperty &g, AnimatedProperty &b, uint32_t argb)
+{
+    a.static_value = (argb >> 24) & 0xFF;
+    r.static_value = (argb >> 16) & 0xFF;
+    g.static_value = (argb >> 8) & 0xFF;
+    b.static_value = argb & 0xFF;
+}
+
 static void set_color_channels(Layer &l, bool text, uint32_t argb)
 {
     AnimatedProperty &a = text ? l.text_color_a : l.fill_color_a;
     AnimatedProperty &r = text ? l.text_color_r : l.fill_color_r;
     AnimatedProperty &g = text ? l.text_color_g : l.fill_color_g;
     AnimatedProperty &b = text ? l.text_color_b : l.fill_color_b;
-    a.static_value = (argb >> 24) & 0xFF;
-    r.static_value = (argb >> 16) & 0xFF;
-    g.static_value = (argb >> 8) & 0xFF;
-    b.static_value = argb & 0xFF;
+    set_argb_channels(a, r, g, b, argb);
 }
 
 static void set_background_color_channels(Layer &l, uint32_t argb)
@@ -1104,8 +1109,21 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["background_padding"] = l.background_padding_x;
     j["background_padding_x"] = l.background_padding_x;
     j["background_padding_y"] = l.background_padding_y;
+    j["background_padding_left"] = l.background_padding_left;
+    j["background_padding_right"] = l.background_padding_right;
+    j["background_padding_top"] = l.background_padding_top;
+    j["background_padding_bottom"] = l.background_padding_bottom;
     j["background_corner_radius"] = l.background_corner_radius;
+    j["background_corner_radius_tl"] = l.background_corner_radius_tl;
+    j["background_corner_radius_tr"] = l.background_corner_radius_tr;
+    j["background_corner_radius_br"] = l.background_corner_radius_br;
+    j["background_corner_radius_bl"] = l.background_corner_radius_bl;
+    j["background_corner_type"] = (int)l.background_corner_type;
     j["background_fill_type"] = l.background_fill_type;
+    j["background_stroke_color"] = l.background_stroke_color;
+    j["background_stroke_width"] = l.background_stroke_width;
+    j["background_stroke_opacity"] = l.background_stroke_opacity;
+    j["background_stroke_fill_type"] = l.background_stroke_fill_type;
     j["background_gradient_type"] = l.background_gradient_type;
     j["background_gradient_start_color"] = l.background_gradient_start_color;
     j["background_gradient_end_color"] = l.background_gradient_end_color;
@@ -1125,11 +1143,25 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["background_opacity_prop"] = aprop_to_json(l.background_opacity_prop);
     j["background_padding_x_prop"] = aprop_to_json(l.background_padding_x_prop);
     j["background_padding_y_prop"] = aprop_to_json(l.background_padding_y_prop);
+    j["background_padding_left_prop"] = aprop_to_json(l.background_padding_left_prop);
+    j["background_padding_right_prop"] = aprop_to_json(l.background_padding_right_prop);
+    j["background_padding_top_prop"] = aprop_to_json(l.background_padding_top_prop);
+    j["background_padding_bottom_prop"] = aprop_to_json(l.background_padding_bottom_prop);
     j["background_corner_radius_prop"] = aprop_to_json(l.background_corner_radius_prop);
+    j["background_corner_radius_tl_prop"] = aprop_to_json(l.background_corner_radius_tl_prop);
+    j["background_corner_radius_tr_prop"] = aprop_to_json(l.background_corner_radius_tr_prop);
+    j["background_corner_radius_br_prop"] = aprop_to_json(l.background_corner_radius_br_prop);
+    j["background_corner_radius_bl_prop"] = aprop_to_json(l.background_corner_radius_bl_prop);
+    j["background_stroke_width_prop"] = aprop_to_json(l.background_stroke_width_prop);
+    j["background_stroke_opacity_prop"] = aprop_to_json(l.background_stroke_opacity_prop);
     j["background_color_a"] = aprop_to_json(l.background_color_a);
     j["background_color_r"] = aprop_to_json(l.background_color_r);
     j["background_color_g"] = aprop_to_json(l.background_color_g);
     j["background_color_b"] = aprop_to_json(l.background_color_b);
+    j["background_stroke_color_a"] = aprop_to_json(l.background_stroke_color_a);
+    j["background_stroke_color_r"] = aprop_to_json(l.background_stroke_color_r);
+    j["background_stroke_color_g"] = aprop_to_json(l.background_stroke_color_g);
+    j["background_stroke_color_b"] = aprop_to_json(l.background_stroke_color_b);
     j["rect_width"]    = l.rect_width;
     j["rect_height"]   = l.rect_height;
     j["corner_radius"] = l.corner_radius;
@@ -1213,7 +1245,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->properties_expanded = json_bool(j, "properties_expanded", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
-    l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedAlpha);
+    l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedLuma);
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
     l->blend_mode = (EffectBlendMode)std::clamp(json_int(j, "blend_mode", (int)EffectBlendMode::Normal), 0, (int)EffectBlendMode::Color);
     l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false);
@@ -1419,8 +1451,21 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     const double legacy_padding = finite_or(json_double(j, "background_padding", 0.0), 0.0);
     l->background_padding_x = (float)std::clamp(finite_or(json_double(j, "background_padding_x", legacy_padding), legacy_padding), 0.0, (double)kMaxCanvasDimension);
     l->background_padding_y = (float)std::clamp(finite_or(json_double(j, "background_padding_y", legacy_padding), legacy_padding), 0.0, (double)kMaxCanvasDimension);
+    l->background_padding_left = (float)std::clamp(finite_or(json_double(j, "background_padding_left", l->background_padding_x), l->background_padding_x), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+    l->background_padding_right = (float)std::clamp(finite_or(json_double(j, "background_padding_right", l->background_padding_x), l->background_padding_x), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+    l->background_padding_top = (float)std::clamp(finite_or(json_double(j, "background_padding_top", l->background_padding_y), l->background_padding_y), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
+    l->background_padding_bottom = (float)std::clamp(finite_or(json_double(j, "background_padding_bottom", l->background_padding_y), l->background_padding_y), -(double)kMaxCanvasDimension, (double)kMaxCanvasDimension);
     l->background_corner_radius = (float)std::clamp(finite_or(json_double(j, "background_corner_radius", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
+    l->background_corner_radius_tl = (float)std::clamp(finite_or(json_double(j, "background_corner_radius_tl", l->background_corner_radius), l->background_corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->background_corner_radius_tr = (float)std::clamp(finite_or(json_double(j, "background_corner_radius_tr", l->background_corner_radius), l->background_corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->background_corner_radius_br = (float)std::clamp(finite_or(json_double(j, "background_corner_radius_br", l->background_corner_radius), l->background_corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->background_corner_radius_bl = (float)std::clamp(finite_or(json_double(j, "background_corner_radius_bl", l->background_corner_radius), l->background_corner_radius), 0.0, (double)kMaxCanvasDimension);
+    l->background_corner_type = (CornerType)std::clamp(json_int(j, "background_corner_type", (int)CornerType::Round), 0, (int)CornerType::Cutout);
     l->background_fill_type = std::clamp(json_int(j, "background_fill_type", 0), 0, 1);
+    l->background_stroke_color = json_color(j, "background_stroke_color", (uint32_t)0x00000000);
+    l->background_stroke_width = (float)std::clamp(finite_or(json_double(j, "background_stroke_width", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
+    l->background_stroke_opacity = (float)std::clamp(finite_or(json_double(j, "background_stroke_opacity", 1.0), 1.0), 0.0, 1.0);
+    l->background_stroke_fill_type = std::clamp(json_int(j, "background_stroke_fill_type", 0), 0, 1);
     l->background_gradient_type = std::clamp(json_int(j, "background_gradient_type", l->gradient_type), 0, 4);
     l->background_gradient_start_color = json_color(j, "background_gradient_start_color", l->gradient_start_color);
     l->background_gradient_end_color = json_color(j, "background_gradient_end_color", l->gradient_end_color);
@@ -1440,17 +1485,42 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->background_opacity_prop.static_value = l->background_opacity;
     l->background_padding_x_prop.static_value = l->background_padding_x;
     l->background_padding_y_prop.static_value = l->background_padding_y;
+    l->background_padding_left_prop.static_value = l->background_padding_left;
+    l->background_padding_right_prop.static_value = l->background_padding_right;
+    l->background_padding_top_prop.static_value = l->background_padding_top;
+    l->background_padding_bottom_prop.static_value = l->background_padding_bottom;
     l->background_corner_radius_prop.static_value = l->background_corner_radius;
+    l->background_corner_radius_tl_prop.static_value = l->background_corner_radius_tl;
+    l->background_corner_radius_tr_prop.static_value = l->background_corner_radius_tr;
+    l->background_corner_radius_br_prop.static_value = l->background_corner_radius_br;
+    l->background_corner_radius_bl_prop.static_value = l->background_corner_radius_bl;
+    l->background_stroke_width_prop.static_value = l->background_stroke_width;
+    l->background_stroke_opacity_prop.static_value = l->background_stroke_opacity;
     set_background_color_channels(*l, l->background_color);
+    set_argb_channels(l->background_stroke_color_a, l->background_stroke_color_r, l->background_stroke_color_g, l->background_stroke_color_b, l->background_stroke_color);
     if (j.contains("background_enabled_prop")) l->background_enabled_prop = aprop_from_json(j["background_enabled_prop"], "background_enabled");
     if (j.contains("background_opacity_prop")) l->background_opacity_prop = aprop_from_json(j["background_opacity_prop"], "background_opacity");
     if (j.contains("background_padding_x_prop")) l->background_padding_x_prop = aprop_from_json(j["background_padding_x_prop"], "background_padding_x");
     if (j.contains("background_padding_y_prop")) l->background_padding_y_prop = aprop_from_json(j["background_padding_y_prop"], "background_padding_y");
+    if (j.contains("background_padding_left_prop")) l->background_padding_left_prop = aprop_from_json(j["background_padding_left_prop"], "background_padding_left");
+    if (j.contains("background_padding_right_prop")) l->background_padding_right_prop = aprop_from_json(j["background_padding_right_prop"], "background_padding_right");
+    if (j.contains("background_padding_top_prop")) l->background_padding_top_prop = aprop_from_json(j["background_padding_top_prop"], "background_padding_top");
+    if (j.contains("background_padding_bottom_prop")) l->background_padding_bottom_prop = aprop_from_json(j["background_padding_bottom_prop"], "background_padding_bottom");
     if (j.contains("background_corner_radius_prop")) l->background_corner_radius_prop = aprop_from_json(j["background_corner_radius_prop"], "background_corner_radius");
+    if (j.contains("background_corner_radius_tl_prop")) l->background_corner_radius_tl_prop = aprop_from_json(j["background_corner_radius_tl_prop"], "background_corner_radius_tl");
+    if (j.contains("background_corner_radius_tr_prop")) l->background_corner_radius_tr_prop = aprop_from_json(j["background_corner_radius_tr_prop"], "background_corner_radius_tr");
+    if (j.contains("background_corner_radius_br_prop")) l->background_corner_radius_br_prop = aprop_from_json(j["background_corner_radius_br_prop"], "background_corner_radius_br");
+    if (j.contains("background_corner_radius_bl_prop")) l->background_corner_radius_bl_prop = aprop_from_json(j["background_corner_radius_bl_prop"], "background_corner_radius_bl");
+    if (j.contains("background_stroke_width_prop")) l->background_stroke_width_prop = aprop_from_json(j["background_stroke_width_prop"], "background_stroke_width");
+    if (j.contains("background_stroke_opacity_prop")) l->background_stroke_opacity_prop = aprop_from_json(j["background_stroke_opacity_prop"], "background_stroke_opacity");
     if (j.contains("background_color_a")) l->background_color_a = aprop_from_json(j["background_color_a"], "background_color_a");
     if (j.contains("background_color_r")) l->background_color_r = aprop_from_json(j["background_color_r"], "background_color_r");
     if (j.contains("background_color_g")) l->background_color_g = aprop_from_json(j["background_color_g"], "background_color_g");
     if (j.contains("background_color_b")) l->background_color_b = aprop_from_json(j["background_color_b"], "background_color_b");
+    if (j.contains("background_stroke_color_a")) l->background_stroke_color_a = aprop_from_json(j["background_stroke_color_a"], "background_stroke_color_a");
+    if (j.contains("background_stroke_color_r")) l->background_stroke_color_r = aprop_from_json(j["background_stroke_color_r"], "background_stroke_color_r");
+    if (j.contains("background_stroke_color_g")) l->background_stroke_color_g = aprop_from_json(j["background_stroke_color_g"], "background_stroke_color_g");
+    if (j.contains("background_stroke_color_b")) l->background_stroke_color_b = aprop_from_json(j["background_stroke_color_b"], "background_stroke_color_b");
     l->rect_width    = std::clamp(finite_or(json_double(j, "rect_width", 1920.0), 1920.0), 0.0, (double)kMaxCanvasDimension);
     l->rect_height   = std::clamp(finite_or(json_double(j, "rect_height", 100.0), 100.0), 0.0, (double)kMaxCanvasDimension);
     l->corner_radius = std::clamp(finite_or(json_double(j, "corner_radius", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
@@ -1619,6 +1689,25 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["bg_color"] = t.bg_color;
     jt["width"]    = t.width;
     jt["height"]   = t.height;
+    if (t.editor_default_style_enabled) {
+        json defaults = layer_to_json(t.editor_default_layer_style, false, false, nullptr, nullptr);
+        defaults.erase("effects");
+        defaults.erase("effect_stack_respects_masks");
+        // Keep an explicit empty array so loading this defaults object never
+        // reconstructs legacy shadow/background/outline effects.
+        defaults["effects"] = json::array();
+        jt["editor_default_layer_style"] = defaults;
+        jt["editor_default_foreground_color"] = t.editor_default_foreground_color;
+        jt["editor_default_background_color"] = t.editor_default_background_color;
+    }
+    if (!t.editor_recent_color_hexes.empty()) {
+        json recent = json::array();
+        for (const auto &hex : t.editor_recent_color_hexes) {
+            if (!hex.empty())
+                recent.push_back(hex);
+        }
+        jt["editor_recent_color_hexes"] = recent;
+    }
     json layers = json::array();
     for (auto &l : t.layers) {
         bool asset_embed_failed = false;
@@ -1663,6 +1752,29 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->bg_color = json_color(jt, "bg_color", (uint32_t)0x00000000);
     t->width    = std::clamp(json_int(jt, "width", 1920), 1, kMaxCanvasDimension);
     t->height   = std::clamp(json_int(jt, "height", 1080), 1, kMaxCanvasDimension);
+    if (jt.contains("editor_default_layer_style") && jt["editor_default_layer_style"].is_object()) {
+        auto defaults = layer_from_json(jt["editor_default_layer_style"], false, nullptr);
+        if (defaults) {
+            defaults->effects.clear();
+            defaults->effect_stack_respects_masks = false;
+            t->editor_default_layer_style = *defaults;
+            t->editor_default_style_enabled = true;
+        }
+        t->editor_default_foreground_color = json_color(jt, "editor_default_foreground_color", t->editor_default_foreground_color);
+        t->editor_default_background_color = json_color(jt, "editor_default_background_color", t->editor_default_background_color);
+    }
+    if (jt.contains("editor_recent_color_hexes") && jt["editor_recent_color_hexes"].is_array()) {
+        t->editor_recent_color_hexes.clear();
+        const size_t n = std::min<size_t>(jt["editor_recent_color_hexes"].size(), 32);
+        for (size_t i = 0; i < n; ++i) {
+            if (jt["editor_recent_color_hexes"][i].is_string()) {
+                auto value = jt["editor_recent_color_hexes"][i].get<std::string>();
+                if (value.size() > 16) value.resize(16);
+                if (!value.empty())
+                    t->editor_recent_color_hexes.push_back(value);
+            }
+        }
+    }
     if (jt.contains("layers") && jt["layers"].is_array()) {
         const size_t count = std::min(jt["layers"].size(), kMaxLayersPerTitle);
         t->layers.reserve(count);

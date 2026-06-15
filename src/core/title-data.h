@@ -43,6 +43,17 @@ struct Title {
     int         height      = 1080;
 
     std::vector<std::shared_ptr<Layer>> layers;  /* bottom → top order */
+
+    /* Editor defaults persisted with the title/template. These are used only
+     * as the initial style for newly-created layers; they must not affect
+     * rendering and must not carry an effect stack. */
+    bool        editor_default_style_enabled = false;
+    Layer       editor_default_layer_style;
+    uint32_t    editor_default_foreground_color = 0xFF222222;
+    uint32_t    editor_default_background_color = 0xFFFFFFFF;
+    /* Photoshop-style recent colors for the editor color tab: stored newest-first,
+     * de-duplicated, and persisted with the template rather than pushed on every drag. */
+    std::vector<std::string> editor_recent_color_hexes;
     std::vector<std::vector<std::string>> live_text_rows;
     std::vector<std::string> live_text_column_order; /* exposed text layer IDs by logical cue column */
     std::string live_text_header_state; /* base64-encoded dock header layout */

@@ -431,7 +431,10 @@ static QString timeline_layer_switches_text(const Title &title, const Layer &lay
 {
     QStringList tags;
     if (layer.mask_mode != MaskMode::None && !layer.mask_source_id.empty())
-        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? QStringLiteral("TrkMat -α") : QStringLiteral("TrkMat α"));
+        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? QStringLiteral("TrkMat -α") :
+                 layer.mask_mode == MaskMode::Luma ? QStringLiteral("TrkMat Luma") :
+                 layer.mask_mode == MaskMode::InvertedLuma ? QStringLiteral("TrkMat -Luma") :
+                 QStringLiteral("TrkMat α"));
     if (!layer.parent_id.empty()) {
         QString parent_name = QStringLiteral("Parent");
         if (auto parent = title.find_layer(layer.parent_id))

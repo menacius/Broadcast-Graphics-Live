@@ -42,6 +42,8 @@ enum class MaskMode {
     None,
     Alpha,
     InvertedAlpha,
+    Luma,
+    InvertedLuma,
 };
 
 enum class ImageScaleFilter {
@@ -206,10 +208,23 @@ struct Layer {
     bool        background_enabled = false;
     uint32_t    background_color = 0xFF000000;
     float       background_opacity = 0.35f;
-    float       background_padding_x = 0.0f;
-    float       background_padding_y = 0.0f;
-    float       background_corner_radius = 0.0f;
+    float       background_padding_x = 0.0f; /* legacy symmetric horizontal padding */
+    float       background_padding_y = 0.0f; /* legacy symmetric vertical padding */
+    float       background_padding_left = 0.0f;
+    float       background_padding_right = 0.0f;
+    float       background_padding_top = 0.0f;
+    float       background_padding_bottom = 0.0f;
+    float       background_corner_radius = 0.0f; /* legacy shared radius */
+    float       background_corner_radius_tl = 0.0f;
+    float       background_corner_radius_tr = 0.0f;
+    float       background_corner_radius_br = 0.0f;
+    float       background_corner_radius_bl = 0.0f;
+    CornerType  background_corner_type = CornerType::Round;
     int         background_fill_type = 0;  /* 0=solid, 1=gradient */
+    uint32_t    background_stroke_color = 0x00000000;
+    float       background_stroke_width = 0.0f;
+    float       background_stroke_opacity = 1.0f;
+    int         background_stroke_fill_type = 0;  /* reserved: 0=solid */
     int         background_gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
     uint32_t    background_gradient_start_color = 0xFF4B6EA8;
     uint32_t    background_gradient_end_color   = 0xFF1B1B1B;
@@ -229,11 +244,25 @@ struct Layer {
     AnimatedProperty background_opacity_prop { "background_opacity", 0.35 };
     AnimatedProperty background_padding_x_prop { "background_padding_x", 0.0 };
     AnimatedProperty background_padding_y_prop { "background_padding_y", 0.0 };
+    AnimatedProperty background_padding_left_prop { "background_padding_left", 0.0 };
+    AnimatedProperty background_padding_right_prop { "background_padding_right", 0.0 };
+    AnimatedProperty background_padding_top_prop { "background_padding_top", 0.0 };
+    AnimatedProperty background_padding_bottom_prop { "background_padding_bottom", 0.0 };
     AnimatedProperty background_corner_radius_prop { "background_corner_radius", 0.0 };
+    AnimatedProperty background_corner_radius_tl_prop { "background_corner_radius_tl", 0.0 };
+    AnimatedProperty background_corner_radius_tr_prop { "background_corner_radius_tr", 0.0 };
+    AnimatedProperty background_corner_radius_br_prop { "background_corner_radius_br", 0.0 };
+    AnimatedProperty background_corner_radius_bl_prop { "background_corner_radius_bl", 0.0 };
+    AnimatedProperty background_stroke_width_prop { "background_stroke_width", 0.0 };
+    AnimatedProperty background_stroke_opacity_prop { "background_stroke_opacity", 1.0 };
     AnimatedProperty background_color_a { "background_color_a", 255.0 };
     AnimatedProperty background_color_r { "background_color_r", 0.0 };
     AnimatedProperty background_color_g { "background_color_g", 0.0 };
     AnimatedProperty background_color_b { "background_color_b", 0.0 };
+    AnimatedProperty background_stroke_color_a { "background_stroke_color_a", 0.0 };
+    AnimatedProperty background_stroke_color_r { "background_stroke_color_r", 0.0 };
+    AnimatedProperty background_stroke_color_g { "background_stroke_color_g", 0.0 };
+    AnimatedProperty background_stroke_color_b { "background_stroke_color_b", 0.0 };
 
     float       rect_width    = 1920.0f;
     float       rect_height   = 100.0f;

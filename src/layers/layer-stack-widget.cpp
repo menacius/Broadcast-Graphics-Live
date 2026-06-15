@@ -378,7 +378,7 @@ void LayerStack::populate()
         add_matte_indicator("timeline-mask.svg",
                             QStringLiteral("This layer is used as a track matte and is hidden from normal compositing."),
                             used_as_track_matte);
-        add_matte_indicator(l->mask_mode == MaskMode::InvertedAlpha ? "timeline-mask-inverted.svg" : "timeline-mask.svg",
+        add_matte_indicator((l->mask_mode == MaskMode::InvertedAlpha || l->mask_mode == MaskMode::InvertedLuma) ? "timeline-mask-inverted.svg" : "timeline-mask.svg",
                             QStringLiteral("This layer is masked by another layer."),
                             uses_track_matte);
 
@@ -455,6 +455,10 @@ void LayerStack::populate()
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Alpha)));
             mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -α"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedAlpha)));
+            mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " Luma"),
+                          QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Luma)));
+            mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -Luma"),
+                          QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedLuma)));
         }
         QString mask_value = QString::fromStdString(l->mask_source_id + "|" + std::to_string((int)l->mask_mode));
         int mask_idx = mask->findData(mask_value);

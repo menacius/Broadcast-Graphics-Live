@@ -1506,6 +1506,11 @@ void TitleEditor::build_ui()
             this, [this](bool active) {
                 if (canvas_) canvas_->set_gradient_editor_active(active);
             });
+    connect(props_, &PropertiesPanel::color_picker_tool_requested,
+            this, [this]() {
+                reopen_color_tab_after_canvas_pick_ = true;
+                if (canvas_) canvas_->set_color_picker_tool_active();
+            });
     connect(title_props_, &TitlePropertiesPanel::title_changed,
             this, [this](bool push_undo_snapshot) {
                 if (!title_) return;
@@ -1596,6 +1601,7 @@ void TitleEditor::build_ui()
             if (canvas_) canvas_->set_text_tool_active(type);
         });
         connect(tools_sidebar_, &ToolsSidebar::color_picker_tool_requested, this, [this]() {
+            reopen_color_tab_after_canvas_pick_ = false;
             if (canvas_) canvas_->set_color_picker_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::gradient_tool_requested, this, [this]() {
@@ -2331,6 +2337,7 @@ void TitleEditor::open_title(const std::string &tid)
     if (!stored_title) return;
     editing_title_id_ = tid;
     title_ = clone_title(*stored_title);
+    load_new_layer_defaults();
 
     update_title_bar();
     canvas_->set_title(title_);
@@ -2495,6 +2502,10 @@ void TitleEditor::apply_picked_color_to_selection(const QColor &color)
     if (!last_changed) return;
     on_title_modified();
     update_layer_panels(last_changed, playhead_);
+    if (reopen_color_tab_after_canvas_pick_) {
+        reopen_color_tab_after_canvas_pick_ = false;
+        if (props_) props_->open_foreground_color_selector();
+    }
 }
 
 void TitleEditor::duplicate_selected_layers()
@@ -3377,8 +3388,21 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.background_opacity = src.background_opacity;
     dst.background_padding_x = src.background_padding_x;
     dst.background_padding_y = src.background_padding_y;
+    dst.background_padding_left = src.background_padding_left;
+    dst.background_padding_right = src.background_padding_right;
+    dst.background_padding_top = src.background_padding_top;
+    dst.background_padding_bottom = src.background_padding_bottom;
     dst.background_corner_radius = src.background_corner_radius;
+    dst.background_corner_radius_tl = src.background_corner_radius_tl;
+    dst.background_corner_radius_tr = src.background_corner_radius_tr;
+    dst.background_corner_radius_br = src.background_corner_radius_br;
+    dst.background_corner_radius_bl = src.background_corner_radius_bl;
+    dst.background_corner_type = src.background_corner_type;
     dst.background_fill_type = src.background_fill_type;
+    dst.background_stroke_color = src.background_stroke_color;
+    dst.background_stroke_width = src.background_stroke_width;
+    dst.background_stroke_opacity = src.background_stroke_opacity;
+    dst.background_stroke_fill_type = src.background_stroke_fill_type;
     dst.background_gradient_type = src.background_gradient_type;
     dst.background_gradient_start_color = src.background_gradient_start_color;
     dst.background_gradient_end_color = src.background_gradient_end_color;
@@ -3399,6 +3423,11 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.paragraph_indent_first_line_prop.static_value = src.paragraph_indent_first_line_prop.static_value;
     dst.paragraph_space_before_prop.static_value = src.paragraph_space_before_prop.static_value;
     dst.paragraph_space_after_prop.static_value = src.paragraph_space_after_prop.static_value;
+
+    // New-layer defaults should persist visual base styling only. Do not copy
+    // the layer effect stack or mask/effect interaction flags into defaults.
+    dst.effects.clear();
+    dst.effect_stack_respects_masks = false;
 }
 
 void TitleEditor::load_sidebar_default_colors()
@@ -3419,6 +3448,11 @@ void TitleEditor::save_sidebar_default_colors() const
     g_editor_session_foreground_color = default_foreground_color_;
     g_editor_session_background_color = default_background_color_;
     g_editor_session_sidebar_colors_initialized = true;
+    if (title_) {
+        title_->editor_default_style_enabled = true;
+        title_->editor_default_foreground_color = argb_from_color(default_foreground_color_);
+        title_->editor_default_background_color = argb_from_color(default_background_color_);
+    }
 }
 
 
@@ -3477,20 +3511,44 @@ void TitleEditor::apply_new_layer_defaults(Layer &layer) const
 
 void TitleEditor::load_new_layer_defaults()
 {
+    if (title_ && title_->editor_default_style_enabled) {
+        default_new_layer_style_ = title_->editor_default_layer_style;
+        default_new_layer_style_.effects.clear();
+        default_new_layer_style_.effect_stack_respects_masks = false;
+        default_foreground_color_ = color_from_argb(title_->editor_default_foreground_color);
+        default_background_color_ = color_from_argb(title_->editor_default_background_color);
+        return;
+    }
+
     if (g_editor_session_new_layer_defaults_initialized) {
         default_new_layer_style_ = g_editor_session_new_layer_style;
+        default_new_layer_style_.effects.clear();
+        default_new_layer_style_.effect_stack_respects_masks = false;
         return;
     }
 
     g_editor_session_new_layer_style = default_new_layer_style_;
+    g_editor_session_new_layer_style.effects.clear();
+    g_editor_session_new_layer_style.effect_stack_respects_masks = false;
     g_editor_session_new_layer_defaults_initialized = true;
 }
 
 
 void TitleEditor::save_new_layer_defaults() const
 {
-    g_editor_session_new_layer_style = default_new_layer_style_;
+    Layer persisted = default_new_layer_style_;
+    persisted.effects.clear();
+    persisted.effect_stack_respects_masks = false;
+
+    g_editor_session_new_layer_style = persisted;
     g_editor_session_new_layer_defaults_initialized = true;
+
+    if (title_) {
+        title_->editor_default_style_enabled = true;
+        title_->editor_default_layer_style = persisted;
+        title_->editor_default_foreground_color = argb_from_color(default_foreground_color_);
+        title_->editor_default_background_color = argb_from_color(default_background_color_);
+    }
 }
 
 

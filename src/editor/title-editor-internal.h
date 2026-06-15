@@ -464,15 +464,16 @@ class HsvColorPicker : public QWidget {
 public:
     explicit HsvColorPicker(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setMinimumSize(276, 330);
+        setFixedSize(250, 250);
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setMouseTracking(true);
     }
 
     void set_color(const QColor &color)
     {
         current_ = color.isValid() ? color : QColor(Qt::white);
-        int h = current_.hsvHue();
-        hue_ = h < 0 ? 0 : h;
+        const int h = current_.hsvHue();
+        hue_ = h < 0 ? 0.0 : (double)h;
         saturation_ = std::clamp((double)current_.hsvSaturationF(), 0.0, 1.0);
         value_ = std::clamp((double)current_.valueF(), 0.0, 1.0);
         alpha_ = std::clamp((double)current_.alphaF(), 0.0, 1.0);
@@ -482,7 +483,7 @@ public:
     QColor color() const
     {
         QColor color;
-        color.setHsvF(hue_ / 359.0, saturation_, value_, alpha_);
+        color.setHsvF(std::clamp(hue_ / 359.0, 0.0, 1.0), saturation_, value_, alpha_);
         return color;
     }
 
@@ -492,7 +493,43 @@ protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QPointF c = wheel_center();
+        const double outer = wheel_outer_radius();
+        const double inner = wheel_inner_radius();
+
+        QImage wheel(size(), QImage::Format_ARGB32_Premultiplied);
+        wheel.fill(Qt::transparent);
+        for (int y = 0; y < wheel.height(); ++y) {
+            for (int x = 0; x < wheel.width(); ++x) {
+                const double dx = x + 0.5 - c.x();
+                const double dy = y + 0.5 - c.y();
+                const double r = std::sqrt(dx * dx + dy * dy);
+                if (r < inner || r > outer)
+                    continue;
+                double deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+                if (deg < 0.0)
+                    deg += 360.0;
+                QColor hc;
+                hc.setHsvF(deg / 359.0, 1.0, 1.0, 1.0);
+                wheel.setPixelColor(x, y, hc);
+            }
+        }
+        p.drawImage(0, 0, wheel);
+
+        p.setPen(QPen(QColor(0, 0, 0, 90), 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(c, outer, outer);
+        p.drawEllipse(c, inner, inner);
+
+        const double angle = hue_ * 3.14159265358979323846 / 180.0;
+        const QPointF hue_handle(c.x() + std::cos(angle) * ((inner + outer) * 0.5),
+                                 c.y() + std::sin(angle) * ((inner + outer) * 0.5));
+        p.setPen(QPen(Qt::white, 3));
+        p.drawEllipse(hue_handle, 10, 10);
+        p.setPen(QPen(QColor(20, 20, 20), 2));
+        p.drawEllipse(hue_handle, 11, 11);
 
         const QRect sv = sv_rect();
         QImage image(sv.size(), QImage::Format_RGB32);
@@ -500,46 +537,21 @@ protected:
             const double v = 1.0 - (double)y / std::max(1, image.height() - 1);
             for (int x = 0; x < image.width(); ++x) {
                 const double s = (double)x / std::max(1, image.width() - 1);
-                QColor c;
-                c.setHsvF(hue_ / 359.0, s, v, 1.0);
-                image.setPixelColor(x, y, c);
+                QColor col;
+                col.setHsvF(std::clamp(hue_ / 359.0, 0.0, 1.0), s, v, 1.0);
+                image.setPixelColor(x, y, col);
             }
         }
         p.drawImage(sv.topLeft(), image);
-        p.setPen(QColor(18, 18, 18));
+        p.setPen(QPen(QColor(0, 0, 0, 160), 1));
         p.drawRect(sv.adjusted(0, 0, -1, -1));
+
         const QPoint sv_handle(sv.left() + (int)std::round(saturation_ * (sv.width() - 1)),
                                sv.top() + (int)std::round((1.0 - value_) * (sv.height() - 1)));
-        p.setPen(QPen(Qt::white, 1));
-        p.drawEllipse(sv_handle, 5, 5);
-        p.setPen(QPen(Qt::black, 1));
-        p.drawEllipse(sv_handle, 6, 6);
-
-        const QRect hue = hue_rect();
-        QLinearGradient hue_gradient(hue.topLeft(), hue.topRight());
-        for (int i = 0; i <= 6; ++i) {
-            QColor c;
-            c.setHsvF(i / 6.0, 1.0, 1.0, 1.0);
-            hue_gradient.setColorAt(i / 6.0, c);
-        }
-        p.fillRect(hue, hue_gradient);
-        p.setPen(QColor(18, 18, 18));
-        p.drawRect(hue.adjusted(0, 0, -1, -1));
-        draw_slider_handle(p, hue, hue_ / 359.0);
-
-        const QRect alpha = alpha_rect();
-        draw_checkerboard(p, alpha);
-        QColor opaque = color();
-        opaque.setAlphaF(1.0);
-        QColor transparent = opaque;
-        transparent.setAlphaF(0.0);
-        QLinearGradient alpha_gradient(alpha.topLeft(), alpha.topRight());
-        alpha_gradient.setColorAt(0.0, transparent);
-        alpha_gradient.setColorAt(1.0, opaque);
-        p.fillRect(alpha, alpha_gradient);
-        p.setPen(QColor(18, 18, 18));
-        p.drawRect(alpha.adjusted(0, 0, -1, -1));
-        draw_slider_handle(p, alpha, alpha_);
+        p.setPen(QPen(Qt::white, 2));
+        p.drawEllipse(sv_handle, 7, 7);
+        p.setPen(QPen(QColor(20, 20, 20), 1));
+        p.drawEllipse(sv_handle, 8, 8);
     }
 
     void mousePressEvent(QMouseEvent *event) override
@@ -559,56 +571,51 @@ protected:
     }
 
 private:
-    QRect sv_rect() const { return QRect(8, 8, 260, 260); }
-    QRect hue_rect() const { return QRect(8, 282, 260, 20); }
-    QRect alpha_rect() const { return QRect(8, 316, 260, 20); }
+    QPointF wheel_center() const { return QPointF(width() * 0.5, height() * 0.48); }
+    double wheel_outer_radius() const { return std::min(width(), height()) * 0.44; }
+    double wheel_inner_radius() const { return std::min(width(), height()) * 0.32; }
+    QRect sv_rect() const
+    {
+        const int side = (int)std::round(wheel_inner_radius() * 1.28);
+        const QPointF c = wheel_center();
+        return QRect((int)std::round(c.x() - side * 0.5),
+                     (int)std::round(c.y() - side * 0.5),
+                     side, side);
+    }
 
     void update_from_pos(const QPoint &pos)
     {
-        if (sv_rect().contains(pos)) {
-            const QRect r = sv_rect();
-            saturation_ = std::clamp((double)(pos.x() - r.left()) / std::max(1, r.width() - 1), 0.0, 1.0);
-            value_ = std::clamp(1.0 - (double)(pos.y() - r.top()) / std::max(1, r.height() - 1), 0.0, 1.0);
-        } else if (hue_rect().contains(pos)) {
-            const QRect r = hue_rect();
-            hue_ = std::clamp((double)(pos.x() - r.left()) / std::max(1, r.width() - 1), 0.0, 1.0) * 359.0;
-        } else if (alpha_rect().contains(pos)) {
-            const QRect r = alpha_rect();
-            alpha_ = std::clamp((double)(pos.x() - r.left()) / std::max(1, r.width() - 1), 0.0, 1.0);
+        const QRect sv = sv_rect();
+        bool changed = false;
+        if (sv.contains(pos)) {
+            saturation_ = std::clamp((double)(pos.x() - sv.left()) / std::max(1, sv.width() - 1), 0.0, 1.0);
+            value_ = std::clamp(1.0 - (double)(pos.y() - sv.top()) / std::max(1, sv.height() - 1), 0.0, 1.0);
+            changed = true;
         } else {
-            return;
+            const QPointF c = wheel_center();
+            const double dx = pos.x() - c.x();
+            const double dy = pos.y() - c.y();
+            const double r = std::sqrt(dx * dx + dy * dy);
+            if (r >= wheel_inner_radius() && r <= wheel_outer_radius()) {
+                double deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
+                if (deg < 0.0)
+                    deg += 360.0;
+                hue_ = std::clamp(deg, 0.0, 359.0);
+                changed = true;
+            }
         }
 
+        if (!changed)
+            return;
         current_ = color();
         update();
         if (color_changed)
             color_changed(current_);
     }
 
-    static void draw_checkerboard(QPainter &p, const QRect &rect)
-    {
-        const int cell = 8;
-        for (int y = rect.top(); y < rect.bottom(); y += cell) {
-            for (int x = rect.left(); x < rect.right(); x += cell) {
-                const bool dark = ((x / cell) + (y / cell)) % 2;
-                p.fillRect(QRect(x, y, cell, cell).intersected(rect),
-                           dark ? QColor(155, 155, 155) : QColor(220, 220, 220));
-            }
-        }
-    }
-
-    static void draw_slider_handle(QPainter &p, const QRect &rect, double value)
-    {
-        const int x = rect.left() + (int)std::round(std::clamp(value, 0.0, 1.0) * (rect.width() - 1));
-        const QRect handle(x - 4, rect.top() - 2, 8, rect.height() + 4);
-        p.setPen(QPen(QColor(70, 220, 110), 2));
-        p.setBrush(Qt::NoBrush);
-        p.drawRoundedRect(handle, 2, 2);
-    }
-
     QColor current_ = Qt::white;
-    double hue_ = 120.0;
-    double saturation_ = 1.0;
+    double hue_ = 0.0;
+    double saturation_ = 0.0;
     double value_ = 1.0;
     double alpha_ = 1.0;
 };
@@ -3487,11 +3494,82 @@ static double eval_background_padding_y(const Layer &layer, double t)
                              : (double)layer.background_padding_y);
 }
 
+static double eval_background_padding_left(const Layer &layer, double t)
+{
+    return layer.background_padding_left_prop.is_animated()
+               ? layer.background_padding_left_prop.evaluate(t)
+               : (double)layer.background_padding_left;
+}
+
+static double eval_background_padding_right(const Layer &layer, double t)
+{
+    return layer.background_padding_right_prop.is_animated()
+               ? layer.background_padding_right_prop.evaluate(t)
+               : (double)layer.background_padding_right;
+}
+
+static double eval_background_padding_top(const Layer &layer, double t)
+{
+    return layer.background_padding_top_prop.is_animated()
+               ? layer.background_padding_top_prop.evaluate(t)
+               : (double)layer.background_padding_top;
+}
+
+static double eval_background_padding_bottom(const Layer &layer, double t)
+{
+    return layer.background_padding_bottom_prop.is_animated()
+               ? layer.background_padding_bottom_prop.evaluate(t)
+               : (double)layer.background_padding_bottom;
+}
+
 static double eval_background_corner_radius(const Layer &layer, double t)
 {
     return std::max(0.0, layer.background_corner_radius_prop.is_animated()
                              ? layer.background_corner_radius_prop.evaluate(t)
                              : (double)layer.background_corner_radius);
+}
+
+static double eval_background_corner_radius_tl(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.background_corner_radius_tl_prop.is_animated()
+                             ? layer.background_corner_radius_tl_prop.evaluate(t)
+                             : (double)layer.background_corner_radius_tl);
+}
+
+static double eval_background_corner_radius_tr(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.background_corner_radius_tr_prop.is_animated()
+                             ? layer.background_corner_radius_tr_prop.evaluate(t)
+                             : (double)layer.background_corner_radius_tr);
+}
+
+static double eval_background_corner_radius_br(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.background_corner_radius_br_prop.is_animated()
+                             ? layer.background_corner_radius_br_prop.evaluate(t)
+                             : (double)layer.background_corner_radius_br);
+}
+
+static double eval_background_corner_radius_bl(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.background_corner_radius_bl_prop.is_animated()
+                             ? layer.background_corner_radius_bl_prop.evaluate(t)
+                             : (double)layer.background_corner_radius_bl);
+}
+
+static double eval_background_stroke_width(const Layer &layer, double t)
+{
+    return std::max(0.0, layer.background_stroke_width_prop.is_animated()
+                             ? layer.background_stroke_width_prop.evaluate(t)
+                             : (double)layer.background_stroke_width);
+}
+
+static double eval_background_stroke_opacity(const Layer &layer, double t)
+{
+    return std::clamp(layer.background_stroke_opacity_prop.is_animated()
+                          ? layer.background_stroke_opacity_prop.evaluate(t)
+                          : (double)layer.background_stroke_opacity,
+                      0.0, 1.0);
 }
 
 static uint32_t eval_background_color(const Layer &layer, double t)
@@ -3500,6 +3578,14 @@ static uint32_t eval_background_color(const Layer &layer, double t)
            ((uint32_t)eval_channel(layer.background_color_r, (layer.background_color >> 16) & 0xFF, t) << 16) |
            ((uint32_t)eval_channel(layer.background_color_g, (layer.background_color >> 8) & 0xFF, t) << 8) |
            (uint32_t)eval_channel(layer.background_color_b, layer.background_color & 0xFF, t);
+}
+
+static uint32_t eval_background_stroke_color(const Layer &layer, double t)
+{
+    return ((uint32_t)eval_channel(layer.background_stroke_color_a, (layer.background_stroke_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(layer.background_stroke_color_r, (layer.background_stroke_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(layer.background_stroke_color_g, (layer.background_stroke_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(layer.background_stroke_color_b, layer.background_stroke_color & 0xFF, t);
 }
 
 static QColor evaluated_background_color(const Layer &layer, double t)
@@ -3604,6 +3690,14 @@ static void set_background_color_channels_at(Layer &layer, double time, uint32_t
     set_animated_value(layer.background_color_r, time, (argb >> 16) & 0xFF);
     set_animated_value(layer.background_color_g, time, (argb >> 8) & 0xFF);
     set_animated_value(layer.background_color_b, time, argb & 0xFF);
+}
+
+static void set_background_stroke_color_channels_at(Layer &layer, double time, uint32_t argb)
+{
+    set_animated_value(layer.background_stroke_color_a, time, (argb >> 24) & 0xFF);
+    set_animated_value(layer.background_stroke_color_r, time, (argb >> 16) & 0xFF);
+    set_animated_value(layer.background_stroke_color_g, time, (argb >> 8) & 0xFF);
+    set_animated_value(layer.background_stroke_color_b, time, argb & 0xFF);
 }
 
 static bool keyframe_at_time(const AnimatedProperty &prop, double time)
@@ -3870,9 +3964,16 @@ static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
             &layer.fill_color_g, &layer.fill_color_b,
             &layer.background_enabled_prop, &layer.background_opacity_prop,
             &layer.background_padding_x_prop, &layer.background_padding_y_prop,
+            &layer.background_padding_left_prop, &layer.background_padding_right_prop,
+            &layer.background_padding_top_prop, &layer.background_padding_bottom_prop,
             &layer.background_corner_radius_prop,
+            &layer.background_corner_radius_tl_prop, &layer.background_corner_radius_tr_prop,
+            &layer.background_corner_radius_br_prop, &layer.background_corner_radius_bl_prop,
+            &layer.background_stroke_width_prop, &layer.background_stroke_opacity_prop,
             &layer.background_color_a, &layer.background_color_r,
             &layer.background_color_g, &layer.background_color_b,
+            &layer.background_stroke_color_a, &layer.background_stroke_color_r,
+            &layer.background_stroke_color_g, &layer.background_stroke_color_b,
             &layer.shadow_enabled_prop, &layer.shadow_opacity_prop,
             &layer.shadow_distance_prop, &layer.shadow_angle_prop,
             &layer.shadow_blur_prop, &layer.shadow_spread_prop,
@@ -3908,7 +4009,18 @@ static QString property_label(const std::string &name)
     if (name == "background_opacity") return obsgs_tr("OBSTitles.BackgroundOpacityLabel");
     if (name == "background_padding_x") return obsgs_tr("OBSTitles.BackgroundHorizontalPaddingLabel");
     if (name == "background_padding_y") return obsgs_tr("OBSTitles.BackgroundVerticalPaddingLabel");
+    if (name == "background_padding_left") return QStringLiteral("Left Padding");
+    if (name == "background_padding_right") return QStringLiteral("Right Padding");
+    if (name == "background_padding_top") return QStringLiteral("Top Padding");
+    if (name == "background_padding_bottom") return QStringLiteral("Bottom Padding");
     if (name == "background_corner_radius") return obsgs_tr("OBSTitles.BackgroundCornerLabel");
+    if (name == "background_corner_radius_tl") return QStringLiteral("Corner TL");
+    if (name == "background_corner_radius_tr") return QStringLiteral("Corner TR");
+    if (name == "background_corner_radius_br") return QStringLiteral("Corner BR");
+    if (name == "background_corner_radius_bl") return QStringLiteral("Corner BL");
+    if (name == "background_stroke_width") return QStringLiteral("Background Stroke Width");
+    if (name == "background_stroke_opacity") return QStringLiteral("Background Stroke Opacity");
+    if (name == "background_stroke_color_a" || name == "background_stroke_color_r" || name == "background_stroke_color_g" || name == "background_stroke_color_b") return QStringLiteral("Background Stroke");
     if (name == "shadow_enabled") return obsgs_tr("OBSTitles.ShadowEnable");
     if (name == "shadow_opacity") return obsgs_tr("OBSTitles.ShadowOpacity");
     if (name == "shadow_distance") return obsgs_tr("OBSTitles.ShadowDistance");

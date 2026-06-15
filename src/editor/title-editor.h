@@ -209,6 +209,7 @@ private:
     ToolsSidebar    *tools_sidebar_ = nullptr;
     QColor           default_foreground_color_ = QColor(34, 34, 34);
     QColor           default_background_color_ = QColor(255, 255, 255);
+    bool             reopen_color_tab_after_canvas_pick_ = false;
     Layer            default_new_layer_style_;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;

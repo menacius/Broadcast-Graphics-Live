@@ -438,63 +438,133 @@ void EffectsPanel::load_settings()
     };
 
     if (selected_effect()->type == LayerEffectType::BackgroundColor) {
-        auto *fill = combo(); fill->addItem(obsgs_tr("OBSTitles.Solid"), 0); fill->addItem(obsgs_tr("OBSTitles.Gradient"), 1); fill->setCurrentIndex(fill->findData(layer_->background_fill_type));
-        auto *color = color_button(eval_background_color(*layer_, lt), [this, lt](uint32_t argb){ layer_->background_color = argb; set_background_color_channels_at(*layer_, lt, argb); });
-        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(eval_background_opacity(*layer_, lt));
-        auto *pad_x = spin(0.0, 1000.0, 1.0); pad_x->setValue(eval_background_padding_x(*layer_, lt));
-        auto *pad_y = spin(0.0, 1000.0, 1.0); pad_y->setValue(eval_background_padding_y(*layer_, lt));
-        auto *corner = spin(0.0, 1000.0, 1.0); corner->setValue(eval_background_corner_radius(*layer_, lt));
-        auto *grad_type = combo(); grad_type->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0); grad_type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1); grad_type->addItem(QStringLiteral("Angle"), 2); grad_type->addItem(QStringLiteral("Reflected"), 3); grad_type->addItem(QStringLiteral("Diamond"), 4); grad_type->setCurrentIndex(grad_type->findData(layer_->background_gradient_type));
+        auto section_label = [box](const QString &text) {
+            auto *label = new QLabel(text, box);
+            QFont f = label->font();
+            f.setBold(true);
+            label->setFont(f);
+            return label;
+        };
+        auto *fill = combo();
+        fill->addItem(obsgs_tr("OBSTitles.Solid"), 0);
+        fill->addItem(obsgs_tr("OBSTitles.Gradient"), 1);
+        fill->setCurrentIndex(fill->findData(layer_->background_fill_type));
+        auto *fill_color = color_button(eval_background_color(*layer_, lt), [this, lt](uint32_t argb){
+            layer_->background_color = argb;
+            set_background_color_channels_at(*layer_, lt, argb);
+        });
+        auto *opacity = spin(0.0, 1.0, 0.05);
+        opacity->setDecimals(2);
+        opacity->setValue(eval_background_opacity(*layer_, lt));
+
+        auto *stroke_color = color_button(eval_background_stroke_color(*layer_, lt), [this, lt](uint32_t argb){
+            layer_->background_stroke_color = argb;
+            set_background_stroke_color_channels_at(*layer_, lt, argb);
+        });
+        auto *stroke_width = spin(0.0, 1000.0, 1.0);
+        stroke_width->setValue(eval_background_stroke_width(*layer_, lt));
+        auto *stroke_opacity = spin(0.0, 1.0, 0.05);
+        stroke_opacity->setDecimals(2);
+        stroke_opacity->setValue(eval_background_stroke_opacity(*layer_, lt));
+
+        auto *pad_left = spin(-1000.0, 1000.0, 1.0); pad_left->setValue(eval_background_padding_left(*layer_, lt));
+        auto *pad_right = spin(-1000.0, 1000.0, 1.0); pad_right->setValue(eval_background_padding_right(*layer_, lt));
+        auto *pad_top = spin(-1000.0, 1000.0, 1.0); pad_top->setValue(eval_background_padding_top(*layer_, lt));
+        auto *pad_bottom = spin(-1000.0, 1000.0, 1.0); pad_bottom->setValue(eval_background_padding_bottom(*layer_, lt));
+
+        auto *corner_tl = spin(0.0, 1000.0, 1.0); corner_tl->setValue(eval_background_corner_radius_tl(*layer_, lt));
+        auto *corner_tr = spin(0.0, 1000.0, 1.0); corner_tr->setValue(eval_background_corner_radius_tr(*layer_, lt));
+        auto *corner_br = spin(0.0, 1000.0, 1.0); corner_br->setValue(eval_background_corner_radius_br(*layer_, lt));
+        auto *corner_bl = spin(0.0, 1000.0, 1.0); corner_bl->setValue(eval_background_corner_radius_bl(*layer_, lt));
+        auto *corner_row = new QWidget(box);
+        auto *corner_grid = new QGridLayout(corner_row);
+        corner_grid->setContentsMargins(0, 0, 0, 0);
+        corner_grid->setHorizontalSpacing(6);
+        corner_grid->setVerticalSpacing(4);
+        corner_grid->addWidget(new QLabel(QStringLiteral("TL"), corner_row), 0, 0);
+        corner_grid->addWidget(corner_tl, 0, 1);
+        corner_grid->addWidget(new QLabel(QStringLiteral("TR"), corner_row), 0, 2);
+        corner_grid->addWidget(corner_tr, 0, 3);
+        corner_grid->addWidget(new QLabel(QStringLiteral("BL"), corner_row), 1, 0);
+        corner_grid->addWidget(corner_bl, 1, 1);
+        corner_grid->addWidget(new QLabel(QStringLiteral("BR"), corner_row), 1, 2);
+        corner_grid->addWidget(corner_br, 1, 3);
+
+        auto *corner_type_row = new QWidget(box);
+        auto *corner_type_layout = new QHBoxLayout(corner_type_row);
+        corner_type_layout->setContentsMargins(0, 0, 0, 0);
+        corner_type_layout->setSpacing(4);
+        auto *corner_group = new QButtonGroup(corner_type_row);
+        corner_group->setExclusive(true);
+        auto make_corner_button = [corner_type_row, corner_group, corner_type_layout](CornerType type, const char *text, const QString &tip) {
+            auto *button = new QToolButton(corner_type_row);
+            button->setText(QString::fromLatin1(text));
+            button->setToolTip(tip);
+            button->setCheckable(true);
+            button->setFixedSize(26, 22);
+            button->setStyleSheet(obsgs_theme_control_style());
+            corner_group->addButton(button, (int)type);
+            corner_type_layout->addWidget(button);
+        };
+        make_corner_button(CornerType::Round, "R", QStringLiteral("Round"));
+        make_corner_button(CornerType::Straight, "B", QStringLiteral("Bevel / Straight"));
+        make_corner_button(CornerType::Concave, "I", QStringLiteral("Inverse / Concave"));
+        make_corner_button(CornerType::Cutout, "C", QStringLiteral("Inset / Cutout"));
+        corner_type_layout->addStretch(1);
+        if (auto *button = corner_group->button((int)layer_->background_corner_type))
+            button->setChecked(true);
+
+        auto *grad_type = combo();
+        grad_type->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
+        grad_type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
+        grad_type->addItem(QStringLiteral("Angle"), 2);
+        grad_type->addItem(QStringLiteral("Reflected"), 3);
+        grad_type->addItem(QStringLiteral("Diamond"), 4);
+        grad_type->setCurrentIndex(grad_type->findData(layer_->background_gradient_type));
         auto *grad_start = color_button(layer_->background_gradient_start_color, [this](uint32_t argb){ layer_->background_gradient_start_color = argb; });
         auto *grad_end = color_button(layer_->background_gradient_end_color, [this](uint32_t argb){ layer_->background_gradient_end_color = argb; });
-        auto *grad_start_pos = spin(0.0, 1.0, 0.01); grad_start_pos->setDecimals(2); grad_start_pos->setValue(layer_->background_gradient_start_pos);
-        auto *grad_end_pos = spin(0.0, 1.0, 0.01); grad_end_pos->setDecimals(2); grad_end_pos->setValue(layer_->background_gradient_end_pos);
-        auto *grad_start_op = spin(0.0, 1.0, 0.01); grad_start_op->setDecimals(2); grad_start_op->setValue(layer_->background_gradient_start_opacity);
-        auto *grad_end_op = spin(0.0, 1.0, 0.01); grad_end_op->setDecimals(2); grad_end_op->setValue(layer_->background_gradient_end_opacity);
-        auto *grad_op = spin(0.0, 1.0, 0.01); grad_op->setDecimals(2); grad_op->setValue(layer_->background_gradient_opacity);
         auto *grad_angle = spin(-360.0, 360.0, 1.0); grad_angle->setValue(layer_->background_gradient_angle);
-        auto *grad_cx = spin(0.0, 1.0, 0.01); grad_cx->setDecimals(2); grad_cx->setValue(layer_->background_gradient_center_x);
-        auto *grad_cy = spin(0.0, 1.0, 0.01); grad_cy->setDecimals(2); grad_cy->setValue(layer_->background_gradient_center_y);
-        auto *grad_scale = spin(0.01, 10.0, 0.05); grad_scale->setDecimals(2); grad_scale->setValue(layer_->background_gradient_scale);
-        auto *grad_fx = spin(0.0, 1.0, 0.01); grad_fx->setDecimals(2); grad_fx->setValue(layer_->background_gradient_focal_x);
-        auto *grad_fy = spin(0.0, 1.0, 0.01); grad_fy->setDecimals(2); grad_fy->setValue(layer_->background_gradient_focal_y);
-        add_effect_row(obsgs_tr("OBSTitles.BackgroundFillTypeLabel"), fill);
-        add_effect_row(obsgs_tr("OBSTitles.BackgroundColorLabel"), color);
-        add_effect_row(obsgs_tr("OBSTitles.BackgroundOpacityLabel"), opacity);
-        add_effect_row(obsgs_tr("OBSTitles.BackgroundHorizontalPaddingLabel"), pad_x);
-        add_effect_row(obsgs_tr("OBSTitles.BackgroundVerticalPaddingLabel"), pad_y);
-        add_effect_row(obsgs_tr("OBSTitles.BackgroundCornerLabel"), corner);
+
+        form->addRow(section_label(QStringLiteral("Appearance")));
+        add_effect_row(QStringLiteral("Fill"), fill);
+        add_effect_row(QStringLiteral("Fill Color"), fill_color);
+        add_effect_row(QStringLiteral("Stroke Color"), stroke_color);
+        add_effect_row(QStringLiteral("Stroke Width"), stroke_width);
+        add_effect_row(QStringLiteral("Stroke Opacity"), stroke_opacity);
+        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
         add_effect_row(obsgs_tr("OBSTitles.GradientTypeLabel"), grad_type);
         add_effect_row(obsgs_tr("OBSTitles.StartColorLabel"), grad_start);
         add_effect_row(obsgs_tr("OBSTitles.EndColorLabel"), grad_end);
-        add_effect_row(obsgs_tr("OBSTitles.StartStopLabel"), grad_start_pos);
-        add_effect_row(obsgs_tr("OBSTitles.EndStopLabel"), grad_end_pos);
-        add_effect_row(obsgs_tr("OBSTitles.StartOpacityLabel"), grad_start_op);
-        add_effect_row(obsgs_tr("OBSTitles.EndOpacityLabel"), grad_end_op);
-        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), grad_op);
         add_effect_row(obsgs_tr("OBSTitles.AngleLabel"), grad_angle);
-        add_effect_row(obsgs_tr("OBSTitles.CenterXLabel"), grad_cx);
-        add_effect_row(obsgs_tr("OBSTitles.CenterYLabel"), grad_cy);
-        add_effect_row(obsgs_tr("OBSTitles.ScaleLabel"), grad_scale);
-        add_effect_row(obsgs_tr("OBSTitles.FocalXLabel"), grad_fx);
-        add_effect_row(obsgs_tr("OBSTitles.FocalYLabel"), grad_fy);
+        form->addRow(section_label(QStringLiteral("Padding")));
+        add_effect_row(QStringLiteral("Left Padding"), pad_left);
+        add_effect_row(QStringLiteral("Right Padding"), pad_right);
+        add_effect_row(QStringLiteral("Top Padding"), pad_top);
+        add_effect_row(QStringLiteral("Bottom Padding"), pad_bottom);
+        form->addRow(section_label(QStringLiteral("Corners")));
+        add_effect_row(QStringLiteral("TL/TR/BL/BR"), corner_row);
+        add_effect_row(QStringLiteral("Corner Type"), corner_type_row);
+
         connect(fill, QOverload<int>::of(&QComboBox::activated), this, [this, fill](int){ layer_->background_fill_type = fill->currentData().toInt(); emit_effect_changed(); });
         connect(grad_type, QOverload<int>::of(&QComboBox::activated), this, [this, grad_type](int){ layer_->background_gradient_type = grad_type->currentData().toInt(); emit_effect_changed(); });
-        connect(grad_start_pos, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_start_pos = v; emit_effect_changed(); }});
-        connect(grad_end_pos, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_end_pos = v; emit_effect_changed(); }});
-        connect(grad_start_op, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_start_opacity = v; emit_effect_changed(); }});
-        connect(grad_end_op, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_end_opacity = v; emit_effect_changed(); }});
-        connect(grad_op, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_opacity = v; emit_effect_changed(); }});
         connect(grad_angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_angle = v; emit_effect_changed(); }});
-        connect(grad_cx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_center_x = v; emit_effect_changed(); }});
-        connect(grad_cy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_center_y = v; emit_effect_changed(); }});
-        connect(grad_scale, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_scale = v; emit_effect_changed(); }});
-        connect(grad_fx, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_focal_x = v; emit_effect_changed(); }});
-        connect(grad_fy, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_) { layer_->background_gradient_focal_y = v; emit_effect_changed(); }});
         connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_opacity = v; set_animated_value(layer_->background_opacity_prop, lt, v); emit_effect_changed(); }});
-        connect(pad_x, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_x = v; set_animated_value(layer_->background_padding_x_prop, lt, v); emit_effect_changed(); }});
-        connect(pad_y, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_y = v; set_animated_value(layer_->background_padding_y_prop, lt, v); emit_effect_changed(); }});
-        connect(corner, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius = v; set_animated_value(layer_->background_corner_radius_prop, lt, v); emit_effect_changed(); }});
+        connect(stroke_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_stroke_width = v; set_animated_value(layer_->background_stroke_width_prop, lt, v); emit_effect_changed(); }});
+        connect(stroke_opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_stroke_opacity = v; set_animated_value(layer_->background_stroke_opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_left, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_left = v; set_animated_value(layer_->background_padding_left_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_right, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_right = v; set_animated_value(layer_->background_padding_right_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_top, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_top = v; set_animated_value(layer_->background_padding_top_prop, lt, v); emit_effect_changed(); }});
+        connect(pad_bottom, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_padding_bottom = v; set_animated_value(layer_->background_padding_bottom_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_tl, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_tl = v; set_animated_value(layer_->background_corner_radius_tl_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_tr, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_tr = v; set_animated_value(layer_->background_corner_radius_tr_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_br, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_br = v; set_animated_value(layer_->background_corner_radius_br_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_bl, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_) { layer_->background_corner_radius_bl = v; set_animated_value(layer_->background_corner_radius_bl_prop, lt, v); emit_effect_changed(); }});
+        connect(corner_group, &QButtonGroup::idClicked, this, [this](int id){
+            if (!loading_values_) {
+                layer_->background_corner_type = (CornerType)std::clamp(id, 0, (int)CornerType::Cutout);
+                emit_effect_changed();
+            }
+        });
     } else if (selected_effect()->type == LayerEffectType::Outline) {
         auto *color = color_button(layer_->stroke_color, [this](uint32_t argb){ layer_->stroke_color = argb; });
         auto *width = spin(0.0, 200.0, 1.0); width->setValue(layer_->stroke_width);

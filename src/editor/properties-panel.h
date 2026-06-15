@@ -57,11 +57,13 @@ public slots:
     void open_foreground_color_selector();
     void open_background_color_selector();
     void swap_foreground_background_colors();
+    void remember_next_color_popup_position(const QPoint &global_pos);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     void gradient_editor_active_changed(bool active);
+    void color_picker_tool_requested();
 
 private:
     void build_text_section(QWidget *w, QFormLayout *fl);
@@ -72,6 +74,8 @@ private:
 
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
+    bool pending_color_popup_position_valid_ = false;
+    QPoint pending_color_popup_position_;
     double playhead_ = 0.0;
     bool loading_values_ = false;
     bool numeric_label_dragging_ = false;
