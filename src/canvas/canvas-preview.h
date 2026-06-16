@@ -40,6 +40,10 @@ class QKeyEvent;
 class QContextMenuEvent;
 class QResizeEvent;
 class QPaintEvent;
+class QDragEnterEvent;
+class QDropEvent;
+class QDragMoveEvent;
+class QMimeData;
 class QPainter;
 class QScrollBar;
 /* ══════════════════════════════════════════════════════════════════
@@ -94,6 +98,7 @@ public:
     void set_gradient_editor_active(bool active);
     void begin_text_edit_for_layer(const std::string &layer_id);
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
+    QPointF view_center_canvas_point() const;
 
 signals:
     void layer_clicked(const std::string &layer_id);
@@ -109,6 +114,8 @@ signals:
     void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
     void color_picked(const QColor &color);
+    void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
+    void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
@@ -117,6 +124,9 @@ protected:
     void mouseReleaseEvent(QMouseEvent *ev) override;
     void mouseDoubleClickEvent(QMouseEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
+    void dragEnterEvent(QDragEnterEvent *ev) override;
+    void dragMoveEvent(QDragMoveEvent *ev) override;
+    void dropEvent(QDropEvent *ev) override;
     void leaveEvent(QEvent *ev) override;
     void contextMenuEvent(QContextMenuEvent *ev) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -227,6 +237,8 @@ private:
     bool sample_color_at_view(const QPointF &view_pt, QColor &color);
     void update_color_picker_tooltip(const QPointF &view_pt);
     void draw_color_picker_tooltip(QPainter &p);
+    bool mime_has_external_canvas_content(const QMimeData *mime) const;
+    bool handle_external_canvas_mime(const QMimeData *mime, const QPointF &canvas_pt);
     QString canvas_drag_tooltip_text() const;
     void draw_canvas_drag_tooltip(QPainter &p);
     void update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
@@ -354,6 +366,7 @@ private:
     CornerRadiusDragState corner_radius_drag_;
     struct LayerDragState {
         std::string id;
+        std::string resize_root_id;
         double x = 0.0;
         double y = 0.0;
         float w = 1.0f;
@@ -368,4 +381,5 @@ private:
         float corner_radius_bl = 0.0f;
     };
     std::vector<LayerDragState> drag_layer_states_;
+    std::vector<LayerDragState> drag_child_layer_states_;
 };

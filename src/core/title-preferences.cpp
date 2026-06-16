@@ -16,6 +16,7 @@ constexpr const char *kSettingsGroup = "Rendering";
 constexpr const char *kTimelineColorGroup = "TimelineColors";
 constexpr const char *kAppearanceGroup = "Appearance";
 constexpr const char *kUseGpuKey = "useGpu";
+constexpr const char *kCacheEnabledKey = "cacheEnabled";
 constexpr const char *kSceneMaskColorKey = "sceneMaskColor";
 std::atomic_bool g_gpu_available{true};
 std::mutex g_gpu_reason_mutex;
@@ -66,6 +67,25 @@ void set_use_gpu(bool enabled)
     settings.sync();
     if (enabled)
         set_gpu_available(true);
+}
+
+bool cache_enabled()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
+    const bool enabled = settings.value(QString::fromUtf8(kCacheEnabledKey), true).toBool();
+    settings.endGroup();
+    return enabled;
+}
+
+void set_cache_enabled(bool enabled)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
+    settings.setValue(QString::fromUtf8(kCacheEnabledKey), enabled);
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
 }
 
 bool gpu_available()

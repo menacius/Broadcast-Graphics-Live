@@ -346,8 +346,7 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
     }
 
     ++title->cue_revision;
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().touch_runtime_change();
 }
 
 static void cue_relative(const std::shared_ptr<Title> &title, int delta)

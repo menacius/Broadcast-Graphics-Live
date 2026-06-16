@@ -1,4 +1,5 @@
 #include "title-editor-internal.h"
+#include "cache-manager.h"
 
 TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
 {
@@ -643,6 +644,41 @@ void TimelineWidget::paintEvent(QPaintEvent *)
                 : QString("+%1f").arg(frame_in_second, 2, 10, QChar('0'));
             p.drawText(x + 2, rh - 2, text);
         }
+    }
+
+    if (title_) {
+        const QString title_id = QString::fromStdString(title_->id);
+        const int cache_y = rh - 14;
+        const int cache_h = 5;
+        const int frame_w = std::max(1, (int)std::ceil(pixels_per_sec_ * frame_step));
+        auto state_color = [](FrameCacheState state) {
+            switch (state) {
+            case FrameCacheState::Queued: return QColor(96, 96, 96);
+            case FrameCacheState::Rendering: return QColor(255, 202, 74);
+            case FrameCacheState::CachedRam: return QColor(39, 186, 103);
+            case FrameCacheState::CachedDisk: return QColor(74, 144, 226);
+            case FrameCacheState::Stale: return QColor(214, 90, 90);
+            case FrameCacheState::Disabled: return QColor(95, 95, 95);
+            case FrameCacheState::NotCached:
+            default: return QColor(0, 0, 0, 0);
+            }
+        };
+        const bool cache_disabled = !CacheManager::instance().cacheEnabled() ||
+            CacheManager::instance().titleCacheability(title_) == TitleCacheability::NonCacheable;
+        if (cache_disabled) {
+            p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled));
+        } else {
+            for (int frame = first_frame; frame <= last_frame; ++frame) {
+                const FrameCacheState state = CacheManager::instance().stateTracker()->stateForFrame(title_id, frame);
+                if (state == FrameCacheState::NotCached) continue;
+                const QColor color = state_color(state);
+                if (color.alpha() == 0) continue;
+                const int x = time_to_x(frame * frame_step);
+                p.fillRect(QRect(x, cache_y, frame_w, cache_h), color);
+            }
+        }
+        p.setPen(with_alpha(text, 70));
+        p.drawLine(0, cache_y + cache_h, W, cache_y + cache_h);
     }
 
     if (title_) {

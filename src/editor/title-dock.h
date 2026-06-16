@@ -29,11 +29,13 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QSet>
+#include <QStringList>
 #include <map>
 #include <vector>
 
 class TitleEditor;
 class QString;
+class QEvent;
 struct calldata;
 typedef struct calldata calldata_t;
 
@@ -47,6 +49,9 @@ public:
     /* Called externally to refresh the list (e.g. after editor saves) */
     void refresh();
     void update_scene_collection_title();
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void on_add();
@@ -116,6 +121,7 @@ private:
     std::shared_ptr<Title> create_template_title(const std::string &name, int template_id);
     void select_title(const std::string &id);
     void create_title_from_template(const std::string &name, int template_id);
+    void import_title_paths(const QStringList &paths);
     std::vector<int> selected_live_text_rows() const;
     void commit_live_text_cell_edit(const std::shared_ptr<Title> &title, int row, int col, const QString &text);
 

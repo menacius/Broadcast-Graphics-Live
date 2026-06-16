@@ -60,6 +60,7 @@ class PropertiesPanel;
 class EffectsPanel;
 class ToolsSidebar;
 class TitlePropertiesPanel;
+class PrerenderDock;
 class QEvent;
 class QKeyEvent;
 class QContextMenuEvent;
@@ -152,10 +153,13 @@ private:
     void copy_selected_layer();
     void cut_selected_layer();
     void paste_layer_from_clipboard();
+    bool paste_external_clipboard_to_canvas();
     void delete_selected_layer();
     std::shared_ptr<Layer> create_basic_layer(LayerType type, const QString &name_override = QString());
     void create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt);
     void create_text_layer_from_canvas(LayerType type, const QPointF &canvas_pt);
+    void create_image_layer_from_external_source(const QString &image_path, const QPointF &canvas_pt);
+    void create_text_layer_from_external_source(const QString &text, const QPointF &canvas_pt);
     void update_canvas_created_shape(const QRectF &canvas_rect);
     void finish_canvas_created_shape(bool keep_layer);
     void push_undo_snapshot();
@@ -163,6 +167,7 @@ private:
     void update_undo_redo_actions();
     void create_docked_panel_menu(QMenuBar *menu_bar);
     QDockWidget *create_editor_dock(const QString &object_name, const QString &title, QWidget *panel);
+    QWidget *create_prerender_panel();
     QWidget *create_effects_panel();
     QWidget *create_styles_panel();
     QWidget *create_color_swatches_panel();
@@ -181,6 +186,7 @@ private:
     void reset_default_layout();
     void set_panels_locked(bool locked);
     void update_panel_lock_state();
+    void schedule_cache_invalidation();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -193,6 +199,7 @@ private:
     bool                   dirty_ = false;
     QTimer                *play_timer_ = nullptr;
     QTimer                *clock_timer_ = nullptr;
+    QTimer                *cache_invalidation_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
 
     /* Sub-widgets */
@@ -208,8 +215,10 @@ private:
     QDockWidget     *styles_dock_ = nullptr;
     QDockWidget     *color_swatches_dock_ = nullptr;
     QDockWidget     *timeline_dock_ = nullptr;
+    QDockWidget     *prerender_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
     ToolsSidebar    *tools_sidebar_ = nullptr;
+    PrerenderDock   *prerender_panel_ = nullptr;
     QColor           default_foreground_color_ = QColor(34, 34, 34);
     QColor           default_background_color_ = QColor(255, 255, 255);
     bool             reopen_color_tab_after_canvas_pick_ = false;
@@ -242,6 +251,7 @@ private:
     QAction         *act_styles_visible_ = nullptr;
     QAction         *act_color_swatches_visible_ = nullptr;
     QAction         *act_timeline_visible_ = nullptr;
+    QAction         *act_prerender_visible_ = nullptr;
     QAction         *act_tools_visible_ = nullptr;
     std::string      canvas_created_shape_layer_id_;
     int              alignment_target_ = 3; /* 0=selection, 1=title safe guides, 2=action safe guides, 3=artboard/canvas */

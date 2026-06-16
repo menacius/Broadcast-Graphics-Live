@@ -18,6 +18,8 @@
 #include "title-localization.h"
 #include "plugin-main.h"
 #include "title-preferences.h"
+#include "cache-manager.h"
+#include "prerender-dock.h"
 
 #include <obs-module.h>
 
@@ -137,6 +139,7 @@ constexpr const char *kEffectsDockObjectName = "OBSGraphicsStudioProEffectsDock"
 constexpr const char *kStylesDockObjectName = "OBSGraphicsStudioProStylesDock";
 constexpr const char *kColorSwatchesDockObjectName = "OBSGraphicsStudioProColorSwatchesDock";
 constexpr const char *kTimelineDockObjectName = "OBSGraphicsStudioProTimelineDock";
+constexpr const char *kPrerenderDockObjectName = "OBSGraphicsStudioProPrerenderDock";
 
 static QPoint clamp_popup_position_to_screen(const QPoint &desired, const QSize &popup_size, QWidget *anchor)
 {
@@ -1893,7 +1896,8 @@ static double title_manual_screenshot_time(const Title &title)
 
 static std::string title_manual_screenshot_png_base64(const Title &title)
 {
-    const QImage screenshot = render_title_to_image(title, title_manual_screenshot_time(title));
+    const QImage screenshot = CacheManager::instance().requestFrame(std::make_shared<Title>(title),
+                                                                    title_manual_screenshot_time(title));
     if (screenshot.isNull())
         return {};
 

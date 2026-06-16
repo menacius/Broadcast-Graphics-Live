@@ -1,4 +1,15 @@
 #include "title-editor-internal.h"
+#include "cache-manager.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileInfo>
+#include <QImage>
+#include <QMimeData>
+#include <QStandardPaths>
+#include <QUrl>
 
 namespace {
 constexpr int kCanvasRulerThickness = 24;
@@ -125,6 +136,7 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     setAutoFillBackground(false);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+    setAcceptDrops(true);
     load_ruler_guide_settings();
 
     inline_text_editor_ = new QTextEdit(this);
@@ -245,6 +257,12 @@ void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, c
         }
     }
     refresh_inline_text_edit(true, true);
+}
+
+
+QPointF CanvasPreview::view_center_canvas_point() const
+{
+    return view_to_canvas(QPointF(width() * 0.5, height() * 0.5));
 }
 
 void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
@@ -658,6 +676,23 @@ static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &tit
     xf.rotate(layer.rotation.evaluate(lt));
     xf.scale(layer.scale_x.evaluate(lt), layer.scale_y.evaluate(lt));
     return xf;
+}
+
+static bool editor_layer_has_ancestor(const std::shared_ptr<Title> &title,
+                                      const Layer &layer,
+                                      const std::string &ancestor_id)
+{
+    std::string parent_id = layer.parent_id;
+    int guard = 0;
+    while (!parent_id.empty() && guard++ < 64) {
+        if (parent_id == ancestor_id)
+            return true;
+        const Layer *parent = editor_find_layer_by_id(title, parent_id);
+        if (!parent)
+            break;
+        parent_id = parent->parent_id;
+    }
+    return false;
 }
 
 QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
@@ -1424,6 +1459,7 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
         double lt = std::clamp(playhead_ - clone->in_time, 0.0,
                                std::max(0.0, clone->out_time - clone->in_time));
         drag_layer_states_.push_back({clone->id,
+                                      {},
                                       clone->pos_x.evaluate(lt),
                                       clone->pos_y.evaluate(lt),
                                       (float)eval_box_width(*clone, lt),
@@ -2059,7 +2095,10 @@ void CanvasPreview::render_to_pixmap()
 {
     if (!title_) { frame_pixmap_ = QPixmap(); return; }
 
-    frame_pixmap_ = QPixmap::fromImage(render_title_to_image(*title_, playhead_));
+    const CachePlaybackSettings settings = CacheManager::instance().playbackSettings();
+    QImage image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);
+    if (!image.isNull())
+        frame_pixmap_ = QPixmap::fromImage(image);
     dirty_ = false;
 }
 
@@ -3677,6 +3716,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     drag_current_view_ = ev->pos();
     drag_start_canvas_ = view_to_canvas(ev->pos());
     drag_layer_states_.clear();
+    drag_child_layer_states_.clear();
     gradient_drag_ = GradientDragState{};
     corner_radius_drag_ = CornerRadiusDragState{};
     drag_start_selection_bounds_ = selected_canvas_bounds();
@@ -3702,6 +3742,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         double lt = std::clamp(playhead_ - selected->in_time, 0.0,
                                std::max(0.0, selected->out_time - selected->in_time));
         drag_layer_states_.push_back({selected->id,
+                                      {},
                                       selected->pos_x.evaluate(lt),
                                       selected->pos_y.evaluate(lt),
                                       (float)eval_box_width(*selected, lt),
@@ -3714,6 +3755,41 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                                       selected->corner_radius_tr,
                                       selected->corner_radius_br,
                                       selected->corner_radius_bl});
+    }
+
+    auto selected_contains = [&](const std::string &id) {
+        return std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), id) != selected_layer_ids_.end();
+    };
+    if (is_resize_drag(drag_mode_)) {
+        for (const auto &candidate : title_->layers) {
+            if (!candidate || candidate->locked || selected_contains(candidate->id))
+                continue;
+            std::string resize_root_id;
+            for (const auto &selected : layers) {
+                if (selected && editor_layer_has_ancestor(title_, *candidate, selected->id)) {
+                    resize_root_id = selected->id;
+                    break;
+                }
+            }
+            if (resize_root_id.empty())
+                continue;
+            double child_lt = std::clamp(playhead_ - candidate->in_time, 0.0,
+                                         std::max(0.0, candidate->out_time - candidate->in_time));
+            drag_child_layer_states_.push_back({candidate->id,
+                                                resize_root_id,
+                                                candidate->pos_x.evaluate(child_lt),
+                                                candidate->pos_y.evaluate(child_lt),
+                                                (float)eval_box_width(*candidate, child_lt),
+                                                (float)eval_box_height(*candidate, child_lt),
+                                                candidate->scale_x.evaluate(child_lt),
+                                                candidate->scale_y.evaluate(child_lt),
+                                                candidate->rotation.evaluate(child_lt),
+                                                candidate->stroke_width,
+                                                candidate->corner_radius_tl,
+                                                candidate->corner_radius_tr,
+                                                candidate->corner_radius_br,
+                                                candidate->corner_radius_bl});
+        }
     }
 
     double lt = std::clamp(playhead_ - layer->in_time, 0.0,
@@ -3842,6 +3918,111 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     else unsetCursor();
 }
 
+
+
+bool CanvasPreview::mime_has_external_canvas_content(const QMimeData *mime) const
+{
+    if (!mime)
+        return false;
+    if (mime->hasImage())
+        return true;
+    if (mime->hasUrls()) {
+        for (const QUrl &url : mime->urls()) {
+            if (!url.isLocalFile())
+                continue;
+            const QString path = url.toLocalFile();
+            QImageReader reader(path);
+            if (reader.canRead())
+                return true;
+        }
+    }
+    return mime->hasText() && !mime->text().trimmed().isEmpty();
+}
+
+bool CanvasPreview::handle_external_canvas_mime(const QMimeData *mime, const QPointF &canvas_pt)
+{
+    if (!mime || !title_)
+        return false;
+
+    if (mime->hasUrls()) {
+        for (const QUrl &url : mime->urls()) {
+            if (!url.isLocalFile())
+                continue;
+            const QString path = url.toLocalFile();
+            QImageReader reader(path);
+            if (!reader.canRead())
+                continue;
+            emit external_image_layer_requested(path, canvas_pt);
+            return true;
+        }
+    }
+
+    if (mime->hasImage()) {
+        const QImage image = qvariant_cast<QImage>(mime->imageData());
+        if (!image.isNull()) {
+            QString base_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+            if (base_dir.isEmpty())
+                base_dir = QDir::tempPath();
+            QDir dir(base_dir + QStringLiteral("/obs-gsp-pasted-assets"));
+            if (!dir.exists())
+                dir.mkpath(QStringLiteral("."));
+            const QString path = dir.filePath(QStringLiteral("pasted-image-%1.png")
+                .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-hhmmss-zzz"))));
+            if (image.save(path, "PNG")) {
+                emit external_image_layer_requested(path, canvas_pt);
+                return true;
+            }
+        }
+    }
+
+    if (mime->hasText()) {
+        const QString text = mime->text().trimmed();
+        if (!text.isEmpty()) {
+            emit external_text_layer_requested(text, canvas_pt);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void CanvasPreview::dragEnterEvent(QDragEnterEvent *ev)
+{
+    if (mime_has_external_canvas_content(ev ? ev->mimeData() : nullptr)) {
+        ev->acceptProposedAction();
+        return;
+    }
+    QWidget::dragEnterEvent(ev);
+}
+
+void CanvasPreview::dragMoveEvent(QDragMoveEvent *ev)
+{
+    if (mime_has_external_canvas_content(ev ? ev->mimeData() : nullptr)) {
+        ev->acceptProposedAction();
+        return;
+    }
+    QWidget::dragMoveEvent(ev);
+}
+
+void CanvasPreview::dropEvent(QDropEvent *ev)
+{
+    if (!ev) {
+        QWidget::dropEvent(ev);
+        return;
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPointF view_pt = ev->position();
+#else
+    const QPointF view_pt = ev->pos();
+#endif
+    if (handle_external_canvas_mime(ev->mimeData(), view_to_canvas(view_pt))) {
+        ev->acceptProposedAction();
+        setFocus(Qt::MouseFocusReason);
+        return;
+    }
+    QWidget::dropEvent(ev);
+}
+
 void CanvasPreview::leaveEvent(QEvent *ev)
 {
     if (color_picker_tooltip_visible_) {
@@ -3853,6 +4034,14 @@ void CanvasPreview::leaveEvent(QEvent *ev)
 
 void CanvasPreview::keyPressEvent(QKeyEvent *ev)
 {
+    if (ev && inline_text_layer_id_.empty() && ev->matches(QKeySequence::Paste)) {
+        const QPointF paste_pt = view_to_canvas(QPointF(width() * 0.5, height() * 0.5));
+        if (handle_external_canvas_mime(QApplication::clipboard() ? QApplication::clipboard()->mimeData() : nullptr, paste_pt)) {
+            ev->accept();
+            return;
+        }
+    }
+
     if (!inline_text_layer_id_.empty() && ev->key() == Qt::Key_Escape) {
         commit_text_edit(true);
         ev->accept();

@@ -9,6 +9,7 @@
 #include "title-assets.h"
 #include "timecode-spinbox.h"
 #include "title-localization.h"
+#include "cache-manager.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -23,6 +24,7 @@
 #include <QDialogButtonBox>
 #include <QDrag>
 #include <QDragEnterEvent>
+#include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QInputDialog>
@@ -42,6 +44,8 @@
 #include <QIcon>
 #include <QStyle>
 #include <QStyleOptionButton>
+#include <QStyledItemDelegate>
+#include <QApplication>
 #include <QToolButton>
 #include <QToolBar>
 #include <QDoubleSpinBox>
@@ -77,6 +81,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QEvent>
 #include <QRegularExpression>
 #include <memory>
 #include <algorithm>
@@ -105,6 +110,11 @@ constexpr const char *kLiveTextLinesPerRowKey = "liveTextLinesPerRow";
 constexpr int kMinLiveTextLinesPerRow = 1;
 constexpr int kMaxLiveTextLinesPerRow = 8;
 constexpr int kTitleListIconExtent = 16;
+constexpr int kTitleIconViewThumbWidth = 144;
+constexpr int kTitleIconViewThumbHeight = 82;
+constexpr int kTitleIconViewItemWidth = 172;
+constexpr int kTitleIconViewItemHeight = 126;
+constexpr int kTitleIconViewTextLines = 2;
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
     const std::vector<std::shared_ptr<Layer>> &exposed,
@@ -208,6 +218,34 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
         row.resize(exposed.size());
         for (size_t i = old_size; i < exposed.size(); ++i)
             row[i] = exposed[i]->text_content;
+    }
+}
+
+static QString live_cue_cache_text(FrameCacheState state)
+{
+    switch (state) {
+    case FrameCacheState::Queued: return QStringLiteral("Queued");
+    case FrameCacheState::Rendering: return QStringLiteral("Rendering");
+    case FrameCacheState::CachedRam:
+    case FrameCacheState::CachedDisk: return QStringLiteral("Ready");
+    case FrameCacheState::Stale: return QStringLiteral("Stale");
+    case FrameCacheState::Disabled: return QStringLiteral("Disabled");
+    case FrameCacheState::NotCached:
+    default: return QStringLiteral("Not cached");
+    }
+}
+
+static QColor live_cue_cache_color(FrameCacheState state)
+{
+    switch (state) {
+    case FrameCacheState::Queued: return QColor(96, 96, 96);
+    case FrameCacheState::Rendering: return QColor(255, 202, 74);
+    case FrameCacheState::CachedRam: return QColor(39, 186, 103);
+    case FrameCacheState::CachedDisk: return QColor(74, 144, 226);
+    case FrameCacheState::Stale: return QColor(214, 90, 90);
+    case FrameCacheState::Disabled: return QColor(95, 95, 95);
+    case FrameCacheState::NotCached:
+    default: return QColor(130, 130, 130);
     }
 }
 
@@ -404,9 +442,21 @@ public:
     explicit TitleListWidget(QWidget *parent = nullptr)
         : QListWidget(parent)
     {
+        setAcceptDrops(true);
+        setDragEnabled(false);
+        setDragDropMode(QAbstractItemView::DropOnly);
+        setDefaultDropAction(Qt::CopyAction);
+        setDropIndicatorShown(false);
+        setDragDropOverwriteMode(false);
+
+        if (viewport()) {
+            viewport()->setAcceptDrops(true);
+            viewport()->installEventFilter(this);
+        }
     }
 
     std::function<void()> delete_requested;
+    std::function<void(const QStringList &)> files_dropped;
 
 protected:
     void keyPressEvent(QKeyEvent *event) override
@@ -420,6 +470,172 @@ protected:
 
         QListWidget::keyPressEvent(event);
     }
+
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (handle_drag_enter_or_move(event))
+            return;
+        QListWidget::dragEnterEvent(event);
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (handle_drag_enter_or_move(event))
+            return;
+        QListWidget::dragMoveEvent(event);
+    }
+
+    void dragLeaveEvent(QDragLeaveEvent *event) override
+    {
+        set_drag_import_active(false);
+        QListWidget::dragLeaveEvent(event);
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        if (handle_drop(event))
+            return;
+        QListWidget::dropEvent(event);
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == viewport() && event) {
+            switch (event->type()) {
+            case QEvent::DragEnter:
+                if (handle_drag_enter_or_move(static_cast<QDragEnterEvent *>(event)))
+                    return true;
+                break;
+            case QEvent::DragMove:
+                if (handle_drag_enter_or_move(static_cast<QDragMoveEvent *>(event)))
+                    return true;
+                break;
+            case QEvent::DragLeave:
+                set_drag_import_active(false);
+                break;
+            case QEvent::Drop:
+                if (handle_drop(static_cast<QDropEvent *>(event)))
+                    return true;
+                break;
+            default:
+                break;
+            }
+        }
+        return QListWidget::eventFilter(watched, event);
+    }
+
+private:
+    template <typename DragEvent>
+    bool handle_drag_enter_or_move(DragEvent *event)
+    {
+        const QStringList paths = accepted_template_paths(event ? event->mimeData() : nullptr);
+        if (paths.isEmpty()) {
+            if (event) event->ignore();
+            set_drag_import_active(false);
+            return false;
+        }
+
+        set_drag_import_active(true);
+        if (event) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        }
+        return true;
+    }
+
+    bool handle_drop(QDropEvent *event)
+    {
+        const QStringList paths = accepted_template_paths(event ? event->mimeData() : nullptr);
+        set_drag_import_active(false);
+        if (paths.isEmpty()) {
+            if (event) event->ignore();
+            return false;
+        }
+
+        if (files_dropped)
+            files_dropped(paths);
+
+        if (event) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        }
+        return true;
+    }
+
+    static bool is_supported_template_file(const QFileInfo &info)
+    {
+        if (!info.exists() || !info.isFile() || !info.isReadable())
+            return false;
+
+        const QString suffix = info.suffix().toLower();
+        return suffix == QStringLiteral("ogspt") ||
+               suffix == QStringLiteral("otpt") ||
+               suffix == QStringLiteral("json");
+    }
+
+    static void append_path_if_supported(QStringList &paths, const QString &raw_path)
+    {
+        const QString cleaned = raw_path.trimmed();
+        if (cleaned.isEmpty())
+            return;
+
+        const QFileInfo info(cleaned);
+        if (is_supported_template_file(info))
+            paths.push_back(info.absoluteFilePath());
+    }
+
+    static QStringList accepted_template_paths(const QMimeData *mime)
+    {
+        QStringList paths;
+        if (!mime)
+            return paths;
+
+        if (mime->hasUrls()) {
+            const auto urls = mime->urls();
+            for (const QUrl &url : urls) {
+                if (!url.isLocalFile())
+                    continue;
+                append_path_if_supported(paths, url.toLocalFile());
+            }
+        }
+
+        // Some external apps expose file paths as plain text rather than text/uri-list.
+        if (paths.isEmpty() && mime->hasText()) {
+            const QStringList lines = mime->text().split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
+            for (const QString &line : lines) {
+                QString candidate = line.trimmed();
+                if (candidate.startsWith(QStringLiteral("file:///"))) {
+                    const QUrl url(candidate);
+                    if (url.isLocalFile())
+                        candidate = url.toLocalFile();
+                }
+                append_path_if_supported(paths, candidate);
+            }
+        }
+
+        paths.removeDuplicates();
+        return paths;
+    }
+
+    void set_drag_import_active(bool active)
+    {
+        if (drag_import_active_ == active)
+            return;
+        drag_import_active_ = active;
+        setProperty("obsGspTitleImportDropActive", active);
+        if (viewport())
+            viewport()->setProperty("obsGspTitleImportDropActive", active);
+        if (active) {
+            if (saved_style_sheet_.isNull())
+                saved_style_sheet_ = styleSheet();
+            setStyleSheet(saved_style_sheet_ + QStringLiteral("\nQListWidget { border: 1px solid palette(highlight); }") );
+        } else if (!saved_style_sheet_.isNull()) {
+            setStyleSheet(saved_style_sheet_);
+        }
+    }
+
+    bool drag_import_active_ = false;
+    QString saved_style_sheet_;
 };
 
 class LiveTextCueHeader : public QHeaderView {
@@ -691,7 +907,8 @@ static double title_export_screenshot_time(const Title &title)
 
 static QImage title_screenshot_image(const Title &title)
 {
-    return render_title_to_image(title, title_export_screenshot_time(title));
+    return CacheManager::instance().requestFrame(std::make_shared<Title>(title),
+                                                 title_export_screenshot_time(title));
 }
 
 static QIcon title_cached_screenshot_icon(const Title &title, const QSize &size)
@@ -815,6 +1032,139 @@ static QPixmap title_preview_pixmap(const Title &title, const QSize &size)
 
     return pixmap.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 }
+
+static void paint_transparency_grid(QPainter &painter, const QRect &rect, int cell = 8)
+{
+    const QColor light(196, 196, 196);
+    const QColor dark(144, 144, 144);
+    for (int y = rect.top(); y <= rect.bottom(); y += cell) {
+        for (int x = rect.left(); x <= rect.right(); x += cell) {
+            const bool alternate = (((x - rect.left()) / cell) + ((y - rect.top()) / cell)) % 2;
+            painter.fillRect(QRect(x, y, cell, cell).intersected(rect), alternate ? dark : light);
+        }
+    }
+}
+
+static QString elide_to_two_lines(const QString &text, const QFontMetrics &fm, int width)
+{
+    const QString simplified = text.simplified();
+    if (simplified.isEmpty())
+        return simplified;
+
+    const QString first_try = fm.elidedText(simplified, Qt::ElideRight, width);
+    if (first_try == simplified)
+        return simplified;
+
+    QString first;
+    QString rest = simplified;
+    const QStringList words = simplified.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.size() > 1) {
+        for (const QString &word : words) {
+            const QString candidate = first.isEmpty() ? word : first + QLatin1Char(' ') + word;
+            if (fm.horizontalAdvance(candidate) > width)
+                break;
+            first = candidate;
+        }
+        if (!first.isEmpty())
+            rest = simplified.mid(first.length()).trimmed();
+    }
+
+    if (first.isEmpty()) {
+        for (int i = 1; i <= simplified.size(); ++i) {
+            const QString candidate = simplified.left(i);
+            if (fm.horizontalAdvance(candidate) > width)
+                break;
+            first = candidate;
+        }
+        rest = simplified.mid(first.length()).trimmed();
+    }
+
+    if (rest.isEmpty())
+        return first;
+
+    return first + QLatin1Char(' ') + fm.elidedText(rest, Qt::ElideRight, width);
+}
+
+static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, bool has_scene_mask)
+{
+    const QSize thumb_size(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight);
+    QPixmap composed(thumb_size);
+    composed.fill(Qt::transparent);
+
+    QPainter painter(&composed);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRect full_rect(QPoint(0, 0), thumb_size);
+    paint_transparency_grid(painter, full_rect, 8);
+
+    const QPixmap preview = title_preview_pixmap(title, thumb_size);
+    if (!preview.isNull()) {
+        const QPoint preview_pos((thumb_size.width() - preview.width()) / 2,
+                                 (thumb_size.height() - preview.height()) / 2);
+        painter.drawPixmap(preview_pos, preview);
+    }
+
+    painter.setPen(QPen(QColor(0, 0, 0, 90), 1));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(full_rect.adjusted(0, 0, -1, -1));
+
+    const QPixmap type_pixmap = title_list_status_icon(has_exposed_text, has_scene_mask).pixmap(QSize(18, 18));
+    QRect badge_rect(5, 5, 24, 24);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(22, 22, 22, 210));
+    painter.drawRoundedRect(badge_rect, 4, 4);
+    if (!type_pixmap.isNull())
+        painter.drawPixmap(badge_rect.center() - QPoint(type_pixmap.width() / 2, type_pixmap.height() / 2), type_pixmap);
+    painter.end();
+
+    return QIcon(composed);
+}
+
+class TitleIconViewDelegate : public QStyledItemDelegate {
+public:
+    explicit TitleIconViewDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        (void)option;
+        (void)index;
+        return QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight);
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        if (!painter)
+            return;
+
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        opt.icon = QIcon();
+
+        const QWidget *widget = option.widget;
+        QStyle *style = widget ? widget->style() : QApplication::style();
+        style->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, widget);
+
+        const QRect item_rect = option.rect.adjusted(6, 6, -6, -6);
+        const int thumb_x = item_rect.x() + (item_rect.width() - kTitleIconViewThumbWidth) / 2;
+        const QRect thumb_rect(thumb_x, item_rect.y(), kTitleIconViewThumbWidth, kTitleIconViewThumbHeight);
+        const QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
+        const QPixmap pixmap = icon.pixmap(thumb_rect.size());
+        if (!pixmap.isNull())
+            painter->drawPixmap(thumb_rect.topLeft(), pixmap);
+
+        QRect text_rect(item_rect.x(), thumb_rect.bottom() + 6, item_rect.width(),
+                        option.fontMetrics.height() * kTitleIconViewTextLines + 4);
+        painter->setFont(option.font);
+        painter->setPen(option.palette.color((option.state & QStyle::State_Selected)
+                                                 ? QPalette::HighlightedText
+                                                 : QPalette::Text));
+        const QString display = elide_to_two_lines(index.data(Qt::DisplayRole).toString(), option.fontMetrics, text_rect.width());
+        painter->drawText(text_rect, Qt::AlignHCenter | Qt::AlignTop, display);
+    }
+};
 
 static QMessageBox::StandardButton confirm_delete_single_title(QWidget *parent, const Title &title)
 {
@@ -1014,6 +1364,65 @@ static QString template_library_root_path()
 static QString template_file_filter()
 {
     return QStringLiteral("*.ogspt *.otpt *.json");
+}
+
+static bool is_title_template_file_info(const QFileInfo &info)
+{
+    if (!info.exists() || !info.isFile() || !info.isReadable())
+        return false;
+
+    const QString suffix = info.suffix().toLower();
+    return suffix == QStringLiteral("ogspt") ||
+           suffix == QStringLiteral("otpt") ||
+           suffix == QStringLiteral("json");
+}
+
+static void append_title_template_path(QStringList &paths, const QString &raw_path)
+{
+    QString candidate = raw_path.trimmed();
+    if (candidate.isEmpty())
+        return;
+
+    if (candidate.startsWith(QStringLiteral("file:"))) {
+        const QUrl url(candidate);
+        if (url.isLocalFile())
+            candidate = url.toLocalFile();
+    }
+
+    candidate.remove(QChar('"'));
+    const QFileInfo info(candidate);
+    if (is_title_template_file_info(info))
+        paths.push_back(info.absoluteFilePath());
+}
+
+static QStringList title_template_paths_from_mime(const QMimeData *mime)
+{
+    QStringList paths;
+    if (!mime)
+        return paths;
+
+    if (mime->hasUrls()) {
+        const auto urls = mime->urls();
+        for (const QUrl &url : urls) {
+            if (url.isLocalFile())
+                append_title_template_path(paths, url.toLocalFile());
+        }
+    }
+
+    // Fallback for sources that expose newline-separated paths or file:// URLs as text.
+    if (mime->hasText()) {
+        const QStringList lines = mime->text().split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
+        for (const QString &line : lines)
+            append_title_template_path(paths, line);
+    }
+
+    paths.removeDuplicates();
+    return paths;
+}
+
+static bool mime_has_title_templates(const QMimeData *mime)
+{
+    return !title_template_paths_from_mime(mime).isEmpty();
 }
 
 static TemplateFileMetadata read_template_file_metadata(const QString &path)
@@ -1334,6 +1743,20 @@ TitleDock::TitleDock(QWidget *parent)
                 QDockWidget::DockWidgetFloatable);
     build_ui();
 
+    // Accept external template file drops anywhere over the dock/template list.
+    // QListWidget uses a viewport child for DnD, so installing the filter on
+    // every child avoids lost drops when the cursor is over labels, toolbars,
+    // empty list areas, or the viewport.
+    setAcceptDrops(true);
+    installEventFilter(this);
+    const auto dock_drop_widgets = findChildren<QWidget *>();
+    for (QWidget *w : dock_drop_widgets) {
+        if (!w)
+            continue;
+        w->setAcceptDrops(true);
+        w->installEventFilter(this);
+    }
+
     /* React to external data changes.  Always marshal back to the dock's
      * Qt thread so background/source playback changes cannot touch widgets.
      */
@@ -1356,6 +1779,72 @@ TitleDock::TitleDock(QWidget *parent)
         populate_exposed_text();
     });
     live_refresh_timer_->start();
+    connect(&CacheManager::instance(), &CacheManager::liveCueStateChanged, this,
+            [this](const QString &title_id, int row) {
+                if (title_id != QString::fromStdString(selected_id()) || updating_exposed_text_)
+                    return;
+                auto title = TitleDataStore::instance().get_title(selected_id());
+                if (!title || !text_table_ || row < 0 || row >= text_table_->rowCount()) {
+                    populate_exposed_text();
+                    return;
+                }
+                const FrameCacheState cue_state = CacheManager::instance().liveCueState(title, row);
+                auto *cache_item = text_table_->item(row, 1);
+                if (!cache_item) {
+                    cache_item = new QTableWidgetItem();
+                    cache_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                    cache_item->setTextAlignment(Qt::AlignCenter);
+                    cache_item->setToolTip(QStringLiteral("Live Text Cue cache status"));
+                    text_table_->setItem(row, 1, cache_item);
+                }
+                cache_item->setText(live_cue_cache_text(cue_state));
+                cache_item->setForeground(live_cue_cache_color(cue_state));
+            });
+}
+
+
+bool TitleDock::eventFilter(QObject *watched, QEvent *event)
+{
+    Q_UNUSED(watched);
+
+    if (!event)
+        return QObject::eventFilter(watched, event);
+
+    switch (event->type()) {
+    case QEvent::DragEnter: {
+        auto *drag = static_cast<QDragEnterEvent *>(event);
+        if (mime_has_title_templates(drag->mimeData())) {
+            drag->setDropAction(Qt::CopyAction);
+            drag->accept();
+            return true;
+        }
+        break;
+    }
+    case QEvent::DragMove: {
+        auto *drag = static_cast<QDragMoveEvent *>(event);
+        if (mime_has_title_templates(drag->mimeData())) {
+            drag->setDropAction(Qt::CopyAction);
+            drag->accept();
+            return true;
+        }
+        break;
+    }
+    case QEvent::Drop: {
+        auto *drop = static_cast<QDropEvent *>(event);
+        const QStringList paths = title_template_paths_from_mime(drop->mimeData());
+        if (!paths.isEmpty()) {
+            drop->setDropAction(Qt::CopyAction);
+            drop->accept();
+            import_title_paths(paths);
+            return true;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return QObject::eventFilter(watched, event);
 }
 
 TitleDock::~TitleDock()
@@ -1569,6 +2058,7 @@ void TitleDock::build_ui()
 
     auto *title_list = new TitleListWidget(template_section);
     title_list->delete_requested = [this]() { on_delete(); };
+    title_list->files_dropped = [this](const QStringList &paths) { import_title_paths(paths); };
     list_ = title_list;
     list_->setAlternatingRowColors(true);
     list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1850,11 +2340,14 @@ void TitleDock::update_template_view_mode()
 
     if (template_icon_view_) {
         list_->setViewMode(QListView::IconMode);
-        list_->setIconSize(QSize(120, 72));
+        list_->setIconSize(QSize(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight));
+        list_->setGridSize(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
         list_->setResizeMode(QListView::Adjust);
         list_->setMovement(QListView::Static);
-        list_->setSpacing(8);
-        list_->setUniformItemSizes(false);
+        list_->setSpacing(6);
+        list_->setUniformItemSizes(true);
+        list_->setWordWrap(true);
+        list_->setTextElideMode(Qt::ElideRight);
         if (btn_view_) {
             btn_view_->setText(obsgs_tr("OBSTitles.ListView"));
             btn_view_->setAccessibleName(obsgs_tr("OBSTitles.ListView"));
@@ -1864,10 +2357,13 @@ void TitleDock::update_template_view_mode()
     } else {
         list_->setViewMode(QListView::ListMode);
         list_->setIconSize(QSize(kTitleListIconExtent, kTitleListIconExtent));
+        list_->setGridSize(QSize());
         list_->setResizeMode(QListView::Fixed);
         list_->setMovement(QListView::Static);
         list_->setSpacing(0);
         list_->setUniformItemSizes(true);
+        list_->setWordWrap(false);
+        list_->setTextElideMode(Qt::ElideRight);
         if (btn_view_) {
             btn_view_->setText(obsgs_tr("OBSTitles.IconView"));
             btn_view_->setAccessibleName(obsgs_tr("OBSTitles.IconView"));
@@ -1942,10 +2438,17 @@ void TitleDock::populate_list()
         if (!should_show_title(t, active_ids))
             continue;
         auto *item = new QListWidgetItem(QString::fromStdString(t->name));
-        if (template_icon_view_)
-            item->setIcon(title_cached_screenshot_icon(*t, QSize(120, 72)));
-        else
-            item->setIcon(title_list_status_icon(title_has_exposed_text(t), title_has_scene_mask(t)));
+        const bool has_exposed_text = title_has_exposed_text(t);
+        const bool has_scene_mask = title_has_scene_mask(t);
+        if (template_icon_view_) {
+            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask));
+            item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
+            item->setTextAlignment(Qt::AlignHCenter);
+        } else {
+            item->setIcon(title_list_status_icon(has_exposed_text, has_scene_mask));
+            item->setSizeHint(QSize());
+            item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        }
         item->setData(Qt::UserRole, QString::fromStdString(t->id));
         // Layer count hint as tooltip
         item->setToolTip(
@@ -2210,7 +2713,7 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     for (int target_row : target_rows) {
         if (target_row < 0 || target_row >= text_table_->rowCount())
             continue;
-        auto *edit = dynamic_cast<LiveTextCueField *>(text_table_->cellWidget(target_row, col + 1));
+        auto *edit = dynamic_cast<LiveTextCueField *>(text_table_->cellWidget(target_row, col + 2));
         if (!edit || edit->toPlainText() == text)
             continue;
         QSignalBlocker block(edit);
@@ -2220,6 +2723,8 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
 
     TitleDataStore::instance().save();
     TitleDataStore::instance().touch_runtime_change();
+    for (int target_row : target_rows)
+        CacheManager::instance().invalidateLiveCue(title, target_row);
     seen_store_revision_ = TitleDataStore::instance().revision();
     updating_exposed_text_ = false;
 }
@@ -2353,8 +2858,7 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
         title->current_cue_row = -1;
         title->pending_cue_row = -1;
         ++title->cue_revision;
-        TitleDataStore::instance().save();
-        TitleDataStore::instance().notify_change();
+        TitleDataStore::instance().touch_runtime_change();
         updating_exposed_text_ = false;
         populate_exposed_text();
         return true;
@@ -2362,6 +2866,15 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
 
     if (row < 0 || row >= (int)title->live_text_rows.size())
         return false;
+
+    const bool require_cached_cue = CacheManager::instance().cacheEnabled() &&
+        CacheManager::instance().titleCacheability(title) != TitleCacheability::NonCacheable;
+    if (require_cached_cue && !CacheManager::instance().isLiveCueReady(title, row)) {
+        CacheManager::instance().queueLiveCue(title, row);
+        CacheManager::instance().preloadLiveCues(title, row, 2);
+        populate_exposed_text();
+        return false;
+    }
 
     updating_exposed_text_ = true;
     apply_persistence_settings_to_title(title);
@@ -2405,8 +2918,8 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     }
 
     ++title->cue_revision;
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().notify_change();
+    TitleDataStore::instance().touch_runtime_change();
+    CacheManager::instance().preloadLiveCues(title, row, 2);
     updating_exposed_text_ = false;
     populate_exposed_text();
     return true;
@@ -2662,23 +3175,24 @@ void TitleDock::populate_exposed_text()
     }
 
     text_table_->setRowCount((int)title->live_text_rows.size());
-    text_table_->setColumnCount((int)exposed.size() + 2);
+    text_table_->setColumnCount((int)exposed.size() + 3);
 
     QStringList headers;
-    headers << "";
+    headers << "" << QStringLiteral("Cache");
     for (const auto &layer : exposed)
         headers << live_text_layer_header(layer);
     headers << "";
     text_table_->setHorizontalHeaderLabels(headers);
     for (int col = 0; col < (int)exposed.size(); ++col) {
-        if (auto *item = text_table_->horizontalHeaderItem(col + 1))
+        if (auto *item = text_table_->horizontalHeaderItem(col + 2))
             item->setToolTip(live_text_layer_header(exposed[col]));
     }
     text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     text_table_->horizontalHeader()->setSectionsMovable(true);
     if (!restore_live_text_header_state()) {
         text_table_->resizeColumnToContents(0);
-        text_table_->resizeColumnToContents((int)exposed.size() + 1);
+        text_table_->resizeColumnToContents(1);
+        text_table_->resizeColumnToContents((int)exposed.size() + 2);
     }
 
     for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
@@ -2688,6 +3202,13 @@ void TitleDock::populate_exposed_text()
         select_item->setCheckState(Qt::Unchecked);
         select_item->setTextAlignment(Qt::AlignCenter);
         text_table_->setItem(row, 0, select_item);
+        const FrameCacheState cue_state = CacheManager::instance().liveCueState(title, row);
+        auto *cache_item = new QTableWidgetItem(live_cue_cache_text(cue_state));
+        cache_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        cache_item->setTextAlignment(Qt::AlignCenter);
+        cache_item->setForeground(live_cue_cache_color(cue_state));
+        cache_item->setToolTip(QStringLiteral("Live Text Cue cache status"));
+        text_table_->setItem(row, 1, cache_item);
         for (int col = 0; col < (int)exposed.size(); ++col) {
             auto *edit = new LiveTextCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
@@ -2695,7 +3216,7 @@ void TitleDock::populate_exposed_text()
             edit->editing_finished = [this, title, row, col](const QString &text) {
                 commit_live_text_cell_edit(title, row, col, text);
             };
-            text_table_->setCellWidget(row, col + 1, edit);
+            text_table_->setCellWidget(row, col + 2, edit);
         }
 
         auto *cue = new QPushButton("▶", text_table_);
@@ -2713,8 +3234,10 @@ void TitleDock::populate_exposed_text()
         }
         cue->setStyleSheet(cue_style);
         connect(cue, &QPushButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
-        text_table_->setCellWidget(row, (int)exposed.size() + 1, cue);
+        text_table_->setCellWidget(row, (int)exposed.size() + 2, cue);
     }
+    const int current = title->current_cue_row >= 0 ? title->current_cue_row : 0;
+    CacheManager::instance().preloadLiveCues(title, current, 2);
     apply_live_text_row_heights();
     update_playlist_controls();
     update_persistence_controls();
@@ -3585,6 +4108,57 @@ void TitleDock::on_export()
     status_lbl_->setText(obsgs_tr("OBSTitles.ExportedStatusFormat").arg(QFileInfo(path).fileName()));
 }
 
+void TitleDock::import_title_paths(const QStringList &paths)
+{
+    if (paths.isEmpty())
+        return;
+
+    int imported_count = 0;
+    QStringList failures;
+    std::shared_ptr<Title> last_imported;
+
+    for (const QString &path : paths) {
+        const QFileInfo info(path);
+        if (!info.exists() || !info.isFile() || !info.isReadable())
+            continue;
+        const QString suffix = info.suffix().toLower();
+        if (suffix != QStringLiteral("ogspt") && suffix != QStringLiteral("otpt") && suffix != QStringLiteral("json"))
+            continue;
+
+        std::string error;
+        auto imported = TitleDataStore::instance().import_title(info.absoluteFilePath().toStdString(), &error);
+        if (!imported) {
+            const QString message = error.empty() ? QStringLiteral("Import failed") : QString::fromStdString(error);
+            failures.push_back(QStringLiteral("%1 — %2").arg(info.fileName(), message));
+            continue;
+        }
+
+        last_imported = imported;
+        ++imported_count;
+    }
+
+    if (imported_count > 0)
+        refresh();
+
+    if (last_imported)
+        select_title(last_imported->id);
+
+    if (imported_count == 1 && last_imported) {
+        status_lbl_->setText(obsgs_tr("OBSTitles.ImportedStatusFormat").arg(QString::fromStdString(last_imported->name)));
+    } else if (imported_count > 1) {
+        status_lbl_->setText(QStringLiteral("Imported %1 title templates").arg(imported_count));
+    }
+
+    if (!failures.isEmpty()) {
+        QMessageBox::warning(this, obsgs_tr("OBSTitles.ImportTitleTemplate"),
+                             QStringLiteral("Some title templates could not be imported:\n\n%1")
+                                 .arg(failures.join(QStringLiteral("\n"))));
+    } else if (imported_count == 0) {
+        QMessageBox::warning(this, obsgs_tr("OBSTitles.ImportTitleTemplate"),
+                             QStringLiteral("No supported title template files were imported."));
+    }
+}
+
 void TitleDock::on_import()
 {
     QString path = QFileDialog::getOpenFileName(
@@ -3592,16 +4166,7 @@ void TitleDock::on_import()
         obsgs_tr("OBSTitles.TemplateFileFilter"));
     if (path.isEmpty()) return;
 
-    std::string error;
-    auto imported = TitleDataStore::instance().import_title(path.toStdString(), &error);
-    if (!imported) {
-        QMessageBox::warning(this, obsgs_tr("OBSTitles.ImportTitleTemplate"),
-                             QString::fromStdString(error));
-        return;
-    }
-
-    select_title(imported->id);
-    status_lbl_->setText(obsgs_tr("OBSTitles.ImportedStatusFormat").arg(QString::fromStdString(imported->name)));
+    import_title_paths(QStringList{path});
 }
 
 void TitleDock::on_delete()

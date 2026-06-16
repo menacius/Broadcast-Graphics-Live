@@ -1,5 +1,11 @@
 #include "title-editor-internal.h"
 
+#include <QClipboard>
+#include <QMimeData>
+#include <QStandardPaths>
+#include <QUrl>
+
+#include <cmath>
 
 namespace {
 
@@ -91,6 +97,18 @@ TitleEditor::TitleEditor(QWidget *parent)
     play_timer_->setInterval(std::max(1, (int)std::round(obs_frame_duration() * 1000.0)));
     connect(play_timer_, &QTimer::timeout, this, &TitleEditor::tick);
 
+    cache_invalidation_timer_ = new QTimer(this);
+    cache_invalidation_timer_->setSingleShot(true);
+    cache_invalidation_timer_->setInterval(180);
+    connect(cache_invalidation_timer_, &QTimer::timeout, this, [this]() {
+        CacheManager::instance().setInteractiveBypass(false);
+        if (!title_)
+            return;
+        CacheManager::instance().invalidateAll(title_);
+        CacheManager::instance().reprioritize(title_, playhead_);
+        if (timeline_) timeline_->update();
+    });
+
     clock_timer_ = new QTimer(this);
     clock_timer_->setInterval(33);
     connect(clock_timer_, &QTimer::timeout, this, [this]() {
@@ -123,6 +141,18 @@ QWidget *TitleEditor::create_effects_panel()
                 if (layers_) layers_->refresh();
             });
     return effects_panel_;
+}
+
+QWidget *TitleEditor::create_prerender_panel()
+{
+    prerender_panel_ = new PrerenderDock(this);
+    connect(prerender_panel_, &PrerenderDock::cacheWorkAreaRequested, this, [this]() {
+        if (timeline_) timeline_->update();
+    });
+    connect(prerender_panel_, &PrerenderDock::cacheEntireTimelineRequested, this, [this]() {
+        if (timeline_) timeline_->update();
+    });
+    return prerender_panel_;
 }
 
 QWidget *TitleEditor::create_styles_panel()
@@ -282,6 +312,13 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
     connect(act_timeline_visible_, &QAction::triggered, this, [this](bool visible) {
         if (timeline_dock_) timeline_dock_->setVisible(visible);
     });
+
+    act_prerender_visible_ = windows_menu->addAction(QStringLiteral("Prerender"));
+    act_prerender_visible_->setCheckable(true);
+    act_prerender_visible_->setChecked(true);
+    connect(act_prerender_visible_, &QAction::triggered, this, [this](bool visible) {
+        if (prerender_dock_) prerender_dock_->setVisible(visible);
+    });
 }
 
 QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const QString &title, QWidget *panel)
@@ -313,6 +350,8 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
         visibility_action = act_color_swatches_visible_;
     else if (object_name == QString::fromUtf8(kTimelineDockObjectName))
         visibility_action = act_timeline_visible_;
+    else if (object_name == QString::fromUtf8(kPrerenderDockObjectName))
+        visibility_action = act_prerender_visible_;
     else if (object_name == QStringLiteral("OBSGraphicsStudioProToolsDock"))
         visibility_action = act_tools_visible_;
 
@@ -380,6 +419,10 @@ void TitleEditor::load_editor_layout()
         QSignalBlocker blocker(act_timeline_visible_);
         act_timeline_visible_->setChecked(!timeline_dock_->isHidden());
     }
+    if (act_prerender_visible_ && prerender_dock_) {
+        QSignalBlocker blocker(act_prerender_visible_);
+        act_prerender_visible_->setChecked(!prerender_dock_->isHidden());
+    }
 
     restoring_editor_layout_ = false;
     update_panel_lock_state();
@@ -407,7 +450,7 @@ void TitleEditor::reset_default_layout()
         QDockWidget::DockWidgetClosable |
         QDockWidget::DockWidgetMovable |
         QDockWidget::DockWidgetFloatable;
-    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_, timeline_dock_}) {
+    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_, timeline_dock_, prerender_dock_}) {
         if (!dock) continue;
         dock->setMaximumWidth(dock == tools_dock_ ? 64 : QWIDGETSIZE_MAX);
         dock->setMinimumWidth(dock == tools_dock_ ? 46 : (dock->widget() ? dock->widget()->minimumWidth() : 220));
@@ -457,6 +500,12 @@ void TitleEditor::reset_default_layout()
         timeline_dock_->show();
         addDockWidget(Qt::BottomDockWidgetArea, timeline_dock_);
     }
+    if (prerender_dock_) {
+        prerender_dock_->setFloating(false);
+        prerender_dock_->show();
+        addDockWidget(Qt::RightDockWidgetArea, prerender_dock_);
+        if (effects_dock_) tabifyDockWidget(effects_dock_, prerender_dock_);
+    }
     if (tools_dock_) tools_dock_->raise();
     if (graphic_props_dock_) graphic_props_dock_->raise();
     if (layer_props_dock_) layer_props_dock_->raise();
@@ -490,6 +539,10 @@ void TitleEditor::reset_default_layout()
         QSignalBlocker blocker(act_timeline_visible_);
         act_timeline_visible_->setChecked(true);
     }
+    if (act_prerender_visible_) {
+        QSignalBlocker blocker(act_prerender_visible_);
+        act_prerender_visible_->setChecked(true);
+    }
 
     resize(1280, 760);
     update_panel_lock_state();
@@ -512,7 +565,7 @@ void TitleEditor::update_panel_lock_state()
         QDockWidget::DockWidgetFloatable;
     const QDockWidget::DockWidgetFeatures locked_features = QDockWidget::DockWidgetClosable;
 
-    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_, timeline_dock_}) {
+    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_, timeline_dock_, prerender_dock_}) {
         if (!dock) continue;
         dock->setFeatures(panels_locked_ ? locked_features : unlocked_features);
         dock->setAllowedAreas(panels_locked_ ? Qt::NoDockWidgetArea
@@ -705,6 +758,66 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
     on_layer_selected(layer->id);
 }
 
+
+
+void TitleEditor::create_image_layer_from_external_source(const QString &image_path, const QPointF &canvas_pt)
+{
+    if (!title_ || image_path.trimmed().isEmpty())
+        return;
+
+    auto layer = create_basic_layer(LayerType::Image, QFileInfo(image_path).completeBaseName());
+    if (!layer)
+        return;
+
+    layer->image_path = image_path.toStdString();
+    layer->lock_aspect_ratio = true;
+    layer->pos_x.static_value = canvas_pt.x();
+    layer->pos_y.static_value = canvas_pt.y();
+
+    QSize image_size = editor_image_intrinsic_size(image_path);
+    if (image_size.isValid() && !image_size.isEmpty()) {
+        layer->rect_width = (float)image_size.width();
+        layer->rect_height = (float)image_size.height();
+        const double max_w = title_->width * 0.65;
+        const double max_h = title_->height * 0.65;
+        const double scale = std::min({1.0, max_w / std::max(1, image_size.width()), max_h / std::max(1, image_size.height())});
+        layer->rect_width = (float)std::max(1.0, image_size.width() * scale);
+        layer->rect_height = (float)std::max(1.0, image_size.height() * scale);
+        layer->box_width.static_value = layer->rect_width;
+        layer->box_height.static_value = layer->rect_height;
+    }
+
+    title_->add_layer(layer);
+    layers_->refresh();
+    on_layer_selected(layer->id);
+    on_title_modified();
+}
+
+void TitleEditor::create_text_layer_from_external_source(const QString &text, const QPointF &canvas_pt)
+{
+    if (!title_ || text.isEmpty())
+        return;
+
+    const QString normalized = text.left(20000);
+    auto layer = create_basic_layer(LayerType::Text, QString());
+    if (!layer)
+        return;
+
+    layer->pos_x.static_value = canvas_pt.x();
+    layer->pos_y.static_value = canvas_pt.y();
+    layer->text_content = normalized.toStdString();
+    layer->rich_text = rich_text_document_from_layer_defaults(*layer);
+    rich_text_document_replace_text(layer->rich_text, layer->text_content);
+    rich_text_document_sync_layer_mirrors(*layer);
+    set_text_layer_direction_defaults(*layer, normalized.contains(QLatin1Char('\n')), text_has_rtl_direction(normalized));
+    layer->name = unique_layer_name(normalized.simplified().left(40).toStdString());
+
+    title_->add_layer(layer);
+    layers_->refresh();
+    on_layer_selected(layer->id);
+    on_title_modified();
+}
+
 void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
 {
     if (!title_ || canvas_created_shape_layer_id_.empty()) return;
@@ -839,7 +952,10 @@ void TitleEditor::build_ui()
             timeline_->paste_keyframes_at_playhead();
             return;
         }
-        paste_layer_from_clipboard();
+        if (!layer_clipboard_.empty())
+            paste_layer_from_clipboard();
+        else
+            paste_external_clipboard_to_canvas();
     });
     QAction *delete_action = edit_menu->addAction(obsgs_tr("OBSTitles.Delete"));
     delete_action->setShortcut(QKeySequence::Delete);
@@ -1169,6 +1285,9 @@ void TitleEditor::build_ui()
     color_swatches_dock_ = create_editor_dock(QString::fromUtf8(kColorSwatchesDockObjectName),
                                               QStringLiteral("Color Swatches"),
                                               create_color_swatches_panel());
+    prerender_dock_ = create_editor_dock(QString::fromUtf8(kPrerenderDockObjectName),
+                                         QStringLiteral("Prerender"),
+                                         create_prerender_panel());
     tools_sidebar_ = new ToolsSidebar(this);
     tools_dock_ = create_editor_dock(QStringLiteral("OBSGraphicsStudioProToolsDock"),
                                      QStringLiteral("Tools"),
@@ -1185,6 +1304,8 @@ void TitleEditor::build_ui()
     tabifyDockWidget(styles_dock_, color_swatches_dock_);
     addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
     splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
+    addDockWidget(Qt::RightDockWidgetArea, prerender_dock_);
+    tabifyDockWidget(effects_dock_, prerender_dock_);
     tools_dock_->raise();
     graphic_props_dock_->raise();
     layer_props_dock_->raise();
@@ -1344,6 +1465,19 @@ void TitleEditor::build_ui()
     timeline_dock_->setAllowedAreas(Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea);
     timeline_dock_->setMinimumHeight(220);
     addDockWidget(Qt::BottomDockWidgetArea, timeline_dock_);
+
+    connect(&CacheManager::instance(), &CacheManager::frameReady, this,
+            [this](const QString &title_id, int frame) {
+                if (!title_ || title_id != QString::fromStdString(title_->id)) return;
+                const int current_frame = (int)std::round(playhead_ * CacheManager::instance().effectiveFrameRate());
+                if (canvas_ && frame == current_frame) canvas_->refresh_preview();
+                if (timeline_) timeline_->update();
+            });
+    connect(&CacheManager::instance(), &CacheManager::cacheStatesChanged, this,
+            [this](const QString &title_id, int, int) {
+                if (!title_id.isEmpty() && title_ && title_id != QString::fromStdString(title_->id)) return;
+                if (timeline_) timeline_->update();
+            });
 
     load_editor_layout();
 
@@ -1649,6 +1783,10 @@ void TitleEditor::build_ui()
             this, &TitleEditor::create_shape_layer_from_canvas);
     connect(canvas_, &CanvasPreview::text_drawing_started,
             this, &TitleEditor::create_text_layer_from_canvas);
+    connect(canvas_, &CanvasPreview::external_image_layer_requested,
+            this, &TitleEditor::create_image_layer_from_external_source);
+    connect(canvas_, &CanvasPreview::external_text_layer_requested,
+            this, &TitleEditor::create_text_layer_from_external_source);
     connect(canvas_, &CanvasPreview::shape_drawing_changed,
             this, &TitleEditor::update_canvas_created_shape);
     connect(canvas_, &CanvasPreview::shape_drawing_finished,
@@ -2391,6 +2529,9 @@ void TitleEditor::export_title_template(bool save_in_library)
 void TitleEditor::open_title(const std::string &tid)
 {
     play_timer_->stop();
+    if (cache_invalidation_timer_)
+        cache_invalidation_timer_->stop();
+    CacheManager::instance().setInteractiveBypass(false);
     playing_ = false;
     act_play_->setText("▶");
     act_play_->setIcon(obs_icon("play.svg"));
@@ -2411,6 +2552,9 @@ void TitleEditor::open_title(const std::string &tid)
     timeline_->set_title(title_);
     props_->set_title(title_);
     title_props_->set_title(title_);
+    if (prerender_panel_) prerender_panel_->setTitle(title_);
+    CacheManager::instance().invalidateAll(title_);
+    CacheManager::instance().reprioritize(title_, playhead_);
 
     if (!title_->layers.empty())
         on_layer_selected(title_->layers.back()->id);
@@ -2718,6 +2862,61 @@ void TitleEditor::paste_layer_from_clipboard()
     on_title_modified();
 }
 
+
+
+bool TitleEditor::paste_external_clipboard_to_canvas()
+{
+    if (!title_)
+        return false;
+    const QMimeData *mime = QApplication::clipboard() ? QApplication::clipboard()->mimeData() : nullptr;
+    if (!mime)
+        return false;
+
+    const QPointF canvas_pt = canvas_ ? canvas_->view_center_canvas_point()
+                                      : QPointF(title_->width * 0.5, title_->height * 0.5);
+
+    if (mime->hasUrls()) {
+        for (const QUrl &url : mime->urls()) {
+            if (!url.isLocalFile())
+                continue;
+            const QString path = url.toLocalFile();
+            QImageReader reader(path);
+            if (!reader.canRead())
+                continue;
+            create_image_layer_from_external_source(path, canvas_pt);
+            return true;
+        }
+    }
+
+    if (mime->hasImage()) {
+        const QImage image = qvariant_cast<QImage>(mime->imageData());
+        if (!image.isNull()) {
+            QString base_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+            if (base_dir.isEmpty())
+                base_dir = QDir::tempPath();
+            QDir dir(base_dir + QStringLiteral("/obs-gsp-pasted-assets"));
+            if (!dir.exists())
+                dir.mkpath(QStringLiteral("."));
+            const QString path = dir.filePath(QStringLiteral("pasted-image-%1.png")
+                .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-hhmmss-zzz"))));
+            if (image.save(path, "PNG")) {
+                create_image_layer_from_external_source(path, canvas_pt);
+                return true;
+            }
+        }
+    }
+
+    if (mime->hasText()) {
+        const QString text = mime->text().trimmed();
+        if (!text.isEmpty()) {
+            create_text_layer_from_external_source(text, canvas_pt);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void TitleEditor::delete_selected_layer()
 {
     if (!title_) return;
@@ -2934,6 +3133,9 @@ void TitleEditor::play_pause()
         full_loop_playback_ = false;
     playing_ = !playing_;
     if (playing_) {
+        const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
+        if (cache_settings.from_beginning)
+            on_playhead_changed(0.0);
         if (title_->playback_mode != 2 && playhead_ >= title_->duration)
             on_playhead_changed(0.0);
         if (title_->playback_mode == 2 && playhead_ >= std::clamp(title_->pause_time, 0.0, title_->duration))
@@ -3026,8 +3228,17 @@ void TitleEditor::next_keyframe()
 void TitleEditor::tick()
 {
     if (!title_ || !playing_) return;
-    double dt = playback_clock_.isValid() ? playback_clock_.restart() / 1000.0 : 0.0;
-    if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
+    const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
+    double dt = obs_frame_duration();
+    if (!cache_settings.play_every_frame) {
+        dt = playback_clock_.isValid() ? playback_clock_.restart() / 1000.0 : 0.0;
+        if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
+        dt *= std::max(0.01, cache_settings.speed_percent / 100.0);
+        if (cache_settings.skip_frames > 0)
+            dt += obs_frame_duration() * cache_settings.skip_frames;
+    } else if (playback_clock_.isValid()) {
+        playback_clock_.restart();
+    }
 
     double duration = std::max(0.001, title_->duration);
     double loop_start = std::clamp(title_->loop_start, 0.0, title_->duration);
@@ -3035,7 +3246,20 @@ void TitleEditor::tick()
     double loop_len = std::max(0.001, loop_end - loop_start);
     double t = playhead_;
 
-    if (full_loop_playback_) {
+    const bool preview_loop = cache_settings.loop || full_loop_playback_;
+    const bool preview_ping_pong = cache_settings.ping_pong;
+    if (preview_loop && !preview_ping_pong && full_loop_playback_) {
+        t = std::fmod(playhead_ + dt, duration);
+    } else if (preview_ping_pong) {
+        t += (playback_reverse_ ? -dt : dt);
+        if (!playback_reverse_ && t >= duration) {
+            t = duration - std::fmod(t - duration, duration);
+            playback_reverse_ = true;
+        } else if (playback_reverse_ && t <= 0.0) {
+            t = std::fmod(-t, duration);
+            playback_reverse_ = false;
+        }
+    } else if (preview_loop && title_->playback_mode == 0) {
         t = std::fmod(playhead_ + dt, duration);
     } else {
         switch (title_->playback_mode) {
@@ -3258,6 +3482,13 @@ void TitleEditor::show_preferences()
                                .arg(text.name(QColor::HexRgb),
                                     disabled_text.name(QColor::HexRgb)));
     advanced_layout->addWidget(use_gpu);
+    auto *cache_enabled = new QCheckBox(QStringLiteral("Enable caching and prerender"), advanced_page);
+    cache_enabled->setChecked(CacheManager::instance().cacheEnabled());
+    cache_enabled->setToolTip(QStringLiteral("Enable RAM/disk frame caching, editor prerendering, and Live Text Cue prerendering."));
+    cache_enabled->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
+                                     .arg(text.name(QColor::HexRgb),
+                                          disabled_text.name(QColor::HexRgb)));
+    advanced_layout->addWidget(cache_enabled);
     advanced_layout->addStretch(1);
 
     pages->addWidget(colors_page);
@@ -3272,6 +3503,14 @@ void TitleEditor::show_preferences()
     tabs->setCurrentRow(0);
     connect(tabs, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
     connect(use_gpu, &QCheckBox::toggled, this, &TitleEditor::set_gpu_pipeline_enabled);
+    connect(cache_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
+        CacheManager::instance().setCacheEnabled(enabled);
+    });
+    connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, dialog, [cache_enabled](bool enabled) {
+        if (cache_enabled->isChecked() == enabled) return;
+        QSignalBlocker blocker(cache_enabled);
+        cache_enabled->setChecked(enabled);
+    });
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
 
     dialog->show();
@@ -3374,10 +3613,16 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         ev->accept();
         return;
     }
-    if (!editing_value && ev->matches(QKeySequence::Paste) && !layer_clipboard_.empty()) {
-        paste_layer_from_clipboard();
-        ev->accept();
-        return;
+    if (!editing_value && ev->matches(QKeySequence::Paste)) {
+        if (!layer_clipboard_.empty()) {
+            paste_layer_from_clipboard();
+            ev->accept();
+            return;
+        }
+        if (paste_external_clipboard_to_canvas()) {
+            ev->accept();
+            return;
+        }
     }
     if (!editing_value && ev->key() == Qt::Key_Delete && !sel_layer_id_.empty()) {
         delete_selected_layer();
@@ -3874,6 +4119,8 @@ void TitleEditor::on_playhead_changed(double t)
     playhead_ = t;
     canvas_->set_playhead(t);
     timeline_->set_playhead(t);
+    if (prerender_panel_) prerender_panel_->setPlayhead(t);
+    CacheManager::instance().reprioritize(title_, t);
 
     if (!sel_layer_id_.empty() && title_) {
         auto l = title_->find_layer(sel_layer_id_);
@@ -3887,6 +4134,7 @@ void TitleEditor::on_playhead_changed(double t)
 void TitleEditor::on_title_modified(bool push_undo)
 {
     if (title_) set_dirty(true);
+    schedule_cache_invalidation();
     canvas_->refresh_preview();
     if (title_props_) title_props_->set_title(title_);
     if (timeline_) timeline_->set_title(title_);
@@ -3901,6 +4149,15 @@ void TitleEditor::on_title_modified(bool push_undo)
     if (push_undo)
         push_undo_snapshot();
     save_live_edit();
+}
+
+void TitleEditor::schedule_cache_invalidation()
+{
+    if (!title_)
+        return;
+    CacheManager::instance().setInteractiveBypass(true);
+    if (cache_invalidation_timer_)
+        cache_invalidation_timer_->start();
 }
 
 /* ══════════════════════════════════════════════════════════════════

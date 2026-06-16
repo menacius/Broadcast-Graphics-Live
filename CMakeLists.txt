@@ -302,6 +302,15 @@ set(OBS_GSP_RENDERING_HEADERS
     src/rendering/title-gpu-filter-pipeline.h
 )
 
+set(OBS_GSP_CACHE_SOURCES
+    src/cache/cache-manager.cpp
+    src/cache/prerender-dock.cpp
+)
+set(OBS_GSP_CACHE_HEADERS
+    src/cache/cache-manager.h
+    src/cache/prerender-dock.h
+)
+
 set(OBS_GSP_CANVAS_SOURCES
     src/canvas/canvas-preview.cpp
 )
@@ -346,6 +355,7 @@ set(PLUGIN_SOURCES
     ${OBS_GSP_TIMELINE_SOURCES}
     ${OBS_GSP_TEXT_SOURCES}
     ${OBS_GSP_RENDERING_SOURCES}
+    ${OBS_GSP_CACHE_SOURCES}
     ${OBS_GSP_CANVAS_SOURCES}
     ${OBS_GSP_OBS_SOURCES}
     ${OBS_GSP_EDITOR_SOURCES}
@@ -358,6 +368,7 @@ set(PLUGIN_HEADERS
     ${OBS_GSP_TIMELINE_HEADERS}
     ${OBS_GSP_TEXT_HEADERS}
     ${OBS_GSP_RENDERING_HEADERS}
+    ${OBS_GSP_CACHE_HEADERS}
     ${OBS_GSP_CANVAS_HEADERS}
     ${OBS_GSP_OBS_HEADERS}
     ${OBS_GSP_EDITOR_HEADERS}
@@ -380,6 +391,7 @@ target_include_directories(obs-graphics-studio-pro PRIVATE
     src/timeline
     src/text
     src/rendering
+    src/cache
     src/canvas
     src/obs
     src/editor
