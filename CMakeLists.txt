@@ -253,11 +253,13 @@ FetchContent_MakeAvailable(nlohmann_json)
 # ── Sources ─────────────────────────────────────────────────────────
 set(OBS_GSP_CORE_SOURCES
     src/core/title-data.cpp
+    src/core/title-logger.cpp
     src/core/title-preferences.cpp
 )
 set(OBS_GSP_CORE_HEADERS
     src/core/title-data.h
     src/core/title-localization.h
+    src/core/title-logger.h
     src/core/title-preferences.h
 )
 

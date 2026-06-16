@@ -200,6 +200,7 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
     for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
         exposed[col]->text_content = title->live_text_rows[row][col];
+        exposed[col]->rich_text = rich_text_document_from_layer_defaults(*exposed[col]);
         exposed[col]->rich_text_html.clear();
     }
 }

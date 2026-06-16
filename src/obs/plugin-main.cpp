@@ -9,6 +9,7 @@
 #include "title-hotkeys.h"
 #include "title-data.h"
 #include "title-localization.h"
+#include "title-logger.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <QMainWindow>
@@ -84,6 +85,7 @@ static void add_docks_menu_entry(QMainWindow *main)
 bool obs_module_load(void)
 {
     blog(LOG_INFO, "[OBS Graphics Studio Pro] Loading plugin v%s", PLUGIN_VERSION);
+    OGS_LOG_INFO("Plugin", QStringLiteral("Loading plugin version %1").arg(QStringLiteral(PLUGIN_VERSION)));
 
     /* 1. Initialise persistent title store */
     TitleDataStore::instance().load();
@@ -96,6 +98,7 @@ bool obs_module_load(void)
     obs_frontend_add_event_callback(on_frontend_event, nullptr);
 
     blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin loaded.");
+    OGS_LOG_INFO("Plugin", QStringLiteral("Plugin loaded"));
     return true;
 }
 
@@ -107,12 +110,14 @@ void obs_module_unload(void)
     obs_frontend_remove_event_callback(on_frontend_event, nullptr);
     destroy_dock_ui();
     blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin unloaded.");
+    OGS_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
 }
 
 /* ── frontend event handler ─────────────────────────────────────── */
 static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 {
     if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
+        OGS_LOG_INFO("Plugin", QStringLiteral("Frontend finished loading"));
         TitleDataStore::instance().load();
 
         QMainWindow *main =
@@ -133,14 +138,17 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         g_frontend_ready = true;
         title_hotkeys_register();
         blog(LOG_INFO, "[OBS Graphics Studio Pro] Dock and title cue hotkeys registered.");
+        OGS_LOG_INFO("Plugin", QStringLiteral("Dock and title cue hotkeys registered"));
     }
 
     if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
+        OGS_LOG_INFO("Plugin", QStringLiteral("Scene collection cleanup"));
         TitleDataStore::instance().save();
         title_hotkeys_unregister();
     }
 
     if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED && g_frontend_ready) {
+        OGS_LOG_INFO("Plugin", QStringLiteral("Scene collection changed"));
         TitleDataStore::instance().load();
         title_hotkeys_register();
         if (g_dock)
@@ -148,6 +156,7 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
     }
 
     if (event == OBS_FRONTEND_EVENT_EXIT) {
+        OGS_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
         g_frontend_ready = false;
         title_hotkeys_unregister();
         TitleDataStore::instance().save();

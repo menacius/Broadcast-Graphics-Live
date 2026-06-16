@@ -487,9 +487,9 @@ void LayerStack::populate()
         if (!l->properties_expanded) continue;
 
         std::set<std::string> seen;
-        for (auto *prop : timeline_properties(*l)) {
-            if (!prop->is_animated()) continue;
-            QString label = property_label(prop->name);
+        for (auto prop : timeline_properties(*l)) {
+            if (!prop.is_animated()) continue;
+            QString label = property_label(prop.name());
             std::string key = label.toStdString();
             if (!seen.insert(key).second) continue;
 
@@ -514,7 +514,7 @@ void LayerStack::populate()
             QLabel *prop_name = new QLabel(label, prop_widget);
             prop_name->setStyleSheet(QStringLiteral("color:%1;").arg(text.name(QColor::HexRgb)));
             ph->addWidget(prop_name, 1);
-            QLabel *value = new QLabel(property_value_text(*prop, *l), prop_widget);
+            QLabel *value = new QLabel(property_value_text(prop, *l), prop_widget);
             value->setFixedWidth(95);
             value->setStyleSheet(QStringLiteral("color:%1;font-family:monospace;")
                                      .arg(highlight.name(QColor::HexRgb)));

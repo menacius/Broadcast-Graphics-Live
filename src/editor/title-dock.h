@@ -84,6 +84,8 @@ private:
     void build_ui();
     void populate_list();
     void populate_exposed_text();
+    void update_live_text_cache_cell(const std::shared_ptr<Title> &title, int row);
+    void update_live_text_cache_cells();
     void install_obs_state_callbacks();
     void remove_obs_state_callbacks();
     void refresh_for_obs_source_state_change();
@@ -125,6 +127,8 @@ private:
     std::vector<int> selected_live_text_rows() const;
     void commit_live_text_cell_edit(const std::shared_ptr<Title> &title, int row, int col, const QString &text);
 
+    int           cache_waiting_cue_row_ = -1;
+    QString       cache_waiting_title_id_;
     QWidget      *container_  = nullptr;
     QSplitter    *sections_   = nullptr;
     QListWidget  *list_       = nullptr;

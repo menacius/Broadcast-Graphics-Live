@@ -1354,6 +1354,24 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                           : std::vector<AnimatedProperty *>{};
         });
     };
+    auto install_vec_delete_all = [&](QPushButton *button, AnimatedVec2Property Layer::*prop) {
+        if (!button) return;
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(button, &QPushButton::customContextMenuRequested,
+                this, [this, button, prop, can_edit, emit_change, menu_style](const QPoint &pos) {
+                    if (!layer_) return;
+                    auto &vec = layer_.get()->*prop;
+                    QMenu menu(button);
+                    menu.setStyleSheet(menu_style);
+                    QAction *delete_all = menu.addAction(obsgs_tr("OBSTitles.DeleteAllKeyframes"));
+                    delete_all->setEnabled(can_edit() && !vec.keyframes.empty());
+                    if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit()) return;
+                    if (vec.keyframes.empty()) return;
+                    vec.keyframes.clear();
+                    load_values();
+                    emit_change();
+                });
+    };
     auto install_group_delete_all = [&](QPushButton *button, std::initializer_list<AnimatedProperty Layer::*> props) {
         std::vector<AnimatedProperty Layer::*> prop_members(props);
         install_delete_all_keyframes_menu(button, [this, prop_members]() {
@@ -1366,15 +1384,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         });
     };
 
-    install_group_delete_all(btn_kf_pos_x_, {&Layer::pos_x, &Layer::pos_y});
-    install_group_delete_all(btn_kf_pos_y_, {&Layer::pos_x, &Layer::pos_y});
-    install_group_delete_all(btn_kf_scale_x_, {&Layer::scale_x, &Layer::scale_y});
-    install_group_delete_all(btn_kf_scale_y_, {&Layer::scale_x, &Layer::scale_y});
-    install_group_delete_all(btn_kf_transform_size_, {&Layer::box_width, &Layer::box_height});
+    install_vec_delete_all(btn_kf_pos_x_, &Layer::position);
+    install_vec_delete_all(btn_kf_pos_y_, &Layer::position);
+    install_vec_delete_all(btn_kf_scale_x_, &Layer::scale);
+    install_vec_delete_all(btn_kf_scale_y_, &Layer::scale);
+    install_vec_delete_all(btn_kf_transform_size_, &Layer::size);
     install_prop_delete_all(btn_kf_rotation_, &Layer::rotation);
     install_prop_delete_all(btn_kf_opacity_, &Layer::opacity);
-    install_group_delete_all(btn_kf_origin_x_, {&Layer::origin_x_prop, &Layer::origin_y_prop});
-    install_group_delete_all(btn_kf_origin_y_, {&Layer::origin_x_prop, &Layer::origin_y_prop});
+    install_vec_delete_all(btn_kf_origin_x_, &Layer::origin_prop);
+    install_vec_delete_all(btn_kf_origin_y_, &Layer::origin_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_left_, &Layer::paragraph_indent_left_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_right_, &Layer::paragraph_indent_right_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line_prop);
@@ -1385,7 +1403,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     install_prop_delete_all(btn_kf_baseline_shift_, &Layer::baseline_shift_prop);
     install_prop_delete_all(btn_kf_paragraph_space_before_, &Layer::paragraph_space_before_prop);
     install_prop_delete_all(btn_kf_paragraph_space_after_, &Layer::paragraph_space_after_prop);
-    install_group_delete_all(btn_kf_width_, {&Layer::box_width, &Layer::box_height});
+    install_vec_delete_all(btn_kf_width_, &Layer::size);
     install_group_delete_all(btn_kf_text_color_, {&Layer::text_color_a, &Layer::text_color_r,
                                                   &Layer::text_color_g, &Layer::text_color_b});
     install_group_delete_all(btn_kf_fill_color_, {&Layer::fill_color_a, &Layer::fill_color_r,
@@ -1393,23 +1411,33 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     connect(spn_px_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
-                if (can_edit()) { set_animated_value(layer_->pos_x, local_time(), v); emit_change(); }
+                if (can_edit()) {
+                    const double t = local_time();
+                    set_animated_value(layer_->position, t, {v, layer_->position.evaluate(t).y});
+                    emit_change();
+                }
             });
     connect(spn_py_,       QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
-                if (can_edit()) { set_animated_value(layer_->pos_y, local_time(), v); emit_change(); }
+                if (can_edit()) {
+                    const double t = local_time();
+                    set_animated_value(layer_->position, t, {layer_->position.evaluate(t).x, v});
+                    emit_change();
+                }
             });
     connect(spn_scale_x_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
                 if (!can_edit()) return;
                 const double scale = v / 100.0;
                 const double t = local_time();
-                set_animated_value(layer_->scale_x, t, scale);
+                Vec2Value next = layer_->scale.evaluate(t);
+                next.x = scale;
                 if (layer_->scale_lock) {
                     QSignalBlocker blocker(spn_scale_y_);
                     spn_scale_y_->setValue(v);
-                    set_animated_value(layer_->scale_y, t, scale);
+                    next.y = scale;
                 }
+                set_animated_value(layer_->scale, t, next);
                 emit_change();
             });
     connect(spn_scale_y_,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -1417,12 +1445,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (!can_edit()) return;
                 const double scale = v / 100.0;
                 const double t = local_time();
-                set_animated_value(layer_->scale_y, t, scale);
+                Vec2Value next = layer_->scale.evaluate(t);
+                next.y = scale;
                 if (layer_->scale_lock) {
                     QSignalBlocker blocker(spn_scale_x_);
                     spn_scale_x_->setValue(v);
-                    set_animated_value(layer_->scale_x, t, scale);
+                    next.x = scale;
                 }
+                set_animated_value(layer_->scale, t, next);
                 emit_change();
             });
     connect(chk_scale_lock_, &QCheckBox::toggled,
@@ -1434,7 +1464,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     const double scale = spn_scale_x_->value() / 100.0;
                     QSignalBlocker blocker(spn_scale_y_);
                     spn_scale_y_->setValue(spn_scale_x_->value());
-                    set_animated_value(layer_->scale_y, t, scale);
+                    set_animated_value(layer_->scale, t, {scale, scale});
                 }
                 emit_change();
             });
@@ -1448,11 +1478,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             });
     connect(spn_origin_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
-                if (can_edit()) { layer_->origin_x = (float)v; set_animated_value(layer_->origin_x_prop, local_time(), v); emit_change(); }
+                if (can_edit()) {
+                    const double t = local_time();
+                    layer_->origin_x = (float)v;
+                    set_animated_value(layer_->origin_prop, t, {v, layer_->origin_prop.evaluate(t).y});
+                    emit_change();
+                }
             });
     connect(spn_origin_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, local_time, emit_change](double v){
-                if (can_edit()) { layer_->origin_y = (float)v; set_animated_value(layer_->origin_y_prop, local_time(), v); emit_change(); }
+                if (can_edit()) {
+                    const double t = local_time();
+                    layer_->origin_y = (float)v;
+                    set_animated_value(layer_->origin_prop, t, {layer_->origin_prop.evaluate(t).x, v});
+                    emit_change();
+                }
             });
     connect(cmb_anchor_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, local_time, emit_change](int idx) {
@@ -1464,14 +1504,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 QPointF keep = rotated_scaled_delta((next.x() - layer_->origin_x) * w,
                                                     (next.y() - layer_->origin_y) * h,
                                                     layer_->rotation.evaluate(t),
-                                                    layer_->scale_x.evaluate(t),
-                                                    layer_->scale_y.evaluate(t));
+                                                    layer_->scale.evaluate(t).x,
+                                                    layer_->scale.evaluate(t).y);
                 layer_->origin_x = (float)next.x();
                 layer_->origin_y = (float)next.y();
-                set_animated_value(layer_->origin_x_prop, t, next.x());
-                set_animated_value(layer_->origin_y_prop, t, next.y());
-                set_animated_value(layer_->pos_x, t, layer_->pos_x.evaluate(t) + keep.x());
-                set_animated_value(layer_->pos_y, t, layer_->pos_y.evaluate(t) + keep.y());
+                set_animated_value(layer_->origin_prop, t, {next.x(), next.y()});
+                const Vec2Value pos = layer_->position.evaluate(t);
+                set_animated_value(layer_->position, t, {pos.x + keep.x(), pos.y + keep.y()});
                 load_values();
                 emit_change();
             });
@@ -1479,16 +1518,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 const double t = local_time();
-                set_animated_value(layer_->pos_x, t, 0.0);
-                set_animated_value(layer_->pos_y, t, 0.0);
-                set_animated_value(layer_->scale_x, t, 1.0);
-                set_animated_value(layer_->scale_y, t, 1.0);
+                set_animated_value(layer_->position, t, {0.0, 0.0});
+                set_animated_value(layer_->scale, t, {1.0, 1.0});
                 set_animated_value(layer_->rotation, t, 0.0);
                 set_animated_value(layer_->opacity, t, 1.0);
                 layer_->origin_x = 0.5f;
                 layer_->origin_y = 0.5f;
-                set_animated_value(layer_->origin_x_prop, t, 0.5);
-                set_animated_value(layer_->origin_y_prop, t, 0.5);
+                set_animated_value(layer_->origin_prop, t, {0.5, 0.5});
                 layer_->scale_lock = true;
                 load_values();
                 emit_change();
@@ -3014,7 +3050,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_width = (float)v;
-                set_animated_value(layer_->box_width, t, v);
+                set_animated_x(layer_->size, t, v);
                 if (spn_transform_size_w_) {
                     QSignalBlocker block(spn_transform_size_w_);
                     spn_transform_size_w_->setValue(v);
@@ -3025,7 +3061,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                         layer_->type == LayerType::SolidRect);
                 if (lock_size && old_w > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
-                    set_animated_value(layer_->box_height, t, layer_->rect_height);
+                    set_animated_y(layer_->size, t, layer_->rect_height);
                     QSignalBlocker block(spn_layer_h_);
                     spn_layer_h_->setValue(layer_->rect_height);
                     if (spn_transform_size_h_) {
@@ -3043,7 +3079,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_height = (float)v;
-                set_animated_value(layer_->box_height, t, v);
+                set_animated_y(layer_->size, t, v);
                 if (spn_transform_size_h_) {
                     QSignalBlocker block(spn_transform_size_h_);
                     spn_transform_size_h_->setValue(v);
@@ -3054,7 +3090,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                         layer_->type == LayerType::SolidRect);
                 if (lock_size && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
-                    set_animated_value(layer_->box_width, t, layer_->rect_width);
+                    set_animated_x(layer_->size, t, layer_->rect_width);
                     QSignalBlocker block(spn_layer_w_);
                     spn_layer_w_->setValue(layer_->rect_width);
                     if (spn_transform_size_w_) {
@@ -3072,7 +3108,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_width = (float)v;
-                set_animated_value(layer_->box_width, t, v);
+                set_animated_x(layer_->size, t, v);
                 if (spn_layer_w_) {
                     QSignalBlocker block(spn_layer_w_);
                     spn_layer_w_->setValue(v);
@@ -3082,7 +3118,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                         layer_->type == LayerType::SolidRect);
                 if (lock_size && old_w > 0.0) {
                     layer_->rect_height = (float)(v * old_h / old_w);
-                    set_animated_value(layer_->box_height, t, layer_->rect_height);
+                    set_animated_y(layer_->size, t, layer_->rect_height);
                     if (spn_transform_size_h_) {
                         QSignalBlocker block(spn_transform_size_h_);
                         spn_transform_size_h_->setValue(layer_->rect_height);
@@ -3102,7 +3138,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_height = (float)v;
-                set_animated_value(layer_->box_height, t, v);
+                set_animated_y(layer_->size, t, v);
                 if (spn_layer_h_) {
                     QSignalBlocker block(spn_layer_h_);
                     spn_layer_h_->setValue(v);
@@ -3112,7 +3148,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                         layer_->type == LayerType::SolidRect);
                 if (lock_size && old_h > 0.0) {
                     layer_->rect_width = (float)(v * old_w / old_h);
-                    set_animated_value(layer_->box_width, t, layer_->rect_width);
+                    set_animated_x(layer_->size, t, layer_->rect_width);
                     if (spn_transform_size_w_) {
                         QSignalBlocker block(spn_transform_size_w_);
                         spn_transform_size_w_->setValue(layer_->rect_width);
@@ -3251,8 +3287,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->shape_type = ShapeType::Rectangle;
                 layer_->rect_width = (float)default_w;
                 layer_->rect_height = (float)default_h;
-                set_animated_value(layer_->box_width, t, default_w);
-                set_animated_value(layer_->box_height, t, default_h);
+                set_animated_x(layer_->size, t, default_w);
+                set_animated_y(layer_->size, t, default_h);
                 set_layer_all_corner_radii(*layer_, 0.0f);
                 layer_->corner_radius_locked = true;
                 layer_->corner_type = CornerType::Round;
@@ -3373,54 +3409,46 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     double t = local_time();
                     layer_->rect_width = (float)image_size.width();
                     layer_->rect_height = (float)image_size.height();
-                    set_animated_value(layer_->box_width, t, layer_->rect_width);
-                    set_animated_value(layer_->box_height, t, layer_->rect_height);
+                    set_animated_x(layer_->size, t, layer_->rect_width);
+                    set_animated_y(layer_->size, t, layer_->rect_height);
                 }
                 load_values();
                 emit_change();
             });
 
-    auto toggle_vec2_keyframe = [this](AnimatedProperty &x_prop, AnimatedProperty &y_prop,
-                                        double time, double x_value, double y_value) {
-        const bool remove = keyframe_at_time(x_prop, time) || keyframe_at_time(y_prop, time);
-        if (remove) {
-            remove_keyframe_at(x_prop, time);
-            remove_keyframe_at(y_prop, time);
-        } else {
-            add_or_replace_keyframe(x_prop, time, x_value);
-            add_or_replace_keyframe(y_prop, time, y_value);
-        }
+    auto toggle_vec2_keyframe = [](AnimatedVec2Property &prop, double time, double x_value, double y_value) {
+        toggle_keyframe(prop, time, {x_value, y_value});
     };
 
     connect(btn_kf_pos_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->pos_x, layer_->pos_y, local_time(), spn_px_->value(), spn_py_->value());
+        toggle_vec2_keyframe(layer_->position, local_time(), spn_px_->value(), spn_py_->value());
         load_values();
         emit_change();
     });
     connect(btn_kf_pos_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->pos_x, layer_->pos_y, local_time(), spn_px_->value(), spn_py_->value());
+        toggle_vec2_keyframe(layer_->position, local_time(), spn_px_->value(), spn_py_->value());
         load_values();
         emit_change();
     });
     connect(btn_kf_scale_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->scale_x, layer_->scale_y, local_time(),
+        toggle_vec2_keyframe(layer_->scale, local_time(),
                              spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
         load_values();
         emit_change();
     });
     connect(btn_kf_scale_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->scale_x, layer_->scale_y, local_time(),
+        toggle_vec2_keyframe(layer_->scale, local_time(),
                              spn_scale_x_->value() / 100.0, spn_scale_y_->value() / 100.0);
         load_values();
         emit_change();
     });
     connect(btn_kf_transform_size_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->box_width, layer_->box_height, local_time(),
+        toggle_vec2_keyframe(layer_->size, local_time(),
                              spn_transform_size_w_->value(), spn_transform_size_h_->value());
         load_values();
         emit_change();
@@ -3439,14 +3467,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     });
     connect(btn_kf_origin_x_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->origin_x_prop, layer_->origin_y_prop, local_time(),
+        toggle_vec2_keyframe(layer_->origin_prop, local_time(),
                              spn_origin_x_->value(), spn_origin_y_->value());
         load_values();
         emit_change();
     });
     connect(btn_kf_origin_y_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->origin_x_prop, layer_->origin_y_prop, local_time(),
+        toggle_vec2_keyframe(layer_->origin_prop, local_time(),
                              spn_origin_x_->value(), spn_origin_y_->value());
         load_values();
         emit_change();
@@ -3513,7 +3541,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     });
     connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
-        toggle_vec2_keyframe(layer_->box_width, layer_->box_height, local_time(),
+        toggle_vec2_keyframe(layer_->size, local_time(),
                              spn_layer_w_->value(), spn_layer_h_->value());
         load_values();
         emit_change();
@@ -3916,18 +3944,18 @@ void PropertiesPanel::load_values()
 
     double lt = std::clamp(playhead_ - layer_->in_time, 0.0,
                            std::max(0.0, layer_->out_time - layer_->in_time));
-    spn_px_->setValue(layer_->pos_x.is_animated()
-                      ? layer_->pos_x.evaluate(lt)
-                      : layer_->pos_x.static_value);
-    spn_py_->setValue(layer_->pos_y.is_animated()
-                      ? layer_->pos_y.evaluate(lt)
-                      : layer_->pos_y.static_value);
-    spn_scale_x_->setValue((layer_->scale_x.is_animated()
-                            ? layer_->scale_x.evaluate(lt)
-                            : layer_->scale_x.static_value) * 100.0);
-    spn_scale_y_->setValue((layer_->scale_y.is_animated()
-                            ? layer_->scale_y.evaluate(lt)
-                            : layer_->scale_y.static_value) * 100.0);
+    spn_px_->setValue(layer_->position.is_animated()
+                      ? layer_->position.evaluate(lt).x
+                      : layer_->position.static_value.x);
+    spn_py_->setValue(layer_->position.is_animated()
+                      ? layer_->position.evaluate(lt).y
+                      : layer_->position.static_value.y);
+    spn_scale_x_->setValue((layer_->scale.is_animated()
+                            ? layer_->scale.evaluate(lt).x
+                            : layer_->scale.static_value.x) * 100.0);
+    spn_scale_y_->setValue((layer_->scale.is_animated()
+                            ? layer_->scale.evaluate(lt).y
+                            : layer_->scale.static_value.y) * 100.0);
     if (chk_scale_lock_) chk_scale_lock_->setChecked(layer_->scale_lock);
     if (spn_transform_size_w_) spn_transform_size_w_->setValue(eval_box_width(*layer_, lt));
     if (spn_transform_size_h_) spn_transform_size_h_->setValue(eval_box_height(*layer_, lt));
@@ -4062,14 +4090,17 @@ void PropertiesPanel::load_values()
     auto set_group_kf_icon = [&](QPushButton *button, std::initializer_list<const AnimatedProperty *> props) {
         set_kf_icon(button, any_keyframe_at_time(props, lt), any_keyframes(props));
     };
-    set_group_kf_icon(btn_kf_pos_x_, {&layer_->pos_x, &layer_->pos_y});
-    set_group_kf_icon(btn_kf_pos_y_, {&layer_->pos_x, &layer_->pos_y});
-    set_group_kf_icon(btn_kf_scale_x_, {&layer_->scale_x, &layer_->scale_y});
-    set_group_kf_icon(btn_kf_scale_y_, {&layer_->scale_x, &layer_->scale_y});
+    auto set_vec_kf_icon = [&](QPushButton *button, const AnimatedVec2Property &prop) {
+        set_kf_icon(button, keyframe_at_time(prop, lt), prop.is_animated());
+    };
+    set_vec_kf_icon(btn_kf_pos_x_, layer_->position);
+    set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
+    set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
+    set_vec_kf_icon(btn_kf_scale_y_, layer_->scale);
     set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
-    set_group_kf_icon(btn_kf_origin_x_, {&layer_->origin_x_prop, &layer_->origin_y_prop});
-    set_group_kf_icon(btn_kf_origin_y_, {&layer_->origin_x_prop, &layer_->origin_y_prop});
+    set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
+    set_vec_kf_icon(btn_kf_origin_y_, layer_->origin_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
     set_prop_kf_icon(btn_kf_paragraph_indent_first_line_, layer_->paragraph_indent_first_line_prop);
@@ -4080,7 +4111,7 @@ void PropertiesPanel::load_values()
     set_prop_kf_icon(btn_kf_baseline_shift_, layer_->baseline_shift_prop);
     set_prop_kf_icon(btn_kf_paragraph_space_before_, layer_->paragraph_space_before_prop);
     set_prop_kf_icon(btn_kf_paragraph_space_after_, layer_->paragraph_space_after_prop);
-    set_group_kf_icon(btn_kf_width_, {&layer_->box_width, &layer_->box_height});
+    set_vec_kf_icon(btn_kf_width_, layer_->size);
     set_group_kf_icon(btn_kf_text_color_, {&layer_->text_color_a, &layer_->text_color_r,
                                            &layer_->text_color_g, &layer_->text_color_b});
     set_group_kf_icon(btn_kf_fill_color_, {&layer_->fill_color_a, &layer_->fill_color_r,

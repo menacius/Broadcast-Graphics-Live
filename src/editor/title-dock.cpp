@@ -10,6 +10,7 @@
 #include "timecode-spinbox.h"
 #include "title-localization.h"
 #include "cache-manager.h"
+#include "title-logger.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -61,6 +62,7 @@
 #include <QFrame>
 #include <QFocusEvent>
 #include <QSizePolicy>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QHeaderView>
@@ -72,6 +74,7 @@
 #include <QTextDocument>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPen>
 #include <QSet>
 #include <QPixmap>
 #include <QSignalBlocker>
@@ -225,28 +228,134 @@ static QString live_cue_cache_text(FrameCacheState state)
 {
     switch (state) {
     case FrameCacheState::Queued: return QStringLiteral("Queued");
-    case FrameCacheState::Rendering: return QStringLiteral("Rendering");
-    case FrameCacheState::CachedRam:
-    case FrameCacheState::CachedDisk: return QStringLiteral("Ready");
-    case FrameCacheState::Stale: return QStringLiteral("Stale");
-    case FrameCacheState::Disabled: return QStringLiteral("Disabled");
+    case FrameCacheState::Rendering: return QStringLiteral("Caching");
+    case FrameCacheState::CachedRam: return QStringLiteral("Ready (RAM)");
+    case FrameCacheState::CachedDisk: return QStringLiteral("Ready (Disk)");
+    case FrameCacheState::Stale: return QStringLiteral("Cache error or stale");
+    case FrameCacheState::Disabled: return QStringLiteral("Caching disabled");
     case FrameCacheState::NotCached:
     default: return QStringLiteral("Not cached");
+    }
+}
+
+static QString live_cue_cache_tooltip(FrameCacheState state)
+{
+    switch (state) {
+    case FrameCacheState::Queued:
+        return QStringLiteral("Queued for caching. Click to queue this row again.");
+    case FrameCacheState::Rendering:
+        return QStringLiteral("Caching this row. Click to restart caching for this row.");
+    case FrameCacheState::CachedRam:
+        return QStringLiteral("Cached in RAM and ready. Click to rebuild this row cache.");
+    case FrameCacheState::CachedDisk:
+        return QStringLiteral("Cached on disk and ready. Click to promote or rebuild this row cache.");
+    case FrameCacheState::Stale:
+        return QStringLiteral("Cache is stale or failed. Click to rebuild this row cache.");
+    case FrameCacheState::Disabled:
+        return QStringLiteral("Caching is disabled in Preferences.");
+    case FrameCacheState::NotCached:
+    default:
+        return QStringLiteral("Not cached. Click to cache this row.");
     }
 }
 
 static QColor live_cue_cache_color(FrameCacheState state)
 {
     switch (state) {
-    case FrameCacheState::Queued: return QColor(96, 96, 96);
-    case FrameCacheState::Rendering: return QColor(255, 202, 74);
+    case FrameCacheState::Queued: return QColor(230, 138, 33);
+    case FrameCacheState::Rendering: return QColor(255, 214, 63);
     case FrameCacheState::CachedRam: return QColor(39, 186, 103);
     case FrameCacheState::CachedDisk: return QColor(74, 144, 226);
     case FrameCacheState::Stale: return QColor(214, 90, 90);
-    case FrameCacheState::Disabled: return QColor(95, 95, 95);
+    case FrameCacheState::Disabled: return QColor(39, 186, 103);
     case FrameCacheState::NotCached:
     default: return QColor(130, 130, 130);
     }
+}
+
+static const char *live_cue_cache_progress_icon_name(int progress_percent)
+{
+    const int progress = std::clamp(progress_percent, 0, 100);
+    if (progress >= 100)
+        return "cache-ok.svg";
+    if (progress >= 75)
+        return "cache-progress-75-100.svg";
+    if (progress >= 50)
+        return "cache-progress-50-75.svg";
+    if (progress >= 25)
+        return "cache-progress-25-50.svg";
+    return "cache-queued-0-25.svg";
+}
+
+static const char *live_cue_cache_icon_name(FrameCacheState state, int progress_percent)
+{
+    switch (state) {
+    case FrameCacheState::Queued:
+    case FrameCacheState::Rendering:
+        return live_cue_cache_progress_icon_name(progress_percent);
+    case FrameCacheState::CachedRam:
+    case FrameCacheState::CachedDisk:
+    case FrameCacheState::Disabled:
+        return "cache-ok.svg";
+    case FrameCacheState::Stale:
+        return "cache-error.svg";
+    case FrameCacheState::NotCached:
+    default:
+        return "cache-queued-0-25.svg";
+    }
+}
+
+static QToolButton *centered_cell_tool_button(QTableWidget *table, int row, int col, const char *object_name)
+{
+    if (!table || row < 0 || row >= table->rowCount() || col < 0 || col >= table->columnCount())
+        return nullptr;
+
+    if (auto *cell = table->cellWidget(row, col)) {
+        if (auto *button = cell->findChild<QToolButton *>(QString::fromUtf8(object_name)))
+            return button;
+        if (auto *button = qobject_cast<QToolButton *>(cell))
+            return button;
+    }
+
+    auto *holder = new QWidget(table);
+    auto *layout = new QHBoxLayout(holder);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->setAlignment(Qt::AlignCenter);
+
+    auto *button = new QToolButton(holder);
+    button->setObjectName(QString::fromUtf8(object_name));
+    button->setAutoRaise(true);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setIconSize(QSize(18, 18));
+    button->setFixedSize(28, 24);
+    layout->addWidget(button, 0, Qt::AlignCenter);
+
+    table->setCellWidget(row, col, holder);
+    return button;
+}
+
+static QToolButton *live_cue_cache_button(QTableWidget *table, int row)
+{
+    return centered_cell_tool_button(table, row, 1, "liveCueCacheButton");
+}
+
+static QToolButton *live_cue_button(QTableWidget *table, int row, int col)
+{
+    auto *button = centered_cell_tool_button(table, row, col, "liveCueButton");
+    if (button)
+        button->setIconSize(QSize(20, 20));
+    return button;
+}
+
+static QColor live_cue_state_color(bool current, bool queued)
+{
+    if (current)
+        return QColor(208, 48, 48);
+    if (queued)
+        return QColor(40, 184, 79);
+    return QColor(150, 150, 150);
 }
 
 
@@ -428,12 +537,43 @@ public:
         viewport()->setMouseTracking(false);
     }
 
+    std::function<QColor(int)> cue_row_border_color;
+
 protected:
     void mouseMoveEvent(QMouseEvent *event) override
     {
         if (event && event->buttons() == Qt::NoButton)
             return;
         QTableWidget::mouseMoveEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QTableWidget::paintEvent(event);
+
+        if (!cue_row_border_color || rowCount() <= 0)
+            return;
+
+        QPainter painter(viewport());
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        for (int row = 0; row < rowCount(); ++row) {
+            if (isRowHidden(row))
+                continue;
+            const QColor color = cue_row_border_color(row);
+            if (!color.isValid() || color.alpha() == 0)
+                continue;
+
+            const int y = rowViewportPosition(row);
+            const int h = rowHeight(row);
+            if (y + h < 0 || y > viewport()->height())
+                continue;
+
+            QColor border = color;
+            border.setAlpha(220);
+            painter.setPen(QPen(border, 2));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(QRect(1, y + 1, viewport()->width() - 3, h - 3));
+        }
     }
 };
 
@@ -1788,17 +1928,20 @@ TitleDock::TitleDock(QWidget *parent)
                     populate_exposed_text();
                     return;
                 }
-                const FrameCacheState cue_state = CacheManager::instance().liveCueState(title, row);
-                auto *cache_item = text_table_->item(row, 1);
-                if (!cache_item) {
-                    cache_item = new QTableWidgetItem();
-                    cache_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-                    cache_item->setTextAlignment(Qt::AlignCenter);
-                    cache_item->setToolTip(QStringLiteral("Live Text Cue cache status"));
-                    text_table_->setItem(row, 1, cache_item);
+                update_live_text_cache_cell(title, row);
+                if (cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row &&
+                    CacheManager::instance().isLiveCueReady(title, row)) {
+                    OGS_LOG_INFO("LiveCueUI", QStringLiteral("Armed cue row prerender complete; cueing title=%1 row=%2")
+                                                .arg(title_id).arg(row));
+                    cache_waiting_cue_row_ = -1;
+                    cache_waiting_title_id_.clear();
+                    cue_live_text_row(row, false);
                 }
-                cache_item->setText(live_cue_cache_text(cue_state));
-                cache_item->setForeground(live_cue_cache_color(cue_state));
+            });
+    connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this,
+            [this](bool) {
+                if (!updating_exposed_text_)
+                    populate_exposed_text();
             });
 }
 
@@ -1845,6 +1988,48 @@ bool TitleDock::eventFilter(QObject *watched, QEvent *event)
     }
 
     return QObject::eventFilter(watched, event);
+}
+
+void TitleDock::update_live_text_cache_cell(const std::shared_ptr<Title> &title, int row)
+{
+    if (!title || !text_table_ || row < 0 || row >= text_table_->rowCount())
+        return;
+
+    const FrameCacheState state = CacheManager::instance().liveCueState(title, row);
+    auto *button = live_cue_cache_button(text_table_, row);
+    if (!button)
+        return;
+
+    const int progress_percent = CacheManager::instance().liveCueProgressPercent(title, row);
+    const QColor color = live_cue_cache_color(state);
+    const char *icon_name = live_cue_cache_icon_name(state, progress_percent);
+    OGS_LOG_DEBUG("LiveCueUI", QStringLiteral("Update cache cell title=%1 row=%2 state=%3 progress=%4 icon=%5")
+                                     .arg(QString::fromStdString(title->id))
+                                     .arg(row)
+                                     .arg((int)state)
+                                     .arg(progress_percent)
+                                     .arg(QString::fromUtf8(icon_name)));
+    button->setIcon(obs_icon(icon_name, color));
+    button->setToolTip(QStringLiteral("%1\n%2")
+                           .arg(state == FrameCacheState::Queued || state == FrameCacheState::Rendering
+                                    ? QStringLiteral("%1 (%2%)").arg(live_cue_cache_text(state)).arg(progress_percent)
+                                    : live_cue_cache_text(state),
+                                live_cue_cache_tooltip(state)));
+    button->setEnabled(true);
+    button->setCursor(state == FrameCacheState::Disabled ? Qt::ArrowCursor : Qt::PointingHandCursor);
+    button->setStyleSheet(QStringLiteral(
+        "QToolButton{background:transparent;border:none;padding:0;}"
+        "QToolButton:hover{background:transparent;border:none;}"));
+    button->disconnect();
+    connect(button, &QToolButton::clicked, this, [this, row]() {
+        auto current_title = TitleDataStore::instance().get_title(selected_id());
+        if (!current_title || row < 0 || row >= (int)current_title->live_text_rows.size())
+            return;
+        if (!CacheManager::instance().cacheEnabled())
+            return;
+        CacheManager::instance().cacheLiveCueNow(current_title, row);
+        update_live_text_cache_cell(current_title, row);
+    });
 }
 
 TitleDock::~TitleDock()
@@ -2855,6 +3040,8 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
 
     if (exposed_now.empty()) {
         updating_exposed_text_ = true;
+        cache_waiting_cue_row_ = -1;
+        cache_waiting_title_id_.clear();
         title->current_cue_row = -1;
         title->pending_cue_row = -1;
         ++title->cue_revision;
@@ -2870,6 +3057,10 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     const bool require_cached_cue = CacheManager::instance().cacheEnabled() &&
         CacheManager::instance().titleCacheability(title) != TitleCacheability::NonCacheable;
     if (require_cached_cue && !CacheManager::instance().isLiveCueReady(title, row)) {
+        cache_waiting_cue_row_ = row;
+        cache_waiting_title_id_ = QString::fromStdString(title->id);
+        OGS_LOG_INFO("LiveCueUI", QStringLiteral("Armed cue row waiting for prerender title=%1 row=%2")
+                                    .arg(cache_waiting_title_id_).arg(row));
         CacheManager::instance().queueLiveCue(title, row);
         CacheManager::instance().preloadLiveCues(title, row, 2);
         populate_exposed_text();
@@ -2892,6 +3083,8 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     title->cue_persistent_text_columns.assign(exposed_now.size(), false);
 
     if (allow_uncue && (is_active_cue || is_pending_cue)) {
+        cache_waiting_cue_row_ = -1;
+        cache_waiting_title_id_.clear();
         title->current_cue_row = -1;
         title->pending_cue_row = -1;
         title->cue_persistence_transition = false;
@@ -2911,6 +3104,7 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     } else if (!is_active_cue || title->pending_cue_row >= 0) {
         for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col) {
             exposed_now[col]->text_content = title->live_text_rows[row][col];
+            exposed_now[col]->rich_text = rich_text_document_from_layer_defaults(*exposed_now[col]);
             exposed_now[col]->rich_text_html.clear();
         }
         title->current_cue_row = row;
@@ -2918,6 +3112,8 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     }
 
     ++title->cue_revision;
+    cache_waiting_cue_row_ = -1;
+    cache_waiting_title_id_.clear();
     TitleDataStore::instance().touch_runtime_change();
     CacheManager::instance().preloadLiveCues(title, row, 2);
     updating_exposed_text_ = false;
@@ -3130,6 +3326,22 @@ void TitleDock::populate_exposed_text()
     auto exposed = exposed_text_layers(title);
     normalize_live_text_rows(title, exposed);
 
+    if (auto *cue_table = dynamic_cast<LiveTextCueTable *>(text_table_)) {
+        const QString border_title_id = QString::fromStdString(title->id);
+        cue_table->cue_row_border_color = [this, border_title_id](int row) -> QColor {
+            auto current_title = TitleDataStore::instance().get_title(selected_id());
+            if (!current_title || QString::fromStdString(current_title->id) != border_title_id)
+                return QColor();
+            const bool waiting_for_prerender = cache_waiting_title_id_ == border_title_id &&
+                cache_waiting_cue_row_ == row;
+            if (row == current_title->current_cue_row)
+                return live_cue_state_color(true, false);
+            if (row == current_title->pending_cue_row || waiting_for_prerender)
+                return live_cue_state_color(false, true);
+            return QColor();
+        };
+    }
+
     const bool has_exposed = !exposed.empty();
     text_table_->setEnabled(true);
     if (btn_add_text_row_) btn_add_text_row_->setEnabled(has_exposed);
@@ -3154,18 +3366,18 @@ void TitleDock::populate_exposed_text()
         title_item->setToolTip(title_item->text());
         text_table_->setItem(0, 0, title_item);
 
-        auto *cue = new QPushButton("▶", text_table_);
-        cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
-        const QPalette cue_pal = qApp->palette();
-        const QColor cue_bg = cue_pal.color(QPalette::Button);
-        const QColor cue_hover = cue_bg.lightness() < 128 ? cue_bg.lighter(122) : cue_bg.darker(108);
-        cue->setStyleSheet(QStringLiteral("QPushButton{background:%1;color:%2;border:none;border-radius:3px;font-weight:bold;}"
-                           "QPushButton:hover{background:%3;}")
-                           .arg(cue_bg.name(QColor::HexRgb),
-                                cue_pal.color(QPalette::ButtonText).name(QColor::HexRgb),
-                                cue_hover.name(QColor::HexRgb)));
-        connect(cue, &QPushButton::clicked, this, [this]() { cue_live_text_row(0, true); });
-        text_table_->setCellWidget(0, 1, cue);
+        auto *cue = live_cue_button(text_table_, 0, 1);
+        if (cue) {
+            const bool current = title->current_cue_row == 0;
+            const bool queued = title->pending_cue_row == 0 ||
+                (cache_waiting_title_id_ == QString::fromStdString(title->id) && cache_waiting_cue_row_ == 0);
+            cue->setIcon(obs_icon("cue.svg", live_cue_state_color(current, queued)));
+            cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
+            cue->setStyleSheet(QStringLiteral(
+                "QToolButton{background:transparent;border:none;padding:0;}"
+                "QToolButton:hover{background:transparent;border:none;}"));
+            connect(cue, &QToolButton::clicked, this, [this]() { cue_live_text_row(0, true); });
+        }
         apply_live_text_row_heights();
         update_playlist_controls();
         update_persistence_controls();
@@ -3178,7 +3390,7 @@ void TitleDock::populate_exposed_text()
     text_table_->setColumnCount((int)exposed.size() + 3);
 
     QStringList headers;
-    headers << "" << QStringLiteral("Cache");
+    headers << "" << QString();
     for (const auto &layer : exposed)
         headers << live_text_layer_header(layer);
     headers << "";
@@ -3202,13 +3414,7 @@ void TitleDock::populate_exposed_text()
         select_item->setCheckState(Qt::Unchecked);
         select_item->setTextAlignment(Qt::AlignCenter);
         text_table_->setItem(row, 0, select_item);
-        const FrameCacheState cue_state = CacheManager::instance().liveCueState(title, row);
-        auto *cache_item = new QTableWidgetItem(live_cue_cache_text(cue_state));
-        cache_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-        cache_item->setTextAlignment(Qt::AlignCenter);
-        cache_item->setForeground(live_cue_cache_color(cue_state));
-        cache_item->setToolTip(QStringLiteral("Live Text Cue cache status"));
-        text_table_->setItem(row, 1, cache_item);
+        update_live_text_cache_cell(title, row);
         for (int col = 0; col < (int)exposed.size(); ++col) {
             auto *edit = new LiveTextCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
             edit->setPlaceholderText(live_text_layer_header(exposed[col]));
@@ -3219,22 +3425,18 @@ void TitleDock::populate_exposed_text()
             text_table_->setCellWidget(row, col + 2, edit);
         }
 
-        auto *cue = new QPushButton("▶", text_table_);
-        cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
-        QString cue_style;
-        if (row == title->current_cue_row) {
-            cue_style = "QPushButton{background:#b02020;color:white;border:none;border-radius:3px;font-weight:bold;}"
-                        "QPushButton:hover{background:#d03030;}";
-        } else if (row == title->pending_cue_row) {
-            cue_style = "QPushButton{background:#1d8f3a;color:white;border:none;border-radius:3px;font-weight:bold;}"
-                        "QPushButton:hover{background:#28b84f;}";
-        } else {
-            cue_style = "QPushButton{background:#2a2a2a;color:#ddd;border:none;border-radius:3px;font-weight:bold;}"
-                        "QPushButton:hover{background:#3a3a3a;}";
+        const bool waiting_for_prerender = cache_waiting_title_id_ == QString::fromStdString(title->id) &&
+            cache_waiting_cue_row_ == row;
+        auto *cue = live_cue_button(text_table_, row, (int)exposed.size() + 2);
+        if (cue) {
+            cue->setToolTip(obsgs_tr("OBSTitles.PlayCueTooltip"));
+            cue->setIcon(obs_icon("cue.svg", live_cue_state_color(row == title->current_cue_row,
+                                                                    row == title->pending_cue_row || waiting_for_prerender)));
+            cue->setStyleSheet(QStringLiteral(
+                "QToolButton{background:transparent;border:none;padding:0;}"
+                "QToolButton:hover{background:transparent;border:none;}"));
+            connect(cue, &QToolButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
         }
-        cue->setStyleSheet(cue_style);
-        connect(cue, &QPushButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
-        text_table_->setCellWidget(row, (int)exposed.size() + 2, cue);
     }
     const int current = title->current_cue_row >= 0 ? title->current_cue_row : 0;
     CacheManager::instance().preloadLiveCues(title, current, 2);
@@ -3379,6 +3581,7 @@ void TitleDock::on_import_append_live_text_data()
 
     auto exposed = exposed_text_layers(title);
     normalize_live_text_rows(title, exposed);
+    const int first_added_row = (int)title->live_text_rows.size();
     for (auto &row : imported_rows) {
         row.resize(exposed.size());
         title->live_text_rows.push_back(std::move(row));
@@ -3386,6 +3589,8 @@ void TitleDock::on_import_append_live_text_data()
     normalize_live_text_rows(title, exposed);
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
+    for (int row = first_added_row; row < (int)title->live_text_rows.size(); ++row)
+        CacheManager::instance().invalidateLiveCue(title, row);
     populate_exposed_text();
     status_lbl_->setText(obsgs_tr("OBSTitles.ImportedStatusFormat").arg(QFileInfo(path).fileName()));
 }
@@ -3468,8 +3673,11 @@ void TitleDock::on_add_live_text_row()
     const int added_row = (int)title->live_text_rows.size() - 1;
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
+    CacheManager::instance().invalidateLiveCue(title, added_row);
+    CacheManager::instance().preloadLiveCues(title, added_row, 1);
     populate_exposed_text();
     apply_live_text_row_selection({added_row}, false);
+    update_live_text_cache_cell(title, added_row);
 }
 
 void TitleDock::on_delete_live_text_rows()
@@ -3642,12 +3850,12 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
         layer->id = TitleDataStore::make_uuid();
         layer->name = layer_name;
         layer->type = LayerType::SolidRect;
-        layer->pos_x.static_value = x;
-        layer->pos_y.static_value = y;
+        layer->position.static_value.x = x;
+        layer->position.static_value.y = y;
         layer->rect_width = w;
         layer->rect_height = h;
-        layer->box_width.static_value = w;
-        layer->box_height.static_value = h;
+        layer->size.static_value.x = w;
+        layer->size.static_value.y = h;
         layer->corner_radius = radius;
         layer->corner_radius_tl = radius;
         layer->corner_radius_tr = radius;
@@ -3686,10 +3894,10 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
         layer->text_color_b.static_value = color & 0xFF;
         layer->rect_width = 960.0f;
         layer->rect_height = 160.0f;
-        layer->box_width.static_value = layer->rect_width;
-        layer->box_height.static_value = layer->rect_height;
-        layer->pos_x.static_value = x;
-        layer->pos_y.static_value = y;
+        layer->size.static_value.x = layer->rect_width;
+        layer->size.static_value.y = layer->rect_height;
+        layer->position.static_value.x = x;
+        layer->position.static_value.y = y;
         layer->align_h = align_h;
         layer->align_v = align_v;
         layer->out_time = title->duration;
@@ -3722,7 +3930,7 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
         auto ticker = add_text(obs_text_std("OBSTitles.LayerTickerText"), name, 1030, 1010, 44, 0xFFFFFFFF, false, 0, 1);
         ticker->type = LayerType::Ticker;
         ticker->rect_width = 1640.0f;
-        ticker->box_width.static_value = ticker->rect_width;
+        ticker->size.static_value.x = ticker->rect_width;
         ticker->ticker_style = 0;
         ticker->ticker_direction = 1;
         ticker->ticker_speed = 140.0;

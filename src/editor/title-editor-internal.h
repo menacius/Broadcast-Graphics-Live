@@ -3159,8 +3159,8 @@ static double natural_text_height(const Layer &layer, double width)
 
 static double eval_box_width(const Layer &layer, double t)
 {
-    double width = layer.box_width.is_animated()
-        ? layer.box_width.evaluate(t)
+    double width = layer.size.is_animated()
+        ? layer.size.evaluate(t).x
         : static_cast<double>(layer.rect_width);
     if (layer.text_box_width_to_text && is_text_box_auto_size_layer(layer))
         width = std::min(natural_text_width(layer), std::max(1.0, (double)layer.max_text_box_width));
@@ -3169,8 +3169,8 @@ static double eval_box_width(const Layer &layer, double t)
 
 static double eval_box_height(const Layer &layer, double t)
 {
-    double height = layer.box_height.is_animated()
-        ? layer.box_height.evaluate(t)
+    double height = layer.size.is_animated()
+        ? layer.size.evaluate(t).y
         : static_cast<double>(layer.rect_height);
     if (layer.text_box_height_to_text && is_text_box_auto_size_layer(layer)) {
         const double width = eval_box_width(layer, t);
@@ -3187,16 +3187,16 @@ static int shadow_pass_count(double blur)
 
 static double eval_origin_x(const Layer &layer, double t)
 {
-    return std::clamp(layer.origin_x_prop.is_animated()
-                          ? layer.origin_x_prop.evaluate(t)
+    return std::clamp(layer.origin_prop.is_animated()
+                          ? layer.origin_prop.evaluate(t).x
                           : (double)layer.origin_x,
                       0.0, 1.0);
 }
 
 static double eval_origin_y(const Layer &layer, double t)
 {
-    return std::clamp(layer.origin_y_prop.is_animated()
-                          ? layer.origin_y_prop.evaluate(t)
+    return std::clamp(layer.origin_prop.is_animated()
+                          ? layer.origin_prop.evaluate(t).y
                           : (double)layer.origin_y,
                       0.0, 1.0);
 }
@@ -3664,6 +3664,35 @@ static void apply_easing_preset(Keyframe &keyframe, EasingType easing)
     }
 }
 
+static void apply_easing_preset(VectorKeyframe &keyframe, EasingType easing)
+{
+    keyframe.easing = easing;
+    switch (easing) {
+    case EasingType::Bezier:
+        keyframe.cx1 = 0.33f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.67f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::EaseIn:
+        keyframe.cx1 = 0.42f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 1.0f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::EaseOut:
+        keyframe.cx1 = 0.0f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.58f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::EaseInOut:
+        keyframe.cx1 = 0.42f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.58f; keyframe.cy2 = 1.0f;
+        break;
+    case EasingType::Linear:
+    case EasingType::Hold:
+    default:
+        keyframe.cx1 = 0.333f; keyframe.cy1 = 0.0f;
+        keyframe.cx2 = 0.667f; keyframe.cy2 = 1.0f;
+        break;
+    }
+}
+
 static void add_or_replace_keyframe(AnimatedProperty &prop, double time, double value)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -3684,12 +3713,54 @@ static void add_or_replace_keyframe(AnimatedProperty &prop, double time, double 
               [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
 }
 
+static void add_or_replace_keyframe(AnimatedVec2Property &prop, double time, Vec2Value value)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    prop.static_value = value;
+    for (auto &kf : prop.keyframes) {
+        if (std::abs(kf.time - time) <= kEpsilon) {
+            kf.time = time;
+            kf.value = value;
+            return;
+        }
+    }
+    VectorKeyframe kf;
+    kf.time = time;
+    kf.value = value;
+    apply_easing_preset(kf, EasingType::Linear);
+    prop.keyframes.push_back(kf);
+    std::sort(prop.keyframes.begin(), prop.keyframes.end(),
+              [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
+}
+
 static void set_animated_value(AnimatedProperty &prop, double time, double value)
 {
     if (prop.is_animated())
         add_or_replace_keyframe(prop, time, value);
     else
         prop.static_value = value;
+}
+
+static void set_animated_value(AnimatedVec2Property &prop, double time, Vec2Value value)
+{
+    if (prop.is_animated())
+        add_or_replace_keyframe(prop, time, value);
+    else
+        prop.static_value = value;
+}
+
+static void set_animated_x(AnimatedVec2Property &prop, double time, double value)
+{
+    Vec2Value next = prop.evaluate(time);
+    next.x = value;
+    set_animated_value(prop, time, next);
+}
+
+static void set_animated_y(AnimatedVec2Property &prop, double time, double value)
+{
+    Vec2Value next = prop.evaluate(time);
+    next.y = value;
+    set_animated_value(prop, time, next);
 }
 
 static void set_color_channels_at(Layer &layer, bool text, double time, uint32_t argb)
@@ -3736,6 +3807,14 @@ static bool keyframe_at_time(const AnimatedProperty &prop, double time)
     return false;
 }
 
+static bool keyframe_at_time(const AnimatedVec2Property &prop, double time)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    for (const auto &kf : prop.keyframes)
+        if (std::abs(kf.time - time) <= kEpsilon) return true;
+    return false;
+}
+
 static void remove_keyframe_at(AnimatedProperty &prop, double time)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -3745,7 +3824,24 @@ static void remove_keyframe_at(AnimatedProperty &prop, double time)
         prop.keyframes.end());
 }
 
+static void remove_keyframe_at(AnimatedVec2Property &prop, double time)
+{
+    constexpr double kEpsilon = 1.0 / 240.0;
+    prop.keyframes.erase(
+        std::remove_if(prop.keyframes.begin(), prop.keyframes.end(),
+                       [&](const VectorKeyframe &kf) { return std::abs(kf.time - time) <= kEpsilon; }),
+        prop.keyframes.end());
+}
+
 static void toggle_keyframe(AnimatedProperty &prop, double time, double value)
+{
+    if (keyframe_at_time(prop, time))
+        remove_keyframe_at(prop, time);
+    else
+        add_or_replace_keyframe(prop, time, value);
+}
+
+static void toggle_keyframe(AnimatedVec2Property &prop, double time, Vec2Value value)
 {
     if (keyframe_at_time(prop, time))
         remove_keyframe_at(prop, time);
@@ -3969,28 +4065,76 @@ static QString easing_label(EasingType easing)
     }
 }
 
-static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
+struct TimelinePropertyRef {
+    AnimatedProperty *scalar = nullptr;
+    AnimatedVec2Property *vector = nullptr;
+
+    explicit operator bool() const { return scalar || vector; }
+    std::string name() const { return vector ? vector->name : scalar ? scalar->name : std::string(); }
+    bool is_animated() const { return vector ? vector->is_animated() : scalar && scalar->is_animated(); }
+    size_t keyframe_count() const { return vector ? vector->keyframes.size() : scalar ? scalar->keyframes.size() : 0; }
+    double keyframe_time(size_t index) const { return vector ? vector->keyframes[index].time : scalar->keyframes[index].time; }
+    EasingType keyframe_easing(size_t index) const { return vector ? vector->keyframes[index].easing : scalar->keyframes[index].easing; }
+    Keyframe scalar_keyframe(size_t index) const { return scalar ? scalar->keyframes[index] : Keyframe{}; }
+    VectorKeyframe vector_keyframe(size_t index) const { return vector ? vector->keyframes[index] : VectorKeyframe{}; }
+    bool is_vector() const { return vector != nullptr; }
+    void push_keyframe(const Keyframe &keyframe)
+    {
+        if (scalar) scalar->keyframes.push_back(keyframe);
+    }
+    void push_keyframe(const VectorKeyframe &keyframe)
+    {
+        if (vector) vector->keyframes.push_back(keyframe);
+    }
+    void set_keyframe_time(size_t index, double time)
+    {
+        if (vector) vector->keyframes[index].time = time;
+        else if (scalar) scalar->keyframes[index].time = time;
+    }
+    void erase_keyframe(size_t index)
+    {
+        if (vector) vector->keyframes.erase(vector->keyframes.begin() + (ptrdiff_t)index);
+        else if (scalar) scalar->keyframes.erase(scalar->keyframes.begin() + (ptrdiff_t)index);
+    }
+    void clear_keyframes()
+    {
+        if (vector) vector->keyframes.clear();
+        else if (scalar) scalar->keyframes.clear();
+    }
+    void sort_keyframes()
+    {
+        if (vector) {
+            std::sort(vector->keyframes.begin(), vector->keyframes.end(),
+                      [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
+        } else if (scalar) {
+            std::sort(scalar->keyframes.begin(), scalar->keyframes.end(),
+                      [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
+        }
+    }
+    void apply_easing(size_t index, EasingType easing)
+    {
+        if (vector) apply_easing_preset(vector->keyframes[index], easing);
+        else if (scalar) apply_easing_preset(scalar->keyframes[index], easing);
+    }
+};
+
+static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
 {
-    /* Position, Scale, Size and Origin are edited/keyframed as 2D vector
-     * properties in the UI. Keep the scalar AnimatedProperty storage for
-     * backward-compatible rendering/JSON, but expose one timeline lane per
-     * vector by using the X/W property as the group representative.
-     */
-    std::vector<AnimatedProperty *> props {
-        &layer.pos_x,
-        &layer.scale_x,
-        &layer.rotation, &layer.opacity,
-        &layer.box_width,
-        &layer.origin_x_prop,
-        &layer.paragraph_indent_left_prop, &layer.paragraph_indent_right_prop,
-        &layer.paragraph_indent_first_line_prop,
-        &layer.font_size_prop, &layer.char_scale_x_prop, &layer.char_scale_y_prop,
-        &layer.char_tracking_prop, &layer.baseline_shift_prop,
-        &layer.paragraph_space_before_prop, &layer.paragraph_space_after_prop,
-        &layer.text_color_a, &layer.text_color_r,
-        &layer.text_color_g, &layer.text_color_b,
-        &layer.fill_color_a, &layer.fill_color_r,
-        &layer.fill_color_g, &layer.fill_color_b
+    std::vector<TimelinePropertyRef> props {
+        {nullptr, &layer.position},
+        {nullptr, &layer.scale},
+        {&layer.rotation, nullptr}, {&layer.opacity, nullptr},
+        {nullptr, &layer.size},
+        {nullptr, &layer.origin_prop},
+        {&layer.paragraph_indent_left_prop, nullptr}, {&layer.paragraph_indent_right_prop, nullptr},
+        {&layer.paragraph_indent_first_line_prop, nullptr},
+        {&layer.font_size_prop, nullptr}, {&layer.char_scale_x_prop, nullptr}, {&layer.char_scale_y_prop, nullptr},
+        {&layer.char_tracking_prop, nullptr}, {&layer.baseline_shift_prop, nullptr},
+        {&layer.paragraph_space_before_prop, nullptr}, {&layer.paragraph_space_after_prop, nullptr},
+        {&layer.text_color_a, nullptr}, {&layer.text_color_r, nullptr},
+        {&layer.text_color_g, nullptr}, {&layer.text_color_b, nullptr},
+        {&layer.fill_color_a, nullptr}, {&layer.fill_color_r, nullptr},
+        {&layer.fill_color_g, nullptr}, {&layer.fill_color_b, nullptr}
     };
 
     auto add_effect_props = [&](LayerEffect &effect) {
@@ -3999,7 +4143,7 @@ static std::vector<AnimatedProperty *> timeline_properties(Layer &layer)
         prefix = prefix.toLower();
         auto name = [&](AnimatedProperty &prop, const char *suffix) {
             prop.name = (prefix + QStringLiteral("_") + QString::fromLatin1(suffix)).toStdString();
-            props.push_back(&prop);
+            props.push_back({&prop, nullptr});
         };
         name(effect.enabled_prop, "enabled");
         switch (effect.type) {
@@ -4101,10 +4245,10 @@ static QString property_label(const std::string &name)
         title.replace(QStringLiteral("_"), QStringLiteral(" "));
         return effect_label(title, suffix);
     }
-    if (name == "pos_x" || name == "pos_y") return obsgs_tr("OBSTitles.Position");
-    if (name == "scale_x" || name == "scale_y") return obsgs_tr("OBSTitles.Scale");
-    if (name == "box_width" || name == "box_height") return obsgs_tr("OBSTitles.Size");
-    if (name == "origin_x" || name == "origin_y") return obsgs_tr("OBSTitles.Origin");
+    if (name == "position") return obsgs_tr("OBSTitles.Position");
+    if (name == "scale") return obsgs_tr("OBSTitles.Scale");
+    if (name == "size") return obsgs_tr("OBSTitles.Size");
+    if (name == "origin") return obsgs_tr("OBSTitles.Origin");
     if (name == "paragraph_indent_left") return obsgs_tr("OBSTitles.ParagraphIndentLeft");
     if (name == "paragraph_indent_right") return obsgs_tr("OBSTitles.ParagraphIndentRight");
     if (name == "paragraph_indent_first_line") return obsgs_tr("OBSTitles.ParagraphIndentFirstLine");
@@ -4154,26 +4298,46 @@ static QString property_value_text(const AnimatedProperty &prop, const Layer &la
 {
     double value = prop.static_value;
     if (prop.name == "pos_x")
-        return QString("%1,%2").arg(layer.pos_x.static_value, 0, 'f', 1)
-                                .arg(layer.pos_y.static_value, 0, 'f', 1);
+        return QString("%1,%2").arg(layer.position.static_value.x, 0, 'f', 1)
+                                .arg(layer.position.static_value.y, 0, 'f', 1);
     if (prop.name == "scale_x")
-        return QString("%1,%2%").arg(layer.scale_x.static_value * 100.0, 0, 'f', 1)
-                                 .arg(layer.scale_y.static_value * 100.0, 0, 'f', 1);
+        return QString("%1,%2%").arg(layer.scale.static_value.x * 100.0, 0, 'f', 1)
+                                 .arg(layer.scale.static_value.y * 100.0, 0, 'f', 1);
     if (prop.name == "box_width")
-        return QString("%1 × %2").arg(layer.box_width.static_value, 0, 'f', 0)
-                                  .arg(layer.box_height.static_value, 0, 'f', 0);
+        return QString("%1 × %2").arg(layer.size.static_value.x, 0, 'f', 0)
+                                  .arg(layer.size.static_value.y, 0, 'f', 0);
     if (prop.name == "origin_x")
-        return QString("%1,%2").arg(layer.origin_x_prop.static_value, 0, 'f', 2)
-                                .arg(layer.origin_y_prop.static_value, 0, 'f', 2);
+        return QString("%1,%2").arg(layer.origin_prop.static_value.x, 0, 'f', 2)
+                                .arg(layer.origin_prop.static_value.y, 0, 'f', 2);
     if (prop.name == "char_scale_x" || prop.name == "char_scale_y") value *= 100.0;
     if (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") value *= 100.0;
     if (prop.name == "shadow_enabled" || prop.name == "background_enabled") return value >= 0.5 ? obsgs_tr("OBSTitles.On") : obsgs_tr("OBSTitles.Off");
     return QString::number(value, 'f', (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") ? 1 : 2);
 }
 
+static QString property_value_text(const TimelinePropertyRef &prop, const Layer &layer)
+{
+    if (!prop.vector)
+        return prop.scalar ? property_value_text(*prop.scalar, layer) : QString();
+
+    if (prop.name() == "position")
+        return QString("%1,%2").arg(layer.position.static_value.x, 0, 'f', 1)
+                                .arg(layer.position.static_value.y, 0, 'f', 1);
+    if (prop.name() == "scale")
+        return QString("%1,%2%").arg(layer.scale.static_value.x * 100.0, 0, 'f', 1)
+                                 .arg(layer.scale.static_value.y * 100.0, 0, 'f', 1);
+    if (prop.name() == "size")
+        return QString("%1 x %2").arg(layer.size.static_value.x, 0, 'f', 0)
+                                  .arg(layer.size.static_value.y, 0, 'f', 0);
+    if (prop.name() == "origin")
+        return QString("%1,%2").arg(layer.origin_prop.static_value.x, 0, 'f', 2)
+                                .arg(layer.origin_prop.static_value.y, 0, 'f', 2);
+    return QString::fromStdString(prop.name());
+}
+
 struct TimelineRow {
     std::shared_ptr<Layer> layer;
-    AnimatedProperty *prop = nullptr;
+    TimelinePropertyRef prop;
     bool is_property = false;
 };
 
@@ -4183,12 +4347,12 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
     if (!title) return rows;
     for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
         auto layer = *it;
-        rows.push_back({layer, nullptr, false});
+        rows.push_back({layer, TimelinePropertyRef{}, false});
         if (!layer->properties_expanded) continue;
         std::set<std::string> seen;
-        for (auto *prop : timeline_properties(*layer)) {
-            if (!prop->is_animated()) continue;
-            QString label = property_label(prop->name);
+        for (auto prop : timeline_properties(*layer)) {
+            if (!prop.is_animated()) continue;
+            QString label = property_label(prop.name());
             std::string key = label.toStdString();
             if (seen.insert(key).second)
                 rows.push_back({layer, prop, true});

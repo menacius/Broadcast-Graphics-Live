@@ -34,6 +34,35 @@ double AnimatedProperty::evaluate(double t) const
     return keyframes.back().value;
 }
 
+Vec2Value AnimatedVec2Property::evaluate(double t) const
+{
+    if (!std::isfinite(t)) return static_value;
+    if (keyframes.empty()) return static_value;
+    if (keyframes.size() == 1) return keyframes.front().value;
+    if (t <= keyframes.front().time) return keyframes.front().value;
+    if (t >= keyframes.back().time)  return keyframes.back().value;
+
+    for (size_t i = 0; i + 1 < keyframes.size(); ++i) {
+        const auto &k0 = keyframes[i];
+        const auto &k1 = keyframes[i + 1];
+        if (t >= k0.time && t <= k1.time) {
+            const double span = k1.time - k0.time;
+            if (span < 1e-10) return k0.value;
+            const double x = (t - k0.time) / span;
+
+            if (k0.easing == EasingType::Hold) return k0.value;
+
+            const double y = AnimatedProperty::ease(x, k0.easing,
+                                                    k0.cx1, k0.cy1, k0.cx2, k0.cy2);
+            return {
+                k0.value.x + y * (k1.value.x - k0.value.x),
+                k0.value.y + y * (k1.value.y - k0.value.y),
+            };
+        }
+    }
+    return keyframes.back().value;
+}
+
 double AnimatedProperty::ease(double x, EasingType e,
                                float cx1, float cy1,
                                float cx2, float cy2)

@@ -173,7 +173,16 @@ void PrerenderDock::updateStatus()
     }
     if (diagnostics_) {
         const LiveCueCacheStats stats = CacheManager::instance().liveCueStats();
-        diagnostics_->setText(QStringLiteral("Live Text Cue diagnostics\nHits: %1\nMisses: %2\nReuses: %3\nInvalidations: %4")
+        auto format_bytes = [](quint64 bytes) {
+            const double mib = (double)bytes / 1024.0 / 1024.0;
+            if (mib < 1024.0)
+                return QStringLiteral("%1 MB").arg(mib, 0, 'f', 1);
+            return QStringLiteral("%1 GB").arg(mib / 1024.0, 0, 'f', 2);
+        };
+        diagnostics_->setText(QStringLiteral("Cache usage\nRAM: %1 / %2\nDisk: %3\n\nLive Text Cue diagnostics\nHits: %4\nMisses: %5\nReuses: %6\nInvalidations: %7")
+                                  .arg(format_bytes(CacheManager::instance().ramBytesUsed()),
+                                       format_bytes(CacheManager::instance().ramBytesLimit()),
+                                       format_bytes(CacheManager::instance().diskBytesUsed()))
                                   .arg(stats.hits)
                                   .arg(stats.misses)
                                   .arg(stats.reuses)

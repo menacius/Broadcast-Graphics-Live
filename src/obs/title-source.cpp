@@ -9,6 +9,7 @@
  * Build dependency: cairo, pango, pangocairo
  */
 
+#include "cache-manager.h"
 #include "title-source.h"
 #include "title-data.h"
 #include "plugin-main.h"
@@ -353,16 +354,12 @@ static bool layer_has_effect_animation(const Layer &layer)
 static bool layer_has_animation(const Layer &layer)
 {
     return layer_has_effect_animation(layer) ||
-           layer.pos_x.is_animated() ||
-           layer.pos_y.is_animated() ||
-           layer.scale_x.is_animated() ||
-           layer.scale_y.is_animated() ||
+           layer.position.is_animated() ||
+           layer.scale.is_animated() ||
            layer.rotation.is_animated() ||
            layer.opacity.is_animated() ||
-           layer.box_width.is_animated() ||
-           layer.box_height.is_animated() ||
-           layer.origin_x_prop.is_animated() ||
-           layer.origin_y_prop.is_animated() ||
+           layer.size.is_animated() ||
+           layer.origin_prop.is_animated() ||
            layer.paragraph_indent_left_prop.is_animated() ||
            layer.paragraph_indent_right_prop.is_animated() ||
            layer.paragraph_indent_first_line_prop.is_animated() ||
@@ -384,6 +381,15 @@ static bool layer_has_animation(const Layer &layer)
 }
 
 static bool include_property_bounds(const Layer &layer, const AnimatedProperty &prop,
+                                    double &first_time, double &last_time)
+{
+    if (prop.keyframes.empty()) return false;
+    first_time = std::min(first_time, layer.in_time + prop.keyframes.front().time);
+    last_time = std::max(last_time, layer.in_time + prop.keyframes.back().time);
+    return true;
+}
+
+static bool include_property_bounds(const Layer &layer, const AnimatedVec2Property &prop,
                                     double &first_time, double &last_time)
 {
     if (prop.keyframes.empty()) return false;
@@ -427,16 +433,12 @@ static bool include_effect_property_bounds(const Layer &layer, const LayerEffect
 static bool layer_animation_keyframe_bounds(const Layer &layer, double &first_time, double &last_time)
 {
     bool has_bounds = false;
-    has_bounds |= include_property_bounds(layer, layer.pos_x, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.pos_y, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.scale_x, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.scale_y, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.position, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.scale, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.rotation, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.opacity, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.box_width, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.box_height, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.origin_x_prop, first_time, last_time);
-    has_bounds |= include_property_bounds(layer, layer.origin_y_prop, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.size, first_time, last_time);
+    has_bounds |= include_property_bounds(layer, layer.origin_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_left_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_right_prop, first_time, last_time);
     has_bounds |= include_property_bounds(layer, layer.paragraph_indent_first_line_prop, first_time, last_time);
@@ -773,8 +775,8 @@ static double natural_text_height(const Layer &layer, double width)
 
 static double eval_box_width(const Layer &layer, double t)
 {
-    double width = layer.box_width.is_animated()
-        ? layer.box_width.evaluate(t)
+    double width = layer.size.is_animated()
+        ? layer.size.evaluate(t).x
         : static_cast<double>(layer.rect_width);
     if (layer.text_box_width_to_text && is_text_box_auto_size_layer(layer))
         width = std::min(natural_text_width(layer), std::max(1.0, (double)layer.max_text_box_width));
@@ -783,8 +785,8 @@ static double eval_box_width(const Layer &layer, double t)
 
 static double eval_box_height(const Layer &layer, double t)
 {
-    double height = layer.box_height.is_animated()
-        ? layer.box_height.evaluate(t)
+    double height = layer.size.is_animated()
+        ? layer.size.evaluate(t).y
         : static_cast<double>(layer.rect_height);
     if (layer.text_box_height_to_text && is_text_box_auto_size_layer(layer)) {
         const double width = eval_box_width(layer, t);
@@ -847,9 +849,9 @@ static void apply_layer_world_transform(cairo_t *cr, const Title &title, const L
             apply_layer_world_transform(cr, title, *parent, title_time, depth + 1);
     }
     const double lt = std::max(0.0, title_time - layer.in_time);
-    cairo_translate(cr, layer.pos_x.evaluate(lt), layer.pos_y.evaluate(lt));
+    cairo_translate(cr, layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
     cairo_rotate(cr, layer.rotation.evaluate(lt) * kPi / 180.0);
-    cairo_scale(cr, layer.scale_x.evaluate(lt), layer.scale_y.evaluate(lt));
+    cairo_scale(cr, layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
 }
 
 static double layer_chain_opacity(const Title &title, const Layer &layer, double title_time, int depth = 0)
@@ -1103,16 +1105,16 @@ static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, dou
 
 static double eval_origin_x(const Layer &layer, double t)
 {
-    return std::clamp(layer.origin_x_prop.is_animated()
-                          ? layer.origin_x_prop.evaluate(t)
+    return std::clamp(layer.origin_prop.is_animated()
+                          ? layer.origin_prop.evaluate(t).x
                           : (double)layer.origin_x,
                       0.0, 1.0);
 }
 
 static double eval_origin_y(const Layer &layer, double t)
 {
-    return std::clamp(layer.origin_y_prop.is_animated()
-                          ? layer.origin_y_prop.evaluate(t)
+    return std::clamp(layer.origin_prop.is_animated()
+                          ? layer.origin_prop.evaluate(t).y
                           : (double)layer.origin_y,
                       0.0, 1.0);
 }
@@ -3499,10 +3501,8 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
 static bool layer_has_non_transform_animation(const Layer &layer)
 {
     return layer_has_effect_animation(layer) ||
-           layer.box_width.is_animated() ||
-           layer.box_height.is_animated() ||
-           layer.origin_x_prop.is_animated() ||
-           layer.origin_y_prop.is_animated() ||
+           layer.size.is_animated() ||
+           layer.origin_prop.is_animated() ||
            layer.paragraph_indent_left_prop.is_animated() ||
            layer.paragraph_indent_right_prop.is_animated() ||
            layer.paragraph_indent_first_line_prop.is_animated() ||
@@ -3543,14 +3543,12 @@ static QRect image_alpha_bounds(const QImage &image)
 static void neutralize_layer_transform_for_effect_cache(Layer &layer, double opacity, double anchor_x, double anchor_y)
 {
     layer.parent_id.clear();
-    layer.pos_x.static_value = anchor_x;
-    layer.pos_x.keyframes.clear();
-    layer.pos_y.static_value = anchor_y;
-    layer.pos_y.keyframes.clear();
-    layer.scale_x.static_value = 1.0;
-    layer.scale_x.keyframes.clear();
-    layer.scale_y.static_value = 1.0;
-    layer.scale_y.keyframes.clear();
+    layer.position.static_value.x = anchor_x;
+    layer.position.static_value.y = anchor_y;
+    layer.position.keyframes.clear();
+    layer.scale.static_value.x = 1.0;
+    layer.scale.static_value.y = 1.0;
+    layer.scale.keyframes.clear();
     layer.rotation.static_value = 0.0;
     layer.rotation.keyframes.clear();
     layer.opacity.static_value = opacity;
@@ -4112,6 +4110,56 @@ static void render_title_frame(TitleSourceData *data,
     data->dirty = false;
 }
 
+static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image)
+{
+    if (!data || image.isNull())
+        return false;
+    const uint32_t w = clamped_source_dimension(image.width());
+    const uint32_t h = clamped_source_dimension(image.height());
+    if (data->tex_w != w || data->tex_h != h) {
+        bool texture_created = false;
+        {
+            std::lock_guard<std::mutex> lock(data->texture_mutex);
+            obs_enter_graphics();
+            if (data->texture) gs_texture_destroy(data->texture);
+            if (data->scene_mask_alpha_texture) gs_texture_destroy(data->scene_mask_alpha_texture);
+            data->texture = gs_texture_create(w, h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+            data->scene_mask_alpha_texture = nullptr;
+            data->scene_mask_alpha_w = 0;
+            data->scene_mask_alpha_h = 0;
+            texture_created = data->texture != nullptr;
+            obs_leave_graphics();
+        }
+        if (!texture_created)
+            return false;
+        data->tex_w = w;
+        data->tex_h = h;
+        data->pixel_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
+        data->effect_layer_cache.clear();
+    }
+
+    const QImage frame = image.format() == QImage::Format_ARGB32_Premultiplied
+        ? image
+        : image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < frame.height(); ++y)
+        memcpy(data->pixel_buf.data() + (size_t)y * (size_t)w * 4,
+               frame.constScanLine(y),
+               (size_t)w * 4);
+    unpremultiply_bgra_for_obs(data->pixel_buf.data(),
+                               static_cast<size_t>(w) * static_cast<size_t>(h));
+    {
+        std::lock_guard<std::mutex> lock(data->texture_mutex);
+        if (!data->texture)
+            return false;
+        obs_enter_graphics();
+        const uint8_t *ptr = data->pixel_buf.data();
+        gs_texture_set_image(data->texture, ptr, w * 4, false);
+        obs_leave_graphics();
+    }
+    data->dirty = false;
+    return true;
+}
+
 QImage render_title_to_image(const Title &title, double t)
 {
     const int w = std::max(1, title.width);
@@ -4476,7 +4524,25 @@ static void source_video_tick(void *priv, float seconds)
 
     if (data->dirty) {
         Title render_snapshot = snapshot_title_for_render(*title);
-        render_title_frame(data, render_snapshot, data->playhead);
+        auto render_title = std::make_shared<Title>(render_snapshot);
+        CacheManager &cache = CacheManager::instance();
+        const bool use_cached_source_frame = cache.cacheEnabled() &&
+            cache.titleCacheability(render_title) != TitleCacheability::NonCacheable;
+        if (use_cached_source_frame) {
+            QImage cached = cache.requestFrame(render_title, data->playhead, true);
+            const double pause_time = std::clamp(render_title->pause_time, 0.0, render_title->duration);
+            if (cached.isNull() && render_title->current_cue_row >= 0 &&
+                std::abs(data->playhead - pause_time) <= (0.5 / std::max(1.0, cache.effectiveFrameRate()))) {
+                cached = cache.requestLiveCueFrame(title, render_title->current_cue_row, true);
+            }
+            if (!cached.isNull()) {
+                upload_cached_title_frame(data, cached);
+            } else {
+                cache.reprioritize(render_title, data->playhead);
+            }
+        } else {
+            render_title_frame(data, render_snapshot, data->playhead);
+        }
     }
 }
 
@@ -4492,9 +4558,9 @@ static void apply_layer_world_transform_gs(const Title &title, const Layer &laye
             apply_layer_world_transform_gs(title, *parent, title_time, depth + 1);
     }
     const double lt = std::max(0.0, title_time - layer.in_time);
-    gs_matrix_translate3f((float)layer.pos_x.evaluate(lt), (float)layer.pos_y.evaluate(lt), 0.0f);
+    gs_matrix_translate3f((float)layer.position.evaluate(lt).x, (float)layer.position.evaluate(lt).y, 0.0f);
     gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, (float)(layer.rotation.evaluate(lt) * kPi / 180.0));
-    gs_matrix_scale3f((float)layer.scale_x.evaluate(lt), (float)layer.scale_y.evaluate(lt), 1.0f);
+    gs_matrix_scale3f((float)layer.scale.evaluate(lt).x, (float)layer.scale.evaluate(lt).y, 1.0f);
 }
 
 static const TitleSourceData::SceneMaskConfig *scene_mask_config_for_layer(

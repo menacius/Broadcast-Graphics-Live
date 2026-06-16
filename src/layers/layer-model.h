@@ -83,10 +83,8 @@ struct Layer {
     double      out_time = 5.0;
 
     /* ----- Animated properties ----- */
-    AnimatedProperty pos_x   { "pos_x",    0.0 };
-    AnimatedProperty pos_y   { "pos_y",    0.0 };
-    AnimatedProperty scale_x { "scale_x",  1.0 };
-    AnimatedProperty scale_y { "scale_y",  1.0 };
+    AnimatedVec2Property position { "position", {0.0, 0.0} };
+    AnimatedVec2Property scale    { "scale",    {1.0, 1.0} };
     bool             scale_lock = true;
     AnimatedProperty rotation{ "rotation", 0.0 };
     AnimatedProperty opacity { "opacity",  1.0 };
@@ -285,8 +283,7 @@ struct Layer {
     /* Keyframable geometry mirrors the static fields above so older saved
      * titles remain readable while new titles can animate size/origin.
      */
-    AnimatedProperty box_width  { "box_width",  1920.0 };
-    AnimatedProperty box_height { "box_height", 100.0 };
+    AnimatedVec2Property size { "size", {1920.0, 100.0} };
 
     /* ----- Geometry anchor / origin -----
      * Normalized inside the editable bounding box: 0.0 = left/top,
@@ -294,8 +291,7 @@ struct Layer {
      */
     float       origin_x      = 0.5f;
     float       origin_y      = 0.5f;
-    AnimatedProperty origin_x_prop { "origin_x", 0.5 };
-    AnimatedProperty origin_y_prop { "origin_y", 0.5 };
+    AnimatedVec2Property origin_prop { "origin", {0.5, 0.5} };
 
     /* ----- Drop shadow ----- */
     bool        shadow_enabled = false;

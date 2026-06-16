@@ -1,6 +1,10 @@
 #include "title-editor-internal.h"
+#include "title-logger.h"
 
 #include <QClipboard>
+#include <QDesktopServices>
+#include <QFile>
+#include <QFileInfo>
 #include <QMimeData>
 #include <QStandardPaths>
 #include <QUrl>
@@ -30,9 +34,9 @@ QTransform editor_layer_world_transform_for_parenting(const std::shared_ptr<Titl
             xf = editor_layer_world_transform_for_parenting(title, *parent, playhead, depth + 1);
     }
     const double lt = std::max(0.0, playhead - layer.in_time);
-    xf.translate(layer.pos_x.evaluate(lt), layer.pos_y.evaluate(lt));
+    xf.translate(layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
     xf.rotate(layer.rotation.evaluate(lt));
-    xf.scale(layer.scale_x.evaluate(lt), layer.scale_y.evaluate(lt));
+    xf.scale(layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
     return xf;
 }
 
@@ -620,8 +624,8 @@ static void set_text_layer_direction_defaults(Layer &layer, bool paragraph_box, 
     layer.align_v = 0;
     layer.origin_x = rtl ? 1.0f : 0.0f;
     layer.origin_y = 0.0f;
-    layer.origin_x_prop.static_value = layer.origin_x;
-    layer.origin_y_prop.static_value = layer.origin_y;
+    layer.origin_prop.static_value.x = layer.origin_x;
+    layer.origin_prop.static_value.y = layer.origin_y;
     layer.text_overflow_mode = paragraph_box ? 0 : 1;
     layer.text_box_width_to_text = !paragraph_box;
     layer.text_box_height_to_text = !paragraph_box;
@@ -686,16 +690,16 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
         set_text_layer_direction_defaults(*l, false, false);
     }
     l->clock_format = (type == LayerType::Clock) ? "H:i:s" : l->clock_format;
-    l->pos_x.static_value = title_->width / 2.0;
-    l->pos_y.static_value = title_->height / 2.0;
+    l->position.static_value.x = title_->width / 2.0;
+    l->position.static_value.y = title_->height / 2.0;
     l->rect_width = title_->width * 0.5f;
     l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
-    l->box_width.static_value = l->rect_width;
-    l->box_height.static_value = l->rect_height;
+    l->size.static_value.x = l->rect_width;
+    l->size.static_value.y = l->rect_height;
     if (type == LayerType::Shape || type == LayerType::SolidRect)
         l->lock_aspect_ratio = false;
-    l->origin_x_prop.static_value = l->origin_x;
-    l->origin_y_prop.static_value = l->origin_y;
+    l->origin_prop.static_value.x = l->origin_x;
+    l->origin_prop.static_value.y = l->origin_y;
     apply_new_layer_defaults(*l);
     set_channel_statics(*l, true, l->text_color);
     set_channel_statics(*l, false, l->fill_color);
@@ -710,16 +714,16 @@ void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPo
     auto layer = create_basic_layer(LayerType::Shape, shape_display_name(shape_type));
     if (!layer) return;
     layer->shape_type = shape_type;
-    layer->pos_x.static_value = canvas_pt.x();
-    layer->pos_y.static_value = canvas_pt.y();
+    layer->position.static_value.x = canvas_pt.x();
+    layer->position.static_value.y = canvas_pt.y();
     if (shape_type == ShapeType::Ellipse || shape_type == ShapeType::Triangle ||
         shape_type == ShapeType::Star || shape_type == ShapeType::Polygon ||
         shape_type == ShapeType::Diamond) {
         const float size = std::min(layer->rect_width, layer->rect_height);
         layer->rect_width = size;
         layer->rect_height = size;
-        layer->box_width.static_value = layer->rect_width;
-        layer->box_height.static_value = layer->rect_height;
+        layer->size.static_value.x = layer->rect_width;
+        layer->size.static_value.y = layer->rect_height;
     }
     if (shape_type == ShapeType::RoundedRectangle) {
         set_layer_all_corner_radii(*layer, 18.0f);
@@ -741,8 +745,8 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
 
     auto layer = create_basic_layer(type, text_tool_display_name(type));
     if (!layer) return;
-    layer->pos_x.static_value = canvas_pt.x();
-    layer->pos_y.static_value = canvas_pt.y();
+    layer->position.static_value.x = canvas_pt.x();
+    layer->position.static_value.y = canvas_pt.y();
     if (type == LayerType::Text) {
         set_new_text_layer_contents_empty(*layer);
         set_text_layer_direction_defaults(*layer, false, false);
@@ -771,8 +775,8 @@ void TitleEditor::create_image_layer_from_external_source(const QString &image_p
 
     layer->image_path = image_path.toStdString();
     layer->lock_aspect_ratio = true;
-    layer->pos_x.static_value = canvas_pt.x();
-    layer->pos_y.static_value = canvas_pt.y();
+    layer->position.static_value.x = canvas_pt.x();
+    layer->position.static_value.y = canvas_pt.y();
 
     QSize image_size = editor_image_intrinsic_size(image_path);
     if (image_size.isValid() && !image_size.isEmpty()) {
@@ -783,8 +787,8 @@ void TitleEditor::create_image_layer_from_external_source(const QString &image_p
         const double scale = std::min({1.0, max_w / std::max(1, image_size.width()), max_h / std::max(1, image_size.height())});
         layer->rect_width = (float)std::max(1.0, image_size.width() * scale);
         layer->rect_height = (float)std::max(1.0, image_size.height() * scale);
-        layer->box_width.static_value = layer->rect_width;
-        layer->box_height.static_value = layer->rect_height;
+        layer->size.static_value.x = layer->rect_width;
+        layer->size.static_value.y = layer->rect_height;
     }
 
     title_->add_layer(layer);
@@ -803,8 +807,8 @@ void TitleEditor::create_text_layer_from_external_source(const QString &text, co
     if (!layer)
         return;
 
-    layer->pos_x.static_value = canvas_pt.x();
-    layer->pos_y.static_value = canvas_pt.y();
+    layer->position.static_value.x = canvas_pt.x();
+    layer->position.static_value.y = canvas_pt.y();
     layer->text_content = normalized.toStdString();
     layer->rich_text = rich_text_document_from_layer_defaults(*layer);
     rich_text_document_replace_text(layer->rich_text, layer->text_content);
@@ -833,16 +837,16 @@ void TitleEditor::update_canvas_created_shape(const QRectF &canvas_rect)
     if (is_canvas_text_layer(*layer)) {
         const bool rtl = text_has_rtl_direction(QString::fromStdString(layer->text_content), layer->origin_x > 0.5f);
         set_text_layer_direction_defaults(*layer, true, rtl);
-        layer->pos_x.static_value = rtl ? rect.right() : rect.left();
-        layer->pos_y.static_value = rect.top();
+        layer->position.static_value.x = rtl ? rect.right() : rect.left();
+        layer->position.static_value.y = rect.top();
     } else {
-        layer->pos_x.static_value = rect.center().x();
-        layer->pos_y.static_value = rect.center().y();
+        layer->position.static_value.x = rect.center().x();
+        layer->position.static_value.y = rect.center().y();
     }
     layer->rect_width = (float)width;
     layer->rect_height = (float)height;
-    layer->box_width.static_value = layer->rect_width;
-    layer->box_height.static_value = layer->rect_height;
+    layer->size.static_value.x = layer->rect_width;
+    layer->size.static_value.y = layer->rect_height;
     if (!is_canvas_text_layer(*layer) && layer->shape_type == ShapeType::RoundedRectangle) {
         set_layer_all_corner_radii(*layer, (float)std::min(width, height) * 0.12f);
         layer->corner_radius_locked = true;
@@ -1513,8 +1517,8 @@ void TitleEditor::build_ui()
                     if (image_size.isValid() && !image_size.isEmpty()) {
                         l->rect_width = (float)image_size.width();
                         l->rect_height = (float)image_size.height();
-                        l->box_width.static_value = l->rect_width;
-                        l->box_height.static_value = l->rect_height;
+                        l->size.static_value.x = l->rect_width;
+                        l->size.static_value.y = l->rect_height;
                     }
                 }
                 title_->add_layer(l);
@@ -1611,8 +1615,8 @@ void TitleEditor::build_ui()
                                 local_pos = parent_inv.map(world_pos);
                         }
                     }
-                    set_animated_value(layer->pos_x, lt, local_pos.x());
-                    set_animated_value(layer->pos_y, lt, local_pos.y());
+                    set_animated_x(layer->position, lt, local_pos.x());
+                    set_animated_y(layer->position, lt, local_pos.y());
                     layers_->refresh();
                     on_title_modified();
                 }
@@ -1856,8 +1860,8 @@ void TitleEditor::align_selected_to_canvas(int x_mode, int y_mode)
         double y = layer->origin_y * h;
         if (y_mode == 1) y = title_->height / 2.0;
         if (y_mode == 2) y = title_->height - (1.0 - layer->origin_y) * h;
-        set_animated_value(layer->pos_x, lt, x);
-        set_animated_value(layer->pos_y, lt, y);
+        set_animated_x(layer->position, lt, x);
+        set_animated_y(layer->position, lt, y);
         last_layer = layer;
     }
     on_title_modified();
@@ -1877,9 +1881,12 @@ void TitleEditor::flip_selected_layers(bool horizontal)
         if (!layer || layer->locked) continue;
         const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                      std::max(0.0, layer->out_time - layer->in_time));
-        AnimatedProperty &prop = horizontal ? layer->scale_x : layer->scale_y;
-        const double current = prop.evaluate(lt);
-        set_animated_value(prop, lt, -current);
+        Vec2Value scale = layer->scale.evaluate(lt);
+        if (horizontal)
+            scale.x = -scale.x;
+        else
+            scale.y = -scale.y;
+        set_animated_value(layer->scale, lt, scale);
         last_layer = layer;
     }
 
@@ -1946,12 +1953,12 @@ void TitleEditor::align_selected_layers(int x_mode, int y_mode)
         double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
         double width = eval_box_width(*layer, lt);
         double height = eval_box_height(*layer, lt);
-        double sx = layer->scale_x.evaluate(lt);
-        double sy = layer->scale_y.evaluate(lt);
-        double x0 = layer->pos_x.evaluate(lt) - layer->origin_x * width * sx;
-        double x1 = layer->pos_x.evaluate(lt) + (1.0 - layer->origin_x) * width * sx;
-        double y0 = layer->pos_y.evaluate(lt) - layer->origin_y * height * sy;
-        double y1 = layer->pos_y.evaluate(lt) + (1.0 - layer->origin_y) * height * sy;
+        double sx = layer->scale.evaluate(lt).x;
+        double sy = layer->scale.evaluate(lt).y;
+        double x0 = layer->position.evaluate(lt).x - layer->origin_x * width * sx;
+        double x1 = layer->position.evaluate(lt).x + (1.0 - layer->origin_x) * width * sx;
+        double y0 = layer->position.evaluate(lt).y - layer->origin_y * height * sy;
+        double y1 = layer->position.evaluate(lt).y + (1.0 - layer->origin_y) * height * sy;
         double left = std::min(x0, x1);
         double right = std::max(x0, x1);
         double top = std::min(y0, y1);
@@ -1997,22 +2004,22 @@ void TitleEditor::align_selected_layers(int x_mode, int y_mode)
             const double x1 = (1.0 - entry.layer->origin_x) * entry.width * entry.scale_x;
             const double left_offset = std::min(x0, x1);
             const double right_offset = std::max(x0, x1);
-            double next_x = entry.layer->pos_x.evaluate(entry.lt);
+            double next_x = entry.layer->position.evaluate(entry.lt).x;
             if (x_mode == 0) next_x = target_left - left_offset;
             if (x_mode == 1) next_x = target_hcenter - (left_offset + right_offset) / 2.0;
             if (x_mode == 2) next_x = target_right - right_offset;
-            set_animated_value(entry.layer->pos_x, entry.lt, next_x);
+            set_animated_x(entry.layer->position, entry.lt, next_x);
         }
         if (y_mode >= 0) {
             const double y0 = -entry.layer->origin_y * entry.height * entry.scale_y;
             const double y1 = (1.0 - entry.layer->origin_y) * entry.height * entry.scale_y;
             const double top_offset = std::min(y0, y1);
             const double bottom_offset = std::max(y0, y1);
-            double next_y = entry.layer->pos_y.evaluate(entry.lt);
+            double next_y = entry.layer->position.evaluate(entry.lt).y;
             if (y_mode == 0) next_y = target_top - top_offset;
             if (y_mode == 1) next_y = target_vcenter - (top_offset + bottom_offset) / 2.0;
             if (y_mode == 2) next_y = target_bottom - bottom_offset;
-            set_animated_value(entry.layer->pos_y, entry.lt, next_y);
+            set_animated_y(entry.layer->position, entry.lt, next_y);
         }
         last_layer = entry.layer;
     }
@@ -2553,7 +2560,7 @@ void TitleEditor::open_title(const std::string &tid)
     props_->set_title(title_);
     title_props_->set_title(title_);
     if (prerender_panel_) prerender_panel_->setTitle(title_);
-    CacheManager::instance().invalidateAll(title_);
+    CacheManager::instance().restoreDiskStates(title_);
     CacheManager::instance().reprioritize(title_, playhead_);
 
     if (!title_->layers.empty())
@@ -3183,9 +3190,9 @@ static void collect_timeline_keyframes(const std::shared_ptr<Layer> &layer,
                                        std::vector<double> &times)
 {
     if (!layer) return;
-    for (auto *prop : timeline_properties(*layer)) {
-        for (const auto &kf : prop->keyframes)
-            times.push_back(layer->in_time + kf.time);
+    for (auto prop : timeline_properties(*layer)) {
+        for (size_t i = 0; i < prop.keyframe_count(); ++i)
+            times.push_back(layer->in_time + prop.keyframe_time(i));
     }
 }
 
@@ -3360,6 +3367,7 @@ void TitleEditor::show_preferences()
     tabs->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     tabs->addItem(QStringLiteral("Appearance"));
     tabs->addItem(QStringLiteral("Advanced"));
+    tabs->addItem(QStringLiteral("Logging"));
     tabs->setStyleSheet(QStringLiteral(
         "QListWidget{background:%1;border:1px solid %2;color:%3;outline:none;}"
         "QListWidget::item{padding:8px 10px;border-bottom:1px solid %2;}"
@@ -3489,10 +3497,103 @@ void TitleEditor::show_preferences()
                                      .arg(text.name(QColor::HexRgb),
                                           disabled_text.name(QColor::HexRgb)));
     advanced_layout->addWidget(cache_enabled);
+    auto *cache_form = new QFormLayout();
+    cache_form->setContentsMargins(0, 0, 0, 0);
+    cache_form->setSpacing(8);
+    auto *ram_limit = new QSpinBox(advanced_page);
+    ram_limit->setRange(64, 32768);
+    ram_limit->setSingleStep(128);
+    ram_limit->setSuffix(QStringLiteral(" MB"));
+    ram_limit->setValue(TitlePreferences::cache_ram_limit_mb());
+    cache_form->addRow(QStringLiteral("RAM cache limit"), ram_limit);
+
+    auto *disk_path_row = new QWidget(advanced_page);
+    auto *disk_path_layout = new QHBoxLayout(disk_path_row);
+    disk_path_layout->setContentsMargins(0, 0, 0, 0);
+    disk_path_layout->setSpacing(6);
+    auto *disk_path = new QLineEdit(CacheManager::instance().diskCacheLocation(), disk_path_row);
+    auto *browse_cache = new QPushButton(obsgs_tr("OBSTitles.Browse"), disk_path_row);
+    disk_path_layout->addWidget(disk_path, 1);
+    disk_path_layout->addWidget(browse_cache);
+    cache_form->addRow(QStringLiteral("Disk cache folder"), disk_path_row);
+
+    auto *cache_usage = new QLabel(advanced_page);
+    cache_usage->setWordWrap(true);
+    cache_form->addRow(QStringLiteral("Cache usage"), cache_usage);
+    advanced_layout->addLayout(cache_form);
     advanced_layout->addStretch(1);
+
+    auto *logging_page = new QWidget(pages);
+    auto *logging_layout = new QVBoxLayout(logging_page);
+    logging_layout->setContentsMargins(0, 0, 0, 0);
+    logging_layout->setSpacing(10);
+
+    auto *logging_title = new QLabel(QStringLiteral("Logging"), logging_page);
+    logging_title->setFont(title_font);
+    logging_layout->addWidget(logging_title);
+
+    auto *logging_enabled = new QCheckBox(QStringLiteral("Enable file logging"), logging_page);
+    logging_enabled->setChecked(TitlePreferences::logging_enabled());
+    logging_enabled->setToolTip(QStringLiteral("Write OBS Graphics Studio Pro diagnostic logs to a local file."));
+    logging_enabled->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
+                                       .arg(text.name(QColor::HexRgb),
+                                            disabled_text.name(QColor::HexRgb)));
+    logging_layout->addWidget(logging_enabled);
+
+    auto *logging_form = new QFormLayout();
+    logging_form->setContentsMargins(0, 0, 0, 0);
+    logging_form->setSpacing(8);
+
+    auto *logging_level = new QComboBox(logging_page);
+    logging_level->addItem(QStringLiteral("Off"), 0);
+    logging_level->addItem(QStringLiteral("Error"), 1);
+    logging_level->addItem(QStringLiteral("Warning"), 2);
+    logging_level->addItem(QStringLiteral("Info"), 3);
+    logging_level->addItem(QStringLiteral("Debug"), 4);
+    logging_level->addItem(QStringLiteral("Trace"), 5);
+    const int logging_level_index = logging_level->findData(TitlePreferences::logging_level());
+    logging_level->setCurrentIndex(logging_level_index >= 0 ? logging_level_index : 3);
+    logging_form->addRow(QStringLiteral("Level"), logging_level);
+
+    auto *logging_path_row = new QWidget(logging_page);
+    auto *logging_path_layout = new QHBoxLayout(logging_path_row);
+    logging_path_layout->setContentsMargins(0, 0, 0, 0);
+    logging_path_layout->setSpacing(6);
+    auto *logging_path = new QLineEdit(TitlePreferences::logging_file_path(), logging_path_row);
+    auto *browse_log = new QPushButton(obsgs_tr("OBSTitles.Browse"), logging_path_row);
+    logging_path_layout->addWidget(logging_path, 1);
+    logging_path_layout->addWidget(browse_log);
+    logging_form->addRow(QStringLiteral("Log file"), logging_path_row);
+
+    auto *mirror_obs = new QCheckBox(QStringLiteral("Also write to OBS log"), logging_page);
+    mirror_obs->setChecked(TitlePreferences::logging_mirror_to_obs());
+    mirror_obs->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
+                                  .arg(text.name(QColor::HexRgb),
+                                       disabled_text.name(QColor::HexRgb)));
+    logging_form->addRow(QString(), mirror_obs);
+
+    auto *logging_buttons_row = new QWidget(logging_page);
+    auto *logging_buttons_layout = new QHBoxLayout(logging_buttons_row);
+    logging_buttons_layout->setContentsMargins(0, 0, 0, 0);
+    logging_buttons_layout->setSpacing(6);
+    auto *open_log_folder = new QPushButton(QStringLiteral("Open folder"), logging_buttons_row);
+    auto *clear_log = new QPushButton(QStringLiteral("Clear log"), logging_buttons_row);
+    logging_buttons_layout->addWidget(open_log_folder);
+    logging_buttons_layout->addWidget(clear_log);
+    logging_buttons_layout->addStretch(1);
+    logging_form->addRow(QString(), logging_buttons_row);
+
+    auto *logging_hint = new QLabel(QStringLiteral("Use Debug or Trace while diagnosing cache, prerender, rendering, and UI state issues. Trace can be noisy."), logging_page);
+    logging_hint->setWordWrap(true);
+    logging_hint->setStyleSheet(QStringLiteral("color:%1;").arg(disabled_text.name(QColor::HexRgb)));
+    logging_form->addRow(QStringLiteral("Notes"), logging_hint);
+
+    logging_layout->addLayout(logging_form);
+    logging_layout->addStretch(1);
 
     pages->addWidget(colors_page);
     pages->addWidget(advanced_page);
+    pages->addWidget(logging_page);
     content_layout->addWidget(tabs);
     content_layout->addWidget(pages, 1);
     layout->addWidget(content, 1);
@@ -3504,8 +3605,76 @@ void TitleEditor::show_preferences()
     connect(tabs, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
     connect(use_gpu, &QCheckBox::toggled, this, &TitleEditor::set_gpu_pipeline_enabled);
     connect(cache_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set cache enabled=%1").arg(enabled));
         CacheManager::instance().setCacheEnabled(enabled);
     });
+    connect(ram_limit, QOverload<int>::of(&QSpinBox::valueChanged), dialog, [](int value) {
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set RAM cache limit=%1 MB").arg(value));
+        CacheManager::instance().setRamCacheLimitMb(value);
+    });
+    connect(disk_path, &QLineEdit::editingFinished, dialog, [disk_path]() {
+        CacheManager::instance().setDiskCacheLocation(disk_path->text());
+        disk_path->setText(CacheManager::instance().diskCacheLocation());
+    });
+    connect(browse_cache, &QPushButton::clicked, dialog, [dialog, disk_path]() {
+        const QString path = QFileDialog::getExistingDirectory(dialog, QStringLiteral("Disk Cache Folder"),
+                                                               disk_path->text());
+        if (path.isEmpty())
+            return;
+        disk_path->setText(path);
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set disk cache location=%1").arg(path));
+        CacheManager::instance().setDiskCacheLocation(path);
+    });
+    connect(logging_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
+        TitlePreferences::set_logging_enabled(enabled);
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set logging enabled=%1").arg(enabled));
+    });
+    connect(logging_level, QOverload<int>::of(&QComboBox::currentIndexChanged), dialog, [logging_level](int index) {
+        TitlePreferences::set_logging_level(logging_level->itemData(index).toInt());
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set logging level=%1").arg(logging_level->itemData(index).toInt()));
+    });
+    connect(logging_path, &QLineEdit::editingFinished, dialog, [logging_path]() {
+        TitlePreferences::set_logging_file_path(logging_path->text());
+        logging_path->setText(TitlePreferences::logging_file_path());
+    });
+    connect(browse_log, &QPushButton::clicked, dialog, [dialog, logging_path]() {
+        const QString path = QFileDialog::getSaveFileName(dialog, QStringLiteral("Log File"),
+                                                          logging_path->text(),
+                                                          QStringLiteral("Log files (*.log);;All files (*.*)"));
+        if (path.isEmpty())
+            return;
+        logging_path->setText(path);
+        TitlePreferences::set_logging_file_path(path);
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set log file path=%1").arg(path));
+    });
+    connect(mirror_obs, &QCheckBox::toggled, dialog, [](bool enabled) {
+        TitlePreferences::set_logging_mirror_to_obs(enabled);
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set logging mirror to OBS=%1").arg(enabled));
+    });
+    connect(open_log_folder, &QPushButton::clicked, dialog, []() {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(TitlePreferences::logging_file_path()).absolutePath()));
+    });
+    connect(clear_log, &QPushButton::clicked, dialog, []() {
+        QFile file(TitlePreferences::logging_file_path());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+            file.close();
+        OGS_LOG_INFO("Preferences", QStringLiteral("Cleared log file"));
+    });
+    auto format_cache_bytes = [](quint64 bytes) {
+        const double mib = (double)bytes / 1024.0 / 1024.0;
+        if (mib < 1024.0)
+            return QStringLiteral("%1 MB").arg(mib, 0, 'f', 1);
+        return QStringLiteral("%1 GB").arg(mib / 1024.0, 0, 'f', 2);
+    };
+    auto update_cache_usage = [cache_usage, format_cache_bytes]() {
+        CacheManager &cache = CacheManager::instance();
+        cache_usage->setText(QStringLiteral("RAM: %1 / %2\nDisk: %3")
+                                 .arg(format_cache_bytes(cache.ramBytesUsed()),
+                                      format_cache_bytes(cache.ramBytesLimit()),
+                                      format_cache_bytes(cache.diskBytesUsed())));
+    };
+    update_cache_usage();
+    connect(&CacheManager::instance(), &CacheManager::diagnosticsChanged, dialog, update_cache_usage);
     connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, dialog, [cache_enabled](bool enabled) {
         if (cache_enabled->isChecked() == enabled) return;
         QSignalBlocker blocker(cache_enabled);

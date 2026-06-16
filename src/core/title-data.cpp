@@ -598,12 +598,12 @@ std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
     layer->id   = make_uuid();
     layer->name = "Title Text";
     layer->type = LayerType::Text;
-    layer->pos_x.static_value = 960.0;
-    layer->pos_y.static_value = 540.0;
+    layer->position.static_value.x = 960.0;
+    layer->position.static_value.y = 540.0;
     layer->rect_width = 960.0f;
     layer->rect_height = 160.0f;
-    layer->box_width.static_value = layer->rect_width;
-    layer->box_height.static_value = layer->rect_height;
+    layer->size.static_value.x = layer->rect_width;
+    layer->size.static_value.y = layer->rect_height;
     set_color_channels(*layer, true, layer->text_color);
     set_color_channels(*layer, false, layer->fill_color);
     layer->text_content = name;
@@ -727,22 +727,57 @@ static AnimatedProperty aprop_from_json(const json &j, const std::string &name)
     return p;
 }
 
-static json vec2_aprop_to_json(const AnimatedProperty &x, const AnimatedProperty &y)
+static json vec2_aprop_to_json(const AnimatedVec2Property &p)
 {
     json j;
-    j["x"] = aprop_to_json(x);
-    j["y"] = aprop_to_json(y);
+    j["static_value"] = {{"x", p.static_value.x}, {"y", p.static_value.y}};
+    json kf = json::array();
+    for (const auto &k : p.keyframes) {
+        kf.push_back({{"time", k.time},
+                      {"value", {{"x", k.value.x}, {"y", k.value.y}}},
+                      {"easing", (int)k.easing},
+                      {"cx1", k.cx1}, {"cy1", k.cy1},
+                      {"cx2", k.cx2}, {"cy2", k.cy2}});
+    }
+    j["keyframes"] = kf;
     return j;
 }
 
-static void vec2_aprop_from_json(const json &j,
-                                 AnimatedProperty &x, const std::string &x_name,
-                                 AnimatedProperty &y, const std::string &y_name)
+static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
 {
     if (!j.is_object())
         return;
-    if (j.contains("x")) x = aprop_from_json(j["x"], x_name);
-    if (j.contains("y")) y = aprop_from_json(j["y"], y_name);
+    if (j.contains("static_value") && j["static_value"].is_object()) {
+        p.static_value.x = std::clamp(finite_or(json_double(j["static_value"], "x", p.static_value.x), p.static_value.x),
+                                      -kMaxPropertyValue, kMaxPropertyValue);
+        p.static_value.y = std::clamp(finite_or(json_double(j["static_value"], "y", p.static_value.y), p.static_value.y),
+                                      -kMaxPropertyValue, kMaxPropertyValue);
+    }
+    if (j.contains("keyframes") && j["keyframes"].is_array()) {
+        const size_t count = std::min(j["keyframes"].size(), kMaxKeyframesPerProperty);
+        p.keyframes.clear();
+        p.keyframes.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &item = j["keyframes"][i];
+            if (!item.is_object()) continue;
+            VectorKeyframe k;
+            k.time = std::clamp(finite_or(json_double(item, "time", 0.0), 0.0), 0.0, kMaxDuration);
+            if (item.contains("value") && item["value"].is_object()) {
+                k.value.x = std::clamp(finite_or(json_double(item["value"], "x", 0.0), 0.0),
+                                       -kMaxPropertyValue, kMaxPropertyValue);
+                k.value.y = std::clamp(finite_or(json_double(item["value"], "y", 0.0), 0.0),
+                                       -kMaxPropertyValue, kMaxPropertyValue);
+            }
+            k.easing = (EasingType)std::clamp(json_int(item, "easing", 0), 0, (int)EasingType::Hold);
+            k.cx1 = std::clamp(finite_or(json_double(item, "cx1", 0.333), 0.333), 0.0, 1.0);
+            k.cy1 = std::clamp(finite_or(json_double(item, "cy1", 0.0), 0.0), 0.0, 1.0);
+            k.cx2 = std::clamp(finite_or(json_double(item, "cx2", 0.667), 0.667), 0.0, 1.0);
+            k.cy2 = std::clamp(finite_or(json_double(item, "cy2", 1.0), 1.0), 0.0, 1.0);
+            p.keyframes.push_back(k);
+        }
+        std::sort(p.keyframes.begin(), p.keyframes.end(),
+                  [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
+    }
 }
 
 
@@ -1051,13 +1086,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
 
-    j["position"] = vec2_aprop_to_json(l.pos_x, l.pos_y);
-    j["scale"]    = vec2_aprop_to_json(l.scale_x, l.scale_y);
-    /* Legacy scalar keys are still written so older builds can open files. */
-    j["pos_x"]    = aprop_to_json(l.pos_x);
-    j["pos_y"]    = aprop_to_json(l.pos_y);
-    j["scale_x"]  = aprop_to_json(l.scale_x);
-    j["scale_y"]  = aprop_to_json(l.scale_y);
+    j["position"] = vec2_aprop_to_json(l.position);
+    j["scale"]    = vec2_aprop_to_json(l.scale);
     j["scale_lock"] = l.scale_lock;
     j["rotation"] = aprop_to_json(l.rotation);
     j["opacity"]  = aprop_to_json(l.opacity);
@@ -1234,15 +1264,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["shape_roundness"] = l.shape_roundness;
     j["scale_stroke_with_shape"] = l.scale_stroke_with_shape;
     j["scale_corners_with_shape"] = l.scale_corners_with_shape;
-    j["size"]          = vec2_aprop_to_json(l.box_width, l.box_height);
-    j["origin"]        = vec2_aprop_to_json(l.origin_x_prop, l.origin_y_prop);
-    /* Legacy scalar keys are still written so older builds can open files. */
-    j["box_width"]     = aprop_to_json(l.box_width);
-    j["box_height"]    = aprop_to_json(l.box_height);
+    j["size"]          = vec2_aprop_to_json(l.size);
+    j["origin"]        = vec2_aprop_to_json(l.origin_prop);
     j["origin_x"]      = l.origin_x;
     j["origin_y"]      = l.origin_y;
-    j["origin_x_prop"] = aprop_to_json(l.origin_x_prop);
-    j["origin_y_prop"] = aprop_to_json(l.origin_y_prop);
     j["shadow_enabled"] = l.shadow_enabled;
     j["shadow_color"] = l.shadow_color;
     j["shadow_opacity"] = l.shadow_opacity;
@@ -1446,17 +1471,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->in_time  = std::clamp(finite_or(json_double(j, "in_time", 0.0), 0.0), 0.0, kMaxDuration);
     l->out_time = std::clamp(finite_or(json_double(j, "out_time", 5.0), 5.0), l->in_time, kMaxDuration);
 
-    if (j.contains("position")) vec2_aprop_from_json(j["position"], l->pos_x, "pos_x", l->pos_y, "pos_y");
-    if (j.contains("scale"))    vec2_aprop_from_json(j["scale"], l->scale_x, "scale_x", l->scale_y, "scale_y");
-    if (j.contains("pos_x"))    l->pos_x    = aprop_from_json(j["pos_x"],    "pos_x");
-    if (j.contains("pos_y"))    l->pos_y    = aprop_from_json(j["pos_y"],    "pos_y");
-    if (j.contains("scale_x"))  l->scale_x  = aprop_from_json(j["scale_x"],  "scale_x");
-    if (j.contains("scale_y"))  l->scale_y  = aprop_from_json(j["scale_y"],  "scale_y");
+    if (j.contains("position")) vec2_aprop_from_json(j["position"], l->position);
+    if (j.contains("scale"))    vec2_aprop_from_json(j["scale"], l->scale);
     l->scale_lock = json_bool(j, "scale_lock", true);
     if (j.contains("rotation")) l->rotation = aprop_from_json(j["rotation"], "rotation");
     if (j.contains("opacity"))  l->opacity  = aprop_from_json(j["opacity"],  "opacity");
-    l->scale_x.static_value = std::clamp(l->scale_x.static_value, -100.0, 100.0);
-    l->scale_y.static_value = std::clamp(l->scale_y.static_value, -100.0, 100.0);
+    l->scale.static_value.x = std::clamp(l->scale.static_value.x, -100.0, 100.0);
+    l->scale.static_value.y = std::clamp(l->scale.static_value.y, -100.0, 100.0);
     l->opacity.static_value = std::clamp(l->opacity.static_value, 0.0, 1.0);
 
     l->text_content  = bounded_string(j, "text_content", "Title", kMaxTextLength);
@@ -1675,22 +1696,18 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, 1.0);
     l->scale_stroke_with_shape = json_bool(j, "scale_stroke_with_shape", false);
     l->scale_corners_with_shape = json_bool(j, "scale_corners_with_shape", false);
-    l->box_width.static_value = l->rect_width;
-    l->box_height.static_value = l->rect_height;
-    if (j.contains("size")) vec2_aprop_from_json(j["size"], l->box_width, "box_width", l->box_height, "box_height");
-    if (j.contains("box_width"))  l->box_width  = aprop_from_json(j["box_width"],  "box_width");
-    if (j.contains("box_height")) l->box_height = aprop_from_json(j["box_height"], "box_height");
-    l->box_width.static_value = std::clamp(l->box_width.static_value, 0.0, (double)kMaxCanvasDimension);
-    l->box_height.static_value = std::clamp(l->box_height.static_value, 0.0, (double)kMaxCanvasDimension);
+    l->size.static_value.x = l->rect_width;
+    l->size.static_value.y = l->rect_height;
+    if (j.contains("size")) vec2_aprop_from_json(j["size"], l->size);
+    l->size.static_value.x = std::clamp(l->size.static_value.x, 0.0, (double)kMaxCanvasDimension);
+    l->size.static_value.y = std::clamp(l->size.static_value.y, 0.0, (double)kMaxCanvasDimension);
     l->origin_x      = std::clamp(finite_or(json_double(j, "origin_x", 0.5), 0.5), 0.0, 1.0);
     l->origin_y      = std::clamp(finite_or(json_double(j, "origin_y", 0.5), 0.5), 0.0, 1.0);
-    l->origin_x_prop.static_value = l->origin_x;
-    l->origin_y_prop.static_value = l->origin_y;
-    if (j.contains("origin")) vec2_aprop_from_json(j["origin"], l->origin_x_prop, "origin_x", l->origin_y_prop, "origin_y");
-    if (j.contains("origin_x_prop")) l->origin_x_prop = aprop_from_json(j["origin_x_prop"], "origin_x");
-    if (j.contains("origin_y_prop")) l->origin_y_prop = aprop_from_json(j["origin_y_prop"], "origin_y");
-    l->origin_x_prop.static_value = std::clamp(l->origin_x_prop.static_value, 0.0, 1.0);
-    l->origin_y_prop.static_value = std::clamp(l->origin_y_prop.static_value, 0.0, 1.0);
+    l->origin_prop.static_value.x = l->origin_x;
+    l->origin_prop.static_value.y = l->origin_y;
+    if (j.contains("origin")) vec2_aprop_from_json(j["origin"], l->origin_prop);
+    l->origin_prop.static_value.x = std::clamp(l->origin_prop.static_value.x, 0.0, 1.0);
+    l->origin_prop.static_value.y = std::clamp(l->origin_prop.static_value.y, 0.0, 1.0);
     l->shadow_enabled = json_bool(j, "shadow_enabled", false);
     l->shadow_color = json_color(j, "shadow_color", (uint32_t)0x99000000);
     l->shadow_opacity = std::clamp(finite_or(json_double(j, "shadow_opacity", 0.6), 0.6), 0.0, 1.0);

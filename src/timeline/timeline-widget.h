@@ -42,6 +42,7 @@ class QResizeEvent;
 class QPaintEvent;
 class QPainter;
 class QScrollBar;
+struct TimelinePropertyRef;
 /* ══════════════════════════════════════════════════════════════════
  *  TimelineWidget  – keyframe timeline
  * ══════════════════════════════════════════════════════════════════ */
@@ -98,7 +99,7 @@ private:
     void   clamp_vertical_scroll();
     int    max_vertical_scroll() const;
     bool   hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *layer,
-                        AnimatedProperty **prop, int *kf_idx, int *row_idx) const;
+                        TimelinePropertyRef *prop, int *kf_idx, int *row_idx) const;
     struct KeyframeRef {
         std::string layer_id;
         std::string prop_name;
@@ -113,6 +114,8 @@ private:
         std::string layer_id;
         std::string prop_name;
         Keyframe keyframe;
+        VectorKeyframe vector_keyframe;
+        bool is_vector = false;
         double offset = 0.0;
     };
     struct DraggedLayerStrip {
@@ -139,7 +142,7 @@ private:
     bool   paste_keyframes_at(double timeline_time);
     QRect  marquee_rect() const;
     void   begin_keyframe_drag(const std::string &layer_id, const std::string &prop_name, int kf_idx, double start_time);
-    AnimatedProperty *find_timeline_property(Layer &layer, const std::string &prop_name) const;
+    TimelinePropertyRef find_timeline_property(Layer &layer, const std::string &prop_name) const;
     bool   keep_playhead_visible();
     void   set_pixels_per_sec(double pixels_per_sec, double anchor_time, int anchor_x);
     bool   is_layer_selected(const std::string &layer_id) const;
