@@ -1,5 +1,7 @@
 #include "title-editor-internal.h"
 
+#include <QAbstractItemModel>
+
 static QString obsgs_effects_panel_style()
 {
     const QPalette pal = qApp->palette();
@@ -127,6 +129,11 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     effect_list_->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsList"));
     effect_list_->setSelectionMode(QAbstractItemView::SingleSelection);
     effect_list_->setAlternatingRowColors(true);
+    effect_list_->setDragEnabled(true);
+    effect_list_->setAcceptDrops(true);
+    effect_list_->setDragDropMode(QAbstractItemView::InternalMove);
+    effect_list_->setDefaultDropAction(Qt::MoveAction);
+    effect_list_->setDropIndicatorShown(true);
     
     layout->addWidget(effect_list_, 1);
 
@@ -183,6 +190,11 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
                            layer_->effects[row].enabled ? 1.0 : 0.0);
         emit_effect_changed();
     });
+
+    connect(effect_list_->model(), &QAbstractItemModel::rowsMoved, this,
+            [this](const QModelIndex &, int, int, const QModelIndex &, int) {
+                apply_effect_list_order_from_items();
+            });
 
     connect(btn_add, &QToolButton::clicked, this, [this, btn_add]() {
         if (!layer_) return;
@@ -326,9 +338,15 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 
 void EffectsPanel::set_layer(std::shared_ptr<Layer> layer, double playhead)
 {
+    const bool same_layer = layer_ && layer && layer_.get() == layer.get();
+    const int previous_effect_count = layer_ ? (int)layer_->effects.size() : -1;
     layer_ = layer;
     playhead_ = playhead;
     selected_index_ = layer_ && !layer_->effects.empty() ? std::clamp(selected_index_, 0, (int)layer_->effects.size() - 1) : -1;
+    if (same_layer && previous_effect_count == (layer_ ? (int)layer_->effects.size() : -1) &&
+        (settings_editor_has_focus() || numeric_label_dragging_)) {
+        return;
+    }
     rebuild_stack();
 }
 
@@ -357,6 +375,47 @@ void EffectsPanel::emit_effect_changed()
     emit property_changed(!numeric_label_dragging_);
 }
 
+bool EffectsPanel::settings_editor_has_focus() const
+{
+    QWidget *focus = qApp ? qApp->focusWidget() : nullptr;
+    return focus && settings_container_ &&
+           (focus == settings_container_ || settings_container_->isAncestorOf(focus));
+}
+
+void EffectsPanel::apply_effect_list_order_from_items()
+{
+    if (loading_values_ || !layer_ || !effect_list_)
+        return;
+    const int count = (int)layer_->effects.size();
+    if (effect_list_->count() != count || count <= 1)
+        return;
+
+    std::vector<LayerEffect> reordered;
+    reordered.reserve((size_t)count);
+    std::vector<bool> used((size_t)count, false);
+    for (int row = 0; row < count; ++row) {
+        QListWidgetItem *item = effect_list_->item(row);
+        const int source_index = item ? item->data(Qt::UserRole).toInt() : -1;
+        if (source_index < 0 || source_index >= count || used[(size_t)source_index])
+            return;
+        reordered.push_back(layer_->effects[(size_t)source_index]);
+        used[(size_t)source_index] = true;
+    }
+
+    layer_->effects = std::move(reordered);
+    selected_index_ = std::clamp(effect_list_->currentRow(), 0, count - 1);
+
+    QSignalBlocker blocker(effect_list_);
+    for (int row = 0; row < count; ++row) {
+        if (QListWidgetItem *item = effect_list_->item(row))
+            item->setData(Qt::UserRole, row);
+    }
+
+    sync_legacy_enabled_flags();
+    emit_effect_changed();
+    load_settings();
+}
+
 void EffectsPanel::rebuild_stack()
 {
     loading_values_ = true;
@@ -373,7 +432,9 @@ void EffectsPanel::rebuild_stack()
         for (int i = 0; i < (int)layer_->effects.size(); ++i) {
             const auto &effect = layer_->effects[i];
             auto *item = new QListWidgetItem(effect_type_name(effect.type));
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsSelectable |
+                           Qt::ItemIsEnabled | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+            item->setData(Qt::UserRole, i);
             item->setCheckState(effect.enabled ? Qt::Checked : Qt::Unchecked);
             effect_list_->addItem(item);
         }
@@ -473,14 +534,13 @@ void EffectsPanel::load_settings()
         }
         auto *label = new NumericDragLabel(label_text, field, box,
                                            [this]() {
-                                               if (loading_values_) return;
-                                               numeric_label_dragging_ = true;
-                                               emit property_changed(true);
-                                           },
+                                                if (loading_values_) return;
+                                                numeric_label_dragging_ = true;
+                                            },
                                            [this]() {
-                                               if (loading_values_) return;
-                                               numeric_label_dragging_ = false;
-                                               emit property_changed(true);
+                                                if (loading_values_) return;
+                                                numeric_label_dragging_ = false;
+                                                emit property_changed(true);
                                            });
         label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         form->addRow(label, field);

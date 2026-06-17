@@ -1,6 +1,9 @@
 #pragma once
 
+#include "title-effect-registry.h"
+
 #include <cstdint>
+#include <memory>
 
 struct Title;
 struct gs_effect;
@@ -39,7 +42,10 @@ public:
     const char *last_error() const { return last_error_; }
 
 private:
+    bool compile_requested_effects(const TitleGpuEffectUsage &usage);
+
     gs_effect_t *effect_ = nullptr;
+    std::unique_ptr<TitleEffectRegistry> effect_registry_;
     const char *last_error_ = nullptr;
 };
 

@@ -1,0 +1,56 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 texelSize;
+uniform float2 direction;
+uniform float radius;
+uniform float opacity;
+
+sampler_state textureSampler {
+    Filter   = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertDataIn {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertDataOut VSDefault(VertDataIn v_in)
+{
+    VertDataOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float4 PSBlur(VertDataOut v_in) : TARGET
+{
+    float r = clamp(radius, 0.0, 64.0);
+    float amount = clamp(opacity, 0.0, 1.0);
+    float2 dir = length(direction) > 0.0 ? normalize(direction) : float2(1.0, 0.0);
+    float2 step_uv = texelSize * dir * max(1.0, r / 4.0);
+
+    float4 center = image.Sample(textureSampler, v_in.uv);
+    float4 blurred = center * 0.227027;
+    blurred += image.Sample(textureSampler, v_in.uv + step_uv * 1.384615) * 0.316216;
+    blurred += image.Sample(textureSampler, v_in.uv - step_uv * 1.384615) * 0.316216;
+    blurred += image.Sample(textureSampler, v_in.uv + step_uv * 3.230769) * 0.070270;
+    blurred += image.Sample(textureSampler, v_in.uv - step_uv * 3.230769) * 0.070270;
+
+    return lerp(center, blurred, amount);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSBlur(v_in);
+    }
+}

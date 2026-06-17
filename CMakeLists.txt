@@ -298,9 +298,11 @@ set(OBS_GSP_TEXT_HEADERS
 )
 
 set(OBS_GSP_RENDERING_SOURCES
+    src/rendering/title-effect-registry.cpp
     src/rendering/title-gpu-filter-pipeline.cpp
 )
 set(OBS_GSP_RENDERING_HEADERS
+    src/rendering/title-effect-registry.h
     src/rendering/title-gpu-filter-pipeline.h
 )
 
@@ -455,6 +457,9 @@ add_custom_command(TARGET obs-graphics-studio-pro POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/data/icons"
             "${OBS_TITLES_PACKAGE_DIR}/data/icons"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/data/effects"
+            "${OBS_TITLES_PACKAGE_DIR}/data/effects"
     COMMENT "Staging OBS plugin data files")
 
 if(WIN32)
@@ -518,6 +523,8 @@ install(TARGETS obs-graphics-studio-pro
 install(DIRECTORY data/locale
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 install(DIRECTORY data/icons
+        DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
+install(DIRECTORY data/effects
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────

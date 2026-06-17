@@ -1,8 +1,11 @@
 #include "title-gpu-filter-pipeline.h"
 
 #include "title-data.h"
+#include "title-effect-registry.h"
 
 #include <graphics/graphics.h>
+#include <obs-module.h>
+#include <util/bmem.h>
 
 #include <algorithm>
 
@@ -64,6 +67,30 @@ technique Draw
 }
 )";
 
+static gs_effect_t *create_composite_filter_effect(const char **last_error)
+{
+    char *path = obs_module_file("effects/composite-filter/composite-filter.effect");
+    if (path) {
+        char *errors = nullptr;
+        gs_effect_t *effect = gs_effect_create_from_file(path, &errors);
+        if (effect) {
+            if (errors)
+                bfree(errors);
+            bfree(path);
+            return effect;
+        }
+        if (errors)
+            bfree(errors);
+        bfree(path);
+    }
+
+    gs_effect_t *fallback = gs_effect_create(
+        kGpuFilterPipelineEffect, "obs-gsp-gpu-filter-pipeline.effect", nullptr);
+    if (!fallback && last_error)
+        *last_error = "GPU composite shader could not be compiled from file or fallback source.";
+    return fallback;
+}
+
 } // namespace
 
 TitleGpuFilterPipeline::~TitleGpuFilterPipeline()
@@ -77,6 +104,38 @@ void TitleGpuFilterPipeline::reset()
         gs_effect_destroy(effect_);
         effect_ = nullptr;
     }
+    if (effect_registry_)
+        effect_registry_->reset();
+}
+
+bool TitleGpuFilterPipeline::compile_requested_effects(const TitleGpuEffectUsage &usage)
+{
+    if (!usage.has_effects)
+        return true;
+    if (!effect_registry_)
+        effect_registry_ = std::make_unique<TitleEffectRegistry>();
+
+    auto compile_if = [this](bool enabled, LayerEffectType type) {
+        if (!enabled)
+            return true;
+        if (effect_registry_->compile(type))
+            return true;
+        last_error_ = effect_registry_->last_error();
+        return false;
+    };
+
+    return compile_if(usage.background_color, LayerEffectType::BackgroundColor) &&
+           compile_if(usage.outline, LayerEffectType::Outline) &&
+           compile_if(usage.drop_shadow, LayerEffectType::DropShadow) &&
+           compile_if(usage.long_shadow, LayerEffectType::LongShadow) &&
+           compile_if(usage.brightness_contrast, LayerEffectType::BrightnessContrast) &&
+           compile_if(usage.saturation, LayerEffectType::Saturation) &&
+           compile_if(usage.color_overlay, LayerEffectType::ColorOverlay) &&
+           compile_if(usage.glow, LayerEffectType::Glow) &&
+           compile_if(usage.inner_glow, LayerEffectType::InnerGlow) &&
+           compile_if(usage.inner_shadow, LayerEffectType::InnerShadow) &&
+           compile_if(usage.blur, LayerEffectType::Blur) &&
+           compile_if(usage.motion_blur, LayerEffectType::MotionBlur);
 }
 
 bool TitleGpuFilterPipeline::render(gs_texture_t *texture, uint32_t width, uint32_t height,
@@ -88,10 +147,14 @@ bool TitleGpuFilterPipeline::render(gs_texture_t *texture, uint32_t width, uint3
         return false;
     }
 
+    if (!compile_requested_effects(usage))
+        return false;
+
     if (!effect_)
-        effect_ = gs_effect_create(kGpuFilterPipelineEffect, "obs-gsp-gpu-filter-pipeline.effect", nullptr);
+        effect_ = create_composite_filter_effect(&last_error_);
     if (!effect_) {
-        last_error_ = "GPU effect shader could not be created.";
+        if (!last_error_)
+            last_error_ = "GPU effect shader could not be created.";
         return false;
     }
 

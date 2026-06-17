@@ -295,8 +295,10 @@ struct TitleSourceData {
         std::string key;
         QImage image;
         QPointF origin;
+        uint64_t last_used = 0;
     };
     std::unordered_map<std::string, CachedEffectLayer> effect_layer_cache;
+    uint64_t effect_layer_cache_tick = 0;
 
     struct SceneMaskConfig {
         std::string layer_id;
@@ -1325,25 +1327,32 @@ static cairo_pattern_t *create_stroke_gradient_pattern(const Layer &layer, doubl
     return pattern;
 }
 
+static cairo_pattern_t *create_background_gradient_pattern_for_effect(const LayerEffect &effect, double x, double y, double w, double h, double layer_alpha);
+
 static cairo_pattern_t *create_background_gradient_pattern(const Layer &layer, double x, double y, double w, double h, double layer_alpha)
 {
     const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
     if (!effect) return nullptr;
-    const double opacity = std::clamp((double)effect->effect_gradient_opacity * layer_alpha, 0.0, 1.0);
-    const double cx = x + (double)effect->effect_gradient_center_x * w;
-    const double cy = y + (double)effect->effect_gradient_center_y * h;
-    const double scale = std::clamp((double)effect->effect_gradient_scale, 0.01, 100.0);
-    const double start_pos = std::clamp((double)effect->effect_gradient_start_pos, 0.0, 1.0);
-    const double end_pos = std::clamp((double)effect->effect_gradient_end_pos, 0.0, 1.0);
+    return create_background_gradient_pattern_for_effect(*effect, x, y, w, h, layer_alpha);
+}
+
+static cairo_pattern_t *create_background_gradient_pattern_for_effect(const LayerEffect &effect, double x, double y, double w, double h, double layer_alpha)
+{
+    const double opacity = std::clamp((double)effect.effect_gradient_opacity * layer_alpha, 0.0, 1.0);
+    const double cx = x + (double)effect.effect_gradient_center_x * w;
+    const double cy = y + (double)effect.effect_gradient_center_y * h;
+    const double scale = std::clamp((double)effect.effect_gradient_scale, 0.01, 100.0);
+    const double start_pos = std::clamp((double)effect.effect_gradient_start_pos, 0.0, 1.0);
+    const double end_pos = std::clamp((double)effect.effect_gradient_end_pos, 0.0, 1.0);
     cairo_pattern_t *pattern = nullptr;
-    if (effect->effect_gradient_type == 1 || effect->effect_gradient_type == 4) {
+    if (effect.effect_gradient_type == 1 || effect.effect_gradient_type == 4) {
         const double radius = std::max(w, h) * 0.5 * scale;
-        const double fx = x + (double)effect->effect_gradient_focal_x * w;
-        const double fy = y + (double)effect->effect_gradient_focal_y * h;
+        const double fx = x + (double)effect.effect_gradient_focal_x * w;
+        const double fy = y + (double)effect.effect_gradient_focal_y * h;
         pattern = cairo_pattern_create_radial(fx, fy, 0.0, cx, cy, std::max(1.0, radius));
     } else {
         const double length = std::hypot(w, h) * 0.5 * scale;
-        const double angle = effect->effect_gradient_angle * kPi / 180.0;
+        const double angle = effect.effect_gradient_angle * kPi / 180.0;
         const double dx = std::cos(angle) * length;
         const double dy = std::sin(angle) * length;
         pattern = cairo_pattern_create_linear(cx - dx, cy - dy, cx + dx, cy + dy);
@@ -1352,9 +1361,9 @@ static cairo_pattern_t *create_background_gradient_pattern(const Layer &layer, d
         QColor color = gradient_color_with_opacity(argb, opacity, stop_opacity);
         cairo_pattern_add_color_stop_rgba(pattern, pos, color.redF(), color.greenF(), color.blueF(), color.alphaF());
     };
-    add_stop(start_pos, effect->effect_gradient_start_color, effect->effect_gradient_start_opacity);
-    add_stop(end_pos, effect->effect_gradient_end_color, effect->effect_gradient_end_opacity);
-    cairo_pattern_set_extend(pattern, effect->effect_gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
+    add_stop(start_pos, effect.effect_gradient_start_color, effect.effect_gradient_start_opacity);
+    add_stop(end_pos, effect.effect_gradient_end_color, effect.effect_gradient_end_opacity);
+    cairo_pattern_set_extend(pattern, effect.effect_gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
     return pattern;
 }
 
@@ -1558,6 +1567,11 @@ struct CachedShadowImage {
     QPointF origin;
 };
 
+struct CachedShadowEntry {
+    CachedShadowImage image;
+    uint64_t last_used = 0;
+};
+
 static QString image_content_hash(const QImage &image)
 {
     QCryptographicHash hash(QCryptographicHash::Sha1);
@@ -1705,13 +1719,17 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
                                             const QString &shape_key, const QImage &mask)
 {
     static std::mutex cache_mutex;
-    static std::unordered_map<std::string, CachedShadowImage> cache;
+    static std::unordered_map<std::string, CachedShadowEntry> cache;
+    static uint64_t cache_tick = 0;
     const QString key = shadow_param_key(layer, p, shape_key);
     const std::string skey = key.toStdString();
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         auto it = cache.find(skey);
-        if (it != cache.end()) return it->second;
+        if (it != cache.end()) {
+            it->second.last_used = ++cache_tick;
+            return it->second.image;
+        }
     }
 
     const double long_rad = p.long_angle * kPi / 180.0;
@@ -1781,8 +1799,15 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
     CachedShadowImage out{image, QPointF(min_x, min_y)};
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        if (cache.size() > 128) cache.clear();
-        cache[skey] = out;
+        cache[skey] = CachedShadowEntry{out, ++cache_tick};
+        if (cache.size() > 128) {
+            auto oldest = cache.begin();
+            for (auto it = cache.begin(); it != cache.end(); ++it) {
+                if (it->second.last_used < oldest->second.last_used)
+                    oldest = it;
+            }
+            cache.erase(oldest);
+        }
     }
     return out;
 }
@@ -2956,6 +2981,7 @@ static bool layer_effect_requires_stack_surface(const LayerEffect &effect)
 {
     if (!effect.enabled) return false;
     switch (effect.type) {
+    case LayerEffectType::BackgroundColor:
     case LayerEffectType::DropShadow:
     case LayerEffectType::LongShadow:
     case LayerEffectType::ColorOverlay:
@@ -3393,10 +3419,144 @@ static void apply_color_adjustment(cairo_surface_t *surface, const LayerEffect &
     cairo_surface_mark_dirty(surface);
 }
 
-static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, const Layer &layer, double t)
+static std::vector<uint8_t> render_background_effect_behind_surface(
+    cairo_surface_t *surface, const Layer &layer, const LayerEffect &effect,
+    double t, double local_x_offset, double local_y_offset)
+{
+    cairo_surface_flush(surface);
+    const int width = cairo_image_surface_get_width(surface);
+    const int height = cairo_image_surface_get_height(surface);
+    if (width <= 0 || height <= 0)
+        return {};
+
+    const double box_w = std::max(1.0, eval_box_width(layer, t));
+    const double box_h = std::max(1.0, eval_box_height(layer, t));
+    const double bg_left = std::max(0.0, effect.padding_left_prop.is_animated()
+                                             ? effect.padding_left_prop.evaluate(t)
+                                             : (double)effect.effect_padding_left);
+    const double bg_right = std::max(0.0, effect.padding_right_prop.is_animated()
+                                              ? effect.padding_right_prop.evaluate(t)
+                                              : (double)effect.effect_padding_right);
+    const double bg_top = std::max(0.0, effect.padding_top_prop.is_animated()
+                                            ? effect.padding_top_prop.evaluate(t)
+                                            : (double)effect.effect_padding_top);
+    const double bg_bottom = std::max(0.0, effect.padding_bottom_prop.is_animated()
+                                               ? effect.padding_bottom_prop.evaluate(t)
+                                               : (double)effect.effect_padding_bottom);
+    const double x = -eval_origin_x(layer, t) * box_w - bg_left + local_x_offset;
+    const double y = -eval_origin_y(layer, t) * box_h - bg_top + local_y_offset;
+    const double bw = std::max(1.0, box_w + bg_left + bg_right);
+    const double bh = std::max(1.0, box_h + bg_top + bg_bottom);
+
+    std::vector<uint8_t> original = surface_pixels(surface);
+    std::vector<uint8_t> under_pixels((size_t)width * (size_t)height * 4, 0);
+    CairoSurfacePtr under(cairo_image_surface_create_for_data(
+        under_pixels.data(), CAIRO_FORMAT_ARGB32, width, height, width * 4));
+    auto under_cr = make_cairo_context(under.get());
+    if (!under || cairo_surface_status(under.get()) != CAIRO_STATUS_SUCCESS || !under_cr)
+        return {};
+
+    const double tl = std::max(0.0, effect.corner_radius_tl_prop.is_animated()
+                                        ? effect.corner_radius_tl_prop.evaluate(t)
+                                        : (double)effect.effect_corner_radius_tl);
+    const double tr = std::max(0.0, effect.corner_radius_tr_prop.is_animated()
+                                        ? effect.corner_radius_tr_prop.evaluate(t)
+                                        : (double)effect.effect_corner_radius_tr);
+    const double br = std::max(0.0, effect.corner_radius_br_prop.is_animated()
+                                        ? effect.corner_radius_br_prop.evaluate(t)
+                                        : (double)effect.effect_corner_radius_br);
+    const double bl = std::max(0.0, effect.corner_radius_bl_prop.is_animated()
+                                        ? effect.corner_radius_bl_prop.evaluate(t)
+                                        : (double)effect.effect_corner_radius_bl);
+
+    cairo_add_rounded_rect_corners(under_cr.get(), x, y, bw, bh, tl, tr, br, bl,
+                                   (CornerType)effect.effect_corner_type);
+    const bool gradient = effect.effect_fill_type == 1;
+    QColor fill = color_from_argb(eval_effect_color(effect, t));
+    const double fill_opacity = std::clamp(effect.opacity_prop.is_animated()
+                                               ? effect.opacity_prop.evaluate(t)
+                                               : (double)effect.effect_opacity,
+                                           0.0, 1.0);
+    fill.setAlphaF(std::clamp(fill.alphaF() * fill_opacity, 0.0, 1.0));
+    cairo_pattern_t *gradient_pattern = nullptr;
+    if (fill.alpha() > 0 || gradient) {
+        if (gradient) {
+            gradient_pattern = create_background_gradient_pattern_for_effect(effect, x, y, bw, bh, fill_opacity);
+            cairo_set_source(under_cr.get(), gradient_pattern);
+        } else {
+            cairo_set_source_rgba(under_cr.get(), fill.redF(), fill.greenF(), fill.blueF(), fill.alphaF());
+        }
+        cairo_fill_preserve(under_cr.get());
+        if (gradient_pattern)
+            cairo_pattern_destroy(gradient_pattern);
+    }
+
+    const double stroke_w = std::max(0.0, effect.stroke_width_prop.is_animated()
+                                              ? effect.stroke_width_prop.evaluate(t)
+                                              : (double)effect.effect_stroke_width);
+    if (stroke_w > 0.0) {
+        QColor stroke = color_from_argb(eval_effect_stroke_color(effect, t));
+        const double stroke_opacity = std::clamp(effect.stroke_opacity_prop.is_animated()
+                                                     ? effect.stroke_opacity_prop.evaluate(t)
+                                                     : (double)effect.effect_stroke_opacity,
+                                                 0.0, 1.0);
+        stroke.setAlphaF(std::clamp(stroke.alphaF() * stroke_opacity, 0.0, 1.0));
+        if (stroke.alpha() > 0) {
+            cairo_set_line_width(under_cr.get(), stroke_w);
+            cairo_set_source_rgba(under_cr.get(), stroke.redF(), stroke.greenF(), stroke.blueF(), stroke.alphaF());
+            cairo_stroke(under_cr.get());
+        } else {
+            cairo_new_path(under_cr.get());
+        }
+    } else {
+        cairo_new_path(under_cr.get());
+    }
+
+    under_cr.reset();
+    cairo_surface_flush(under.get());
+    std::vector<uint8_t> background_alpha = surface_alpha(under.get());
+    composite_premultiplied_over(under_pixels, original);
+    write_surface_pixels(surface, under_pixels);
+    return background_alpha;
+}
+
+static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, const Layer &layer, double t,
+                                                     double local_x_offset = 0.0,
+                                                     double local_y_offset = 0.0)
 {
     if (!surface || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
         return;
+
+    std::vector<uint8_t> alpha_cache;
+    bool alpha_cache_valid = false;
+    auto alpha_for_surface = [&]() -> const std::vector<uint8_t> & {
+        if (!alpha_cache_valid) {
+            alpha_cache = surface_alpha(surface);
+            alpha_cache_valid = true;
+        }
+        return alpha_cache;
+    };
+    auto invalidate_alpha_cache = [&]() {
+        alpha_cache_valid = false;
+        alpha_cache.clear();
+    };
+    std::vector<uint8_t> subject_alpha_cache;
+    bool subject_alpha_cache_valid = false;
+    auto subject_alpha_for_surface = [&]() -> const std::vector<uint8_t> & {
+        if (!subject_alpha_cache_valid) {
+            subject_alpha_cache = surface_alpha(surface);
+            subject_alpha_cache_valid = true;
+        }
+        return subject_alpha_cache;
+    };
+    auto set_subject_alpha = [&](std::vector<uint8_t> alpha) {
+        subject_alpha_cache = std::move(alpha);
+        subject_alpha_cache_valid = true;
+    };
+    auto invalidate_subject_alpha = [&]() {
+        subject_alpha_cache_valid = false;
+        subject_alpha_cache.clear();
+    };
 
     for (const auto &effect : layer.effects) {
         if (!eval_effect_enabled(effect, t)) continue;
@@ -3411,33 +3571,43 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
         const int width = cairo_image_surface_get_width(surface);
         const int height = cairo_image_surface_get_height(surface);
         if (width <= 0 || height <= 0) return;
-        std::vector<uint8_t> alpha;
         switch (resolved.type) {
+        case LayerEffectType::BackgroundColor: {
+            std::vector<uint8_t> background_alpha = render_background_effect_behind_surface(
+                surface, layer, effect, t, local_x_offset, local_y_offset);
+            invalidate_alpha_cache();
+            set_subject_alpha(std::move(background_alpha));
+            break;
+        }
         case LayerEffectType::BrightnessContrast:
         case LayerEffectType::Saturation:
             apply_color_adjustment(surface, resolved);
             break;
         case LayerEffectType::ColorOverlay:
-            alpha = surface_alpha(surface);
-            composite_solid_alpha(surface, alpha, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, true);
+            composite_solid_alpha(surface, subject_alpha_for_surface(), resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, true);
             break;
         case LayerEffectType::Blur:
             blur_surface_for_type(surface, resolved.effect_size, resolved.effect_blur_type, resolved.effect_opacity);
+            invalidate_alpha_cache();
+            invalidate_subject_alpha();
             break;
         case LayerEffectType::MotionBlur:
             apply_directional_motion_blur(surface, resolved);
+            invalidate_alpha_cache();
+            invalidate_subject_alpha();
             break;
         case LayerEffectType::Glow: {
-            alpha = surface_alpha(surface);
+            const auto &alpha = subject_alpha_for_surface();
             std::vector<uint8_t> glow = alpha;
             blur_alpha_for_type(glow, width, height, resolved.effect_size, resolved.effect_blur_type);
             for (size_t i = 0; i < glow.size(); ++i)
                 glow[i] = (uint8_t)std::max(0, (int)glow[i] - (int)alpha[i]);
             composite_solid_alpha(surface, glow, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, false);
+            invalidate_alpha_cache();
             break;
         }
         case LayerEffectType::InnerGlow: {
-            alpha = surface_alpha(surface);
+            const auto &alpha = subject_alpha_for_surface();
             std::vector<uint8_t> inv(alpha.size());
             for (size_t i = 0; i < alpha.size(); ++i) inv[i] = 255 - alpha[i];
             blur_alpha_for_type(inv, width, height, resolved.effect_size, resolved.effect_blur_type);
@@ -3447,7 +3617,7 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
             break;
         }
         case LayerEffectType::InnerShadow: {
-            alpha = surface_alpha(surface);
+            const auto &alpha = subject_alpha_for_surface();
             std::vector<uint8_t> shifted(alpha.size(), 0);
             const double rad = resolved.effect_angle * kPi / 180.0;
             offset_alpha(alpha, shifted, width, height, std::cos(rad) * resolved.effect_distance,
@@ -3460,7 +3630,7 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
         }
         case LayerEffectType::DropShadow: {
             if (resolved.effect_opacity <= 0.0f) break;
-            alpha = surface_alpha(surface);
+            const auto &alpha = subject_alpha_for_surface();
             std::vector<uint8_t> shadow(alpha.size(), 0);
             const double rad = resolved.effect_angle * kPi / 180.0;
             offset_alpha(alpha, shadow, width, height,
@@ -3470,11 +3640,12 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
                 blur_alpha_for_type(shadow, width, height, resolved.effect_spread, (int)ShadowBlurType::AlphaMask);
             blur_alpha_for_type(shadow, width, height, resolved.effect_size, resolved.effect_blur_type);
             composite_solid_alpha_behind(surface, shadow, resolved.effect_color, resolved.effect_opacity);
+            invalidate_alpha_cache();
             break;
         }
         case LayerEffectType::LongShadow: {
             if (resolved.effect_opacity <= 0.0f || resolved.effect_distance <= 0.0f) break;
-            alpha = surface_alpha(surface);
+            const auto &alpha = subject_alpha_for_surface();
             std::vector<uint8_t> long_shadow(alpha.size(), 0);
             const double rad = resolved.effect_angle * kPi / 180.0;
             const double dx = std::cos(rad) * resolved.effect_distance;
@@ -3489,6 +3660,7 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
             if (mapped_long_blur >= 0 && resolved.effect_size > 0.0f)
                 blur_alpha_for_type(long_shadow, width, height, resolved.effect_size, mapped_long_blur);
             composite_solid_alpha_behind(surface, long_shadow, resolved.effect_color, resolved.effect_opacity);
+            invalidate_alpha_cache();
             break;
         }
         default:
@@ -3555,6 +3727,95 @@ static void neutralize_layer_transform_for_effect_cache(Layer &layer, double opa
     layer.opacity.keyframes.clear();
 }
 
+static double stackable_effect_padding(const Layer &layer, double t)
+{
+    double padding = 2.0;
+    for (const auto &effect : layer.effects) {
+        if (!eval_effect_enabled(effect, t))
+            continue;
+        const double size = std::max(0.0, effect.size_prop.is_animated()
+                                              ? effect.size_prop.evaluate(t)
+                                              : (double)effect.effect_size);
+        const double distance = std::max(0.0, effect.distance_prop.is_animated()
+                                                  ? effect.distance_prop.evaluate(t)
+                                                  : (double)effect.effect_distance);
+        const double spread = std::max(0.0, effect.spread_prop.is_animated()
+                                                ? effect.spread_prop.evaluate(t)
+                                                : (double)effect.effect_spread);
+        switch (effect.type) {
+        case LayerEffectType::DropShadow:
+        case LayerEffectType::InnerShadow:
+            padding = std::max(padding, distance + spread + size * 3.0 + 4.0);
+            break;
+        case LayerEffectType::LongShadow:
+            padding = std::max(padding, distance + size * 3.0 + 4.0);
+            break;
+        case LayerEffectType::Glow:
+        case LayerEffectType::InnerGlow:
+        case LayerEffectType::Blur:
+        case LayerEffectType::MotionBlur:
+            padding = std::max(padding, size * 3.0 + distance + 4.0);
+            break;
+        default:
+            break;
+        }
+    }
+    return std::ceil(std::clamp(padding, 2.0, 4096.0));
+}
+
+static QRectF layer_local_effect_bounds(const Layer &layer, double t)
+{
+    const double w = std::max(1.0, eval_box_width(layer, t));
+    const double h = std::max(1.0, eval_box_height(layer, t));
+    const double origin_x = eval_origin_x(layer, t);
+    const double origin_y = eval_origin_y(layer, t);
+
+    QRectF bounds(-origin_x * w, -origin_y * h, w, h);
+
+    if (eval_background_enabled(layer, t)) {
+        bounds = bounds.united(QRectF(-origin_x * w - eval_background_padding_left(layer, t),
+                                      -origin_y * h - eval_background_padding_top(layer, t),
+                                      w + eval_background_padding_left(layer, t) + eval_background_padding_right(layer, t),
+                                      h + eval_background_padding_top(layer, t) + eval_background_padding_bottom(layer, t)));
+    }
+
+    const double outline = std::max({eval_outline_width(layer, t),
+                                     eval_background_stroke_width(layer, t),
+                                     0.0});
+    if (outline > 0.0)
+        bounds = bounds.adjusted(-outline, -outline, outline, outline);
+
+    const double pad = stackable_effect_padding(layer, t);
+    return bounds.adjusted(-pad, -pad, pad, pad);
+}
+
+static QRect clipped_effect_surface_rect(const Layer &layer, double t, int canvas_w, int canvas_h)
+{
+    QRectF bounds = layer_local_effect_bounds(layer, t);
+    const int max_w = std::max(1, canvas_w);
+    const int max_h = std::max(1, canvas_h);
+    const int x = (int)std::floor(bounds.left());
+    const int y = (int)std::floor(bounds.top());
+    const int right = (int)std::ceil(bounds.right());
+    const int bottom = (int)std::ceil(bounds.bottom());
+    return QRect(QPoint(x, y), QPoint(std::max(x, right), std::max(y, bottom)))
+        .adjusted(0, 0, 1, 1)
+        .intersected(QRect(-max_w, -max_h, max_w * 3, max_h * 3));
+}
+
+static void evict_effect_layer_cache_if_needed(TitleSourceData *data)
+{
+    if (!data || data->effect_layer_cache.size() <= 128)
+        return;
+
+    auto oldest = data->effect_layer_cache.begin();
+    for (auto it = data->effect_layer_cache.begin(); it != data->effect_layer_cache.end(); ++it) {
+        if (it->second.last_used < oldest->second.last_used)
+            oldest = it;
+    }
+    data->effect_layer_cache.erase(oldest);
+}
+
 static std::string effect_layer_cache_key(const TitleSourceData *data, const Title &title, const Layer &layer,
                                           double title_time, int canvas_w, int canvas_h,
                                           bool force_time_key = false)
@@ -3609,7 +3870,13 @@ static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
     const std::string key = effect_layer_cache_key(data, title, layer, title_time, canvas_w, canvas_h, force_time_key);
     auto it = data->effect_layer_cache.find(cache_id);
     if (it == data->effect_layer_cache.end() || it->second.key != key) {
-        QImage canvas(std::max(1, canvas_w), std::max(1, canvas_h), QImage::Format_ARGB32_Premultiplied);
+        const double t = std::max(0.0, title_time - layer.in_time);
+        const QRect surface_rect = clipped_effect_surface_rect(layer, t, canvas_w, canvas_h);
+        if (!surface_rect.isValid() || surface_rect.isEmpty())
+            return nullptr;
+
+        QImage canvas(std::max(1, surface_rect.width()), std::max(1, surface_rect.height()),
+                      QImage::Format_ARGB32_Premultiplied);
         canvas.fill(Qt::transparent);
         auto surface = make_image_surface_for_qimage(canvas);
         auto layer_cr = make_cairo_context(surface.get());
@@ -3618,18 +3885,17 @@ static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
         cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
         cairo_paint(layer_cr.get());
         cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+        cairo_translate(layer_cr.get(), -surface_rect.x(), -surface_rect.y());
 
         Layer base_layer = layer_without_stackable_pixel_effects(layer);
-        const double cache_anchor_x = canvas.width() * 0.5;
-        const double cache_anchor_y = canvas.height() * 0.5;
-        neutralize_layer_transform_for_effect_cache(base_layer, 1.0, cache_anchor_x, cache_anchor_y);
+        neutralize_layer_transform_for_effect_cache(base_layer, 1.0, 0.0, 0.0);
 
         render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
         layer_cr.reset();
         cairo_surface_flush(surface.get());
 
-        const double t = std::max(0.0, title_time - layer.in_time);
-        apply_stackable_pixel_effects_to_surface(surface.get(), layer, t);
+        apply_stackable_pixel_effects_to_surface(surface.get(), layer, t,
+                                                 -surface_rect.x(), -surface_rect.y());
         cairo_surface_flush(surface.get());
         surface.reset();
 
@@ -3641,12 +3907,13 @@ static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
             cached.origin = QPointF(0.0, 0.0);
         } else {
             cached.image = canvas.copy(bounds);
-            cached.origin = QPointF(bounds.x() - cache_anchor_x, bounds.y() - cache_anchor_y);
+            cached.origin = QPointF(surface_rect.x() + bounds.x(), surface_rect.y() + bounds.y());
         }
-        if (data->effect_layer_cache.size() > 128)
-            data->effect_layer_cache.clear();
+        cached.last_used = ++data->effect_layer_cache_tick;
         it = data->effect_layer_cache.insert_or_assign(cache_id, std::move(cached)).first;
+        evict_effect_layer_cache_if_needed(data);
     }
+    it->second.last_used = ++data->effect_layer_cache_tick;
 
     return &it->second;
 }
@@ -3797,21 +4064,31 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
     }
 
     Layer base_layer = layer_without_stackable_pixel_effects(layer);
+    const double t = std::max(0.0, title_time - layer.in_time);
+    const QRect surface_rect = clipped_effect_surface_rect(layer, t, canvas_w, canvas_h);
+    if (!surface_rect.isValid() || surface_rect.isEmpty())
+        return;
 
-    CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, canvas_w, canvas_h));
+    CairoSurfacePtr layer_surface(cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, std::max(1, surface_rect.width()), std::max(1, surface_rect.height())));
     auto layer_cr = make_cairo_context(layer_surface.get());
     if (!layer_surface || cairo_surface_status(layer_surface.get()) != CAIRO_STATUS_SUCCESS || !layer_cr)
         return;
     cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
     cairo_paint(layer_cr.get());
     cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+    cairo_translate(layer_cr.get(), -surface_rect.x(), -surface_rect.y());
+    neutralize_layer_transform_for_effect_cache(base_layer, 1.0, 0.0, 0.0);
     render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
     layer_cr.reset();
 
-    const double t = std::max(0.0, title_time - layer.in_time);
-    apply_stackable_pixel_effects_to_surface(layer_surface.get(), layer, t);
-    cairo_set_source_surface(cr, layer_surface.get(), 0, 0);
-    cairo_paint(cr);
+    apply_stackable_pixel_effects_to_surface(layer_surface.get(), layer, t,
+                                             -surface_rect.x(), -surface_rect.y());
+    cairo_save(cr);
+    apply_layer_world_transform(cr, title, layer, title_time);
+    cairo_set_source_surface(cr, layer_surface.get(), surface_rect.x(), surface_rect.y());
+    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+    cairo_restore(cr);
 }
 
 
@@ -3842,6 +4119,44 @@ static void composite_layer_surface_with_mode(cairo_t *cr, cairo_surface_t *surf
     cairo_set_source_surface(cr, surface, 0, 0);
     cairo_paint(cr);
     cairo_restore(cr);
+}
+
+static bool render_layer_with_local_blend_surface(cairo_t *cr, TitleSourceData *data, const Title &title,
+                                                  const Layer &layer, double title_time,
+                                                  int canvas_w, int canvas_h)
+{
+    if (!cr || layer.mask_mode != MaskMode::None || layer.use_as_scene_mask)
+        return false;
+
+    const double t = std::max(0.0, title_time - layer.in_time);
+    const QRect surface_rect = clipped_effect_surface_rect(layer, t, canvas_w, canvas_h);
+    if (!surface_rect.isValid() || surface_rect.isEmpty())
+        return false;
+
+    CairoSurfacePtr layer_surface(cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, std::max(1, surface_rect.width()), std::max(1, surface_rect.height())));
+    auto layer_cr = make_cairo_context(layer_surface.get());
+    if (!layer_surface || cairo_surface_status(layer_surface.get()) != CAIRO_STATUS_SUCCESS || !layer_cr)
+        return false;
+
+    cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
+    cairo_paint(layer_cr.get());
+    cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
+    cairo_translate(layer_cr.get(), -surface_rect.x(), -surface_rect.y());
+
+    Layer local_layer = layer;
+    neutralize_layer_transform_for_effect_cache(local_layer, 1.0, 0.0, 0.0);
+    render_layer_unmasked_with_stackable_effects(layer_cr.get(), data, title, local_layer,
+                                                 title_time, canvas_w, canvas_h);
+    layer_cr.reset();
+
+    cairo_save(cr);
+    cairo_set_operator(cr, cairo_operator_for_layer_blend_mode(layer.blend_mode));
+    apply_layer_world_transform(cr, title, layer, title_time);
+    cairo_set_source_surface(cr, layer_surface.get(), surface_rect.x(), surface_rect.y());
+    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+    cairo_restore(cr);
+    return true;
 }
 
 
@@ -4063,6 +4378,8 @@ static void render_title_frame(TitleSourceData *data,
 
         if (layer->blend_mode == EffectBlendMode::Normal) {
             render_layer_with_mask(cr.get(), data, title, *layer, layer_time, (int)w, (int)h);
+        } else if (render_layer_with_local_blend_surface(cr.get(), data, title, *layer, layer_time, (int)w, (int)h)) {
+            continue;
         } else {
             CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, (int)w, (int)h));
             auto layer_cr = make_cairo_context(layer_surface.get());
@@ -4187,6 +4504,8 @@ QImage render_title_to_image(const Title &title, double t)
 
         if (layer->blend_mode == EffectBlendMode::Normal) {
             render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
+        } else if (render_layer_with_local_blend_surface(cr.get(), nullptr, title, *layer, clamped_time, w, h)) {
+            continue;
         } else {
             CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h));
             auto layer_cr = make_cairo_context(layer_surface.get());

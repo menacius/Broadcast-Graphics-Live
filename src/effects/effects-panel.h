@@ -64,6 +64,8 @@ private:
     const LayerEffect *selected_effect() const;
     void sync_legacy_enabled_flags();
     void emit_effect_changed();
+    bool settings_editor_has_focus() const;
+    void apply_effect_list_order_from_items();
 
     std::shared_ptr<Layer> layer_;
     double playhead_ = 0.0;
@@ -80,4 +82,3 @@ private:
     QToolButton *btn_move_down_ = nullptr;
     QToolButton *btn_respect_masks_ = nullptr;
 };
-
