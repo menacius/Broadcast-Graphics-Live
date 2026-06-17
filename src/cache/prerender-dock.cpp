@@ -1,4 +1,5 @@
 #include "prerender-dock.h"
+#include "title-localization.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -43,31 +44,31 @@ void PrerenderDock::buildUi()
     form->setContentsMargins(0, 0, 0, 0);
 
     start_mode_ = new QComboBox(this);
-    start_mode_->addItems({QStringLiteral("From current time"), QStringLiteral("From beginning")});
-    form->addRow(QStringLiteral("Start"), start_mode_);
+    start_mode_->addItems({obsgs_tr("OBSTitles.FromCurrentTime"), obsgs_tr("OBSTitles.FromBeginning")});
+    form->addRow(obsgs_tr("OBSTitles.Start"), start_mode_);
 
     playback_mode_ = new QComboBox(this);
-    playback_mode_->addItems({QStringLiteral("Loop"), QStringLiteral("Ping-pong loop"), QStringLiteral("Play once")});
-    form->addRow(QStringLiteral("Mode"), playback_mode_);
+    playback_mode_->addItems({obsgs_tr("OBSTitles.Loop"), obsgs_tr("OBSTitles.PingPongLoop"), obsgs_tr("OBSTitles.PlayOnce")});
+    form->addRow(obsgs_tr("OBSTitles.Mode"), playback_mode_);
 
-    cache_enabled_ = new QCheckBox(QStringLiteral("Enable cache"), this);
+    cache_enabled_ = new QCheckBox(obsgs_tr("OBSTitles.EnableCache"), this);
     cache_enabled_->setChecked(CacheManager::instance().cacheEnabled());
     form->addRow(QString(), cache_enabled_);
 
     skip_frames_ = new QSpinBox(this);
     skip_frames_->setRange(0, 30);
-    form->addRow(QStringLiteral("Skip frames"), skip_frames_);
+    form->addRow(obsgs_tr("OBSTitles.SkipFrames"), skip_frames_);
 
     speed_percent_ = new QDoubleSpinBox(this);
     speed_percent_->setRange(1.0, 400.0);
     speed_percent_->setValue(100.0);
     speed_percent_->setSuffix(QStringLiteral("%"));
-    form->addRow(QStringLiteral("Speed"), speed_percent_);
+    form->addRow(obsgs_tr("OBSTitles.Speed"), speed_percent_);
 
-    cached_only_ = new QCheckBox(QStringLiteral("Play cached frames only"), this);
+    cached_only_ = new QCheckBox(obsgs_tr("OBSTitles.PlayCachedFramesOnly"), this);
     form->addRow(QString(), cached_only_);
 
-    play_every_frame_ = new QCheckBox(QStringLiteral("Play every frame, even if slow"), this);
+    play_every_frame_ = new QCheckBox(obsgs_tr("OBSTitles.PlayEveryFrameEvenIfSlow"), this);
     form->addRow(QString(), play_every_frame_);
     root->addLayout(form);
 
@@ -78,22 +79,22 @@ void PrerenderDock::buildUi()
         grid->addWidget(button, row, col);
         return button;
     };
-    add_button(QStringLiteral("Clear RAM Cache"), 0, 0, []() { CacheManager::instance().clearRam(); });
-    add_button(QStringLiteral("Clear Disk Cache"), 0, 1, []() { CacheManager::instance().clearDisk(); });
-    add_button(QStringLiteral("Clear All Cache"), 1, 0, []() { CacheManager::instance().clearAll(); });
-    pause_resume_ = add_button(QStringLiteral("Pause Prerender"), 1, 1, [this]() {
+    add_button(obsgs_tr("OBSTitles.ClearRamCache"), 0, 0, []() { CacheManager::instance().clearRam(); });
+    add_button(obsgs_tr("OBSTitles.ClearDiskCache"), 0, 1, []() { CacheManager::instance().clearDisk(); });
+    add_button(obsgs_tr("OBSTitles.ClearAllCache"), 1, 0, []() { CacheManager::instance().clearAll(); });
+    pause_resume_ = add_button(obsgs_tr("OBSTitles.PausePrerender"), 1, 1, [this]() {
         if (CacheManager::instance().prerenderPaused())
             CacheManager::instance().resumePrerender();
         else
             CacheManager::instance().pausePrerender();
         updateStatus();
     });
-    cache_work_area_ = add_button(QStringLiteral("Cache Work Area"), 2, 0, [this]() {
+    cache_work_area_ = add_button(obsgs_tr("OBSTitles.CacheWorkArea"), 2, 0, [this]() {
         applySettings();
         if (title_) CacheManager::instance().queueWorkArea(title_);
         emit cacheWorkAreaRequested();
     });
-    cache_timeline_ = add_button(QStringLiteral("Cache Entire Timeline"), 2, 1, [this]() {
+    cache_timeline_ = add_button(obsgs_tr("OBSTitles.CacheEntireTimeline"), 2, 1, [this]() {
         applySettings();
         if (title_) CacheManager::instance().queueWholeTimeline(title_);
         emit cacheEntireTimelineRequested();
@@ -150,11 +151,11 @@ void PrerenderDock::updateStatus()
 {
     if (pause_resume_)
         pause_resume_->setText(CacheManager::instance().prerenderPaused()
-                                   ? QStringLiteral("Resume Prerender")
-                                   : QStringLiteral("Pause Prerender"));
+                                   ? obsgs_tr("OBSTitles.ResumePrerender")
+                                   : obsgs_tr("OBSTitles.PausePrerender"));
     if (!status_) return;
     if (!title_) {
-        status_->setText(QStringLiteral("No title loaded."));
+        status_->setText(obsgs_tr("OBSTitles.NoTitleLoaded"));
         if (diagnostics_) diagnostics_->clear();
         return;
     }
@@ -169,7 +170,7 @@ void PrerenderDock::updateStatus()
     if (!message.isEmpty()) {
         status_->setText(message);
     } else {
-        status_->setText(QStringLiteral("Prerender queue is active. Timeline colors show queued, rendering, RAM, disk, and stale frames."));
+        status_->setText(obsgs_tr("OBSTitles.PrerenderQueueStatus"));
     }
     if (diagnostics_) {
         const LiveCueCacheStats stats = CacheManager::instance().liveCueStats();
@@ -179,7 +180,7 @@ void PrerenderDock::updateStatus()
                 return QStringLiteral("%1 MB").arg(mib, 0, 'f', 1);
             return QStringLiteral("%1 GB").arg(mib / 1024.0, 0, 'f', 2);
         };
-        diagnostics_->setText(QStringLiteral("Cache usage\nRAM: %1 / %2\nDisk: %3\n\nLive Text Cue diagnostics\nHits: %4\nMisses: %5\nReuses: %6\nInvalidations: %7")
+        diagnostics_->setText(obsgs_tr("OBSTitles.CacheUsageDiagnostics")
                                   .arg(format_bytes(CacheManager::instance().ramBytesUsed()),
                                        format_bytes(CacheManager::instance().ramBytesLimit()),
                                        format_bytes(CacheManager::instance().diskBytesUsed()))

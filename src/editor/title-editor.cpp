@@ -1,5 +1,6 @@
 #include "title-editor-internal.h"
 #include "title-logger.h"
+#include "style-presets.h"
 
 #include <QClipboard>
 #include <QDesktopServices>
@@ -165,7 +166,147 @@ QWidget *TitleEditor::create_styles_panel()
     tabs->setObjectName(QStringLiteral("OBSGraphicsStudioProStylesTabs"));
     tabs->setDocumentMode(true);
 
-    auto make_tab = [](const QString &title, const QString &description) {
+    auto *text_styles = new obsgsp::StylePresetPanel(obsgsp::StylePresetKind::Text, tabs);
+    text_styles->setCreatePresetCallback([this](const QString &name, const QString &category) {
+        Layer fallback;
+        if (title_ && !sel_layer_id_.empty()) {
+            if (auto layer = title_->find_layer(sel_layer_id_)) {
+                if (active_text_edit_layer_id_ == layer->id) {
+                    RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer, true);
+                    if (summary.valid) {
+                        Layer inline_style = *layer;
+                        inline_style.font_family = summary.format.font_family;
+                        inline_style.font_style = summary.format.font_style;
+                        inline_style.font_size = summary.format.font_size;
+                        inline_style.font_bold = summary.format.bold;
+                        inline_style.font_italic = summary.format.italic;
+                        inline_style.text_underline = summary.format.underline;
+                        inline_style.text_strikethrough = summary.format.strikethrough;
+                        inline_style.char_tracking = summary.format.tracking;
+                        inline_style.char_scale_x = summary.format.scale_x;
+                        inline_style.char_scale_y = summary.format.scale_y;
+                        inline_style.baseline_shift = summary.format.baseline_shift;
+                        inline_style.fill_type = summary.format.fill.type;
+                        inline_style.text_color = summary.format.fill.color;
+                        inline_style.fill_color = summary.format.fill.color;
+                        inline_style.gradient_type = summary.format.fill.gradient_type;
+                        inline_style.gradient_start_color = summary.format.fill.gradient_start_color;
+                        inline_style.gradient_end_color = summary.format.fill.gradient_end_color;
+                        inline_style.gradient_start_pos = summary.format.fill.gradient_start_pos;
+                        inline_style.gradient_end_pos = summary.format.fill.gradient_end_pos;
+                        inline_style.gradient_start_opacity = summary.format.fill.gradient_start_opacity;
+                        inline_style.gradient_end_opacity = summary.format.fill.gradient_end_opacity;
+                        inline_style.gradient_opacity = summary.format.fill.gradient_opacity;
+                        inline_style.gradient_angle = summary.format.fill.gradient_angle;
+                        inline_style.gradient_center_x = summary.format.fill.gradient_center_x;
+                        inline_style.gradient_center_y = summary.format.fill.gradient_center_y;
+                        inline_style.gradient_scale = summary.format.fill.gradient_scale;
+                        inline_style.gradient_focal_x = summary.format.fill.gradient_focal_x;
+                        inline_style.gradient_focal_y = summary.format.fill.gradient_focal_y;
+                        return obsgsp::StylePresetLibrary::makeTextPreset(inline_style, name, category);
+                    }
+                }
+                return obsgsp::StylePresetLibrary::makeTextPreset(*layer, name, category);
+            }
+        }
+        return obsgsp::StylePresetLibrary::makeTextPreset(fallback, name, category);
+    });
+    text_styles->setApplyPresetCallback([this](const obsgsp::StylePreset &preset) {
+        if (!title_ || sel_layer_id_.empty()) return;
+        if (auto layer = title_->find_layer(sel_layer_id_)) {
+            if (layer->type != LayerType::Text && layer->type != LayerType::Clock && layer->type != LayerType::Ticker)
+                return;
+            push_undo_snapshot();
+            const bool apply_inline = active_text_edit_layer_id_ == layer->id;
+            if (apply_inline) {
+                RichTextCharFormat fmt = layer_char_format_for_editor(*layer);
+                if (!obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, fmt))
+                    return;
+                const uint32_t mask = obsgsp::StylePresetLibrary::textPresetCharMask();
+                apply_rich_text_format_to_layer_range(*layer, fmt, mask, true);
+                if (canvas_) canvas_->apply_active_text_char_format(layer->id, fmt, mask);
+                on_title_modified(false);
+                update_layer_panels(layer, playhead_);
+                if (layers_) layers_->refresh();
+                if (canvas_) canvas_->update();
+                return;
+            }
+            if (obsgsp::StylePresetLibrary::applyTextPreset(preset, *layer)) {
+                on_title_modified(false);
+                update_layer_panels(layer, playhead_);
+                if (layers_) layers_->refresh();
+                if (canvas_) canvas_->update();
+            }
+        }
+    });
+
+    auto *gradient_styles = new obsgsp::StylePresetPanel(obsgsp::StylePresetKind::Gradient, tabs);
+    gradient_styles->setCreatePresetCallback([this](const QString &name, const QString &category) {
+        Layer fallback;
+        fallback.fill_type = 1;
+        if (title_ && !sel_layer_id_.empty()) {
+            if (auto layer = title_->find_layer(sel_layer_id_)) {
+                if (active_text_edit_layer_id_ == layer->id &&
+                    (layer->type == LayerType::Text || layer->type == LayerType::Clock || layer->type == LayerType::Ticker)) {
+                    RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer, true);
+                    if (summary.valid) {
+                        Layer inline_gradient = *layer;
+                        inline_gradient.fill_type = summary.format.fill.type;
+                        inline_gradient.text_color = summary.format.fill.color;
+                        inline_gradient.fill_color = summary.format.fill.color;
+                        inline_gradient.gradient_type = summary.format.fill.gradient_type;
+                        inline_gradient.gradient_start_color = summary.format.fill.gradient_start_color;
+                        inline_gradient.gradient_end_color = summary.format.fill.gradient_end_color;
+                        inline_gradient.gradient_start_pos = summary.format.fill.gradient_start_pos;
+                        inline_gradient.gradient_end_pos = summary.format.fill.gradient_end_pos;
+                        inline_gradient.gradient_start_opacity = summary.format.fill.gradient_start_opacity;
+                        inline_gradient.gradient_end_opacity = summary.format.fill.gradient_end_opacity;
+                        inline_gradient.gradient_opacity = summary.format.fill.gradient_opacity;
+                        inline_gradient.gradient_angle = summary.format.fill.gradient_angle;
+                        inline_gradient.gradient_center_x = summary.format.fill.gradient_center_x;
+                        inline_gradient.gradient_center_y = summary.format.fill.gradient_center_y;
+                        inline_gradient.gradient_scale = summary.format.fill.gradient_scale;
+                        inline_gradient.gradient_focal_x = summary.format.fill.gradient_focal_x;
+                        inline_gradient.gradient_focal_y = summary.format.fill.gradient_focal_y;
+                        return obsgsp::StylePresetLibrary::makeGradientPreset(inline_gradient, name, category);
+                    }
+                }
+                return obsgsp::StylePresetLibrary::makeGradientPreset(*layer, name, category);
+            }
+        }
+        return obsgsp::StylePresetLibrary::makeGradientPreset(fallback, name, category);
+    });
+    gradient_styles->setApplyPresetCallback([this](const obsgsp::StylePreset &preset) {
+        if (!title_ || sel_layer_id_.empty()) return;
+        if (auto layer = title_->find_layer(sel_layer_id_)) {
+            push_undo_snapshot();
+            const bool apply_inline = active_text_edit_layer_id_ == layer->id &&
+                                      (layer->type == LayerType::Text || layer->type == LayerType::Clock || layer->type == LayerType::Ticker);
+            if (apply_inline) {
+                RichTextCharFormat fmt = layer_char_format_for_editor(*layer);
+                if (!obsgsp::StylePresetLibrary::gradientPresetToCharFormat(preset, fmt))
+                    return;
+                const uint32_t mask = obsgsp::StylePresetLibrary::gradientPresetCharMask();
+                apply_rich_text_format_to_layer_range(*layer, fmt, mask, true);
+                if (canvas_) canvas_->apply_active_text_char_format(layer->id, fmt, mask);
+                on_title_modified(false);
+                update_layer_panels(layer, playhead_);
+                update_sidebar_color_swatches(layer);
+                if (layers_) layers_->refresh();
+                if (canvas_) canvas_->update();
+                return;
+            }
+            if (obsgsp::StylePresetLibrary::applyGradientPreset(preset, *layer)) {
+                on_title_modified(false);
+                update_layer_panels(layer, playhead_);
+                update_sidebar_color_swatches(layer);
+                if (layers_) layers_->refresh();
+                if (canvas_) canvas_->update();
+            }
+        }
+    });
+
+    auto make_placeholder_tab = [](const QString &title, const QString &description) {
         auto *tab = new QWidget;
         auto *layout = new QVBoxLayout(tab);
         layout->setContentsMargins(10, 10, 10, 10);
@@ -184,18 +325,11 @@ QWidget *TitleEditor::create_styles_panel()
         return tab;
     };
 
-    tabs->addTab(make_tab(QStringLiteral("Text styles"),
-                          QStringLiteral("Reusable typography presets, text treatments, and layer text settings will be managed here.")),
-                 QStringLiteral("Text"));
-    tabs->addTab(make_tab(QStringLiteral("Gradient styles"),
-                          QStringLiteral("Reusable foreground and background gradient presets will be managed here.")),
-                 QStringLiteral("Gradient"));
-    tabs->addTab(make_tab(QStringLiteral("Pattern styles"),
-                          QStringLiteral("Reusable pattern, texture, and fill presets will be managed here.")),
-                 QStringLiteral("Pattern"));
-    tabs->addTab(make_tab(QStringLiteral("Style presets"),
-                          QStringLiteral("Saved style preset libraries and shared style settings will be organized here.")),
-                 QStringLiteral("Presets"));
+    tabs->addTab(text_styles, obsgs_tr("OBSTitles.Text"));
+    tabs->addTab(gradient_styles, obsgs_tr("OBSTitles.Gradient"));
+    tabs->addTab(make_placeholder_tab(obsgs_tr("OBSTitles.PatternStyles"),
+                                      obsgs_tr("OBSTitles.PatternStylesHint")),
+                 obsgs_tr("OBSTitles.Pattern"));
 
     return tabs;
 }
@@ -207,7 +341,7 @@ QWidget *TitleEditor::create_color_swatches_panel()
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
 
-    auto *hint = new QLabel(QStringLiteral("Reusable color palettes"), panel);
+    auto *hint = new QLabel(obsgs_tr("OBSTitles.ReusableColorPalettes"), panel);
     hint->setWordWrap(true);
     QFont hint_font = hint->font();
     hint_font.setBold(true);
@@ -245,7 +379,7 @@ QWidget *TitleEditor::create_color_swatches_panel()
     }
 
     layout->addWidget(grid_widget, 0, Qt::AlignTop | Qt::AlignLeft);
-    auto *footer = new QLabel(QStringLiteral("Palette saving, palette import/export, and quick color application workflows will build on these swatches."), panel);
+    auto *footer = new QLabel(obsgs_tr("OBSTitles.PaletteWorkflowHint"), panel);
     footer->setWordWrap(true);
     footer->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg((qApp->palette().color(QPalette::WindowText).lightness() < 128 ? qApp->palette().color(QPalette::WindowText).lighter(145) : qApp->palette().color(QPalette::WindowText).darker(145)).name(QColor::HexRgb)));
     layout->addWidget(footer);
@@ -258,66 +392,66 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
 {
     if (!menu_bar) return;
 
-    auto *windows_menu = menu_bar->addMenu(QStringLiteral("Windows"));
+    auto *windows_menu = menu_bar->addMenu(obsgs_tr("OBSTitles.Windows"));
 
-    act_lock_panels_ = windows_menu->addAction(QStringLiteral("Lock Panels"));
+    act_lock_panels_ = windows_menu->addAction(obsgs_tr("OBSTitles.LockPanels"));
     act_lock_panels_->setCheckable(true);
     connect(act_lock_panels_, &QAction::toggled, this, &TitleEditor::set_panels_locked);
 
-    QAction *reset_layout_action = windows_menu->addAction(QStringLiteral("Reset to Default Layout"));
+    QAction *reset_layout_action = windows_menu->addAction(obsgs_tr("OBSTitles.ResetDefaultLayout"));
     connect(reset_layout_action, &QAction::triggered, this, &TitleEditor::reset_default_layout);
 
     windows_menu->addSeparator();
-    act_tools_visible_ = windows_menu->addAction(QStringLiteral("Tools"));
+    act_tools_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Tools"));
     act_tools_visible_->setCheckable(true);
     act_tools_visible_->setChecked(true);
     connect(act_tools_visible_, &QAction::triggered, this, [this](bool visible) {
         if (tools_dock_) tools_dock_->setVisible(visible);
     });
 
-    act_graphic_props_visible_ = windows_menu->addAction(QStringLiteral("Graphic Properties"));
+    act_graphic_props_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.GraphicProperties"));
     act_graphic_props_visible_->setCheckable(true);
     act_graphic_props_visible_->setChecked(true);
     connect(act_graphic_props_visible_, &QAction::triggered, this, [this](bool visible) {
         if (graphic_props_dock_) graphic_props_dock_->setVisible(visible);
     });
 
-    act_layer_props_visible_ = windows_menu->addAction(QStringLiteral("Layer Properties"));
+    act_layer_props_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.LayerProperties"));
     act_layer_props_visible_->setCheckable(true);
     act_layer_props_visible_->setChecked(true);
     connect(act_layer_props_visible_, &QAction::triggered, this, [this](bool visible) {
         if (layer_props_dock_) layer_props_dock_->setVisible(visible);
     });
 
-    act_effects_visible_ = windows_menu->addAction(QStringLiteral("Effects"));
+    act_effects_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Effects"));
     act_effects_visible_->setCheckable(true);
     act_effects_visible_->setChecked(true);
     connect(act_effects_visible_, &QAction::triggered, this, [this](bool visible) {
         if (effects_dock_) effects_dock_->setVisible(visible);
     });
 
-    act_styles_visible_ = windows_menu->addAction(QStringLiteral("Styles"));
+    act_styles_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Styles"));
     act_styles_visible_->setCheckable(true);
     act_styles_visible_->setChecked(true);
     connect(act_styles_visible_, &QAction::triggered, this, [this](bool visible) {
         if (styles_dock_) styles_dock_->setVisible(visible);
     });
 
-    act_color_swatches_visible_ = windows_menu->addAction(QStringLiteral("Color Swatches"));
+    act_color_swatches_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.ColorSwatches"));
     act_color_swatches_visible_->setCheckable(true);
     act_color_swatches_visible_->setChecked(true);
     connect(act_color_swatches_visible_, &QAction::triggered, this, [this](bool visible) {
         if (color_swatches_dock_) color_swatches_dock_->setVisible(visible);
     });
 
-    act_timeline_visible_ = windows_menu->addAction(QStringLiteral("Timeline"));
+    act_timeline_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Timeline"));
     act_timeline_visible_->setCheckable(true);
     act_timeline_visible_->setChecked(true);
     connect(act_timeline_visible_, &QAction::triggered, this, [this](bool visible) {
         if (timeline_dock_) timeline_dock_->setVisible(visible);
     });
 
-    act_prerender_visible_ = windows_menu->addAction(QStringLiteral("Prerender"));
+    act_prerender_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Prerender"));
     act_prerender_visible_->setCheckable(true);
     act_prerender_visible_->setChecked(true);
     connect(act_prerender_visible_, &QAction::triggered, this, [this](bool visible) {
@@ -975,55 +1109,55 @@ void TitleEditor::build_ui()
     QAction *preferences_action = edit_menu->addAction(obsgs_tr("OBSTitles.Preferences"));
     connect(preferences_action, &QAction::triggered, this, &TitleEditor::show_preferences);
 
-    auto *view_menu = menu_bar->addMenu(QStringLiteral("View"));
-    act_rulers_visible_ = view_menu->addAction(QStringLiteral("Rulers"));
+    auto *view_menu = menu_bar->addMenu(obsgs_tr("OBSTitles.View"));
+    act_rulers_visible_ = view_menu->addAction(obsgs_tr("OBSTitles.Rulers"));
     act_rulers_visible_->setCheckable(true);
     act_rulers_visible_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
-    act_rulers_visible_->setToolTip(QStringLiteral("Show or hide Photoshop-style canvas rulers."));
+    act_rulers_visible_->setToolTip(obsgs_tr("OBSTitles.RulersTooltip"));
     connect(act_rulers_visible_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_rulers_visible(visible);
     });
 
-    act_guides_visible_ = view_menu->addAction(QStringLiteral("Guides"));
+    act_guides_visible_ = view_menu->addAction(obsgs_tr("OBSTitles.Guides"));
     act_guides_visible_->setCheckable(true);
     act_guides_visible_->setChecked(true);
     act_guides_visible_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_QuoteLeft));
-    act_guides_visible_->setToolTip(QStringLiteral("Show or hide user-created guides."));
+    act_guides_visible_->setToolTip(obsgs_tr("OBSTitles.GuidesTooltip"));
     connect(act_guides_visible_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_guides_visible(visible);
     });
 
-    act_guides_locked_ = view_menu->addAction(QStringLiteral("Lock Guides"));
+    act_guides_locked_ = view_menu->addAction(obsgs_tr("OBSTitles.LockGuides"));
     act_guides_locked_->setCheckable(true);
-    act_guides_locked_->setToolTip(QStringLiteral("Prevent guides from being moved, removed, or created from rulers."));
+    act_guides_locked_->setToolTip(obsgs_tr("OBSTitles.LockGuidesTooltip"));
     connect(act_guides_locked_, &QAction::toggled, this, [this](bool locked) {
         if (canvas_) canvas_->set_guides_locked(locked);
     });
 
-    act_guide_coordinates_ = view_menu->addAction(QStringLiteral("Show Guide Coordinates"));
+    act_guide_coordinates_ = view_menu->addAction(obsgs_tr("OBSTitles.ShowGuideCoordinates"));
     act_guide_coordinates_->setCheckable(true);
     act_guide_coordinates_->setChecked(true);
     connect(act_guide_coordinates_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_show_guide_coordinates(visible);
     });
 
-    act_clear_guides_ = view_menu->addAction(QStringLiteral("Clear Guides"));
-    act_clear_guides_->setToolTip(QStringLiteral("Remove all user-created horizontal and vertical guides."));
+    act_clear_guides_ = view_menu->addAction(obsgs_tr("OBSTitles.ClearGuides"));
+    act_clear_guides_->setToolTip(obsgs_tr("OBSTitles.ClearGuidesTooltip"));
     connect(act_clear_guides_, &QAction::triggered, this, [this]() {
         if (canvas_) canvas_->clear_user_guides();
     });
     view_menu->addSeparator();
 
-    QAction *snap_action = view_menu->addAction(QStringLiteral("Snap"));
+    QAction *snap_action = view_menu->addAction(obsgs_tr("OBSTitles.Snap"));
     snap_action->setCheckable(true);
     snap_action->setChecked(true);
     snap_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Semicolon));
-    snap_action->setToolTip(QStringLiteral("Globally enable or disable snapping without changing Snap To targets."));
+    snap_action->setToolTip(obsgs_tr("OBSTitles.SnapTooltip"));
     connect(snap_action, &QAction::toggled, this, [this](bool enabled) {
         if (canvas_) canvas_->set_snap_enabled(enabled);
     });
 
-    auto *snap_to_menu = view_menu->addMenu(QStringLiteral("Snap To"));
+    auto *snap_to_menu = view_menu->addMenu(obsgs_tr("OBSTitles.SnapTo"));
     auto add_snap_to_action = [this, snap_to_menu](const QString &text, bool checked, auto setter) {
         QAction *action = snap_to_menu->addAction(text);
         action->setCheckable(true);
@@ -1033,12 +1167,12 @@ void TitleEditor::build_ui()
         });
         return action;
     };
-    add_snap_to_action(QStringLiteral("Guides"), true, &CanvasPreview::set_snap_to_guides);
-    add_snap_to_action(QStringLiteral("Grid"), false, &CanvasPreview::set_snap_to_grid);
-    add_snap_to_action(QStringLiteral("Object Edges"), true, &CanvasPreview::set_snap_to_object_edges);
-    add_snap_to_action(QStringLiteral("Object Centers"), true, &CanvasPreview::set_snap_to_object_centers);
-    add_snap_to_action(QStringLiteral("Canvas Bounds"), true, &CanvasPreview::set_snap_to_canvas_bounds);
-    add_snap_to_action(QStringLiteral("Spacing / Alignment"), true, &CanvasPreview::set_snap_to_spacing);
+    add_snap_to_action(obsgs_tr("OBSTitles.Guides"), true, &CanvasPreview::set_snap_to_guides);
+    add_snap_to_action(obsgs_tr("OBSTitles.Grid"), false, &CanvasPreview::set_snap_to_grid);
+    add_snap_to_action(obsgs_tr("OBSTitles.ObjectEdges"), true, &CanvasPreview::set_snap_to_object_edges);
+    add_snap_to_action(obsgs_tr("OBSTitles.ObjectCenters"), true, &CanvasPreview::set_snap_to_object_centers);
+    add_snap_to_action(obsgs_tr("OBSTitles.CanvasBounds"), true, &CanvasPreview::set_snap_to_canvas_bounds);
+    add_snap_to_action(obsgs_tr("OBSTitles.SpacingAlignment"), true, &CanvasPreview::set_snap_to_spacing);
 
     create_docked_panel_menu(menu_bar);
 
@@ -1084,7 +1218,7 @@ void TitleEditor::build_ui()
     tf.setBold(true);
     title_lbl_->setFont(tf);
     title_lbl_->setStyleSheet(QStringLiteral("color:%1;").arg(editor_text.name(QColor::HexRgb)));
-    title_lbl_->setToolTip(QStringLiteral("Double-click to rename"));
+    title_lbl_->setToolTip(obsgs_tr("OBSTitles.DoubleClickRename"));
     title_lbl_->installEventFilter(this);
     title_bar_layout->addWidget(title_lbl_, 0, Qt::AlignVCenter);
     title_name_edit_ = new QLineEdit(title_bar);
@@ -1275,26 +1409,26 @@ void TitleEditor::build_ui()
     upper_split->setStretchFactor(0, 1);
 
     graphic_props_dock_ = create_editor_dock(QString::fromUtf8(kGraphicPropertiesDockObjectName),
-                                             QStringLiteral("Graphic Properties"),
+                                             obsgs_tr("OBSTitles.GraphicProperties"),
                                              title_props_);
     layer_props_dock_ = create_editor_dock(QString::fromUtf8(kLayerPropertiesDockObjectName),
-                                           QStringLiteral("Layer Properties"),
+                                           obsgs_tr("OBSTitles.LayerProperties"),
                                            props_);
     effects_dock_ = create_editor_dock(QString::fromUtf8(kEffectsDockObjectName),
-                                       QStringLiteral("Effects"),
+                                       obsgs_tr("OBSTitles.Effects"),
                                        create_effects_panel());
     styles_dock_ = create_editor_dock(QString::fromUtf8(kStylesDockObjectName),
-                                      QStringLiteral("Styles"),
+                                      obsgs_tr("OBSTitles.Styles"),
                                       create_styles_panel());
     color_swatches_dock_ = create_editor_dock(QString::fromUtf8(kColorSwatchesDockObjectName),
-                                              QStringLiteral("Color Swatches"),
+                                              obsgs_tr("OBSTitles.ColorSwatches"),
                                               create_color_swatches_panel());
     prerender_dock_ = create_editor_dock(QString::fromUtf8(kPrerenderDockObjectName),
-                                         QStringLiteral("Prerender"),
+                                         obsgs_tr("OBSTitles.Prerender"),
                                          create_prerender_panel());
     tools_sidebar_ = new ToolsSidebar(this);
     tools_dock_ = create_editor_dock(QStringLiteral("OBSGraphicsStudioProToolsDock"),
-                                     QStringLiteral("Tools"),
+                                     obsgs_tr("OBSTitles.Tools"),
                                      tools_sidebar_);
     tools_dock_->setMinimumWidth(46);
     tools_dock_->setMaximumWidth(64);
@@ -1464,7 +1598,7 @@ void TitleEditor::build_ui()
 
     timeline_editor->setMinimumHeight(210);
     timeline_dock_ = create_editor_dock(QString::fromUtf8(kTimelineDockObjectName),
-                                        QStringLiteral("Timeline"),
+                                        obsgs_tr("OBSTitles.Timeline"),
                                         timeline_editor);
     timeline_dock_->setAllowedAreas(Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea);
     timeline_dock_->setMinimumHeight(220);
@@ -1737,6 +1871,7 @@ void TitleEditor::build_ui()
     connect(canvas_, &CanvasPreview::text_edit_changed,
             this, [this](const std::string &layer_id) {
                 if (!title_) return;
+                active_text_edit_layer_id_ = layer_id;
                 if (props_) props_->set_active_text_edit_layer(layer_id);
                 on_title_modified(false);
                 if (auto layer = title_->find_layer(layer_id))
@@ -1745,6 +1880,7 @@ void TitleEditor::build_ui()
     connect(canvas_, &CanvasPreview::text_edit_cursor_changed,
             this, [this](const std::string &layer_id) {
                 if (!title_) return;
+                active_text_edit_layer_id_ = layer_id;
                 if (props_) props_->set_active_text_edit_layer(layer_id);
                 if (auto layer = title_->find_layer(layer_id))
                     update_layer_panels(layer, playhead_);
@@ -1752,6 +1888,7 @@ void TitleEditor::build_ui()
     connect(canvas_, &CanvasPreview::text_edit_committed,
             this, [this](const std::string &layer_id) {
                 if (!title_) return;
+                active_text_edit_layer_id_.clear();
                 if (props_) props_->set_active_text_edit_layer(std::string());
                 bool renamed_layer = false;
                 if (auto layer = title_->find_layer(layer_id)) {
@@ -2232,7 +2369,7 @@ static QStringList editor_template_library_category_paths(const QString &root_pa
         const QString rel = QDir(root_path).relativeFilePath(it.filePath());
         if (!rel.isEmpty()) categories << rel;
     }
-    if (categories.isEmpty()) categories << QStringLiteral("Custom");
+    if (categories.isEmpty()) categories << obsgs_tr("OBSTitles.Custom");
     categories.sort(Qt::CaseInsensitive);
     return categories;
 }
@@ -3052,8 +3189,8 @@ void TitleEditor::update_title_bar()
         title_lbl_->setText(QString::fromStdString(title_->name));
     if (graphic_props_dock_) {
         graphic_props_dock_->setWindowTitle(title_
-            ? QStringLiteral("Properties: %1").arg(QString::fromStdString(title_->name))
-            : QStringLiteral("Properties"));
+            ? obsgs_tr("OBSTitles.PropertiesNamed").arg(QString::fromStdString(title_->name))
+            : obsgs_tr("OBSTitles.Properties"));
     }
     if (dirty_indicator_)
         dirty_indicator_->setVisible(dirty_);
@@ -3333,9 +3470,19 @@ void TitleEditor::show_about()
 
 void TitleEditor::show_preferences()
 {
-    auto *dialog = new QDialog(this);
+    show_preferences_dialog(this, this);
+}
+
+void TitleEditor::show_global_preferences(QWidget *parent)
+{
+    show_preferences_dialog(parent, nullptr);
+}
+
+void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
+{
+    auto *dialog = new QDialog(parent);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(obsgs_tr("OBSTitles.Preferences"));
+    dialog->setWindowTitle(obsgs_tr("OBSTitles.PreferencesWindowTitle"));
     dialog->setModal(false);
     dialog->resize(620, 420);
 
@@ -3365,9 +3512,9 @@ void TitleEditor::show_preferences()
     tabs->setFrameShape(QFrame::NoFrame);
     tabs->setSelectionMode(QAbstractItemView::SingleSelection);
     tabs->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    tabs->addItem(QStringLiteral("Appearance"));
-    tabs->addItem(QStringLiteral("Advanced"));
-    tabs->addItem(QStringLiteral("Logging"));
+    tabs->addItem(obsgs_tr("OBSTitles.Appearance"));
+    tabs->addItem(obsgs_tr("OBSTitles.Advanced"));
+    tabs->addItem(obsgs_tr("OBSTitles.Logging"));
     tabs->setStyleSheet(QStringLiteral(
         "QListWidget{background:%1;border:1px solid %2;color:%3;outline:none;}"
         "QListWidget::item{padding:8px 10px;border-bottom:1px solid %2;}"
@@ -3390,7 +3537,7 @@ void TitleEditor::show_preferences()
     colors_layout->setContentsMargins(0, 0, 0, 0);
     colors_layout->setSpacing(10);
 
-    auto *colors_title = new QLabel(QStringLiteral("Timeline Colors"), colors_page);
+    auto *colors_title = new QLabel(obsgs_tr("OBSTitles.TimelineColors"), colors_page);
     QFont title_font = colors_title->font();
     title_font.setPointSize(title_font.pointSize() + 2);
     title_font.setBold(true);
@@ -3403,13 +3550,17 @@ void TitleEditor::show_preferences()
     grid->setVerticalSpacing(8);
     colors_layout->addLayout(grid);
 
-    auto update_appearance = [this]() {
-        if (layers_)
-            layers_->refresh();
-        if (timeline_)
-            timeline_->update();
-        if (canvas_)
-            canvas_->update();
+    auto update_appearance = [editor]() {
+        if (!editor) {
+            TitlePreferences::notify_changed(nullptr);
+            return;
+        }
+        if (editor->layers_)
+            editor->layers_->refresh();
+        if (editor->timeline_)
+            editor->timeline_->update();
+        if (editor->canvas_)
+            editor->canvas_->update();
     };
 
     auto color_to_text = [](const QColor &color) {
@@ -3459,15 +3610,15 @@ void TitleEditor::show_preferences()
     };
 
     int color_row = 0;
-    add_timeline_color_row(color_row++, QStringLiteral("Text layers"), TitlePreferences::TimelineColorRole::TextLayer);
-    add_timeline_color_row(color_row++, QStringLiteral("Clock layers"), TitlePreferences::TimelineColorRole::ClockLayer);
-    add_timeline_color_row(color_row++, QStringLiteral("Ticker layers"), TitlePreferences::TimelineColorRole::TickerLayer);
-    add_timeline_color_row(color_row++, QStringLiteral("Object layers"), TitlePreferences::TimelineColorRole::ObjectLayer);
-    add_timeline_color_row(color_row++, QStringLiteral("Image layers"), TitlePreferences::TimelineColorRole::ImageLayer);
-    add_timeline_color_row(color_row++, QStringLiteral("Current time"), TitlePreferences::TimelineColorRole::Current);
-    add_timeline_color_row(color_row++, QStringLiteral("Pause marker"), TitlePreferences::TimelineColorRole::Pause);
-    add_timeline_color_row(color_row++, QStringLiteral("Loop start/end"), TitlePreferences::TimelineColorRole::Loop);
-    add_color_button_row(color_row++, QStringLiteral("Scene mask objects"), []() { return TitlePreferences::scene_mask_color(); }, [update_appearance](const QColor &color) {
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.TextLayers"), TitlePreferences::TimelineColorRole::TextLayer);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.ClockLayers"), TitlePreferences::TimelineColorRole::ClockLayer);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.TickerLayers"), TitlePreferences::TimelineColorRole::TickerLayer);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.ObjectLayers"), TitlePreferences::TimelineColorRole::ObjectLayer);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.ImageLayers"), TitlePreferences::TimelineColorRole::ImageLayer);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.CurrentTime"), TitlePreferences::TimelineColorRole::Current);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.PauseMarker"), TitlePreferences::TimelineColorRole::Pause);
+    add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.LoopStartEnd"), TitlePreferences::TimelineColorRole::Loop);
+    add_color_button_row(color_row++, obsgs_tr("OBSTitles.SceneMaskObjects"), []() { return TitlePreferences::scene_mask_color(); }, [update_appearance](const QColor &color) {
         TitlePreferences::set_scene_mask_color(color);
         update_appearance();
     });
@@ -3479,7 +3630,7 @@ void TitleEditor::show_preferences()
     advanced_layout->setContentsMargins(0, 0, 0, 0);
     advanced_layout->setSpacing(10);
 
-    auto *advanced_title = new QLabel(QStringLiteral("Advanced"), advanced_page);
+    auto *advanced_title = new QLabel(obsgs_tr("OBSTitles.Advanced"), advanced_page);
     advanced_title->setFont(title_font);
     advanced_layout->addWidget(advanced_title);
 
@@ -3490,9 +3641,9 @@ void TitleEditor::show_preferences()
                                .arg(text.name(QColor::HexRgb),
                                     disabled_text.name(QColor::HexRgb)));
     advanced_layout->addWidget(use_gpu);
-    auto *cache_enabled = new QCheckBox(QStringLiteral("Enable caching and prerender"), advanced_page);
+    auto *cache_enabled = new QCheckBox(obsgs_tr("OBSTitles.EnableCachingPrerender"), advanced_page);
     cache_enabled->setChecked(CacheManager::instance().cacheEnabled());
-    cache_enabled->setToolTip(QStringLiteral("Enable RAM/disk frame caching, editor prerendering, and Live Text Cue prerendering."));
+    cache_enabled->setToolTip(obsgs_tr("OBSTitles.EnableCachingPrerenderTooltip"));
     cache_enabled->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
                                      .arg(text.name(QColor::HexRgb),
                                           disabled_text.name(QColor::HexRgb)));
@@ -3505,7 +3656,7 @@ void TitleEditor::show_preferences()
     ram_limit->setSingleStep(128);
     ram_limit->setSuffix(QStringLiteral(" MB"));
     ram_limit->setValue(TitlePreferences::cache_ram_limit_mb());
-    cache_form->addRow(QStringLiteral("RAM cache limit"), ram_limit);
+    cache_form->addRow(obsgs_tr("OBSTitles.RamCacheLimit"), ram_limit);
 
     auto *disk_path_row = new QWidget(advanced_page);
     auto *disk_path_layout = new QHBoxLayout(disk_path_row);
@@ -3515,11 +3666,30 @@ void TitleEditor::show_preferences()
     auto *browse_cache = new QPushButton(obsgs_tr("OBSTitles.Browse"), disk_path_row);
     disk_path_layout->addWidget(disk_path, 1);
     disk_path_layout->addWidget(browse_cache);
-    cache_form->addRow(QStringLiteral("Disk cache folder"), disk_path_row);
+    cache_form->addRow(obsgs_tr("OBSTitles.DiskCacheFolder"), disk_path_row);
 
     auto *cache_usage = new QLabel(advanced_page);
     cache_usage->setWordWrap(true);
-    cache_form->addRow(QStringLiteral("Cache usage"), cache_usage);
+    cache_form->addRow(obsgs_tr("OBSTitles.CacheUsage"), cache_usage);
+
+    auto *cache_actions_row = new QWidget(advanced_page);
+    auto *cache_actions_layout = new QHBoxLayout(cache_actions_row);
+    cache_actions_layout->setContentsMargins(0, 0, 0, 0);
+    cache_actions_layout->setSpacing(6);
+    auto *clear_cache_now = new QPushButton(obsgs_tr("OBSTitles.ClearCacheNow"), cache_actions_row);
+    clear_cache_now->setToolTip(obsgs_tr("OBSTitles.ClearCacheNowTooltip"));
+    cache_actions_layout->addWidget(clear_cache_now);
+    cache_actions_layout->addStretch(1);
+    cache_form->addRow(QString(), cache_actions_row);
+
+    auto *clear_cache_on_exit = new QCheckBox(obsgs_tr("OBSTitles.ClearCacheOnExit"), advanced_page);
+    clear_cache_on_exit->setChecked(TitlePreferences::clear_cache_on_exit());
+    clear_cache_on_exit->setToolTip(obsgs_tr("OBSTitles.ClearCacheOnExitTooltip"));
+    clear_cache_on_exit->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
+                                           .arg(text.name(QColor::HexRgb),
+                                                disabled_text.name(QColor::HexRgb)));
+    cache_form->addRow(QString(), clear_cache_on_exit);
+
     advanced_layout->addLayout(cache_form);
     advanced_layout->addStretch(1);
 
@@ -3528,13 +3698,13 @@ void TitleEditor::show_preferences()
     logging_layout->setContentsMargins(0, 0, 0, 0);
     logging_layout->setSpacing(10);
 
-    auto *logging_title = new QLabel(QStringLiteral("Logging"), logging_page);
+    auto *logging_title = new QLabel(obsgs_tr("OBSTitles.Logging"), logging_page);
     logging_title->setFont(title_font);
     logging_layout->addWidget(logging_title);
 
-    auto *logging_enabled = new QCheckBox(QStringLiteral("Enable file logging"), logging_page);
+    auto *logging_enabled = new QCheckBox(obsgs_tr("OBSTitles.EnableFileLogging"), logging_page);
     logging_enabled->setChecked(TitlePreferences::logging_enabled());
-    logging_enabled->setToolTip(QStringLiteral("Write OBS Graphics Studio Pro diagnostic logs to a local file."));
+    logging_enabled->setToolTip(obsgs_tr("OBSTitles.FileLoggingTooltip"));
     logging_enabled->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
                                        .arg(text.name(QColor::HexRgb),
                                             disabled_text.name(QColor::HexRgb)));
@@ -3545,15 +3715,15 @@ void TitleEditor::show_preferences()
     logging_form->setSpacing(8);
 
     auto *logging_level = new QComboBox(logging_page);
-    logging_level->addItem(QStringLiteral("Off"), 0);
-    logging_level->addItem(QStringLiteral("Error"), 1);
-    logging_level->addItem(QStringLiteral("Warning"), 2);
-    logging_level->addItem(QStringLiteral("Info"), 3);
-    logging_level->addItem(QStringLiteral("Debug"), 4);
-    logging_level->addItem(QStringLiteral("Trace"), 5);
+    logging_level->addItem(obsgs_tr("OBSTitles.Off"), 0);
+    logging_level->addItem(obsgs_tr("OBSTitles.Error"), 1);
+    logging_level->addItem(obsgs_tr("OBSTitles.Warning"), 2);
+    logging_level->addItem(obsgs_tr("OBSTitles.Info"), 3);
+    logging_level->addItem(obsgs_tr("OBSTitles.Debug"), 4);
+    logging_level->addItem(obsgs_tr("OBSTitles.Trace"), 5);
     const int logging_level_index = logging_level->findData(TitlePreferences::logging_level());
     logging_level->setCurrentIndex(logging_level_index >= 0 ? logging_level_index : 3);
-    logging_form->addRow(QStringLiteral("Level"), logging_level);
+    logging_form->addRow(obsgs_tr("OBSTitles.Level"), logging_level);
 
     auto *logging_path_row = new QWidget(logging_page);
     auto *logging_path_layout = new QHBoxLayout(logging_path_row);
@@ -3563,9 +3733,9 @@ void TitleEditor::show_preferences()
     auto *browse_log = new QPushButton(obsgs_tr("OBSTitles.Browse"), logging_path_row);
     logging_path_layout->addWidget(logging_path, 1);
     logging_path_layout->addWidget(browse_log);
-    logging_form->addRow(QStringLiteral("Log file"), logging_path_row);
+    logging_form->addRow(obsgs_tr("OBSTitles.LogFile"), logging_path_row);
 
-    auto *mirror_obs = new QCheckBox(QStringLiteral("Also write to OBS log"), logging_page);
+    auto *mirror_obs = new QCheckBox(obsgs_tr("OBSTitles.AlsoWriteObsLog"), logging_page);
     mirror_obs->setChecked(TitlePreferences::logging_mirror_to_obs());
     mirror_obs->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
                                   .arg(text.name(QColor::HexRgb),
@@ -3576,17 +3746,17 @@ void TitleEditor::show_preferences()
     auto *logging_buttons_layout = new QHBoxLayout(logging_buttons_row);
     logging_buttons_layout->setContentsMargins(0, 0, 0, 0);
     logging_buttons_layout->setSpacing(6);
-    auto *open_log_folder = new QPushButton(QStringLiteral("Open folder"), logging_buttons_row);
-    auto *clear_log = new QPushButton(QStringLiteral("Clear log"), logging_buttons_row);
+    auto *open_log_folder = new QPushButton(obsgs_tr("OBSTitles.OpenFolder"), logging_buttons_row);
+    auto *clear_log = new QPushButton(obsgs_tr("OBSTitles.ClearLog"), logging_buttons_row);
     logging_buttons_layout->addWidget(open_log_folder);
     logging_buttons_layout->addWidget(clear_log);
     logging_buttons_layout->addStretch(1);
     logging_form->addRow(QString(), logging_buttons_row);
 
-    auto *logging_hint = new QLabel(QStringLiteral("Use Debug or Trace while diagnosing cache, prerender, rendering, and UI state issues. Trace can be noisy."), logging_page);
+    auto *logging_hint = new QLabel(obsgs_tr("OBSTitles.LoggingHint"), logging_page);
     logging_hint->setWordWrap(true);
     logging_hint->setStyleSheet(QStringLiteral("color:%1;").arg(disabled_text.name(QColor::HexRgb)));
-    logging_form->addRow(QStringLiteral("Notes"), logging_hint);
+    logging_form->addRow(obsgs_tr("OBSTitles.Notes"), logging_hint);
 
     logging_layout->addLayout(logging_form);
     logging_layout->addStretch(1);
@@ -3603,7 +3773,17 @@ void TitleEditor::show_preferences()
 
     tabs->setCurrentRow(0);
     connect(tabs, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
-    connect(use_gpu, &QCheckBox::toggled, this, &TitleEditor::set_gpu_pipeline_enabled);
+    connect(use_gpu, &QCheckBox::toggled, dialog, [editor, update_appearance](bool enabled) {
+        if (editor) {
+            editor->set_gpu_pipeline_enabled(enabled);
+            return;
+        }
+        if (TitlePreferences::use_gpu() == enabled)
+            return;
+        TitlePreferences::set_use_gpu(enabled);
+        TitlePreferences::notify_changed(nullptr);
+        update_appearance();
+    });
     connect(cache_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
         OGS_LOG_INFO("Preferences", QStringLiteral("Set cache enabled=%1").arg(enabled));
         CacheManager::instance().setCacheEnabled(enabled);
@@ -3617,13 +3797,21 @@ void TitleEditor::show_preferences()
         disk_path->setText(CacheManager::instance().diskCacheLocation());
     });
     connect(browse_cache, &QPushButton::clicked, dialog, [dialog, disk_path]() {
-        const QString path = QFileDialog::getExistingDirectory(dialog, QStringLiteral("Disk Cache Folder"),
+        const QString path = QFileDialog::getExistingDirectory(dialog, obsgs_tr("OBSTitles.DiskCacheFolder"),
                                                                disk_path->text());
         if (path.isEmpty())
             return;
         disk_path->setText(path);
         OGS_LOG_INFO("Preferences", QStringLiteral("Set disk cache location=%1").arg(path));
         CacheManager::instance().setDiskCacheLocation(path);
+    });
+    connect(clear_cache_now, &QPushButton::clicked, dialog, []() {
+        OGS_LOG_INFO("Preferences", QStringLiteral("Clear cache now requested"));
+        CacheManager::instance().clearAll();
+    });
+    connect(clear_cache_on_exit, &QCheckBox::toggled, dialog, [](bool enabled) {
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set clear cache on exit=%1").arg(enabled));
+        TitlePreferences::set_clear_cache_on_exit(enabled);
     });
     connect(logging_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
         TitlePreferences::set_logging_enabled(enabled);
@@ -3638,9 +3826,9 @@ void TitleEditor::show_preferences()
         logging_path->setText(TitlePreferences::logging_file_path());
     });
     connect(browse_log, &QPushButton::clicked, dialog, [dialog, logging_path]() {
-        const QString path = QFileDialog::getSaveFileName(dialog, QStringLiteral("Log File"),
+        const QString path = QFileDialog::getSaveFileName(dialog, obsgs_tr("OBSTitles.LogFile"),
                                                           logging_path->text(),
-                                                          QStringLiteral("Log files (*.log);;All files (*.*)"));
+                                                          obsgs_tr("OBSTitles.LogFileFilter"));
         if (path.isEmpty())
             return;
         logging_path->setText(path);
@@ -3668,7 +3856,7 @@ void TitleEditor::show_preferences()
     };
     auto update_cache_usage = [cache_usage, format_cache_bytes]() {
         CacheManager &cache = CacheManager::instance();
-        cache_usage->setText(QStringLiteral("RAM: %1 / %2\nDisk: %3")
+        cache_usage->setText(obsgs_tr("OBSTitles.CacheUsageSummary")
                                  .arg(format_cache_bytes(cache.ramBytesUsed()),
                                       format_cache_bytes(cache.ramBytesLimit()),
                                       format_cache_bytes(cache.diskBytesUsed())));
@@ -4187,8 +4375,8 @@ void TitleEditor::open_default_sidebar_color_popup(bool foreground)
     auto *color_layout = new QVBoxLayout(color_tab);
     color_layout->setContentsMargins(8, 8, 8, 8);
     color_layout->setSpacing(8);
-    auto *label = new QLabel(foreground ? QStringLiteral("Default foreground color")
-                                         : QStringLiteral("Default background color"), color_tab);
+    auto *label = new QLabel(foreground ? obsgs_tr("OBSTitles.DefaultForegroundColor")
+                                         : obsgs_tr("OBSTitles.DefaultBackgroundColor"), color_tab);
     auto *swatch = new QPushButton(color_tab);
     swatch->setFixedSize(90, 52);
     auto *hex = new QLineEdit(color_tab);
@@ -4217,7 +4405,7 @@ void TitleEditor::open_default_sidebar_color_popup(bool foreground)
     };
     connect(swatch, &QPushButton::clicked, &popup, [&]() {
         QColor picked = QColorDialog::getColor(target, &popup,
-            foreground ? QStringLiteral("Foreground Color") : QStringLiteral("Background Color"),
+            foreground ? obsgs_tr("OBSTitles.ForegroundColor") : obsgs_tr("OBSTitles.BackgroundColor"),
             QColorDialog::ShowAlphaChannel);
         apply_color(picked);
     });
@@ -4229,23 +4417,23 @@ void TitleEditor::open_default_sidebar_color_popup(bool foreground)
     color_layout->addWidget(label);
     color_layout->addWidget(swatch, 0, Qt::AlignLeft);
     color_layout->addWidget(hex);
-    tabs->addTab(color_tab, QStringLiteral("Color"));
+    tabs->addTab(color_tab, obsgs_tr("OBSTitles.Color"));
 
     auto *gradient_tab = new QWidget(tabs);
     auto *gradient_layout = new QVBoxLayout(gradient_tab);
-    auto *gradient_label = new QLabel(QStringLiteral("Gradient defaults will use the main layer selector when a layer is selected."), gradient_tab);
+    auto *gradient_label = new QLabel(obsgs_tr("OBSTitles.GradientDefaultsHint"), gradient_tab);
     gradient_label->setWordWrap(true);
     gradient_layout->addWidget(gradient_label);
     gradient_layout->addStretch(1);
-    tabs->addTab(gradient_tab, QStringLiteral("Gradient"));
+    tabs->addTab(gradient_tab, obsgs_tr("OBSTitles.Gradient"));
 
     auto *swatches_tab = new QWidget(tabs);
     auto *swatches_layout = new QVBoxLayout(swatches_tab);
-    auto *swatches_label = new QLabel(QStringLiteral("Saved foreground/background defaults are used for new objects."), swatches_tab);
+    auto *swatches_label = new QLabel(obsgs_tr("OBSTitles.SavedDefaultsHint"), swatches_tab);
     swatches_label->setWordWrap(true);
     swatches_layout->addWidget(swatches_label);
     swatches_layout->addStretch(1);
-    tabs->addTab(swatches_tab, QStringLiteral("Swatches"));
+    tabs->addTab(swatches_tab, obsgs_tr("OBSTitles.Swatches"));
 
     update_controls();
     popup.adjustSize();
@@ -4259,8 +4447,8 @@ void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playh
 {
     if (layer_props_dock_) {
         layer_props_dock_->setWindowTitle(layer
-            ? QStringLiteral("Properties: %1").arg(QString::fromStdString(layer->name))
-            : QStringLiteral("Properties: No selection"));
+            ? obsgs_tr("OBSTitles.PropertiesNamed").arg(QString::fromStdString(layer->name))
+            : obsgs_tr("OBSTitles.PropertiesNoSelection"));
     }
     if (props_) props_->set_layer(layer, playhead);
     update_sidebar_color_swatches(layer);

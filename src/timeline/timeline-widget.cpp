@@ -561,13 +561,13 @@ void TimelineWidget::begin_layer_strip_drag(const std::string &layer_id, DragMod
 static QString timeline_blend_mode_short(EffectBlendMode mode)
 {
     switch (mode) {
-    case EffectBlendMode::Multiply: return QStringLiteral("Mul");
-    case EffectBlendMode::Additive: return QStringLiteral("Add");
-    case EffectBlendMode::Screen: return QStringLiteral("Scr");
-    case EffectBlendMode::Overlay: return QStringLiteral("Ovr");
-    case EffectBlendMode::Color: return QStringLiteral("Clr");
+    case EffectBlendMode::Multiply: return obsgs_tr("OBSTitles.BlendShortMultiply");
+    case EffectBlendMode::Additive: return obsgs_tr("OBSTitles.BlendShortAdditive");
+    case EffectBlendMode::Screen: return obsgs_tr("OBSTitles.BlendShortScreen");
+    case EffectBlendMode::Overlay: return obsgs_tr("OBSTitles.BlendShortOverlay");
+    case EffectBlendMode::Color: return obsgs_tr("OBSTitles.BlendShortColor");
     case EffectBlendMode::Normal:
-    default: return QStringLiteral("Nor");
+    default: return obsgs_tr("OBSTitles.BlendShortNormal");
     }
 }
 
@@ -575,18 +575,18 @@ static QString timeline_layer_switches_text(const Title &title, const Layer &lay
 {
     QStringList tags;
     if (layer.mask_mode != MaskMode::None && !layer.mask_source_id.empty())
-        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? QStringLiteral("TrkMat -α") :
-                 layer.mask_mode == MaskMode::Luma ? QStringLiteral("TrkMat Luma") :
-                 layer.mask_mode == MaskMode::InvertedLuma ? QStringLiteral("TrkMat -Luma") :
-                 QStringLiteral("TrkMat α"));
+        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? obsgs_tr("OBSTitles.TrackMatteInvAlpha") :
+                 layer.mask_mode == MaskMode::Luma ? obsgs_tr("OBSTitles.TrackMatteLuma") :
+                 layer.mask_mode == MaskMode::InvertedLuma ? obsgs_tr("OBSTitles.TrackMatteInvLuma") :
+                 obsgs_tr("OBSTitles.TrackMatteAlpha"));
     if (!layer.parent_id.empty()) {
-        QString parent_name = QStringLiteral("Parent");
+        QString parent_name = obsgs_tr("OBSTitles.Parent");
         if (auto parent = title.find_layer(layer.parent_id))
             parent_name = QString::fromStdString(parent->name);
-        tags << QStringLiteral("Parent: %1").arg(parent_name);
+        tags << obsgs_tr("OBSTitles.ParentNamed").arg(parent_name);
     }
     if (layer.blend_mode != EffectBlendMode::Normal)
-        tags << QStringLiteral("Mode: %1").arg(timeline_blend_mode_short(layer.blend_mode));
+        tags << obsgs_tr("OBSTitles.ModeNamed").arg(timeline_blend_mode_short(layer.blend_mode));
     return tags.join(QStringLiteral("  ·  "));
 }
 

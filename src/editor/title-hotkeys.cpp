@@ -199,9 +199,17 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
     for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
-        exposed[col]->text_content = title->live_text_rows[row][col];
-        exposed[col]->rich_text = rich_text_document_from_layer_defaults(*exposed[col]);
-        exposed[col]->rich_text_html.clear();
+        auto &target = exposed[col];
+        if (!target)
+            continue;
+        target->text_content = title->live_text_rows[row][col];
+        if (target->rich_text.empty())
+            target->rich_text = rich_text_document_from_layer_defaults(*target);
+        RichTextCharFormat insertion_format = target->rich_text.has_typing_format
+            ? target->rich_text.typing_format
+            : target->rich_text.default_format;
+        rich_text_document_replace_text(target->rich_text, target->text_content, &insertion_format);
+        target->rich_text_html.clear();
     }
 }
 

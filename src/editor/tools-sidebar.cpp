@@ -5,7 +5,7 @@ ForegroundBackgroundSwatch::ForegroundBackgroundSwatch(QWidget *parent) : QWidge
 {
     setFixedSize(42, 42);
     setCursor(Qt::PointingHandCursor);
-    setToolTip(QStringLiteral("Foreground / Background color/gradient. Click a swatch to edit; click the corner switcher to swap."));
+    setToolTip(obsgs_tr("OBSTitles.ForegroundBackgroundTooltip"));
     foreground_fill_.type = 0;
     foreground_fill_.color = foreground_color_;
     foreground_fill_.start = foreground_color_;
@@ -231,27 +231,27 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
         return button;
     };
 
-    selection_button_ = make_tool_button(QStringLiteral("Selection Tool"), cursor_tool_icon(),
-                                         QStringLiteral("Selection/Cursor Tool: normal object selection mode"));
-    shape_button_ = make_tool_button(QStringLiteral("Shape Tool"), shape_tool_icon(selected_shape_),
-                                     QStringLiteral("Shape Tool: choose a shape, then click and drag on the canvas"));
-    text_button_ = make_tool_button(QStringLiteral("Text Tool"), text_tool_icon(selected_text_layer_type_),
-                                    QStringLiteral("Text Tool: choose text, clock, or ticker, then click and drag on the canvas"));
-    color_picker_button_ = make_tool_button(QStringLiteral("Color Picker Tool"), obs_icon("eyedropper.svg"),
-                                            QStringLiteral("Color Picker Tool: sample a color from the canvas into the selected layer"));
-    gradient_button_ = make_tool_button(QStringLiteral("Gradient Tool"), gradient_tool_icon(),
-                                        QStringLiteral("Gradient Tool: drag on the selected object to place or edit its gradient"));
+    selection_button_ = make_tool_button(obsgs_tr("OBSTitles.SelectionTool"), cursor_tool_icon(),
+                                         obsgs_tr("OBSTitles.SelectionToolTooltip"));
+    shape_button_ = make_tool_button(obsgs_tr("OBSTitles.ShapeTool"), shape_tool_icon(selected_shape_),
+                                     obsgs_tr("OBSTitles.ShapeToolTooltip"));
+    text_button_ = make_tool_button(obsgs_tr("OBSTitles.TextTool"), text_tool_icon(selected_text_layer_type_),
+                                    obsgs_tr("OBSTitles.TextToolTooltip"));
+    color_picker_button_ = make_tool_button(obsgs_tr("OBSTitles.ColorPickerTool"), obs_icon("eyedropper.svg"),
+                                            obsgs_tr("OBSTitles.ColorPickerToolTooltip"));
+    gradient_button_ = make_tool_button(obsgs_tr("OBSTitles.GradientTool"), gradient_tool_icon(),
+                                        obsgs_tr("OBSTitles.GradientToolTooltip"));
 
-    auto *selection_action = new QAction(cursor_tool_icon(), QStringLiteral("Selection Tool"), this);
+    auto *selection_action = new QAction(cursor_tool_icon(), obsgs_tr("OBSTitles.SelectionTool"), this);
     selection_action->setCheckable(true);
     selection_action->setChecked(true);
-    auto *shape_action = new QAction(shape_tool_icon(selected_shape_), QStringLiteral("Shape Tool"), this);
+    auto *shape_action = new QAction(shape_tool_icon(selected_shape_), obsgs_tr("OBSTitles.ShapeTool"), this);
     shape_action->setCheckable(true);
-    auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), QStringLiteral("Text Tool"), this);
+    auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), obsgs_tr("OBSTitles.TextTool"), this);
     text_action->setCheckable(true);
-    auto *color_picker_action = new QAction(obs_icon("eyedropper.svg"), QStringLiteral("Color Picker Tool"), this);
+    auto *color_picker_action = new QAction(obs_icon("eyedropper.svg"), obsgs_tr("OBSTitles.ColorPickerTool"), this);
     color_picker_action->setCheckable(true);
-    auto *gradient_action = new QAction(gradient_tool_icon(), QStringLiteral("Gradient Tool"), this);
+    auto *gradient_action = new QAction(gradient_tool_icon(), obsgs_tr("OBSTitles.GradientTool"), this);
     gradient_action->setCheckable(true);
     tool_group_->addAction(selection_action);
     tool_group_->addAction(shape_action);
@@ -308,7 +308,7 @@ void ToolsSidebar::set_selected_shape(ShapeType shape_type)
             action->setText(shape_display_name(shape_type));
             action->setChecked(true);
         }
-        shape_button_->setToolTip(QStringLiteral("Shape Tool: %1. Click and drag on the canvas to draw.").arg(shape_display_name(shape_type)));
+        shape_button_->setToolTip(obsgs_tr("OBSTitles.ShapeToolSelectedTooltip").arg(shape_display_name(shape_type)));
         shape_button_->setChecked(true);
     }
 }
@@ -351,7 +351,7 @@ void ToolsSidebar::set_selected_text_layer_type(LayerType type)
             action->setText(name);
             action->setChecked(true);
         }
-        text_button_->setToolTip(QStringLiteral("Text Tool: %1. Click and drag on the canvas to draw a text box.").arg(name));
+        text_button_->setToolTip(obsgs_tr("OBSTitles.TextToolSelectedTooltip").arg(name));
         text_button_->setChecked(true);
     }
 }

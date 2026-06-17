@@ -23,6 +23,7 @@ constexpr const char *kUseGpuKey = "useGpu";
 constexpr const char *kCacheEnabledKey = "cacheEnabled";
 constexpr const char *kCacheRamLimitMbKey = "cacheRamLimitMb";
 constexpr const char *kCacheDiskLocationKey = "cacheDiskLocation";
+constexpr const char *kClearCacheOnExitKey = "clearCacheOnExit";
 constexpr const char *kLoggingEnabledKey = "enabled";
 constexpr const char *kLoggingLevelKey = "level";
 constexpr const char *kLoggingMirrorToObsKey = "mirrorToObs";
@@ -136,6 +137,25 @@ void set_cache_disk_location(const QString &path)
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
     settings.setValue(QString::fromUtf8(kCacheDiskLocationKey), QDir::cleanPath(path));
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
+bool clear_cache_on_exit()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
+    const bool enabled = settings.value(QString::fromUtf8(kClearCacheOnExitKey), false).toBool();
+    settings.endGroup();
+    return enabled;
+}
+
+void set_clear_cache_on_exit(bool enabled)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
+    settings.setValue(QString::fromUtf8(kClearCacheOnExitKey), enabled);
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);

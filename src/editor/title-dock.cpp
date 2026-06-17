@@ -17,6 +17,8 @@
 
 #include <QAction>
 #include <QBuffer>
+#include <QCheckBox>
+#include <QBrush>
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
@@ -73,6 +75,7 @@
 #include <QTextOption>
 #include <QTextDocument>
 #include <QMouseEvent>
+#include <QResizeEvent>
 #include <QPainter>
 #include <QPen>
 #include <QSet>
@@ -227,14 +230,14 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
 static QString live_cue_cache_text(FrameCacheState state)
 {
     switch (state) {
-    case FrameCacheState::Queued: return QStringLiteral("Queued");
-    case FrameCacheState::Rendering: return QStringLiteral("Caching");
-    case FrameCacheState::CachedRam: return QStringLiteral("Ready (RAM)");
-    case FrameCacheState::CachedDisk: return QStringLiteral("Ready (Disk)");
-    case FrameCacheState::Stale: return QStringLiteral("Cache error or stale");
-    case FrameCacheState::Disabled: return QStringLiteral("Caching disabled");
+    case FrameCacheState::Queued: return obsgs_tr("OBSTitles.Queued");
+    case FrameCacheState::Rendering: return obsgs_tr("OBSTitles.Caching");
+    case FrameCacheState::CachedRam: return obsgs_tr("OBSTitles.ReadyRam");
+    case FrameCacheState::CachedDisk: return obsgs_tr("OBSTitles.ReadyDisk");
+    case FrameCacheState::Stale: return obsgs_tr("OBSTitles.CacheErrorOrStale");
+    case FrameCacheState::Disabled: return obsgs_tr("OBSTitles.CachingDisabled");
     case FrameCacheState::NotCached:
-    default: return QStringLiteral("Not cached");
+    default: return obsgs_tr("OBSTitles.NotCached");
     }
 }
 
@@ -242,20 +245,20 @@ static QString live_cue_cache_tooltip(FrameCacheState state)
 {
     switch (state) {
     case FrameCacheState::Queued:
-        return QStringLiteral("Queued for caching. Click to queue this row again.");
+        return obsgs_tr("OBSTitles.LiveCueQueuedTooltip");
     case FrameCacheState::Rendering:
-        return QStringLiteral("Caching this row. Click to restart caching for this row.");
+        return obsgs_tr("OBSTitles.LiveCueCachingTooltip");
     case FrameCacheState::CachedRam:
-        return QStringLiteral("Cached in RAM and ready. Click to rebuild this row cache.");
+        return obsgs_tr("OBSTitles.LiveCueCachedRamTooltip");
     case FrameCacheState::CachedDisk:
-        return QStringLiteral("Cached on disk and ready. Click to promote or rebuild this row cache.");
+        return obsgs_tr("OBSTitles.LiveCueCachedDiskTooltip");
     case FrameCacheState::Stale:
-        return QStringLiteral("Cache is stale or failed. Click to rebuild this row cache.");
+        return obsgs_tr("OBSTitles.LiveCueStaleTooltip");
     case FrameCacheState::Disabled:
-        return QStringLiteral("Caching is disabled in Preferences.");
+        return obsgs_tr("OBSTitles.LiveCueCacheDisabledTooltip");
     case FrameCacheState::NotCached:
     default:
-        return QStringLiteral("Not cached. Click to cache this row.");
+        return obsgs_tr("OBSTitles.LiveCueNotCachedTooltip");
     }
 }
 
@@ -267,7 +270,7 @@ static QColor live_cue_cache_color(FrameCacheState state)
     case FrameCacheState::CachedRam: return QColor(39, 186, 103);
     case FrameCacheState::CachedDisk: return QColor(74, 144, 226);
     case FrameCacheState::Stale: return QColor(214, 90, 90);
-    case FrameCacheState::Disabled: return QColor(39, 186, 103);
+    case FrameCacheState::Disabled: return QColor(130, 130, 130);
     case FrameCacheState::NotCached:
     default: return QColor(130, 130, 130);
     }
@@ -358,6 +361,14 @@ static QColor live_cue_state_color(bool current, bool queued)
     return QColor(150, 150, 150);
 }
 
+static QColor live_cue_select_cell_color(bool current, bool queued)
+{
+    if (current)
+        return QColor(208, 48, 48, 72);
+    if (queued)
+        return QColor(40, 184, 79, 72);
+    return QColor();
+}
 
 static QIcon obs_icon(const char *file_name)
 {
@@ -456,11 +467,11 @@ static bool live_text_rows_from_json(const QJsonDocument &doc,
         else if (live_rows_value.isArray())
             json_rows = live_rows_value.toArray();
         else {
-            if (error) *error = QStringLiteral("The JSON file must contain a rows or live_text_rows array.");
+            if (error) *error = obsgs_tr("OBSTitles.LiveCueJsonRowsError");
             return false;
         }
     } else {
-        if (error) *error = QStringLiteral("The selected file is not a valid live text cue JSON document.");
+        if (error) *error = obsgs_tr("OBSTitles.LiveCueJsonInvalidError");
         return false;
     }
 
@@ -468,7 +479,7 @@ static bool live_text_rows_from_json(const QJsonDocument &doc,
     rows.reserve(json_rows.size());
     for (const QJsonValue &row_value : json_rows) {
         if (!row_value.isArray()) {
-            if (error) *error = QStringLiteral("Each imported live text cue row must be a JSON array.");
+            if (error) *error = obsgs_tr("OBSTitles.LiveCueJsonRowArrayError");
             return false;
         }
         std::vector<std::string> row;
@@ -538,8 +549,16 @@ public:
     }
 
     std::function<QColor(int)> cue_row_border_color;
+    std::function<void()> layout_requested;
 
 protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QTableWidget::resizeEvent(event);
+        if (layout_requested)
+            layout_requested();
+    }
+
     void mouseMoveEvent(QMouseEvent *event) override
     {
         if (event && event->buttons() == Qt::NoButton)
@@ -1128,9 +1147,9 @@ static QIcon title_list_status_icon(bool has_exposed_text, bool has_scene_mask)
             painter.drawRoundedRect(icon_rect.adjusted(1, 1, -2, -2), 2, 2);
         }
     } else if (has_scene_mask) {
-        glyph = font_awesome_glyph(0xf6fa, QStringLiteral("M")); // fa-mask
+        glyph = font_awesome_glyph(0xf6fa, obsgs_tr("OBSTitles.M")); // fa-mask
     } else {
-        glyph = font_awesome_glyph(0xf61f, QStringLiteral("G")); // fa-shapes
+        glyph = font_awesome_glyph(0xf61f, obsgs_tr("OBSTitles.G")); // fa-shapes
     }
 
     QFont font;
@@ -1306,7 +1325,12 @@ public:
     }
 };
 
-static QMessageBox::StandardButton confirm_delete_single_title(QWidget *parent, const Title &title)
+struct DeleteTitleConfirmationResult {
+    QMessageBox::StandardButton button = QMessageBox::No;
+    bool delete_sources = false;
+};
+
+static DeleteTitleConfirmationResult confirm_delete_single_title(QWidget *parent, const Title &title)
 {
     QMessageBox box(QMessageBox::Question,
                     obsgs_tr("OBSTitles.DeleteTitle"),
@@ -1318,17 +1342,93 @@ static QMessageBox::StandardButton confirm_delete_single_title(QWidget *parent, 
     if (!preview.isNull())
         box.setIconPixmap(preview);
 
+    auto *delete_sources_checkbox = new QCheckBox(obsgs_tr("OBSTitles.DeleteSourcesContainingTitle"), &box);
+    delete_sources_checkbox->setToolTip(obsgs_tr("OBSTitles.DeleteSourcesContainingTitleTooltip"));
+    delete_sources_checkbox->setChecked(false);
+    box.setCheckBox(delete_sources_checkbox);
+
     box.setDefaultButton(QMessageBox::No);
-    return static_cast<QMessageBox::StandardButton>(box.exec());
+
+    DeleteTitleConfirmationResult result;
+    result.button = static_cast<QMessageBox::StandardButton>(box.exec());
+    result.delete_sources = delete_sources_checkbox->isChecked();
+    return result;
 }
 
-static QMessageBox::StandardButton confirm_delete_multiple_titles(QWidget *parent, int count)
+static DeleteTitleConfirmationResult confirm_delete_multiple_titles(QWidget *parent, int count)
 {
-    return QMessageBox::question(
-        parent, obsgs_tr("OBSTitles.DeleteTitle"),
-        obsgs_tr("OBSTitles.DeleteSelectedTitlesQuestionFormat").arg(count),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
+    QMessageBox box(QMessageBox::Question,
+                    obsgs_tr("OBSTitles.DeleteTitle"),
+                    obsgs_tr("OBSTitles.DeleteSelectedTitlesQuestionFormat").arg(count),
+                    QMessageBox::Yes | QMessageBox::No,
+                    parent);
+
+    auto *delete_sources_checkbox = new QCheckBox(obsgs_tr("OBSTitles.DeleteSourcesContainingTitles"), &box);
+    delete_sources_checkbox->setToolTip(obsgs_tr("OBSTitles.DeleteSourcesContainingTitleTooltip"));
+    delete_sources_checkbox->setChecked(false);
+    box.setCheckBox(delete_sources_checkbox);
+    box.setDefaultButton(QMessageBox::No);
+
+    DeleteTitleConfirmationResult result;
+    result.button = static_cast<QMessageBox::StandardButton>(box.exec());
+    result.delete_sources = delete_sources_checkbox->isChecked();
+    return result;
+}
+
+static int delete_title_sources_for_ids(const std::vector<std::string> &title_ids)
+{
+    if (title_ids.empty())
+        return 0;
+
+    QSet<QString> ids;
+    for (const auto &id : title_ids) {
+        const QString qid = QString::fromStdString(id).trimmed();
+        if (!qid.isEmpty())
+            ids.insert(qid);
+    }
+    if (ids.isEmpty())
+        return 0;
+
+    struct SourceDeleteLookup {
+        QSet<QString> ids;
+        QStringList source_names;
+    } lookup{ids, {}};
+
+    obs_enum_sources([](void *param, obs_source_t *source) {
+        auto *lookup = static_cast<SourceDeleteLookup *>(param);
+        if (!lookup || !source)
+            return true;
+
+        const char *source_id = obs_source_get_id(source);
+        if (!source_id || strcmp(source_id, kTitleSourceId) != 0)
+            return true;
+
+        obs_data_t *settings = obs_source_get_settings(source);
+        const char *title_id = settings ? obs_data_get_string(settings, PROP_TITLE_ID) : nullptr;
+        const QString qid = QString::fromUtf8(title_id ? title_id : "").trimmed();
+        if (settings)
+            obs_data_release(settings);
+
+        if (!qid.isEmpty() && lookup->ids.contains(qid)) {
+            const char *source_name = obs_source_get_name(source);
+            if (source_name && *source_name)
+                lookup->source_names << QString::fromUtf8(source_name);
+        }
+
+        return true;
+    }, &lookup);
+
+    int removed_count = 0;
+    for (const QString &source_name : lookup.source_names) {
+        obs_source_t *source = obs_get_source_by_name(source_name.toUtf8().constData());
+        if (!source)
+            continue;
+        obs_source_remove(source);
+        obs_source_release(source);
+        ++removed_count;
+    }
+
+    return removed_count;
 }
 
 static QString title_screenshot_png_base64(const QImage &screenshot)
@@ -1995,6 +2095,8 @@ void TitleDock::update_live_text_cache_cell(const std::shared_ptr<Title> &title,
     if (!title || !text_table_ || row < 0 || row >= text_table_->rowCount())
         return;
 
+    update_live_text_select_cell_status(row);
+
     const FrameCacheState state = CacheManager::instance().liveCueState(title, row);
     auto *button = live_cue_cache_button(text_table_, row);
     if (!button)
@@ -2030,6 +2132,98 @@ void TitleDock::update_live_text_cache_cell(const std::shared_ptr<Title> &title,
         CacheManager::instance().cacheLiveCueNow(current_title, row);
         update_live_text_cache_cell(current_title, row);
     });
+}
+
+void TitleDock::update_live_text_cache_cells()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title || !text_table_)
+        return;
+
+    for (int row = 0; row < text_table_->rowCount(); ++row) {
+        update_live_text_cache_cell(title, row);
+        update_live_text_select_cell_status(row);
+    }
+}
+
+void TitleDock::update_live_text_select_cell_status(int row)
+{
+    if (!text_table_ || row < 0 || row >= text_table_->rowCount())
+        return;
+
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    auto *item = text_table_->item(row, 0);
+    if (!title || !item)
+        return;
+
+    const QString title_id = QString::fromStdString(title->id);
+    const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
+        cache_waiting_cue_row_ == row;
+    const bool current = row == title->current_cue_row;
+    const bool queued = row == title->pending_cue_row || waiting_for_prerender;
+    const QColor status_color = live_cue_select_cell_color(current, queued);
+    if (status_color.isValid())
+        item->setBackground(QBrush(status_color));
+    else
+        item->setBackground(QBrush());
+}
+
+void TitleDock::adjust_live_text_table_columns(bool fill_to_viewport)
+{
+    if (!text_table_ || text_table_->columnCount() <= 0)
+        return;
+
+    auto *header = text_table_->horizontalHeader();
+    if (!header)
+        return;
+
+    const int last_col = text_table_->columnCount() - 1;
+    const int cache_col = text_table_->columnCount() > 1 ? 1 : -1;
+    const int first_text_col = text_table_->columnCount() > 3 ? 2 : -1;
+    const int last_text_col = text_table_->columnCount() > 3 ? last_col - 1 : -1;
+
+    QSignalBlocker header_block(header);
+    auto resize_to_contents = [&](int col) {
+        if (col >= 0 && col < text_table_->columnCount()) {
+            header->setSectionResizeMode(col, QHeaderView::ResizeToContents);
+            text_table_->resizeColumnToContents(col);
+        }
+    };
+
+    if (text_table_->columnCount() <= 2) {
+        resize_to_contents(last_col);
+        header->setSectionResizeMode(0, QHeaderView::Interactive);
+        const int viewport_width = text_table_->viewport() ? text_table_->viewport()->width() : text_table_->width();
+        const int remaining = viewport_width - header->sectionSize(last_col);
+        if (remaining > 0)
+            header->resizeSection(0, remaining);
+        return;
+    }
+
+    resize_to_contents(0);
+    resize_to_contents(cache_col);
+    resize_to_contents(last_col);
+
+    if (first_text_col >= 0) {
+        for (int col = first_text_col; col <= last_text_col; ++col)
+            header->setSectionResizeMode(col, QHeaderView::Interactive);
+    }
+
+    int total_width = 0;
+    for (int col = 0; col < text_table_->columnCount(); ++col)
+        total_width += header->sectionSize(col);
+
+    const int viewport_width = text_table_->viewport() ? text_table_->viewport()->width() : text_table_->width();
+    if (fill_to_viewport && first_text_col >= 0 && viewport_width > 0 && total_width < viewport_width) {
+        const int missing = viewport_width - total_width;
+        const int text_cols = std::max(1, last_text_col - first_text_col + 1);
+        const int per_col = missing / text_cols;
+        int remainder = missing % text_cols;
+        for (int col = first_text_col; col <= last_text_col; ++col) {
+            const int add = per_col + (remainder-- > 0 ? 1 : 0);
+            header->resizeSection(col, header->sectionSize(col) + add);
+        }
+    }
 }
 
 TitleDock::~TitleDock()
@@ -2338,6 +2532,8 @@ void TitleDock::build_ui()
     live_layout->addLayout(live_header);
 
     text_table_ = new LiveTextCueTable(live_section);
+    if (auto *cue_table = dynamic_cast<LiveTextCueTable *>(text_table_))
+        cue_table->layout_requested = [this]() { adjust_live_text_table_columns(); };
     auto *live_text_header = new LiveTextCueHeader(text_table_);
     live_text_header->select_all_toggled = [this](bool checked) { set_all_live_text_rows_checked(checked); };
     text_table_->setHorizontalHeader(live_text_header);
@@ -3103,9 +3299,17 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
         title->pending_cue_row = row;
     } else if (!is_active_cue || title->pending_cue_row >= 0) {
         for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col) {
-            exposed_now[col]->text_content = title->live_text_rows[row][col];
-            exposed_now[col]->rich_text = rich_text_document_from_layer_defaults(*exposed_now[col]);
-            exposed_now[col]->rich_text_html.clear();
+            auto &target = exposed_now[col];
+            if (!target)
+                continue;
+            target->text_content = title->live_text_rows[row][col];
+            if (target->rich_text.empty())
+                target->rich_text = rich_text_document_from_layer_defaults(*target);
+            RichTextCharFormat insertion_format = target->rich_text.has_typing_format
+                ? target->rich_text.typing_format
+                : target->rich_text.default_format;
+            rich_text_document_replace_text(target->rich_text, target->text_content, &insertion_format);
+            target->rich_text_html.clear();
         }
         title->current_cue_row = row;
         title->pending_cue_row = -1;
@@ -3323,6 +3527,11 @@ void TitleDock::populate_exposed_text()
         return;
     }
 
+    const QString current_width_title_id = QString::fromStdString(title->id);
+    const bool first_width_fit_for_title = live_text_width_initialized_title_id_ != current_width_title_id;
+    if (first_width_fit_for_title)
+        live_text_width_initialized_title_id_ = current_width_title_id;
+
     auto exposed = exposed_text_layers(title);
     normalize_live_text_rows(title, exposed);
 
@@ -3379,6 +3588,7 @@ void TitleDock::populate_exposed_text()
             connect(cue, &QToolButton::clicked, this, [this]() { cue_live_text_row(0, true); });
         }
         apply_live_text_row_heights();
+        adjust_live_text_table_columns(first_width_fit_for_title);
         update_playlist_controls();
         update_persistence_controls();
         update_external_data_controls();
@@ -3401,11 +3611,8 @@ void TitleDock::populate_exposed_text()
     }
     text_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     text_table_->horizontalHeader()->setSectionsMovable(true);
-    if (!restore_live_text_header_state()) {
-        text_table_->resizeColumnToContents(0);
-        text_table_->resizeColumnToContents(1);
-        text_table_->resizeColumnToContents((int)exposed.size() + 2);
-    }
+    restore_live_text_header_state();
+    adjust_live_text_table_columns(first_width_fit_for_title);
 
     for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
         text_table_->setVerticalHeaderItem(row, new QTableWidgetItem(QString::number(row + 1)));
@@ -3441,6 +3648,7 @@ void TitleDock::populate_exposed_text()
     const int current = title->current_cue_row >= 0 ? title->current_cue_row : 0;
     CacheManager::instance().preloadLiveCues(title, current, 2);
     apply_live_text_row_heights();
+    adjust_live_text_table_columns(first_width_fit_for_title);
     update_playlist_controls();
     update_persistence_controls();
     update_external_data_controls();
@@ -3457,7 +3665,7 @@ void TitleDock::on_export_live_text_data()
 
     QString path = QFileDialog::getSaveFileName(
         this, obsgs_tr("OBSTitles.ExportData"), QString(),
-        QStringLiteral("JSON files (*.json);;All files (*.*)"));
+        obsgs_tr("OBSTitles.JsonFileFilter"));
     if (path.isEmpty()) return;
     if (!path.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive))
         path += QStringLiteral(".json");
@@ -3494,7 +3702,7 @@ void TitleDock::on_import_live_text_data()
 
     const QString path = QFileDialog::getOpenFileName(
         this, obsgs_tr("OBSTitles.ImportData"), QString(),
-        QStringLiteral("JSON files (*.json);;All files (*.*)"));
+        obsgs_tr("OBSTitles.JsonFileFilter"));
     if (path.isEmpty()) return;
 
     QFile file(path);
@@ -3555,7 +3763,7 @@ void TitleDock::on_import_append_live_text_data()
 
     const QString path = QFileDialog::getOpenFileName(
         this, obsgs_tr("OBSTitles.ImportAppendData"), QString(),
-        QStringLiteral("JSON files (*.json);;All files (*.*)"));
+        obsgs_tr("OBSTitles.JsonFileFilter"));
     if (path.isEmpty()) return;
 
     QFile file(path);
@@ -3617,10 +3825,10 @@ void TitleDock::on_show_external_data_settings()
 
     auto *tabs = new QTabWidget(&dialog);
     const QStringList names = {
-        QStringLiteral("CSV"),
-        QStringLiteral("URL"),
-        QStringLiteral("RSS Feed"),
-        QStringLiteral("Data Sources Settings")
+        obsgs_tr("OBSTitles.CSV"),
+        obsgs_tr("OBSTitles.URL"),
+        obsgs_tr("OBSTitles.RSSFeed"),
+        obsgs_tr("OBSTitles.DataSourcesSettings")
     };
     for (const QString &name : names) {
         auto *tab = new QWidget(tabs);
@@ -4336,7 +4544,7 @@ void TitleDock::import_title_paths(const QStringList &paths)
         std::string error;
         auto imported = TitleDataStore::instance().import_title(info.absoluteFilePath().toStdString(), &error);
         if (!imported) {
-            const QString message = error.empty() ? QStringLiteral("Import failed") : QString::fromStdString(error);
+            const QString message = error.empty() ? obsgs_tr("OBSTitles.ImportFailed") : QString::fromStdString(error);
             failures.push_back(QStringLiteral("%1 — %2").arg(info.fileName(), message));
             continue;
         }
@@ -4354,16 +4562,16 @@ void TitleDock::import_title_paths(const QStringList &paths)
     if (imported_count == 1 && last_imported) {
         status_lbl_->setText(obsgs_tr("OBSTitles.ImportedStatusFormat").arg(QString::fromStdString(last_imported->name)));
     } else if (imported_count > 1) {
-        status_lbl_->setText(QStringLiteral("Imported %1 title templates").arg(imported_count));
+        status_lbl_->setText(obsgs_tr("OBSTitles.ImportedTitleTemplates").arg(imported_count));
     }
 
     if (!failures.isEmpty()) {
         QMessageBox::warning(this, obsgs_tr("OBSTitles.ImportTitleTemplate"),
-                             QStringLiteral("Some title templates could not be imported:\n\n%1")
+                             obsgs_tr("OBSTitles.SomeTemplatesImportFailed")
                                  .arg(failures.join(QStringLiteral("\n"))));
     } else if (imported_count == 0) {
         QMessageBox::warning(this, obsgs_tr("OBSTitles.ImportTitleTemplate"),
-                             QStringLiteral("No supported title template files were imported."));
+                             obsgs_tr("OBSTitles.NoSupportedTemplatesImported"));
     }
 }
 
@@ -4394,16 +4602,19 @@ void TitleDock::on_delete()
             target_row = first_selected_row;
     }
 
-    QMessageBox::StandardButton reply = QMessageBox::No;
+    DeleteTitleConfirmationResult confirmation;
     if (ids.size() == 1) {
         auto title = TitleDataStore::instance().get_title(ids.front());
         if (!title) return;
-        reply = confirm_delete_single_title(this, *title);
+        confirmation = confirm_delete_single_title(this, *title);
     } else {
-        reply = confirm_delete_multiple_titles(this, (int)ids.size());
+        confirmation = confirm_delete_multiple_titles(this, (int)ids.size());
     }
 
-    if (reply == QMessageBox::Yes) {
+    if (confirmation.button == QMessageBox::Yes) {
+        if (confirmation.delete_sources)
+            delete_title_sources_for_ids(ids);
+
         for (const auto &id : ids)
             TitleDataStore::instance().delete_title(id);
         TitleDataStore::instance().save();
@@ -4460,8 +4671,6 @@ void TitleDock::on_add_to_scene()
     /* Create the source */
     obs_data_t *settings = obs_data_create();
     obs_data_set_string(settings, PROP_TITLE_ID, id.c_str());
-    obs_data_set_bool  (settings, PROP_LOOP,     true);
-    obs_data_set_double(settings, PROP_SPEED,    1.0);
 
     obs_source_t *source = obs_source_create(
         "obs_graphics_studio_pro_source",

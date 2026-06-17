@@ -87,6 +87,7 @@ public:
     ~TitleEditor() override;
 
     void open_title(const std::string &title_id);
+    static void show_global_preferences(QWidget *parent = nullptr);
 
 signals:
     void title_saved(const std::string &title_id);
@@ -117,6 +118,7 @@ private slots:
     void reject();
 
 private:
+    static void show_preferences_dialog(QWidget *parent, TitleEditor *editor);
     void build_ui();
     void build_toolbar();
     void update_title_bar();
@@ -192,6 +194,7 @@ private:
     std::shared_ptr<Title> title_;
     std::string            editing_title_id_;
     std::string            sel_layer_id_;
+    std::string            active_text_edit_layer_id_;
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
     bool                   playback_reverse_ = false;

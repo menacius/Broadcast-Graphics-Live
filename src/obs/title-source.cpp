@@ -11,6 +11,7 @@
 
 #include "cache-manager.h"
 #include "title-source.h"
+#include "style-presets.h"
 #include "title-data.h"
 #include "plugin-main.h"
 #include "title-localization.h"
@@ -254,8 +255,8 @@ struct TitleSourceData {
 
     /* Settings */
     std::string title_id;
-    bool        loop         = true;
-    float       speed        = 1.0f;
+    bool        output_visible = true;
+    bool        manual_uncue = false;
     bool        auto_advance = false;  /* future: playlist mode */
 
     enum class CuePhase { FreeRun, IntroLoop, OutroThenIntro, OutroOnly };
@@ -679,15 +680,27 @@ static int exposed_text_layer_index(const std::vector<std::shared_ptr<Layer>> &e
 
 
 
+static void replace_layer_text_preserving_rich_rules(const std::shared_ptr<Layer> &layer, const std::string &text)
+{
+    if (!layer)
+        return;
+    layer->text_content = text;
+    if (layer->rich_text.empty())
+        layer->rich_text = rich_text_document_from_layer_defaults(*layer);
+
+    RichTextCharFormat insertion_format = layer->rich_text.has_typing_format
+        ? layer->rich_text.typing_format
+        : layer->rich_text.default_format;
+    rich_text_document_replace_text(layer->rich_text, text, &insertion_format);
+    layer->rich_text_html.clear();
+}
+
 static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
     auto exposed = exposed_text_layers(title);
-    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
-        exposed[col]->text_content = title->live_text_rows[row][col];
-        exposed[col]->rich_text = rich_text_document_from_layer_defaults(*exposed[col]);
-        exposed[col]->rich_text_html.clear();
-    }
+    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col)
+        replace_layer_text_preserving_rich_rules(exposed[col], title->live_text_rows[row][col]);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -2437,6 +2450,8 @@ static bool rich_text_format_differs_from_default(const RichTextCharFormat &a, c
 
 static bool rich_text_model_requires_document_renderer(const RichTextDocument &model)
 {
+    if (model.auto_style_enabled && !model.plain_text.empty())
+        return true;
     if (model.plain_text.empty() || model.ranges.empty())
         return false;
     if (model.ranges.size() > 1)
@@ -2495,6 +2510,28 @@ static QBrush rich_text_fill_brush(const RichTextFill &fill, const QRectF &box)
                                {});
 }
 
+
+static int qtext_position_from_rich_byte_offset_source(const QString &text, size_t byte_offset)
+{
+    const QByteArray utf8 = text.toUtf8();
+    const size_t clamped = std::min(byte_offset, (size_t)utf8.size());
+    int units = 0;
+    size_t bytes_seen = 0;
+    for (int i = 0; i < text.size(); ++i) {
+        const ushort u = text.at(i).unicode();
+        const bool high = u >= 0xD800 && u <= 0xDBFF && i + 1 < text.size();
+        const int char_units = high ? 2 : 1;
+        const QString chunk = text.mid(i, char_units);
+        const size_t chunk_bytes = (size_t)chunk.toUtf8().size();
+        if (bytes_seen + chunk_bytes > clamped)
+            break;
+        bytes_seen += chunk_bytes;
+        units += char_units;
+        if (high) ++i;
+    }
+    return units;
+}
+
 static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &format, const QFont &fallback_font,
                                                      const QRectF &text_rect)
 {
@@ -2515,18 +2552,33 @@ static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &fo
     return out;
 }
 
+static bool resolve_auto_text_style_preset(const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask)
+{
+    static obsgsp::StylePresetLibrary library;
+    obsgsp::StylePreset preset;
+    if (!library.findById(QString::fromStdString(preset_id), &preset) || preset.kind != obsgsp::StylePresetKind::Text)
+        return false;
+    if (!obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, format))
+        return false;
+    mask = obsgsp::StylePresetLibrary::textPresetCharMask();
+    return true;
+}
+
 static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const QFont &font,
                                    const QRectF &text_rect)
 {
-    const RichTextDocument &model = layer.rich_text;
+    const RichTextDocument model = rich_text_document_with_auto_styles(layer.rich_text, resolve_auto_text_style_preset);
     QTextCursor all(&doc);
     all.select(QTextCursor::Document);
     all.mergeCharFormat(text_format_from_rich_format(model.default_format, font, text_rect));
     for (const auto &range : model.ranges) {
         if (range.length == 0 || range.start >= model.plain_text.size()) continue;
         QTextCursor cursor(&doc);
-        cursor.setPosition((int)std::min(range.start, model.plain_text.size()));
-        cursor.setPosition((int)std::min(range.start + range.length, model.plain_text.size()), QTextCursor::KeepAnchor);
+        const QString qplain = QString::fromStdString(model.plain_text);
+        const int qstart = qtext_position_from_rich_byte_offset_source(qplain, range.start);
+        const int qend = qtext_position_from_rich_byte_offset_source(qplain, range.start + range.length);
+        cursor.setPosition(std::clamp(qstart, 0, static_cast<int>(qplain.size())));
+        cursor.setPosition(std::clamp(qend, 0, static_cast<int>(qplain.size())), QTextCursor::KeepAnchor);
         cursor.mergeCharFormat(text_format_from_rich_format(range.format, font, text_rect));
     }
 }
@@ -2551,13 +2603,13 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
     option.setAlignment(align);
     doc->setDefaultTextOption(option);
     doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width()));
-    if (layer.type != LayerType::Ticker && (!layer.rich_text.plain_text.empty() || !layer.rich_text.ranges.empty())) {
-        doc->setPlainText(QString::fromStdString(layer.rich_text.plain_text));
-        apply_rich_text_ranges(*doc, layer, font, QRectF(0.0, 0.0, text_rect.width(), text_rect.height()));
-    } else if (!layer.rich_text_html.empty()) {
-        doc->setHtml(QString::fromStdString(layer.rich_text_html));
-    } else {
+    if (layer.type == LayerType::Ticker) {
         doc->setPlainText(display_text_for_style(layer));
+    } else {
+        Layer canonical = layer;
+        rich_text_document_ensure_canonical(canonical);
+        doc->setPlainText(QString::fromStdString(canonical.rich_text.plain_text));
+        apply_rich_text_ranges(*doc, canonical, font, QRectF(0.0, 0.0, text_rect.width(), text_rect.height()));
     }
 
     return doc;
@@ -2672,8 +2724,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
     if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
-    const bool has_rich_text = layer.type != LayerType::Ticker &&
-        (rich_text_model_requires_document_renderer(layer.rich_text) || !layer.rich_text_html.empty());
+    const bool has_rich_text = layer.type != LayerType::Ticker;
     QPainterPath text_path;
     if (!has_rich_text) {
         text_path = layer.type == LayerType::Ticker
@@ -2714,10 +2765,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         if (has_rich_text) {
             painter.save();
             painter.setOpacity(fill.alphaF());
-            const bool legacy_html_gradient = !layer.rich_text_html.empty() &&
-                                              layer.rich_text.plain_text.empty() &&
-                                              layer.rich_text.ranges.empty() &&
-                                              layer.fill_type == 1;
+            const bool legacy_html_gradient = false;
             if (legacy_html_gradient) {
                 QImage gradient_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
                 gradient_mask.fill(Qt::transparent);
@@ -4541,8 +4589,6 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     data->source = source;
     if (settings) {
         data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
-        data->loop = obs_data_get_bool(settings, PROP_LOOP);
-        data->speed = (float)obs_data_get_double(settings, PROP_SPEED);
         refresh_scene_mask_configs(data, settings);
     }
     data->last_tick = std::chrono::steady_clock::now();
@@ -4553,6 +4599,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     data->playing = false;
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
+    data->output_visible = true;
     data->dirty = true;
     return data;
 }
@@ -4592,8 +4639,6 @@ static void source_update(void *priv, obs_data_t *settings)
         release_active_scene_mask_scenes(data);
 
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
-    data->loop     = obs_data_get_bool(settings,   PROP_LOOP);
-    data->speed    = (float)obs_data_get_double(settings, PROP_SPEED);
     refresh_scene_mask_configs(data, settings);
     if (keep_scene_masks_foreground)
         activate_scene_mask_scenes(data);
@@ -4601,8 +4646,10 @@ static void source_update(void *priv, obs_data_t *settings)
     data->playback_reverse = false;
     data->cue_phase = TitleSourceData::CuePhase::FreeRun;
     data->playing = false;
+    data->output_visible = true;
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
+    data->output_visible = true;
     if (auto title = TitleDataStore::instance().get_title(data->title_id))
         data->seen_cue_revision = title->cue_revision;
     else
@@ -4663,6 +4710,7 @@ static void source_video_tick(void *priv, float seconds)
         bool has_current = title->current_cue_row >= 0 &&
                            title->current_cue_row < (int)title->live_text_rows.size();
         bool is_uncue = !has_pending && !has_current && data->active_cue_row >= 0;
+        data->manual_uncue = is_uncue;
         if (title->playback_mode == 1) {
             if (has_pending) {
                 data->playhead = loop_end;
@@ -4697,6 +4745,8 @@ static void source_video_tick(void *priv, float seconds)
         data->playback_reverse = false;
         data->waiting_for_cue = false;
         data->playing = true;
+        if (!data->manual_uncue)
+            data->output_visible = true;
         data->dirty = true;
     }
 
@@ -4706,7 +4756,7 @@ static void source_video_tick(void *priv, float seconds)
     const bool static_clock_title = has_clock_layer && !has_timeline_animation;
 
     if (data->playing && !static_clock_title) {
-        double dt = (double)seconds * data->speed;
+        double dt = (double)seconds;
         double duration = std::max(0.001, title->duration);
         double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
         double loop_end = std::clamp(title->loop_end, loop_start, title->duration);
@@ -4743,12 +4793,24 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = title->duration;
                 data->playing = false;
                 data->cue_phase = TitleSourceData::CuePhase::FreeRun;
-                data->active_cue_row = -1;
-                title->current_cue_row = -1;
-                title->pending_cue_row = -1;
-                title->cue_persistence_transition = false;
-                title->cue_persistent_text_columns.clear();
-                TitleDataStore::instance().touch_runtime_change();
+                if (data->manual_uncue || title->cue_end_behavior == 1) {
+                    data->active_cue_row = -1;
+                    data->output_visible = false;
+                    title->current_cue_row = -1;
+                    title->pending_cue_row = -1;
+                    title->cue_persistence_transition = false;
+                    title->cue_persistent_text_columns.clear();
+                    data->manual_uncue = false;
+                    TitleDataStore::instance().touch_runtime_change();
+                } else {
+                    data->output_visible = true;
+                    data->active_cue_row = title->current_cue_row;
+                    title->pending_cue_row = -1;
+                    title->cue_persistence_transition = false;
+                    title->cue_persistent_text_columns.clear();
+                    data->manual_uncue = false;
+                    TitleDataStore::instance().touch_runtime_change();
+                }
             } else {
                 if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
                     apply_live_text_row(title, title->pending_cue_row);
@@ -4798,11 +4860,21 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = title->duration;
                 data->playing  = false;
                 if (title->current_cue_row >= 0 || title->pending_cue_row >= 0 || data->active_cue_row >= 0) {
-                    title->current_cue_row = -1;
-                    title->pending_cue_row = -1;
-                    title->cue_persistence_transition = false;
-                    title->cue_persistent_text_columns.clear();
-                    data->active_cue_row = -1;
+                    if (data->manual_uncue || title->cue_end_behavior == 1) {
+                        title->current_cue_row = -1;
+                        title->pending_cue_row = -1;
+                        title->cue_persistence_transition = false;
+                        title->cue_persistent_text_columns.clear();
+                        data->active_cue_row = -1;
+                        data->output_visible = false;
+                    } else {
+                        title->pending_cue_row = -1;
+                        title->cue_persistence_transition = false;
+                        title->cue_persistent_text_columns.clear();
+                        data->active_cue_row = title->current_cue_row;
+                        data->output_visible = true;
+                    }
+                    data->manual_uncue = false;
                     TitleDataStore::instance().touch_runtime_change();
                 }
             }
@@ -4839,6 +4911,11 @@ static void source_video_tick(void *priv, float seconds)
         }
         data->effect_layer_cache.clear();
         data->dirty = true;
+    }
+
+    if (!data->output_visible) {
+        data->dirty = false;
+        return;
     }
 
     if (data->dirty) {
@@ -5175,6 +5252,8 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
 
+    if (!data->output_visible) return;
+
     auto title = TitleDataStore::instance().get_title(data->title_id);
     const TitleGpuEffectUsage effect_usage = title ? title_gpu_effect_usage(*title) : TitleGpuEffectUsage{};
 
@@ -5287,10 +5366,6 @@ static obs_properties_t *source_get_properties(void *priv)
         obs_property_list_add_string(p, t->name.c_str(), t->id.c_str());
     obs_property_set_modified_callback(p, source_title_property_modified);
 
-    obs_properties_add_bool(props,   PROP_LOOP,  obsgs_tr_c("OBSTitles.Loop"));
-    obs_properties_add_float_slider(props, PROP_SPEED,
-        obsgs_tr_c("OBSTitles.Speed"), 0.1, 4.0, 0.05);
-
     add_scene_mask_properties_for_title(props, data ? data->title_id : std::string());
 
     return props;
@@ -5299,8 +5374,6 @@ static obs_properties_t *source_get_properties(void *priv)
 static void source_get_defaults(obs_data_t *settings)
 {
     obs_data_set_default_string(settings, PROP_TITLE_ID, "");
-    obs_data_set_default_bool(settings,   PROP_LOOP,     true);
-    obs_data_set_default_double(settings, PROP_SPEED,    1.0);
 }
 
 /* ══════════════════════════════════════════════════════════════════

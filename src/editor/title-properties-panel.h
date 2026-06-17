@@ -68,6 +68,7 @@ private:
     bool applying_theme_style_ = false;
     QButtonGroup   *grp_playback_mode_ = nullptr;
     QWidget        *loop_area_row_ = nullptr;
+    QComboBox      *cmb_cue_end_behavior_ = nullptr;
     QDoubleSpinBox *spn_pause_frame_ = nullptr;
     QDoubleSpinBox *spn_duration_ = nullptr;
     QDoubleSpinBox *spn_loop_start_ = nullptr;

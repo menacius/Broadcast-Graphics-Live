@@ -26,6 +26,8 @@ int cache_ram_limit_mb();
 void set_cache_ram_limit_mb(int megabytes);
 QString cache_disk_location();
 void set_cache_disk_location(const QString &path);
+bool clear_cache_on_exit();
+void set_clear_cache_on_exit(bool enabled);
 bool logging_enabled();
 void set_logging_enabled(bool enabled);
 int logging_level();

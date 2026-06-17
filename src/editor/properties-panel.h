@@ -138,6 +138,32 @@ private:
     QDoubleSpinBox  *spn_paragraph_space_after_ = nullptr;
     QCheckBox       *chk_paragraph_hyphenate_ = nullptr;
     QPushButton     *btn_text_color_ = nullptr;
+    QGroupBox       *auto_style_box_ = nullptr;
+    QCheckBox       *chk_auto_style_enabled_ = nullptr;
+    QComboBox       *cmb_auto_default_style_ = nullptr;
+    QListWidget     *lst_auto_style_rules_ = nullptr;
+    QComboBox       *cmb_auto_rule_style_ = nullptr;
+    QLineEdit       *edt_auto_rule_name_ = nullptr;
+    QCheckBox       *chk_auto_rule_enabled_ = nullptr;
+    QComboBox       *cmb_auto_rule_start_condition_ = nullptr;
+    QSpinBox        *spn_auto_rule_start_offset_ = nullptr;
+    QLineEdit       *edt_auto_rule_start_chars_ = nullptr;
+    QComboBox       *cmb_auto_rule_end_condition_ = nullptr;
+    QSpinBox        *spn_auto_rule_end_offset_ = nullptr;
+    QLineEdit       *edt_auto_rule_end_chars_ = nullptr;
+    QComboBox       *cmb_auto_rule_conflict_mode_ = nullptr;
+    QComboBox       *cmb_auto_rule_match_mode_ = nullptr;
+    QLineEdit       *edt_auto_rule_excludes_ = nullptr;
+    QCheckBox       *chk_auto_rule_stop_processing_ = nullptr;
+    QCheckBox       *chk_auto_rule_require_stop_match_ = nullptr;
+    QCheckBox       *chk_auto_rule_include_start_marker_ = nullptr;
+    QCheckBox       *chk_auto_rule_include_end_marker_ = nullptr;
+    QSpinBox        *spn_auto_rule_chars_ = nullptr; // legacy hidden fallback
+    QPushButton     *btn_auto_rule_add_ = nullptr;
+    QPushButton     *btn_auto_rule_update_ = nullptr;
+    QPushButton     *btn_auto_rule_delete_ = nullptr;
+    QPushButton     *btn_auto_rule_up_ = nullptr;
+    QPushButton     *btn_auto_rule_down_ = nullptr;
 
     /* Text/shape outline controls */
     QGroupBox       *outline_box_ = nullptr;

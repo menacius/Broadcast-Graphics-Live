@@ -308,7 +308,7 @@ void LayerStack::populate()
                                        is_mask_object ? "layer-mask-object.svg" : "layer-hidden.svg",
                                        l->visible,
                                        is_mask_object
-                                           ? QStringLiteral("This layer is used as a mask object.")
+                                           ? obsgs_tr("OBSTitles.LayerMaskObjectTooltip")
                                            : obsgs_tr("OBSTitles.LayerVisibilityTooltip"));
         QToolButton *lock = make_toggle("layer-lock.svg", "layer-unlock.svg", l->locked, obsgs_tr("OBSTitles.LockLayerTooltip"));
         connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
@@ -353,11 +353,11 @@ void LayerStack::populate()
 
         const bool has_enabled_effect_stack = std::any_of(l->effects.begin(), l->effects.end(),
             [](const LayerEffect &effect) { return effect.enabled; });
-        QLabel *fx_indicator = new QLabel(has_enabled_effect_stack ? QStringLiteral("FX") : QString(), row_widget);
+        QLabel *fx_indicator = new QLabel(has_enabled_effect_stack ? obsgs_tr("OBSTitles.FX") : QString(), row_widget);
         fx_indicator->setFixedSize(24, 18);
         fx_indicator->setAlignment(Qt::AlignCenter);
         fx_indicator->setToolTip(has_enabled_effect_stack
-            ? QStringLiteral("This layer has an active effect stack.")
+            ? obsgs_tr("OBSTitles.LayerEffectStackTooltip")
             : QString());
         fx_indicator->setStyleSheet(has_enabled_effect_stack
             ? QStringLiteral("QLabel{background:%1;border:1px solid %2;border-radius:2px;color:%3;font-size:9px;font-weight:bold;}")
@@ -383,10 +383,10 @@ void LayerStack::populate()
         const bool used_as_track_matte = is_mask_object;
         const bool uses_track_matte = l->mask_mode != MaskMode::None && !l->mask_source_id.empty();
         add_matte_indicator("timeline-mask.svg",
-                            QStringLiteral("This layer is used as a track matte and is hidden from normal compositing."),
+                            obsgs_tr("OBSTitles.TrackMatteTooltip"),
                             used_as_track_matte);
         add_matte_indicator((l->mask_mode == MaskMode::InvertedAlpha || l->mask_mode == MaskMode::InvertedLuma) ? "timeline-mask-inverted.svg" : "timeline-mask.svg",
-                            QStringLiteral("This layer is masked by another layer."),
+                            obsgs_tr("OBSTitles.MaskedLayerTooltip"),
                             uses_track_matte);
 
         QLineEdit *name = new QLineEdit(QString::fromStdString(l->name), row_widget);

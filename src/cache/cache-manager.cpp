@@ -1,4 +1,5 @@
 #include "cache-manager.h"
+#include "title-localization.h"
 #include "title-source.h"
 #include "title-preferences.h"
 #include "title-logger.h"
@@ -776,6 +777,50 @@ QString CacheManager::contentHash(const Title &title) const
         stream << value;
         hash.addData(bytes);
     };
+    auto add_fill = [&](const RichTextFill &f) {
+        add(f.type); add((quint32)f.color); add(f.gradient_type);
+        add((quint32)f.gradient_start_color); add((quint32)f.gradient_end_color);
+        add(f.gradient_start_pos); add(f.gradient_end_pos);
+        add(f.gradient_start_opacity); add(f.gradient_end_opacity); add(f.gradient_opacity);
+        add(f.gradient_angle); add(f.gradient_center_x); add(f.gradient_center_y);
+        add(f.gradient_scale); add(f.gradient_focal_x); add(f.gradient_focal_y);
+    };
+    auto add_char_format = [&](const RichTextCharFormat &f) {
+        add(QString::fromStdString(f.font_family)); add(QString::fromStdString(f.font_style));
+        add(f.font_size); add(f.bold); add(f.italic); add(f.underline); add(f.strikethrough);
+        add(f.kerning); add(f.kerning_mode); add(f.manual_kerning); add(f.tracking);
+        add(f.scale_x); add(f.scale_y); add(f.baseline_shift); add(f.text_style);
+        add(f.ligatures); add(f.stylistic_alternates); add(f.fractions); add(f.opentype_features);
+        add(QString::fromStdString(f.language)); add_fill(f.fill);
+    };
+    auto add_paragraph_format = [&](const RichTextParagraphFormat &f) {
+        add(f.align_h); add(f.align_v); add(f.indent_left); add(f.indent_right);
+        add(f.indent_first_line); add(f.line_spacing); add(f.space_before);
+        add(f.space_after); add(f.hyphenate);
+    };
+    auto add_rich_text = [&](const RichTextDocument &rt) {
+        add(rt.version); add(QString::fromStdString(rt.plain_text));
+        add_char_format(rt.default_format); add_paragraph_format(rt.default_paragraph_format);
+        add(rt.has_typing_format); if (rt.has_typing_format) add_char_format(rt.typing_format);
+        add((quint64)rt.ranges.size());
+        for (const auto &r : rt.ranges) { add((quint64)r.start); add((quint64)r.length); add_char_format(r.format); }
+        add(rt.auto_style_enabled); add(QString::fromStdString(rt.auto_default_style_preset_id));
+        add(rt.auto_default_style_cached_mask); add_char_format(rt.auto_default_style_cached_format);
+        add((quint64)rt.auto_style_rules.size());
+        for (const auto &rule : rt.auto_style_rules) {
+            add(rule.enabled); add(QString::fromStdString(rule.style_preset_id));
+            add(QString::fromStdString(rule.rule_id)); add(QString::fromStdString(rule.display_name));
+            add(QString::fromStdString(rule.conflict_mode)); add(QString::fromStdString(rule.match_mode));
+            add(rule.stop_processing); add(rule.require_stop_match);
+            add(rule.include_start_marker); add(rule.include_end_marker);
+            add((quint64)rule.excludes_rule_ids.size());
+            for (const auto &excluded_id : rule.excludes_rule_ids) add(QString::fromStdString(excluded_id));
+            add(QString::fromStdString(rule.start_condition)); add(QString::fromStdString(rule.end_condition));
+            add((quint64)rule.start_offset); add((quint64)rule.end_offset);
+            add(QString::fromStdString(rule.start_custom_chars)); add(QString::fromStdString(rule.end_custom_chars));
+            add(rule.cached_mask); add_char_format(rule.cached_format);
+        }
+    };
     add(QString::fromStdString(title.id));
     add(QString::fromStdString(title.name));
     add(title.width);
@@ -785,6 +830,7 @@ QString CacheManager::contentHash(const Title &title) const
     add(title.loop_end);
     add(title.playback_mode);
     add(title.loop_type);
+    add(title.cue_end_behavior);
     add((quint32)title.bg_color);
     add((quint64)title.layers.size());
     for (const auto &layer : title.layers) {
@@ -796,6 +842,8 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->in_time);
         add(layer->out_time);
         add(QString::fromStdString(layer->text_content));
+        add(QString::fromStdString(layer->rich_text_html));
+        add_rich_text(layer->rich_text);
         add(QString::fromStdString(layer->image_path));
         add(layer->position.static_value.x);
         add(layer->position.static_value.y);
@@ -806,6 +854,13 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->size.static_value.x);
         add(layer->size.static_value.y);
         add((quint32)layer->text_color);
+        add(QString::fromStdString(layer->font_family)); add(QString::fromStdString(layer->font_style));
+        add(layer->font_size); add(layer->font_bold); add(layer->font_italic);
+        add(layer->text_underline); add(layer->text_strikethrough);
+        add(layer->char_tracking); add(layer->char_scale_x); add(layer->char_scale_y);
+        add(layer->baseline_shift); add(layer->fill_type); add(layer->gradient_type);
+        add((quint32)layer->gradient_start_color); add((quint32)layer->gradient_end_color);
+        add(layer->gradient_start_pos); add(layer->gradient_end_pos); add(layer->gradient_angle);
         add((quint32)layer->fill_color);
         add((quint32)layer->stroke_color);
         add((int)layer->effects.size());
@@ -977,12 +1032,14 @@ void CacheManager::clearRam()
 {
     ram_cache_.clear();
     state_tracker_.clear();
+    emit diagnosticsChanged();
 }
 
 void CacheManager::clearDisk()
 {
     disk_cache_.clear();
     state_tracker_.clear();
+    emit diagnosticsChanged();
 }
 
 void CacheManager::clearAll()
@@ -995,6 +1052,7 @@ void CacheManager::clearAll()
     live_cue_progress_percent_.clear();
     live_cue_rows_.clear();
     live_cue_title_ids_.clear();
+    emit diagnosticsChanged();
 }
 
 void CacheManager::pausePrerender()
@@ -1065,9 +1123,9 @@ TitleCacheability CacheManager::titleCacheability(const std::shared_ptr<Title> &
 QString CacheManager::titleCacheabilityMessage(const std::shared_ptr<Title> &title) const
 {
     if (!cache_enabled_)
-        return QStringLiteral("Caching is disabled.");
+        return obsgs_tr("OBSTitles.CacheDisabledMessage");
     if (titleCacheability(title) == TitleCacheability::NonCacheable)
-        return QStringLiteral("Prerender unavailable for dynamic real-time content.");
+        return obsgs_tr("OBSTitles.PrerenderDynamicUnavailable");
     return QString();
 }
 
@@ -1153,9 +1211,26 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
         exposed = std::move(ordered);
     }
     for (int col = 0; col < (int)exposed.size() && col < (int)cue_title->live_text_rows[row].size(); ++col) {
-        exposed[col]->text_content = cue_title->live_text_rows[row][col];
-        exposed[col]->rich_text = rich_text_document_from_layer_defaults(*exposed[col]);
-        exposed[col]->rich_text_html.clear();
+        auto &target = exposed[col];
+        if (!target)
+            continue;
+
+        /* Live text cues must use the same rich-text source of truth as normal
+         * text layers. Do not rebuild the document from scalar defaults here:
+         * that discards auto-style rules, default auto style presets, conflict
+         * settings and manual range styles. Instead, replace only the cue text
+         * and preserve the styling/rule model. The renderer will resolve auto
+         * styles against this new plain_text exactly as it does in the editor. */
+        const std::string cue_text = cue_title->live_text_rows[row][col];
+        target->text_content = cue_text;
+        if (target->rich_text.empty())
+            target->rich_text = rich_text_document_from_layer_defaults(*target);
+
+        RichTextCharFormat insertion_format = target->rich_text.has_typing_format
+            ? target->rich_text.typing_format
+            : target->rich_text.default_format;
+        rich_text_document_replace_text(target->rich_text, cue_text, &insertion_format);
+        target->rich_text_html.clear();
     }
     cue_title->current_cue_row = row;
     return cue_title;

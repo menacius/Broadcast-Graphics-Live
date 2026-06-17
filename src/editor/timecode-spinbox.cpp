@@ -1,4 +1,5 @@
 #include "timecode-spinbox.h"
+#include "title-localization.h"
 
 #include <obs-module.h>
 
@@ -16,7 +17,7 @@ TimecodeSpinBox::TimecodeSpinBox(QWidget *parent)
     setSingleStep(frame_duration());
     setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     setKeyboardTracking(false);
-    setToolTip(QStringLiteral("Enter timecode as HH:MM:SS:FF."));
+    setToolTip(obsgs_tr("OBSTitles.TimecodeTooltip"));
     lineEdit()->setPlaceholderText(QStringLiteral("00:00:00:00"));
 }
 

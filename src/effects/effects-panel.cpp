@@ -119,7 +119,7 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
 
-    auto *hint = new QLabel(QStringLiteral("Effect stack"), this);
+    auto *hint = new QLabel(obsgs_tr("OBSTitles.EffectStack"), this);
     QFont hint_font = hint->font();
     hint_font.setBold(true);
     hint->setFont(hint_font);
@@ -153,14 +153,14 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         return button;
     };
 
-    auto *btn_add = add_button("add.svg", QStringLiteral("Add Effect"));
-    btn_remove_ = add_button("delete.svg", QStringLiteral("Remove Effect"));
-    btn_duplicate_ = add_button("duplicate.svg", QStringLiteral("Duplicate Effect"));
-    btn_move_up_ = add_button("move-up.svg", QStringLiteral("Move Effect Up"));
-    btn_move_down_ = add_button("move-down.svg", QStringLiteral("Move Effect Down"));
-    btn_respect_masks_ = add_button("timeline-mask.svg", QStringLiteral("Apply Effect Stack After Mask"));
+    auto *btn_add = add_button("add.svg", obsgs_tr("OBSTitles.AddEffect"));
+    btn_remove_ = add_button("delete.svg", obsgs_tr("OBSTitles.RemoveEffect"));
+    btn_duplicate_ = add_button("duplicate.svg", obsgs_tr("OBSTitles.DuplicateEffect"));
+    btn_move_up_ = add_button("move-up.svg", obsgs_tr("OBSTitles.MoveEffectUp"));
+    btn_move_down_ = add_button("move-down.svg", obsgs_tr("OBSTitles.MoveEffectDown"));
+    btn_respect_masks_ = add_button("timeline-mask.svg", obsgs_tr("OBSTitles.ApplyEffectStackAfterMask"));
     btn_respect_masks_->setCheckable(true);
-    btn_respect_masks_->setToolTip(QStringLiteral("Toggle whether this layer's effect stack respects track mattes/masks. When enabled, effects are applied after the mask."));
+    btn_respect_masks_->setToolTip(obsgs_tr("OBSTitles.ApplyEffectStackAfterMaskTooltip"));
     button_layout->addStretch(1);
     layout->addWidget(button_bar);
 
@@ -421,11 +421,11 @@ void EffectsPanel::rebuild_stack()
     loading_values_ = true;
     effect_list_->clear();
     if (!layer_) {
-        effect_list_->addItem(QStringLiteral("Select a layer to edit effects"));
+        effect_list_->addItem(obsgs_tr("OBSTitles.SelectLayerEditEffects"));
         if (auto *item = effect_list_->item(0)) item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         selected_index_ = -1;
     } else if (layer_->effects.empty()) {
-        effect_list_->addItem(QStringLiteral("No effects added"));
+        effect_list_->addItem(obsgs_tr("OBSTitles.NoEffectsAdded"));
         if (auto *item = effect_list_->item(0)) item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         selected_index_ = -1;
     } else {
@@ -469,7 +469,7 @@ void EffectsPanel::load_settings()
 {
     build_settings();
     if (!layer_ || !selected_effect()) {
-        auto *label = new QLabel(layer_ ? QStringLiteral("Add an effect to edit its settings.") : QStringLiteral("Select a layer to edit effects."), settings_container_);
+        auto *label = new QLabel(layer_ ? obsgs_tr("OBSTitles.AddEffectSettingsHint") : obsgs_tr("OBSTitles.SelectLayerEditEffectsHint"), settings_container_);
         label->setWordWrap(true);
         
         settings_layout_->addWidget(label);
@@ -517,7 +517,7 @@ void EffectsPanel::load_settings()
         auto *button = new QPushButton(box);
         set_color_button_argb(button, argb);
         connect(button, &QPushButton::clicked, this, [this, button, setter]() {
-            QColor picked = QColorDialog::getColor(color_from_argb(color_button_argb(button)), this, QStringLiteral("Choose Color"), QColorDialog::ShowAlphaChannel);
+            QColor picked = QColorDialog::getColor(color_from_argb(color_button_argb(button)), this, obsgs_tr("OBSTitles.ChooseColor"), QColorDialog::ShowAlphaChannel);
             if (!picked.isValid()) return;
             uint32_t argb = argb_from_color(picked);
             set_color_button_argb(button, argb);
@@ -593,13 +593,13 @@ void EffectsPanel::load_settings()
         corner_grid->setContentsMargins(0, 0, 0, 0);
         corner_grid->setHorizontalSpacing(6);
         corner_grid->setVerticalSpacing(4);
-        corner_grid->addWidget(new QLabel(QStringLiteral("TL"), corner_row), 0, 0);
+        corner_grid->addWidget(new QLabel(obsgs_tr("OBSTitles.TL"), corner_row), 0, 0);
         corner_grid->addWidget(corner_tl, 0, 1);
-        corner_grid->addWidget(new QLabel(QStringLiteral("TR"), corner_row), 0, 2);
+        corner_grid->addWidget(new QLabel(obsgs_tr("OBSTitles.TR"), corner_row), 0, 2);
         corner_grid->addWidget(corner_tr, 0, 3);
-        corner_grid->addWidget(new QLabel(QStringLiteral("BL"), corner_row), 1, 0);
+        corner_grid->addWidget(new QLabel(obsgs_tr("OBSTitles.BL"), corner_row), 1, 0);
         corner_grid->addWidget(corner_bl, 1, 1);
-        corner_grid->addWidget(new QLabel(QStringLiteral("BR"), corner_row), 1, 2);
+        corner_grid->addWidget(new QLabel(obsgs_tr("OBSTitles.BR"), corner_row), 1, 2);
         corner_grid->addWidget(corner_br, 1, 3);
 
         auto *corner_type_row = new QWidget(box);
@@ -618,10 +618,10 @@ void EffectsPanel::load_settings()
             corner_group->addButton(button, (int)type);
             corner_type_layout->addWidget(button);
         };
-        make_corner_button(CornerType::Round, "R", QStringLiteral("Round"));
-        make_corner_button(CornerType::Straight, "B", QStringLiteral("Bevel / Straight"));
-        make_corner_button(CornerType::Concave, "I", QStringLiteral("Inverse / Concave"));
-        make_corner_button(CornerType::Cutout, "C", QStringLiteral("Inset / Cutout"));
+        make_corner_button(CornerType::Round, "R", obsgs_tr("OBSTitles.Round"));
+        make_corner_button(CornerType::Straight, "B", obsgs_tr("OBSTitles.BevelStraight"));
+        make_corner_button(CornerType::Concave, "I", obsgs_tr("OBSTitles.InverseConcave"));
+        make_corner_button(CornerType::Cutout, "C", obsgs_tr("OBSTitles.InsetCutout"));
         corner_type_layout->addStretch(1);
         if (auto *button = corner_group->button(effect->effect_corner_type))
             button->setChecked(true);
@@ -629,33 +629,33 @@ void EffectsPanel::load_settings()
         auto *grad_type = combo();
         grad_type->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
         grad_type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-        grad_type->addItem(QStringLiteral("Angle"), 2);
-        grad_type->addItem(QStringLiteral("Reflected"), 3);
-        grad_type->addItem(QStringLiteral("Diamond"), 4);
+        grad_type->addItem(obsgs_tr("OBSTitles.Angle"), 2);
+        grad_type->addItem(obsgs_tr("OBSTitles.Reflected"), 3);
+        grad_type->addItem(obsgs_tr("OBSTitles.Diamond"), 4);
         grad_type->setCurrentIndex(grad_type->findData(effect->effect_gradient_type));
         auto *grad_start = color_button(effect->effect_gradient_start_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_gradient_start_color = argb; });
         auto *grad_end = color_button(effect->effect_gradient_end_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_gradient_end_color = argb; });
         auto *grad_angle = spin(-360.0, 360.0, 1.0); grad_angle->setValue(effect->effect_gradient_angle);
 
-        form->addRow(section_label(QStringLiteral("Appearance")));
-        add_effect_row(QStringLiteral("Fill"), fill);
-        add_effect_row(QStringLiteral("Fill Color"), fill_color);
-        add_effect_row(QStringLiteral("Stroke Color"), stroke_color);
-        add_effect_row(QStringLiteral("Stroke Width"), stroke_width);
-        add_effect_row(QStringLiteral("Stroke Opacity"), stroke_opacity);
+        form->addRow(section_label(obsgs_tr("OBSTitles.Appearance")));
+        add_effect_row(obsgs_tr("OBSTitles.Fill"), fill);
+        add_effect_row(obsgs_tr("OBSTitles.FillColor"), fill_color);
+        add_effect_row(obsgs_tr("OBSTitles.StrokeColor"), stroke_color);
+        add_effect_row(obsgs_tr("OBSTitles.StrokeWidth"), stroke_width);
+        add_effect_row(obsgs_tr("OBSTitles.StrokeOpacity"), stroke_opacity);
         add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
         add_effect_row(obsgs_tr("OBSTitles.GradientTypeLabel"), grad_type);
         add_effect_row(obsgs_tr("OBSTitles.StartColorLabel"), grad_start);
         add_effect_row(obsgs_tr("OBSTitles.EndColorLabel"), grad_end);
         add_effect_row(obsgs_tr("OBSTitles.AngleLabel"), grad_angle);
-        form->addRow(section_label(QStringLiteral("Padding")));
-        add_effect_row(QStringLiteral("Left Padding"), pad_left);
-        add_effect_row(QStringLiteral("Right Padding"), pad_right);
-        add_effect_row(QStringLiteral("Top Padding"), pad_top);
-        add_effect_row(QStringLiteral("Bottom Padding"), pad_bottom);
-        form->addRow(section_label(QStringLiteral("Corners")));
-        add_effect_row(QStringLiteral("TL/TR/BL/BR"), corner_row);
-        add_effect_row(QStringLiteral("Corner Type"), corner_type_row);
+        form->addRow(section_label(obsgs_tr("OBSTitles.Padding")));
+        add_effect_row(obsgs_tr("OBSTitles.LeftPadding"), pad_left);
+        add_effect_row(obsgs_tr("OBSTitles.RightPadding"), pad_right);
+        add_effect_row(obsgs_tr("OBSTitles.TopPadding"), pad_top);
+        add_effect_row(obsgs_tr("OBSTitles.BottomPadding"), pad_bottom);
+        form->addRow(section_label(obsgs_tr("OBSTitles.Corners")));
+        add_effect_row(obsgs_tr("OBSTitles.CornerInitials"), corner_row);
+        add_effect_row(obsgs_tr("OBSTitles.CornerType"), corner_type_row);
 
         connect(fill, QOverload<int>::of(&QComboBox::activated), this, [this, fill](int){ if (selected_effect()) { selected_effect()->effect_fill_type = fill->currentData().toInt(); emit_effect_changed(); }});
         connect(grad_type, QOverload<int>::of(&QComboBox::activated), this, [this, grad_type](int){ if (selected_effect()) { selected_effect()->effect_gradient_type = grad_type->currentData().toInt(); emit_effect_changed(); }});

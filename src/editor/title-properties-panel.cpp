@@ -34,6 +34,13 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_duration_->setFixedHeight(22);
     add_form_row(fl, obsgs_tr("OBSTitles.LengthLabel"), spn_duration_);
 
+    cmb_cue_end_behavior_ = new QComboBox(this);
+    cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowLastFrame"), 0);
+    cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowNothing"), 1);
+    cmb_cue_end_behavior_->setToolTip(obsgs_tr("OBSTitles.CueEndBehaviorTooltip"));
+    cmb_cue_end_behavior_->setFixedHeight(22);
+    add_form_row(fl, obsgs_tr("OBSTitles.CueEndBehaviorLabel"), cmb_cue_end_behavior_);
+
     auto *playback_row = new QWidget(this);
     auto *playback_layout = new QHBoxLayout(playback_row);
     playback_layout->setContentsMargins(0, 0, 0, 0);
@@ -111,6 +118,13 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
                 if (!title_ || loading_values_) return;
                 title_->pause_time = std::clamp(v, 0.0, title_->duration);
                 load_values();
+                emit title_changed(!numeric_label_dragging_);
+            });
+
+    connect(cmb_cue_end_behavior_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                if (!title_ || loading_values_ || !cmb_cue_end_behavior_) return;
+                title_->cue_end_behavior = std::clamp(cmb_cue_end_behavior_->currentData().toInt(), 0, 1);
                 emit title_changed(!numeric_label_dragging_);
             });
 
@@ -220,6 +234,7 @@ void TitlePropertiesPanel::load_values()
     double loop_end = title_ ? title_->loop_end : 4.0;
     int playback_mode = title_ ? std::clamp(title_->playback_mode, 0, 2) : 0;
     int loop_type = title_ ? std::clamp(title_->loop_type, 0, 1) : 0;
+    int cue_end_behavior = title_ ? std::clamp(title_->cue_end_behavior, 0, 1) : 0;
     int playback_selection = playback_mode == 1 ? (loop_type == 1 ? 2 : 1)
                                                 : (playback_mode == 2 ? 3 : 0);
     double pause_time = title_ ? std::clamp(title_->pause_time, 0.0, duration) : 0.0;
@@ -227,6 +242,10 @@ void TitlePropertiesPanel::load_values()
     if (auto *button = grp_playback_mode_->button(playback_selection))
         button->setChecked(true);
     spn_duration_->setValue(duration);
+    if (cmb_cue_end_behavior_) {
+        int idx = cmb_cue_end_behavior_->findData(cue_end_behavior);
+        cmb_cue_end_behavior_->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
     spn_loop_start_->setMaximum(duration);
     spn_loop_end_->setMaximum(duration);
     spn_loop_start_->setValue(std::clamp(loop_start, 0.0, duration));

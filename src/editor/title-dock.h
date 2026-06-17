@@ -86,6 +86,8 @@ private:
     void populate_exposed_text();
     void update_live_text_cache_cell(const std::shared_ptr<Title> &title, int row);
     void update_live_text_cache_cells();
+    void update_live_text_select_cell_status(int row);
+    void adjust_live_text_table_columns(bool fill_to_viewport = false);
     void install_obs_state_callbacks();
     void remove_obs_state_callbacks();
     void refresh_for_obs_source_state_change();
@@ -179,6 +181,7 @@ private:
     bool          background_persistence_ = false;
     bool          text_persistence_ = false;
     QString       last_selected_title_id_;
+    QString       live_text_width_initialized_title_id_;
     int           live_text_lines_per_row_ = 1;
     uint64_t      seen_store_revision_ = 0;
     uint64_t      change_callback_id_ = 0;

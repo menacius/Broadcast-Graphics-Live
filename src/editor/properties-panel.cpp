@@ -1,6 +1,44 @@
 #include "title-editor-internal.h"
 
 #include <memory>
+#include <QRegularExpression>
+
+static QString auto_style_marker_label(const std::string &marker, size_t offset, const std::string &custom_chars)
+{
+    QString name;
+    if (marker == "text_start") name = "start";
+    else if (marker == "text_end") name = "end";
+    else if (marker == "character_index" || marker == "character_count") name = "chars";
+    else if (marker == "word_count") name = "words";
+    else if (marker == "space") name = "space";
+    else if (marker == "line_break") name = "line break";
+    else if (marker == "newline") name = "new line";
+    else if (marker == "paragraph_start") name = "paragraph start";
+    else if (marker == "paragraph_end") name = "paragraph end";
+    else if (marker == "custom_char") name = QStringLiteral("'%1'").arg(QString::fromStdString(custom_chars));
+    else name = QString::fromStdString(marker);
+    if (marker == "text_start" || marker == "text_end")
+        return name;
+    return QStringLiteral("%1[%2]").arg(name).arg((int)offset);
+}
+
+static std::vector<std::string> auto_style_split_ids(const QString &text)
+{
+    std::vector<std::string> ids;
+    const QStringList parts = text.split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts);
+    for (const QString &part : parts)
+        ids.push_back(part.trimmed().toStdString());
+    return ids;
+}
+
+static QString auto_style_join_ids(const std::vector<std::string> &ids)
+{
+    QStringList parts;
+    for (const auto &id : ids)
+        if (!id.empty()) parts << QString::fromStdString(id);
+    return parts.join(QStringLiteral(", "));
+}
+
 
 PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 {
@@ -205,14 +243,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_transform_size_lock_->setChecked(true);
     spn_rot_     = mk_dspin(-9999,  9999,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
-    chk_scene_mask_ = new QCheckBox(QStringLiteral("Use as Scene Mask"), inner);
-    chk_scene_mask_->setToolTip(QStringLiteral("Render a configured OBS scene through this layer shape when the title source is used in OBS."));
+    chk_scene_mask_ = new QCheckBox(obsgs_tr("OBSTitles.UseAsSceneMask"), inner);
+    chk_scene_mask_->setToolTip(obsgs_tr("OBSTitles.SceneMaskRenderTooltip"));
     style_checkbox(chk_scene_mask_);
-    chk_shape_scale_stroke_ = new QCheckBox(QStringLiteral("Scale Stroke"), inner);
-    chk_shape_scale_stroke_->setToolTip(QStringLiteral("Scale the Appearance stroke width when shape size changes."));
+    chk_shape_scale_stroke_ = new QCheckBox(obsgs_tr("OBSTitles.ScaleStroke"), inner);
+    chk_shape_scale_stroke_->setToolTip(obsgs_tr("OBSTitles.ScaleStrokeTooltip"));
     style_checkbox(chk_shape_scale_stroke_);
-    chk_shape_scale_corners_ = new QCheckBox(QStringLiteral("Scale Corners"), inner);
-    chk_shape_scale_corners_->setToolTip(QStringLiteral("Scale shape corner radii when shape size changes."));
+    chk_shape_scale_corners_ = new QCheckBox(obsgs_tr("OBSTitles.ScaleCorners"), inner);
+    chk_shape_scale_corners_->setToolTip(obsgs_tr("OBSTitles.ScaleCornersTooltip"));
     style_checkbox(chk_shape_scale_corners_);
     spn_origin_x_ = mk_dspin(0.0, 1.0, 0.05);
     spn_origin_y_ = mk_dspin(0.0, 1.0, 0.05);
@@ -232,7 +270,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_kf_scale_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleScaleXKeyframe"));
     btn_kf_scale_y_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleScaleYKeyframe"));
     btn_kf_transform_size_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleWidthKeyframe"));
-    btn_kf_transform_size_->setToolTip(QStringLiteral("Toggle size keyframe"));
+    btn_kf_transform_size_->setToolTip(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
     btn_kf_rotation_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleRotationKeyframe"));
     btn_kf_opacity_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOpacityKeyframe"));
     btn_kf_origin_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOriginXKeyframe"));
@@ -260,11 +298,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     transform_header_layout->addWidget(transform_title);
     transform_header_layout->addStretch();
-    btn_transform_defaults_ = new QPushButton(QStringLiteral("Defaults"), transform_header);
+    btn_transform_defaults_ = new QPushButton(obsgs_tr("OBSTitles.Defaults"), transform_header);
     btn_transform_defaults_->setFixedHeight(22);
     btn_transform_defaults_->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     btn_transform_defaults_->setIconSize(QSize(13, 13));
-    btn_transform_defaults_->setToolTip(QStringLiteral("Restore Transform defaults"));
+    btn_transform_defaults_->setToolTip(obsgs_tr("OBSTitles.RestoreTransformDefaults"));
     btn_transform_defaults_->setStyleSheet(push_button_style);
     transform_header_layout->addWidget(btn_transform_defaults_);
     tform_layout->addWidget(transform_header);
@@ -330,15 +368,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return field;
     };
 
-    QWidget *field_pos_x = make_transform_field(QStringLiteral("X"), spn_px_);
-    QWidget *field_pos_y = make_transform_field(QStringLiteral("Y"), spn_py_);
-    QWidget *field_scale_x = make_transform_field(QStringLiteral("W"), spn_scale_x_);
-    QWidget *field_scale_y = make_transform_field(QStringLiteral("H"), spn_scale_y_);
-    QWidget *field_transform_size_w = make_transform_field(QStringLiteral("W"), spn_transform_size_w_);
-    QWidget *field_transform_size_h = make_transform_field(QStringLiteral("H"), spn_transform_size_h_);
-    QWidget *field_origin_x = make_transform_field(QStringLiteral("X"), spn_origin_x_);
-    QWidget *field_origin_y = make_transform_field(QStringLiteral("Y"), spn_origin_y_);
-    QWidget *field_rotation = make_transform_field(QStringLiteral("R"), spn_rot_);
+    QWidget *field_pos_x = make_transform_field(obsgs_tr("OBSTitles.X"), spn_px_);
+    QWidget *field_pos_y = make_transform_field(obsgs_tr("OBSTitles.Y"), spn_py_);
+    QWidget *field_scale_x = make_transform_field(obsgs_tr("OBSTitles.W"), spn_scale_x_);
+    QWidget *field_scale_y = make_transform_field(obsgs_tr("OBSTitles.H"), spn_scale_y_);
+    QWidget *field_transform_size_w = make_transform_field(obsgs_tr("OBSTitles.W"), spn_transform_size_w_);
+    QWidget *field_transform_size_h = make_transform_field(obsgs_tr("OBSTitles.H"), spn_transform_size_h_);
+    QWidget *field_origin_x = make_transform_field(obsgs_tr("OBSTitles.X"), spn_origin_x_);
+    QWidget *field_origin_y = make_transform_field(obsgs_tr("OBSTitles.Y"), spn_origin_y_);
+    QWidget *field_rotation = make_transform_field(obsgs_tr("OBSTitles.R"), spn_rot_);
 
     btn_anchor_grid_ = new AnchorGridButton(transform_box_);
     btn_anchor_grid_->setFixedSize(36, 36);
@@ -379,15 +417,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return text;
     };
 
-    add_transform_row(0, btn_kf_pos_x_, QStringLiteral("Location"), field_pos_x, field_pos_x, nullptr, field_pos_y);
-    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, QStringLiteral("Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
+    add_transform_row(0, btn_kf_pos_x_, obsgs_tr("OBSTitles.Location"), field_pos_x, field_pos_x, nullptr, field_pos_y);
+    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, obsgs_tr("OBSTitles.Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
     transform_scale_field_x_ = field_scale_x;
     transform_scale_field_y_ = field_scale_y;
-    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, QStringLiteral("Size"), field_transform_size_w,
+    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, obsgs_tr("OBSTitles.Size"), field_transform_size_w,
                                               field_transform_size_w, chk_transform_size_lock_, field_transform_size_h);
     transform_size_field_w_ = field_transform_size_w;
     transform_size_field_h_ = field_transform_size_h;
-    auto *anchor_label = new NumericDragLabel(QStringLiteral("Anchor"), field_origin_x, transform_box_,
+    auto *anchor_label = new NumericDragLabel(obsgs_tr("OBSTitles.Anchor"), field_origin_x, transform_box_,
                                               [this]() {
                                                   if (loading_values_) return;
                                                   numeric_label_dragging_ = true;
@@ -403,7 +441,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_grid->addWidget(btn_kf_origin_x_, 2, 0, Qt::AlignCenter);
     transform_grid->addWidget(field_origin_x, 2, 2, Qt::AlignLeft);
     transform_grid->addWidget(field_origin_y, 2, 4, Qt::AlignLeft);
-    add_transform_row(3, btn_kf_rotation_, QStringLiteral("Rotation"), field_rotation, field_rotation, nullptr, btn_anchor_grid_);
+    add_transform_row(3, btn_kf_rotation_, obsgs_tr("OBSTitles.Rotation"), field_rotation, field_rotation, nullptr, btn_anchor_grid_);
     row_shape_scale_options_ = new QWidget(transform_box_);
     row_shape_scale_options_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *shape_scale_options_layout = new QHBoxLayout(row_shape_scale_options_);
@@ -425,7 +463,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     appearance_layout->setContentsMargins(14, 2, 14, 12);
     appearance_layout->setSpacing(8);
 
-    auto *appearance_title = new QLabel(QStringLiteral("Appearance"), appearance_box_);
+    auto *appearance_title = new QLabel(obsgs_tr("OBSTitles.Appearance"), appearance_box_);
     appearance_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     appearance_layout->addWidget(appearance_title);
 
@@ -467,7 +505,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *stroke_options_trigger = new QPushButton(appearance_box_);
     stroke_options_trigger->hide();
     btn_appearance_stroke_label_ = new StrokeOptionsLabel(
-        QStringLiteral("Stroke"), spn_appearance_stroke_width_, appearance_box_,
+        obsgs_tr("OBSTitles.Stroke"), spn_appearance_stroke_width_, appearance_box_,
         [stroke_options_trigger]() { stroke_options_trigger->click(); },
         [this]() {
             if (loading_values_) return;
@@ -508,10 +546,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             appearance_grid->addWidget(secondary, row, 4, Qt::AlignLeft | Qt::AlignVCenter);
     };
 
-    add_appearance_row(0, btn_kf_appearance_fill_, QStringLiteral("Fill"), btn_appearance_fill_color_);
-    add_appearance_row(1, btn_kf_appearance_stroke_, QStringLiteral("Stroke"), btn_appearance_stroke_color_,
+    add_appearance_row(0, btn_kf_appearance_fill_, obsgs_tr("OBSTitles.Fill"), btn_appearance_fill_color_);
+    add_appearance_row(1, btn_kf_appearance_stroke_, obsgs_tr("OBSTitles.Stroke"), btn_appearance_stroke_color_,
                        spn_appearance_stroke_width_, btn_appearance_stroke_label_);
-    add_appearance_row(2, btn_kf_appearance_opacity_, QStringLiteral("Opacity"), nullptr,
+    add_appearance_row(2, btn_kf_appearance_opacity_, obsgs_tr("OBSTitles.Opacity"), nullptr,
                        spn_appearance_opacity_);
     appearance_layout->addLayout(appearance_grid);
     vl->addWidget(appearance_box_);
@@ -631,10 +669,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_size_->setFixedHeight(22);
     spn_size_->setStyleSheet(control_style);
 
-    cmb_kerning_mode_ = mk_combo({"Metrics", "Optical", "Manual"}, {0, 1, 2});
+    cmb_kerning_mode_ = mk_combo({obsgs_tr("OBSTitles.KerningMetrics"), obsgs_tr("OBSTitles.KerningOptical"), obsgs_tr("OBSTitles.KerningManual")}, {0, 1, 2});
     spn_kerning_value_ = mk_dspin(-100.0, 500.0, 1.0);
     spn_kerning_value_->setSuffix(" px");
-    spn_kerning_value_->setToolTip("Manual kerning adjustment added to tracking.");
+    spn_kerning_value_->setToolTip(obsgs_tr("OBSTitles.ManualKerningTooltip"));
     spn_text_leading_ = mk_dspin(-200.0, 500.0, 1.0);
     spn_text_leading_->setSuffix(" px");
     spn_text_leading_->setToolTip(obsgs_tr("OBSTitles.LeadingTooltip"));
@@ -883,8 +921,188 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(dynamic_form, obsgs_tr("OBSTitles.DirectionLabel"), cmb_ticker_direction_);
     vl->addWidget(dynamic_text_box_);
 
+    /* ── Auto Styling ── */
+    auto_style_box_ = new QGroupBox("Auto Styling Rules", inner);
+    auto_style_box_->setStyleSheet(QStringLiteral(
+        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
+        "QLabel{color:%3;font-size:10px;background:transparent;}")
+        .arg(panel_text_name, section_bg_name, subtle_text_name));
+    auto *auto_layout = new QVBoxLayout(auto_style_box_);
+    auto_layout->setContentsMargins(14, 28, 14, 12);
+    auto_layout->setSpacing(6);
+    chk_auto_style_enabled_ = new QCheckBox("Enable automatic text styling", auto_style_box_);
+    chk_auto_style_enabled_->setToolTip("When enabled, the selected text layer is styled by the rule engine before rendering. The original text stays editable; rules only produce final style runs.");
+    style_checkbox(chk_auto_style_enabled_);
+    auto_layout->addWidget(chk_auto_style_enabled_);
+
+    auto *auto_help = new QLabel("Create rules that find text ranges, apply presets, and resolve conflicts before the renderer draws the final text runs.", auto_style_box_);
+    auto_help->setWordWrap(true);
+    auto_help->setToolTip("Auto Styling works on the whole text box and also on live text cue values. Manual inline formatting is applied last, so it can still override automatic rules.");
+    auto_layout->addWidget(auto_help);
+
+    auto *auto_form = new QFormLayout();
+    style_form(auto_form);
+    cmb_auto_default_style_ = new QComboBox(auto_style_box_);
+    cmb_auto_default_style_->setFixedHeight(22);
+    cmb_auto_default_style_->setStyleSheet(control_style);
+    cmb_auto_default_style_->setToolTip("Base preset for the entire text box. Rules are applied on top of this default style.");
+    auto_form->addRow("Base style", cmb_auto_default_style_);
+    auto_layout->addLayout(auto_form);
+    lst_auto_style_rules_ = new QListWidget(auto_style_box_);
+    lst_auto_style_rules_->setFixedHeight(132);
+    lst_auto_style_rules_->setStyleSheet(control_style);
+    lst_auto_style_rules_->setToolTip("Rules are evaluated from top to bottom. Use the arrow buttons to change priority. Later rules can override, respect or exclude earlier/later rules depending on their conflict mode.");
+    auto_layout->addWidget(lst_auto_style_rules_);
+    auto *rule_form = new QFormLayout();
+    style_form(rule_form);
+    cmb_auto_rule_style_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_style_->setFixedHeight(22);
+    cmb_auto_rule_style_->setStyleSheet(control_style);
+    cmb_auto_rule_style_->setToolTip("Text style preset to apply when this rule matches.");
+    edt_auto_rule_name_ = new QLineEdit(auto_style_box_);
+    edt_auto_rule_name_->setPlaceholderText("Optional rule name");
+    edt_auto_rule_name_->setFixedHeight(22);
+    edt_auto_rule_name_->setStyleSheet(control_style);
+    edt_auto_rule_name_->setToolTip("Optional friendly name shown in the rule list. Leave empty to use the preset name.");
+    chk_auto_rule_enabled_ = new QCheckBox("This rule is active", auto_style_box_);
+    chk_auto_rule_enabled_->setToolTip("Disable this rule without deleting it.");
+    chk_auto_rule_enabled_->setChecked(true);
+    style_checkbox(chk_auto_rule_enabled_);
+    auto fill_auto_marker_combo = [](QComboBox *combo) {
+        combo->addItem("Start of text", "text_start");
+        combo->addItem("End of text", "text_end");
+        combo->addItem("Character index", "character_index");
+        combo->addItem("Number of characters", "character_count");
+        combo->addItem("Number of words", "word_count");
+        combo->addItem("Space / tab", "space");
+        combo->addItem("Line break", "line_break");
+        combo->addItem("New line", "newline");
+        combo->addItem("Start of paragraph", "paragraph_start");
+        combo->addItem("End of paragraph", "paragraph_end");
+        combo->addItem("Custom character", "custom_char");
+    };
+    cmb_auto_rule_start_condition_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_end_condition_ = new QComboBox(auto_style_box_);
+    fill_auto_marker_combo(cmb_auto_rule_start_condition_);
+    fill_auto_marker_combo(cmb_auto_rule_end_condition_);
+    cmb_auto_rule_start_condition_->setFixedHeight(22);
+    cmb_auto_rule_end_condition_->setFixedHeight(22);
+    cmb_auto_rule_start_condition_->setStyleSheet(control_style);
+    cmb_auto_rule_end_condition_->setStyleSheet(control_style);
+    cmb_auto_rule_start_condition_->setToolTip("Where the styled range begins. Marker rules scan the entire text box, not only the beginning.");
+    cmb_auto_rule_end_condition_->setToolTip("Where the styled range ends. For marker-based rules, this is searched after each matching From marker.");
+    spn_auto_rule_start_offset_ = new QSpinBox(auto_style_box_);
+    spn_auto_rule_end_offset_ = new QSpinBox(auto_style_box_);
+    for (auto *spin : {spn_auto_rule_start_offset_, spn_auto_rule_end_offset_}) {
+        spin->setRange(0, 100000);
+        spin->setFixedHeight(22);
+        spin->setStyleSheet(control_style);
+        spin->setToolTip("Offset / occurrence number. For Character index, this is the exact character position. For marker rules, 0 means the first matching marker.");
+    }
+    edt_auto_rule_start_chars_ = new QLineEdit(auto_style_box_);
+    edt_auto_rule_end_chars_ = new QLineEdit(auto_style_box_);
+    edt_auto_rule_start_chars_->setMaxLength(8);
+    edt_auto_rule_end_chars_->setMaxLength(8);
+    edt_auto_rule_start_chars_->setPlaceholderText("custom");
+    edt_auto_rule_end_chars_->setPlaceholderText("custom");
+    edt_auto_rule_start_chars_->setFixedHeight(22);
+    edt_auto_rule_end_chars_->setFixedHeight(22);
+    edt_auto_rule_start_chars_->setStyleSheet(control_style);
+    edt_auto_rule_end_chars_->setStyleSheet(control_style);
+    edt_auto_rule_start_chars_->setToolTip("Characters to search for when From is set to Custom character. Example: : or #.");
+    edt_auto_rule_end_chars_->setToolTip("Characters to search for when To is set to Custom character. Example: , or ).");
+    auto *start_row = new QWidget(auto_style_box_);
+    auto *start_lay = new QHBoxLayout(start_row);
+    start_lay->setContentsMargins(0, 0, 0, 0);
+    start_lay->setSpacing(4);
+    start_lay->addWidget(cmb_auto_rule_start_condition_, 2);
+    start_lay->addWidget(spn_auto_rule_start_offset_, 1);
+    start_lay->addWidget(edt_auto_rule_start_chars_, 1);
+    auto *end_row = new QWidget(auto_style_box_);
+    auto *end_lay = new QHBoxLayout(end_row);
+    end_lay->setContentsMargins(0, 0, 0, 0);
+    end_lay->setSpacing(4);
+    end_lay->addWidget(cmb_auto_rule_end_condition_, 2);
+    end_lay->addWidget(spn_auto_rule_end_offset_, 1);
+    end_lay->addWidget(edt_auto_rule_end_chars_, 1);
+
+    chk_auto_rule_require_stop_match_ = new QCheckBox("Require stop match", auto_style_box_);
+    chk_auto_rule_require_stop_match_->setChecked(true);
+    chk_auto_rule_require_stop_match_->setToolTip("When enabled, the rule is skipped if the Stop matching at condition is not found after the Start condition. This prevents accidental styling to the line/text end when a delimiter is missing in live text cues.");
+    style_checkbox(chk_auto_rule_require_stop_match_);
+    chk_auto_rule_include_start_marker_ = new QCheckBox("Include From custom character", auto_style_box_);
+    chk_auto_rule_include_start_marker_->setChecked(true);
+    chk_auto_rule_include_start_marker_->setToolTip("When From is Custom character, include that character in the styled range. Disable it to start styling after the marker.");
+    style_checkbox(chk_auto_rule_include_start_marker_);
+    chk_auto_rule_include_end_marker_ = new QCheckBox("Include To custom character", auto_style_box_);
+    chk_auto_rule_include_end_marker_->setChecked(false);
+    chk_auto_rule_include_end_marker_->setToolTip("When Stop matching at is Custom character, include that stop character in the styled range. Leave disabled to stop before the marker.");
+    style_checkbox(chk_auto_rule_include_end_marker_);
+    auto *marker_options_row = new QWidget(auto_style_box_);
+    auto *marker_options_lay = new QVBoxLayout(marker_options_row);
+    marker_options_lay->setContentsMargins(0, 0, 0, 0);
+    marker_options_lay->setSpacing(2);
+    marker_options_lay->addWidget(chk_auto_rule_require_stop_match_);
+    marker_options_lay->addWidget(chk_auto_rule_include_start_marker_);
+    marker_options_lay->addWidget(chk_auto_rule_include_end_marker_);
+
+    cmb_auto_rule_conflict_mode_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_conflict_mode_->addItem("Override previous rules", "override_previous");
+    cmb_auto_rule_conflict_mode_->addItem("Respect previous rules", "respect_previous");
+    cmb_auto_rule_conflict_mode_->addItem("Apply only if empty", "apply_if_empty");
+    cmb_auto_rule_conflict_mode_->addItem("Merge", "merge");
+    cmb_auto_rule_conflict_mode_->addItem("Exclude selected rules", "exclude_other_rules");
+    cmb_auto_rule_conflict_mode_->setFixedHeight(22);
+    cmb_auto_rule_conflict_mode_->setStyleSheet(control_style);
+    cmb_auto_rule_conflict_mode_->setToolTip("How this rule behaves when another rule already styled the same text. Override wins, Respect keeps previous fields, Apply only if empty affects unstyled text, Exclude blocks selected rules.");
+    cmb_auto_rule_match_mode_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_match_mode_->addItem("All matches", "all_matches");
+    cmb_auto_rule_match_mode_->addItem("First match only", "first_match");
+    cmb_auto_rule_match_mode_->setFixedHeight(22);
+    cmb_auto_rule_match_mode_->setStyleSheet(control_style);
+    cmb_auto_rule_match_mode_->setToolTip("Apply to every matching range in the text box or only to the first one.");
+    edt_auto_rule_excludes_ = new QLineEdit(auto_style_box_);
+    edt_auto_rule_excludes_->setPlaceholderText("Rule IDs to exclude, comma-separated");
+    edt_auto_rule_excludes_->setFixedHeight(22);
+    edt_auto_rule_excludes_->setStyleSheet(control_style);
+    edt_auto_rule_excludes_->setToolTip("Comma-separated rule IDs to block where this rule matches. Example: rule_1, rule_3. Use with Conflict: Exclude selected rules.");
+    chk_auto_rule_stop_processing_ = new QCheckBox("Stop later rules on this matched text", auto_style_box_);
+    chk_auto_rule_stop_processing_->setToolTip("After this rule matches, later rules in the list cannot change the same characters. Useful for speaker names, labels, or protected prefixes.");
+    style_checkbox(chk_auto_rule_stop_processing_);
+    spn_auto_rule_chars_ = new QSpinBox(auto_style_box_);
+    spn_auto_rule_chars_->hide();
+    rule_form->addRow("Rule name", edt_auto_rule_name_);
+    rule_form->addRow("Apply preset", cmb_auto_rule_style_);
+    rule_form->addRow("Active", chk_auto_rule_enabled_);
+    rule_form->addRow("Start matching at", start_row);
+    rule_form->addRow("Stop matching at", end_row);
+    rule_form->addRow("Stop safety", marker_options_row);
+    rule_form->addRow("Apply to", cmb_auto_rule_match_mode_);
+    rule_form->addRow("If rules overlap", cmb_auto_rule_conflict_mode_);
+    rule_form->addRow("Exclude rules", edt_auto_rule_excludes_);
+    rule_form->addRow("Protect match", chk_auto_rule_stop_processing_);
+    auto_layout->addLayout(rule_form);
+    auto *rule_buttons = new QHBoxLayout();
+    btn_auto_rule_add_ = new QPushButton("Add rule", auto_style_box_);
+    btn_auto_rule_update_ = new QPushButton("Save rule", auto_style_box_);
+    btn_auto_rule_delete_ = new QPushButton("Delete", auto_style_box_);
+    btn_auto_rule_up_ = new QPushButton("↑", auto_style_box_);
+    btn_auto_rule_down_ = new QPushButton("↓", auto_style_box_);
+    btn_auto_rule_add_->setToolTip("Create a new rule from the editor fields below.");
+    btn_auto_rule_update_->setToolTip("Save the current editor fields into the selected rule.");
+    btn_auto_rule_delete_->setToolTip("Delete the selected rule.");
+    btn_auto_rule_up_->setToolTip("Move selected rule earlier. Earlier rules are evaluated first.");
+    btn_auto_rule_down_->setToolTip("Move selected rule later. Later rules can override earlier ones depending on conflict mode.");
+    for (auto *b : {btn_auto_rule_add_, btn_auto_rule_update_, btn_auto_rule_delete_, btn_auto_rule_up_, btn_auto_rule_down_}) {
+        style_push_button(b);
+        rule_buttons->addWidget(b);
+    }
+    auto_layout->addLayout(rule_buttons);
+    vl->addWidget(auto_style_box_);
+
     /* ── Live Edit ── */
-    live_edit_box_ = new QGroupBox(QStringLiteral("Live Edit"), inner);
+    live_edit_box_ = new QGroupBox(obsgs_tr("OBSTitles.LiveEdit"), inner);
     live_edit_box_->setStyleSheet(QStringLiteral(
         "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
@@ -895,14 +1113,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     live_edit_form->setContentsMargins(14, 28, 14, 12);
     live_edit_form->setHorizontalSpacing(8);
     live_edit_form->setVerticalSpacing(6);
-    chk_scene_mask_->setText(QStringLiteral("Set as scene mask"));
-    chk_scene_mask_->setToolTip(QStringLiteral("Use this shape or text layer as a live scene mask for an OBS scene."));
+    chk_scene_mask_->setText(obsgs_tr("OBSTitles.SetAsSceneMask"));
+    chk_scene_mask_->setToolTip(obsgs_tr("OBSTitles.LiveSceneMaskTooltip"));
     chk_scene_mask_->setFixedHeight(22);
     chk_scene_mask_->setStyleSheet(checkbox_style);
-    chk_expose_text_->setText(QStringLiteral("Expose to dock"));
+    chk_expose_text_->setText(obsgs_tr("OBSTitles.ExposeToDock"));
     chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
-    add_form_row(live_edit_form, QStringLiteral("Scene Mask"), chk_scene_mask_);
-    add_form_row(live_edit_form, QStringLiteral("Dock Editing"), chk_expose_text_);
+    add_form_row(live_edit_form, obsgs_tr("OBSTitles.SceneMask"), chk_scene_mask_);
+    add_form_row(live_edit_form, obsgs_tr("OBSTitles.DockEditing"), chk_expose_text_);
     vl->addWidget(live_edit_box_);
 
     /* ── Bullets and Numbering ── */
@@ -930,16 +1148,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *shape_header_layout = new QHBoxLayout(shape_header);
     shape_header_layout->setContentsMargins(0, 8, 0, 0);
     shape_header_layout->setSpacing(8);
-    auto *shape_title = new QLabel(QStringLiteral("Shape"), shape_header);
+    auto *shape_title = new QLabel(obsgs_tr("OBSTitles.Shape"), shape_header);
     shape_title->setObjectName(QStringLiteral("OBSTitlesShapePanelTitle"));
     shape_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     shape_header_layout->addWidget(shape_title);
     shape_header_layout->addStretch();
-    btn_shape_defaults_ = new QPushButton(QStringLiteral("Defaults"), shape_header);
+    btn_shape_defaults_ = new QPushButton(obsgs_tr("OBSTitles.Defaults"), shape_header);
     btn_shape_defaults_->setFixedHeight(22);
     btn_shape_defaults_->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     btn_shape_defaults_->setIconSize(QSize(13, 13));
-    btn_shape_defaults_->setToolTip(QStringLiteral("Restore Shape defaults"));
+    btn_shape_defaults_->setToolTip(obsgs_tr("OBSTitles.RestoreShapeDefaults"));
     btn_shape_defaults_->setStyleSheet(push_button_style);
     shape_header_layout->addWidget(btn_shape_defaults_);
     shape_layout->addWidget(shape_header);
@@ -1050,7 +1268,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_shape_outer_radius_ = mk_dspin(0.0, 1.0, 0.05); spn_shape_outer_radius_->setDecimals(2);
     spn_shape_roundness_ = mk_dspin(0.0, 1000.0, 1.0);
     btn_kf_width_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleWidthKeyframe"));
-    btn_kf_width_->setToolTip(QStringLiteral("Toggle size keyframe"));
+    btn_kf_width_->setToolTip(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
 
     style_transform_spin(spn_layer_w_);
     style_transform_spin(spn_layer_h_);
@@ -1058,14 +1276,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_transform_spin(spn_rect_corner_tr_);
     style_transform_spin(spn_rect_corner_br_);
     style_transform_spin(spn_rect_corner_bl_);
-    auto *field_width = make_shape_field(QStringLiteral("W"), spn_layer_w_);
-    auto *field_height = make_shape_field(QStringLiteral("H"), spn_layer_h_);
+    auto *field_width = make_shape_field(obsgs_tr("OBSTitles.W"), spn_layer_w_);
+    auto *field_height = make_shape_field(obsgs_tr("OBSTitles.H"), spn_layer_h_);
     chk_size_lock_ = new TransformLockCheckBox(rect_box_);
     chk_size_lock_->setText(QString());
     chk_size_lock_->setToolTip(obsgs_tr("OBSTitles.LockAspectRatio"));
     chk_size_lock_->setFixedSize(24, 24);
     chk_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto *size_label = new QLabel(QStringLiteral("Size"), rect_box_);
+    auto *size_label = new QLabel(obsgs_tr("OBSTitles.Size"), rect_box_);
     size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
     shape_size_label_ = size_label;
     shape_size_field_w_ = field_width;
@@ -1083,16 +1301,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     corners_layout->setContentsMargins(0, 0, 0, 0);
     corners_layout->setHorizontalSpacing(8);
     corners_layout->setVerticalSpacing(6);
-    corners_layout->addWidget(make_shape_field(QStringLiteral("TL"), spn_rect_corner_tl_, obs_icon("corner-radius-tl.svg")), 0, 0);
-    corners_layout->addWidget(make_shape_field(QStringLiteral("TR"), spn_rect_corner_tr_, obs_icon("corner-radius-tr.svg")), 0, 1);
+    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.TL"), spn_rect_corner_tl_, obs_icon("corner-radius-tl.svg")), 0, 0);
+    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.TR"), spn_rect_corner_tr_, obs_icon("corner-radius-tr.svg")), 0, 1);
     chk_corner_lock_ = new TransformLockCheckBox(row_rect_corners_);
     chk_corner_lock_->setText(QString());
-    chk_corner_lock_->setToolTip(QStringLiteral("Sync all corner radii"));
+    chk_corner_lock_->setToolTip(obsgs_tr("OBSTitles.SyncCornerRadii"));
     chk_corner_lock_->setFixedSize(24, 24);
     chk_corner_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     corners_layout->addWidget(chk_corner_lock_, 0, 2, 2, 1, Qt::AlignCenter);
-    corners_layout->addWidget(make_shape_field(QStringLiteral("BL"), spn_rect_corner_bl_, obs_icon("corner-radius-bl.svg")), 1, 0);
-    corners_layout->addWidget(make_shape_field(QStringLiteral("BR"), spn_rect_corner_br_, obs_icon("corner-radius-br.svg")), 1, 1);
+    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.BL"), spn_rect_corner_bl_, obs_icon("corner-radius-bl.svg")), 1, 0);
+    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.BR"), spn_rect_corner_br_, obs_icon("corner-radius-br.svg")), 1, 1);
 
     row_corner_type_ = new QWidget(rect_box_);
     row_corner_type_->setStyleSheet(QStringLiteral("background:transparent;"));
@@ -1117,10 +1335,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         grp_corner_type_->addButton(button, (int)corner_type);
         corner_type_layout->addWidget(button);
     };
-    add_corner_type_button(CornerType::Round, "corner-type-round.svg", QStringLiteral("Round"));
-    add_corner_type_button(CornerType::Straight, "corner-type-straight.svg", QStringLiteral("Straight"));
-    add_corner_type_button(CornerType::Concave, "corner-type-concave.svg", QStringLiteral("Concave"));
-    add_corner_type_button(CornerType::Cutout, "corner-type-cutout.svg", QStringLiteral("Cutout"));
+    add_corner_type_button(CornerType::Round, "corner-type-round.svg", obsgs_tr("OBSTitles.Round"));
+    add_corner_type_button(CornerType::Straight, "corner-type-straight.svg", obsgs_tr("OBSTitles.Straight"));
+    add_corner_type_button(CornerType::Concave, "corner-type-concave.svg", obsgs_tr("OBSTitles.Concave"));
+    add_corner_type_button(CornerType::Cutout, "corner-type-cutout.svg", obsgs_tr("OBSTitles.Cutout"));
     corner_type_layout->addStretch(1);
 
     auto *shape_form_widget = new QWidget(rect_box_);
@@ -1132,7 +1350,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(rfl, "", chk_text_box_height_to_text_);
     add_form_row(rfl, obsgs_tr("OBSTitles.MaxTextBoxHeightLabel"), spn_max_text_box_height_);
     add_form_row(rfl, obsgs_tr("OBSTitles.CornerLabel"), row_rect_corners_);
-    add_form_row(rfl, QStringLiteral("Corner Type"), row_corner_type_);
+    add_form_row(rfl, obsgs_tr("OBSTitles.CornerType"), row_corner_type_);
     add_form_row(rfl, "Points", spn_shape_points_);
     add_form_row(rfl, "Sides", spn_shape_sides_);
     add_form_row(rfl, "Inner Radius", spn_shape_inner_radius_);
@@ -1160,9 +1378,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_gradient_type_ = new QComboBox(inner);
     cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
     cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-    cmb_gradient_type_->addItem(QStringLiteral("Angle"), 2);
-    cmb_gradient_type_->addItem(QStringLiteral("Reflected"), 3);
-    cmb_gradient_type_->addItem(QStringLiteral("Diamond"), 4);
+    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.Angle"), 2);
+    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.Reflected"), 3);
+    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.Diamond"), 4);
     cmb_gradient_type_->setFixedHeight(22);
     cmb_gradient_type_->setStyleSheet(control_style);
     btn_gradient_start_color_ = new QPushButton(inner);
@@ -1536,9 +1754,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (layer_->type == LayerType::Clock) {
                     layer_->clock_format = value.empty() ? "H:i:s" : value;
                 } else {
-                    layer_->text_content = value;
-                    if (layer_->rich_text.empty())
-                        layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+                    rich_text_document_ensure_canonical(*layer_);
                     RichTextCharFormat insertion_format = insertion_format_for_text_replace(layer_->rich_text);
                     rich_text_document_replace_text(layer_->rich_text, value, &insertion_format);
                     layer_->rich_text_html.clear();
@@ -1972,17 +2188,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         swatch_row_layout->setContentsMargins(0, 0, 0, 0);
         swatch_row_layout->setSpacing(6);
         auto *none_button = new QPushButton(QStringLiteral("╱"), swatch_row);
-        none_button->setToolTip(QStringLiteral("No Color"));
+        none_button->setToolTip(obsgs_tr("OBSTitles.NoColor"));
         none_button->setStyleSheet(none_swatch_style(30));
         auto *background_button = new QPushButton(swatch_row);
-        background_button->setToolTip(QStringLiteral("Background Color"));
+        background_button->setToolTip(obsgs_tr("OBSTitles.BackgroundColor"));
         auto *foreground_button = new QPushButton(swatch_row);
-        foreground_button->setToolTip(QStringLiteral("Foreground Color"));
+        foreground_button->setToolTip(obsgs_tr("OBSTitles.ForegroundColor"));
         auto *swap_button = new QPushButton(QStringLiteral("⇄"), swatch_row);
-        swap_button->setToolTip(QStringLiteral("Swap foreground/background colors"));
+        swap_button->setToolTip(obsgs_tr("OBSTitles.SwapForegroundBackground"));
         swap_button->setFixedSize(30, 30);
         auto *eyedropper_button = new QPushButton(QStringLiteral("⌕"), swatch_row);
-        eyedropper_button->setToolTip(QStringLiteral("Pick Color"));
+        eyedropper_button->setToolTip(obsgs_tr("OBSTitles.PickColor"));
         eyedropper_button->setFixedSize(30, 30);
         swatch_row_layout->addWidget(none_button);
         swatch_row_layout->addWidget(background_button);
@@ -1996,7 +2212,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *opacity_layout = new QHBoxLayout(opacity_row);
         opacity_layout->setContentsMargins(0, 0, 0, 0);
         opacity_layout->setSpacing(8);
-        auto *opacity_label = new QLabel(QStringLiteral("Opacity"), opacity_row);
+        auto *opacity_label = new QLabel(obsgs_tr("OBSTitles.Opacity"), opacity_row);
         auto *opacity_slider = new QSlider(Qt::Horizontal, opacity_row);
         opacity_slider->setRange(0, 100);
         opacity_slider->setMinimumWidth(180);
@@ -2009,7 +2225,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         opacity_layout->addWidget(opacity_spin);
         wheel_layout->addWidget(opacity_row);
 
-        auto *recent_label = new QLabel(QStringLiteral("Recent Colors"), wheel_column);
+        auto *recent_label = new QLabel(obsgs_tr("OBSTitles.RecentColors"), wheel_column);
         wheel_layout->addWidget(recent_label);
         auto *recent_row = new QWidget(wheel_column);
         auto *recent_layout = new QHBoxLayout(recent_row);
@@ -2033,8 +2249,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         value_layout->setSpacing(6);
 
         auto *model_combo = new QComboBox(value_column);
-        model_combo->addItems({QStringLiteral("RGB"), QStringLiteral("HSV"), QStringLiteral("HSL"), QStringLiteral("CMYK"), QStringLiteral("Hex")});
-        model_combo->setCurrentText(QStringLiteral("RGB"));
+        model_combo->addItems({obsgs_tr("OBSTitles.RGB"), obsgs_tr("OBSTitles.HSV"), obsgs_tr("OBSTitles.HSL"), obsgs_tr("OBSTitles.CMYK"), obsgs_tr("OBSTitles.Hex")});
+        model_combo->setCurrentText(obsgs_tr("OBSTitles.RGB"));
         value_layout->addWidget(model_combo);
 
         auto make_spin_row = [&](const QString &label, int min, int max) {
@@ -2051,10 +2267,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             layout->addWidget(spin);
             return std::pair<QWidget *, QSpinBox *>(row, spin);
         };
-        auto r_row = make_spin_row(QStringLiteral("R"), 0, 255);
-        auto g_row = make_spin_row(QStringLiteral("G"), 0, 255);
-        auto b_row = make_spin_row(QStringLiteral("B"), 0, 255);
-        auto a_row = make_spin_row(QStringLiteral("A"), 0, 100);
+        auto r_row = make_spin_row(obsgs_tr("OBSTitles.R"), 0, 255);
+        auto g_row = make_spin_row(obsgs_tr("OBSTitles.G"), 0, 255);
+        auto b_row = make_spin_row(obsgs_tr("OBSTitles.B"), 0, 255);
+        auto a_row = make_spin_row(obsgs_tr("OBSTitles.A"), 0, 100);
         value_layout->addWidget(r_row.first);
         value_layout->addWidget(g_row.first);
         value_layout->addWidget(b_row.first);
@@ -2223,13 +2439,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         });
 
         update_color_controls();
-        tabs->addTab(color_tab, QStringLiteral("Color"));
+        tabs->addTab(color_tab, obsgs_tr("OBSTitles.Color"));
 
         auto *swatches_tab = new QWidget(tabs);
         auto *swatches_layout = new QVBoxLayout(swatches_tab);
-        auto *swatches_label = new QLabel(QStringLiteral("Swatches are not implemented yet."), swatches_tab);
+        auto *swatches_label = new QLabel(obsgs_tr("OBSTitles.SwatchesNotImplemented"), swatches_tab);
         swatches_layout->addWidget(swatches_label);
-        tabs->addTab(swatches_tab, QStringLiteral("Swatches"));
+        tabs->addTab(swatches_tab, obsgs_tr("OBSTitles.Swatches"));
         tabs->setTabEnabled(tabs->indexOf(swatches_tab), false);
 
         auto *gradient_tab = new QWidget(tabs);
@@ -2238,7 +2454,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_layout->setContentsMargins(8, 8, 8, 8);
         gradient_layout->setSpacing(6);
 
-        auto *preset_box = new QGroupBox(QStringLiteral("Presets"), gradient_tab);
+        auto *preset_box = new QGroupBox(obsgs_tr("OBSTitles.Presets"), gradient_tab);
         preset_box->setStyleSheet(QStringLiteral("QGroupBox{color:%1;background:%2;border:1px solid %3;"
                                 "border-radius:2px;margin-top:15px;padding-top:8px;font-size:10px;}"
                                 "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;background:%2;}")
@@ -2251,8 +2467,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         preset_folders_layout->setContentsMargins(0, 0, 0, 0);
         preset_folders_layout->setHorizontalSpacing(10);
         preset_folders_layout->setVerticalSpacing(4);
-        const QStringList preset_groups = {QStringLiteral("Cloud"), QStringLiteral("Iridescent"),
-                                           QStringLiteral("Pastels"), QStringLiteral("Neutrals")};
+        const QStringList preset_groups = {obsgs_tr("OBSTitles.Cloud"), obsgs_tr("OBSTitles.Iridescent"),
+                                           obsgs_tr("OBSTitles.Pastels"), obsgs_tr("OBSTitles.Neutrals")};
         for (int i = 0; i < preset_groups.size(); ++i) {
             auto *label = new QLabel(QStringLiteral("▸  📁  %1").arg(preset_groups[i]), preset_folders);
             label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:10px;}").arg(panel_text_name));
@@ -2271,15 +2487,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_form_layout->setContentsMargins(0, 0, 0, 0);
         gradient_form_layout->setHorizontalSpacing(6);
         gradient_form_layout->setVerticalSpacing(4);
-        auto *name_edit = new QLineEdit(QStringLiteral("Custom"), gradient_form);
+        auto *name_edit = new QLineEdit(obsgs_tr("OBSTitles.Custom"), gradient_form);
         name_edit->setStyleSheet(control_style);
-        auto *new_preset = new QPushButton(QStringLiteral("New"), gradient_form);
+        auto *new_preset = new QPushButton(obsgs_tr("OBSTitles.New"), gradient_form);
         auto *type = new QComboBox(gradient_form);
-        type->addItem(QStringLiteral("Linear"), 0);
+        type->addItem(obsgs_tr("OBSTitles.Linear"), 0);
         type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-        type->addItem(QStringLiteral("Angle"), 2);
-        type->addItem(QStringLiteral("Reflected"), 3);
-        type->addItem(QStringLiteral("Diamond"), 4);
+        type->addItem(obsgs_tr("OBSTitles.Angle"), 2);
+        type->addItem(obsgs_tr("OBSTitles.Reflected"), 3);
+        type->addItem(obsgs_tr("OBSTitles.Diamond"), 4);
         type->setStyleSheet(control_style);
         auto *smoothness = new QSpinBox(gradient_form);
         smoothness->setRange(0, 100);
@@ -2289,9 +2505,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         // Compact square-layout controls: keep only the essentials visible.
         name_edit->hide();
         new_preset->hide();
-        gradient_form_layout->addWidget(new QLabel(QStringLiteral("Type"), gradient_form), 0, 0);
+        gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Type"), gradient_form), 0, 0);
         gradient_form_layout->addWidget(type, 0, 1);
-        gradient_form_layout->addWidget(new QLabel(QStringLiteral("Smooth"), gradient_form), 0, 2);
+        gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Smooth"), gradient_form), 0, 2);
         gradient_form_layout->addWidget(smoothness, 0, 3);
         gradient_form_layout->setColumnStretch(1, 1);
 
@@ -2326,12 +2542,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *scale = make_spin(0.01, 100.0, 0.05);
         auto *focal_x = make_spin(-100.0, 100.0, 0.01);
         auto *focal_y = make_spin(-100.0, 100.0, 0.01);
-        auto *reverse_gradient = new QCheckBox(QStringLiteral("Reverse Gradient"), gradient_tab);
-        auto *dither_gradient = new QCheckBox(QStringLiteral("Dither"), gradient_tab);
+        auto *reverse_gradient = new QCheckBox(obsgs_tr("OBSTitles.ReverseGradient"), gradient_tab);
+        auto *dither_gradient = new QCheckBox(obsgs_tr("OBSTitles.Dither"), gradient_tab);
         auto *repeat_mode = new QComboBox(gradient_tab);
-        repeat_mode->addItem(QStringLiteral("Clamp"), 0);
-        repeat_mode->addItem(QStringLiteral("Repeat"), 1);
-        repeat_mode->addItem(QStringLiteral("Mirror"), 2);
+        repeat_mode->addItem(obsgs_tr("OBSTitles.Clamp"), 0);
+        repeat_mode->addItem(obsgs_tr("OBSTitles.Repeat"), 1);
+        repeat_mode->addItem(obsgs_tr("OBSTitles.Mirror"), 2);
         repeat_mode->setStyleSheet(control_style);
         for (auto *w : {gradient_opacity, angle, center_x, center_y, scale, focal_x, focal_y})
             w->hide();
@@ -2373,7 +2589,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         start_color->setText(QString());
         end_color->setText(QString());
 
-        auto *stops_box = new QGroupBox(QStringLiteral("Stops"), gradient_tab);
+        auto *stops_box = new QGroupBox(obsgs_tr("OBSTitles.Stops"), gradient_tab);
         stops_box->setStyleSheet(preset_box->styleSheet());
         auto *stops_layout = new QVBoxLayout(stops_box);
         stops_layout->setContentsMargins(5, 5, 5, 5);
@@ -2385,8 +2601,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(6);
             color_button->setFixedSize(28, 18);
-            layout->addWidget(new QLabel(stop_index < 2 ? (stop_index == 0 ? QStringLiteral("Start") : QStringLiteral("End"))
-                                                        : QStringLiteral("Stop"), row));
+            layout->addWidget(new QLabel(stop_index < 2 ? (stop_index == 0 ? obsgs_tr("OBSTitles.Start") : obsgs_tr("OBSTitles.End"))
+                                                        : obsgs_tr("OBSTitles.Stop"), row));
             layout->addWidget(color_button);
             pos_spin->setSuffix(QStringLiteral("%"));
             pos_spin->setRange(0.0, 100.0);
@@ -2399,10 +2615,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             auto *delete_button = new QPushButton(QStringLiteral("×"), row);
             delete_button->setFixedSize(22, 22);
             delete_button->setEnabled(false);
-            delete_button->setToolTip(QStringLiteral("Start/end stops cannot be deleted. Use the Delete button for selected intermediate stops."));
-            layout->addWidget(new QLabel(QStringLiteral("Location"), row));
+            delete_button->setToolTip(obsgs_tr("OBSTitles.StopDeleteLockedTooltip"));
+            layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Location"), row));
             layout->addWidget(pos_spin);
-            layout->addWidget(new QLabel(QStringLiteral("Opacity"), row));
+            layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Opacity"), row));
             layout->addWidget(opacity_spin);
             layout->addWidget(delete_button);
             row->setProperty("stop_index", stop_index);
@@ -2424,7 +2640,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         selected_stop_layout->setContentsMargins(0, 0, 0, 0);
         selected_stop_layout->setHorizontalSpacing(6);
         selected_stop_layout->setVerticalSpacing(5);
-        auto *selected_stop_label = new QLabel(QStringLiteral("No stop selected"), selected_stop_row);
+        auto *selected_stop_label = new QLabel(obsgs_tr("OBSTitles.NoStopSelected"), selected_stop_row);
         auto *selected_stop_color = new QPushButton(selected_stop_row);
         selected_stop_color->setFixedSize(28, 18);
         auto *selected_stop_location = make_spin(0.0, 100.0, 1.0, 0);
@@ -2435,14 +2651,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         selected_stop_opacity->setFixedWidth(58);
         auto *selected_stop_delete = new QPushButton(QStringLiteral("×"), selected_stop_row);
         selected_stop_delete->setFixedSize(22, 22);
-        selected_stop_delete->setToolTip(QStringLiteral("Delete selected stop until two remain"));
+        selected_stop_delete->setToolTip(obsgs_tr("OBSTitles.DeleteSelectedStopTooltip"));
         selected_stop_layout->addWidget(selected_stop_label, 0, 0, 1, 5);
-        selected_stop_layout->addWidget(new QLabel(QStringLiteral("Color"), selected_stop_row), 1, 0);
+        selected_stop_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Color"), selected_stop_row), 1, 0);
         selected_stop_layout->addWidget(selected_stop_color, 1, 1);
-        selected_stop_layout->addWidget(new QLabel(QStringLiteral("Location"), selected_stop_row), 1, 2);
+        selected_stop_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Location"), selected_stop_row), 1, 2);
         selected_stop_layout->addWidget(selected_stop_location, 1, 3);
         selected_stop_layout->addWidget(selected_stop_delete, 1, 4);
-        selected_stop_layout->addWidget(new QLabel(QStringLiteral("Opacity"), selected_stop_row), 2, 2);
+        selected_stop_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Opacity"), selected_stop_row), 2, 2);
         selected_stop_layout->addWidget(selected_stop_opacity, 2, 3);
         stops_layout->addWidget(selected_stop_row);
 
@@ -2451,13 +2667,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *stop_actions_layout = new QHBoxLayout(stop_actions);
         stop_actions_layout->setContentsMargins(0, 0, 0, 0);
         stop_actions_layout->setSpacing(5);
-        auto *add_stop = new QPushButton(QStringLiteral("+ Add Stop"), stop_actions);
-        auto *duplicate_stop = new QPushButton(QStringLiteral("Duplicate"), stop_actions);
-        auto *sort_stops = new QPushButton(QStringLiteral("Sort"), stop_actions);
-        auto *delete_stop = new QPushButton(QStringLiteral("Delete"), stop_actions);
-        delete_stop->setToolTip(QStringLiteral("Deletes the selected stop until only two stops remain."));
-        duplicate_stop->setToolTip(QStringLiteral("Duplicates the selected stop as a new intermediate stop."));
-        add_stop->setToolTip(QStringLiteral("Adds a new intermediate stop. Double-click empty gradient ramp space to add one; double-click an existing stop to delete it until only two stops remain."));
+        auto *add_stop = new QPushButton(obsgs_tr("OBSTitles.AddStop"), stop_actions);
+        auto *duplicate_stop = new QPushButton(obsgs_tr("OBSTitles.Duplicate"), stop_actions);
+        auto *sort_stops = new QPushButton(obsgs_tr("OBSTitles.Sort"), stop_actions);
+        auto *delete_stop = new QPushButton(obsgs_tr("OBSTitles.Delete"), stop_actions);
+        delete_stop->setToolTip(obsgs_tr("OBSTitles.DeleteStopTooltip"));
+        duplicate_stop->setToolTip(obsgs_tr("OBSTitles.DuplicateStopTooltip"));
+        add_stop->setToolTip(obsgs_tr("OBSTitles.AddStopTooltip"));
         stop_actions_layout->addWidget(add_stop);
         stop_actions_layout->addWidget(duplicate_stop);
         stop_actions_layout->addWidget(sort_stops);
@@ -2507,14 +2723,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_layout->addWidget(preview);
         gradient_layout->addWidget(stops_box);
         gradient_layout->addWidget(preset_box, 0, Qt::AlignTop);
-        tabs->addTab(gradient_tab, QStringLiteral("Gradient"));
+        tabs->addTab(gradient_tab, obsgs_tr("OBSTitles.Gradient"));
         // With the Color tab hidden, open directly on Gradient.
         tabs->setCurrentWidget(gradient_tab);
 
         auto *pattern_tab = new QWidget(tabs);
         auto *pattern_layout = new QVBoxLayout(pattern_tab);
-        pattern_layout->addWidget(new QLabel(QStringLiteral("Patterns are not implemented yet."), pattern_tab));
-        tabs->addTab(pattern_tab, QStringLiteral("Pattern"));
+        pattern_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.PatternsNotImplemented"), pattern_tab));
+        tabs->addTab(pattern_tab, obsgs_tr("OBSTitles.Pattern"));
         tabs->setTabEnabled(tabs->indexOf(pattern_tab), false);
 
         auto preview_change_in_progress = std::make_shared<bool>(false);
@@ -2526,9 +2742,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
             syncing_selected_stop_controls = true;
             selected_stop_label->setText(has_selection
-                ? QStringLiteral("Selected %1 stop").arg(selected < 2 ? (selected == 0 ? QStringLiteral("start") : QStringLiteral("end"))
-                                                               : QStringLiteral("intermediate"))
-                : QStringLiteral("No stop selected"));
+                ? obsgs_tr("OBSTitles.SelectedStop").arg(selected < 2 ? (selected == 0 ? obsgs_tr("OBSTitles.StartLower") : obsgs_tr("OBSTitles.EndLower"))
+                                                               : obsgs_tr("OBSTitles.IntermediateLower"))
+                : obsgs_tr("OBSTitles.NoStopSelected"));
             selected_stop_color->setEnabled(has_selection);
             selected_stop_location->setEnabled(has_selection);
             selected_stop_opacity->setEnabled(has_selection);
@@ -2607,7 +2823,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             QColor initial = color_from_argb(stroke
                 ? (start ? layer_->stroke_gradient_start_color : layer_->stroke_gradient_end_color)
                 : (start ? layer_->gradient_start_color : layer_->gradient_end_color));
-            QColor picked = QColorDialog::getColor(initial, &popup, QStringLiteral("Gradient Color"),
+            QColor picked = QColorDialog::getColor(initial, &popup, obsgs_tr("OBSTitles.GradientColor"),
                                                     QColorDialog::ShowAlphaChannel);
             if (!picked.isValid()) return;
             if (stroke) {
@@ -2631,7 +2847,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             initial.setAlphaF(preview->stop_opacity(stop_index));
 
             // Use the existing Qt/OBS color dialog here; do not create a second custom picker for gradient stops.
-            QColor picked = QColorDialog::getColor(initial, &popup, QStringLiteral("Gradient Stop Color"),
+            QColor picked = QColorDialog::getColor(initial, &popup, obsgs_tr("OBSTitles.GradientStopColor"),
                                                     QColorDialog::ShowAlphaChannel);
             if (!picked.isValid())
                 return;
@@ -2811,7 +3027,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *weight_layout = new QHBoxLayout(weight_row);
                 weight_layout->setContentsMargins(0, 0, 0, 0);
                 weight_layout->setSpacing(6);
-                auto *weight_label = new QLabel(QStringLiteral("Weight:"), weight_row);
+                auto *weight_label = new QLabel(obsgs_tr("OBSTitles.WeightColon"), weight_row);
                 auto *weight = new QDoubleSpinBox(weight_row);
                 weight->setRange(0.0, 200.0);
                 weight->setDecimals(0);
@@ -2853,18 +3069,18 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     root->addWidget(row);
                 };
 
-                auto *cap_butt = make_button(QStringLiteral("Butt"), QStringLiteral("Cap style is not supported yet"), &popup);
-                auto *cap_round = make_button(QStringLiteral("Rnd"), QStringLiteral("Cap style is not supported yet"), &popup);
-                auto *cap_square = make_button(QStringLiteral("Sqr"), QStringLiteral("Cap style is not supported yet"), &popup);
+                auto *cap_butt = make_button(obsgs_tr("OBSTitles.Butt"), obsgs_tr("OBSTitles.CapStyleUnsupported"), &popup);
+                auto *cap_round = make_button(obsgs_tr("OBSTitles.Rnd"), obsgs_tr("OBSTitles.CapStyleUnsupported"), &popup);
+                auto *cap_square = make_button(obsgs_tr("OBSTitles.Sqr"), obsgs_tr("OBSTitles.CapStyleUnsupported"), &popup);
                 for (auto *button : {cap_butt, cap_round, cap_square})
                     button->setEnabled(false);
-                add_button_group_row(QStringLiteral("Cap:"), {cap_butt, cap_round, cap_square});
+                add_button_group_row(obsgs_tr("OBSTitles.CapColon"), {cap_butt, cap_round, cap_square});
 
                 auto *corner_group = new QButtonGroup(&popup);
                 corner_group->setExclusive(true);
-                auto *corner_miter = make_button(QStringLiteral("M"), obsgs_tr("OBSTitles.Miter"), &popup);
-                auto *corner_round = make_button(QStringLiteral("R"), obsgs_tr("OBSTitles.Round"), &popup);
-                auto *corner_bevel = make_button(QStringLiteral("B"), obsgs_tr("OBSTitles.Bevel"), &popup);
+                auto *corner_miter = make_button(obsgs_tr("OBSTitles.M"), obsgs_tr("OBSTitles.Miter"), &popup);
+                auto *corner_round = make_button(obsgs_tr("OBSTitles.R"), obsgs_tr("OBSTitles.Round"), &popup);
+                auto *corner_bevel = make_button(obsgs_tr("OBSTitles.B"), obsgs_tr("OBSTitles.Bevel"), &popup);
                 corner_group->addButton(corner_miter, 0);
                 corner_group->addButton(corner_round, 1);
                 corner_group->addButton(corner_bevel, 2);
@@ -2880,28 +3096,28 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *limit_layout = new QHBoxLayout(limit_wrap);
                 limit_layout->setContentsMargins(0, 0, 0, 0);
                 limit_layout->setSpacing(4);
-                limit_layout->addWidget(new QLabel(QStringLiteral("Limit:"), limit_wrap));
+                limit_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.LimitColon"), limit_wrap));
                 limit_layout->addWidget(limit);
-                add_button_group_row(QStringLiteral("Corner:"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
+                add_button_group_row(obsgs_tr("OBSTitles.CornerColon"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
 
                 auto *align_group = new QButtonGroup(&popup);
                 align_group->setExclusive(true);
-                auto *align_back = make_button(QStringLiteral("Back"), obsgs_tr("OBSTitles.Back"), &popup);
-                auto *align_front = make_button(QStringLiteral("Front"), obsgs_tr("OBSTitles.Front"), &popup);
+                auto *align_back = make_button(obsgs_tr("OBSTitles.Back"), obsgs_tr("OBSTitles.Back"), &popup);
+                auto *align_front = make_button(obsgs_tr("OBSTitles.Front"), obsgs_tr("OBSTitles.Front"), &popup);
                 align_group->addButton(align_back, 0);
                 align_group->addButton(align_front, 1);
                 if (auto *button = align_group->button(layer_->outline_on_front ? 1 : 0))
                     button->setChecked(true);
-                add_button_group_row(QStringLiteral("Align Stroke:"), {align_back, align_front});
+                add_button_group_row(obsgs_tr("OBSTitles.AlignStrokeColon"), {align_back, align_front});
 
                 auto *dash_row = new QWidget(&popup);
                 auto *dash_layout = new QHBoxLayout(dash_row);
                 dash_layout->setContentsMargins(0, 0, 0, 0);
                 dash_layout->setSpacing(4);
-                auto *dashed = new QCheckBox(QStringLiteral("Dashed Line"), dash_row);
+                auto *dashed = new QCheckBox(obsgs_tr("OBSTitles.DashedLine"), dash_row);
                 dashed->setEnabled(false);
                 dashed->setStyleSheet(checkbox_style);
-                dashed->setToolTip(QStringLiteral("Dashed strokes are not supported yet"));
+                dashed->setToolTip(obsgs_tr("OBSTitles.DashedStrokesUnsupported"));
                 dash_layout->addWidget(dashed);
                 dash_layout->addStretch();
                 root->addWidget(dash_row);
@@ -2910,13 +3126,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *dash_values_layout = new QHBoxLayout(dash_values);
                 dash_values_layout->setContentsMargins(0, 0, 0, 0);
                 dash_values_layout->setSpacing(4);
-                for (const QString &label : {QStringLiteral("dash"), QStringLiteral("gap"),
-                                             QStringLiteral("dash"), QStringLiteral("gap"),
-                                             QStringLiteral("dash"), QStringLiteral("gap")}) {
+                for (const QString &label : {obsgs_tr("OBSTitles.Dash"), obsgs_tr("OBSTitles.Gap"),
+                                             obsgs_tr("OBSTitles.Dash"), obsgs_tr("OBSTitles.Gap"),
+                                             obsgs_tr("OBSTitles.Dash"), obsgs_tr("OBSTitles.Gap")}) {
                     auto *field = new QSpinBox(dash_values);
                     field->setRange(0, 999);
-                    field->setValue(label == QStringLiteral("dash") ? 12 : 0);
-                    if (label == QStringLiteral("dash"))
+                    field->setValue(label == obsgs_tr("OBSTitles.Dash") ? 12 : 0);
+                    if (label == obsgs_tr("OBSTitles.Dash"))
                         field->setSuffix(QStringLiteral(" pt"));
                     field->setFixedWidth(48);
                     field->setEnabled(false);
@@ -3609,6 +3825,180 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         load_values();
         emit_change();
     });
+
+    auto apply_rule_editor_to_rule = [this](RichTextAutoStyleRule &rule) {
+        rule.enabled = chk_auto_rule_enabled_ ? chk_auto_rule_enabled_->isChecked() : true;
+        rule.display_name = edt_auto_rule_name_ ? edt_auto_rule_name_->text().trimmed().toStdString() : std::string();
+        rule.style_preset_id = cmb_auto_rule_style_->currentData().toString().toStdString();
+        rule.conflict_mode = cmb_auto_rule_conflict_mode_ ? cmb_auto_rule_conflict_mode_->currentData().toString().toStdString() : std::string("override_previous");
+        rule.match_mode = cmb_auto_rule_match_mode_ ? cmb_auto_rule_match_mode_->currentData().toString().toStdString() : std::string("all_matches");
+        rule.stop_processing = chk_auto_rule_stop_processing_ ? chk_auto_rule_stop_processing_->isChecked() : false;
+        rule.require_stop_match = chk_auto_rule_require_stop_match_ ? chk_auto_rule_require_stop_match_->isChecked() : true;
+        rule.include_start_marker = chk_auto_rule_include_start_marker_ ? chk_auto_rule_include_start_marker_->isChecked() : true;
+        rule.include_end_marker = chk_auto_rule_include_end_marker_ ? chk_auto_rule_include_end_marker_->isChecked() : false;
+        rule.excludes_rule_ids = edt_auto_rule_excludes_ ? auto_style_split_ids(edt_auto_rule_excludes_->text()) : std::vector<std::string>();
+        rule.condition_type = "range_markers";
+        rule.start_condition = cmb_auto_rule_start_condition_->currentData().toString().toStdString();
+        rule.end_condition = cmb_auto_rule_end_condition_->currentData().toString().toStdString();
+        rule.start_offset = (size_t)spn_auto_rule_start_offset_->value();
+        rule.end_offset = (size_t)spn_auto_rule_end_offset_->value();
+        rule.start_custom_chars = edt_auto_rule_start_chars_->text().toStdString();
+        rule.end_custom_chars = edt_auto_rule_end_chars_->text().toStdString();
+        rule.start = rule.start_offset;
+        rule.length = rule.end_offset > rule.start_offset ? rule.end_offset - rule.start_offset : 0;
+    };
+    auto load_rule_to_editor = [this](const RichTextAutoStyleRule &rule) {
+        if (chk_auto_rule_enabled_) chk_auto_rule_enabled_->setChecked(rule.enabled);
+        if (edt_auto_rule_name_) edt_auto_rule_name_->setText(QString::fromStdString(rule.display_name));
+        int idx = cmb_auto_rule_style_->findData(QString::fromStdString(rule.style_preset_id));
+        if (idx >= 0) cmb_auto_rule_style_->setCurrentIndex(idx);
+        int sidx = cmb_auto_rule_start_condition_->findData(QString::fromStdString(rule.start_condition.empty() ? std::string("text_start") : rule.start_condition));
+        int eidx = cmb_auto_rule_end_condition_->findData(QString::fromStdString(rule.end_condition.empty() ? std::string("character_index") : rule.end_condition));
+        if (sidx >= 0) cmb_auto_rule_start_condition_->setCurrentIndex(sidx);
+        if (eidx >= 0) cmb_auto_rule_end_condition_->setCurrentIndex(eidx);
+        spn_auto_rule_start_offset_->setValue((int)rule.start_offset);
+        spn_auto_rule_end_offset_->setValue((int)(rule.end_offset ? rule.end_offset : rule.length));
+        edt_auto_rule_start_chars_->setText(QString::fromStdString(rule.start_custom_chars));
+        edt_auto_rule_end_chars_->setText(QString::fromStdString(rule.end_custom_chars));
+        if (cmb_auto_rule_conflict_mode_) { int cidx = cmb_auto_rule_conflict_mode_->findData(QString::fromStdString(rule.conflict_mode.empty() ? std::string("override_previous") : rule.conflict_mode)); if (cidx >= 0) cmb_auto_rule_conflict_mode_->setCurrentIndex(cidx); }
+        if (cmb_auto_rule_match_mode_) { int midx = cmb_auto_rule_match_mode_->findData(QString::fromStdString(rule.match_mode.empty() ? std::string("all_matches") : rule.match_mode)); if (midx >= 0) cmb_auto_rule_match_mode_->setCurrentIndex(midx); }
+        if (edt_auto_rule_excludes_) edt_auto_rule_excludes_->setText(auto_style_join_ids(rule.excludes_rule_ids));
+        if (chk_auto_rule_stop_processing_) chk_auto_rule_stop_processing_->setChecked(rule.stop_processing);
+        if (chk_auto_rule_require_stop_match_) chk_auto_rule_require_stop_match_->setChecked(rule.require_stop_match);
+        if (chk_auto_rule_include_start_marker_) chk_auto_rule_include_start_marker_->setChecked(rule.include_start_marker);
+        if (chk_auto_rule_include_end_marker_) chk_auto_rule_include_end_marker_->setChecked(rule.include_end_marker);
+        if (spn_auto_rule_chars_) spn_auto_rule_chars_->setValue((int)(rule.end_offset ? rule.end_offset : rule.length));
+    };
+    auto refresh_auto_rule_list = [this]() {
+        if (!lst_auto_style_rules_ || !layer_) return;
+        obsgsp::StylePresetLibrary library;
+        QSignalBlocker blocker(lst_auto_style_rules_);
+        lst_auto_style_rules_->clear();
+        int i = 1;
+        for (const auto &rule : layer_->rich_text.auto_style_rules) {
+            const QString preset_name = library.displayNameForId(QString::fromStdString(rule.style_preset_id));
+            const QString display_name = rule.display_name.empty() ? preset_name : QString::fromStdString(rule.display_name);
+            const QString rule_id = QString::fromStdString(rule.rule_id.empty() ? std::to_string(i) : rule.rule_id);
+            const QString from = auto_style_marker_label(rule.start_condition, rule.start_offset, rule.start_custom_chars);
+            const QString to = auto_style_marker_label(rule.end_condition, rule.end_offset ? rule.end_offset : rule.length, rule.end_custom_chars);
+            auto *item = new QListWidgetItem(QStringLiteral("%1. %2  •  %3 → %4  •  %5%6")
+                                             .arg(i++).arg(display_name).arg(from).arg(to)
+                                             .arg(QString::fromStdString(rule.conflict_mode.empty() ? std::string("override_previous") : rule.conflict_mode))
+                                             .arg(rule.enabled ? QString() : QStringLiteral("  [off]")),
+                                             lst_auto_style_rules_);
+            item->setData(Qt::UserRole, i - 2);
+            item->setToolTip(QStringLiteral("Rule ID: %1\nPreset: %2\nRange: %3 → %4\nConflict mode: %5\n%6")
+                             .arg(rule_id, preset_name, from, to,
+                                  QString::fromStdString(rule.conflict_mode.empty() ? std::string("override_previous") : rule.conflict_mode),
+                                  rule.enabled ? QStringLiteral("Enabled") : QStringLiteral("Disabled")));
+        }
+    };
+    auto cache_text_preset_format = [](const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask) {
+        mask = 0;
+        if (preset_id.empty()) return;
+        obsgsp::StylePresetLibrary library;
+        obsgsp::StylePreset preset;
+        if (library.findById(QString::fromStdString(preset_id), &preset) &&
+            preset.kind == obsgsp::StylePresetKind::Text &&
+            obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, format))
+            mask = obsgsp::StylePresetLibrary::textPresetCharMask();
+    };
+    auto cache_rule_format = [cache_text_preset_format](RichTextAutoStyleRule &rule) {
+        cache_text_preset_format(rule.style_preset_id, rule.cached_format, rule.cached_mask);
+    };
+    auto cache_default_auto_style = [this, cache_text_preset_format]() {
+        if (!layer_) return;
+        cache_text_preset_format(layer_->rich_text.auto_default_style_preset_id,
+                                 layer_->rich_text.auto_default_style_cached_format,
+                                 layer_->rich_text.auto_default_style_cached_mask);
+    };
+    auto invalidate_auto_text_styling = [this, cache_default_auto_style, cache_rule_format]() {
+        if (!layer_) return;
+        if (layer_->rich_text.empty())
+            layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+        if (layer_->rich_text.plain_text != layer_->text_content) {
+            RichTextCharFormat insertion_format = insertion_format_for_text_replace(layer_->rich_text);
+            rich_text_document_replace_text(layer_->rich_text, layer_->text_content, &insertion_format);
+        }
+        cache_default_auto_style();
+        for (auto &rule : layer_->rich_text.auto_style_rules)
+            cache_rule_format(rule);
+        layer_->rich_text.normalize();
+        layer_->rich_text_html.clear();
+    };
+    connect(chk_auto_style_enabled_, &QCheckBox::toggled, this, [this, invalidate_auto_text_styling](bool v){
+        if (loading_values_ || !layer_) return;
+        if (layer_->rich_text.empty()) layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+        layer_->rich_text.auto_style_enabled = v;
+        invalidate_auto_text_styling();
+        emit property_changed();
+    });
+    connect(cmb_auto_default_style_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, invalidate_auto_text_styling](int){
+        if (loading_values_ || !layer_ || !cmb_auto_default_style_) return;
+        if (layer_->rich_text.empty()) layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+        layer_->rich_text.auto_default_style_preset_id = cmb_auto_default_style_->currentData().toString().toStdString();
+        invalidate_auto_text_styling();
+        emit property_changed();
+    });
+    connect(btn_auto_rule_add_, &QPushButton::clicked, this, [this, apply_rule_editor_to_rule, cache_rule_format, invalidate_auto_text_styling, refresh_auto_rule_list](){
+        if (!layer_ || !cmb_auto_rule_style_) return;
+        const QString id = cmb_auto_rule_style_->currentData().toString();
+        if (id.isEmpty()) return;
+        if (layer_->rich_text.empty()) layer_->rich_text = rich_text_document_from_layer_defaults(*layer_);
+        RichTextAutoStyleRule rule;
+        rule.rule_id = std::string("rule_") + std::to_string(layer_->rich_text.auto_style_rules.size() + 1);
+        rule.enabled = true;
+        rule.style_preset_id = id.toStdString();
+        apply_rule_editor_to_rule(rule);
+        if (rule.rule_id.empty()) rule.rule_id = std::string("rule_") + std::to_string(layer_->rich_text.auto_style_rules.size() + 1);
+        cache_rule_format(rule);
+        layer_->rich_text.auto_style_rules.push_back(rule);
+        invalidate_auto_text_styling();
+        refresh_auto_rule_list();
+        emit property_changed();
+    });
+    connect(btn_auto_rule_update_, &QPushButton::clicked, this, [this, apply_rule_editor_to_rule, cache_rule_format, invalidate_auto_text_styling, refresh_auto_rule_list](){
+        if (!layer_ || !lst_auto_style_rules_ || !lst_auto_style_rules_->currentItem()) return;
+        int row = lst_auto_style_rules_->currentRow();
+        if (row < 0 || row >= (int)layer_->rich_text.auto_style_rules.size()) return;
+        auto &rule = layer_->rich_text.auto_style_rules[(size_t)row];
+        apply_rule_editor_to_rule(rule);
+        cache_rule_format(rule);
+        invalidate_auto_text_styling();
+        refresh_auto_rule_list();
+        lst_auto_style_rules_->setCurrentRow(row);
+        emit property_changed();
+    });
+    connect(btn_auto_rule_delete_, &QPushButton::clicked, this, [this, invalidate_auto_text_styling, refresh_auto_rule_list](){
+        if (!layer_ || !lst_auto_style_rules_ || !lst_auto_style_rules_->currentItem()) return;
+        int row = lst_auto_style_rules_->currentRow();
+        if (row < 0 || row >= (int)layer_->rich_text.auto_style_rules.size()) return;
+        layer_->rich_text.auto_style_rules.erase(layer_->rich_text.auto_style_rules.begin() + row);
+        invalidate_auto_text_styling();
+        refresh_auto_rule_list();
+        emit property_changed();
+    });
+    connect(btn_auto_rule_up_, &QPushButton::clicked, this, [this, invalidate_auto_text_styling, refresh_auto_rule_list](){
+        if (!layer_ || !lst_auto_style_rules_) return;
+        int row = lst_auto_style_rules_->currentRow();
+        if (row <= 0 || row >= (int)layer_->rich_text.auto_style_rules.size()) return;
+        std::swap(layer_->rich_text.auto_style_rules[(size_t)row], layer_->rich_text.auto_style_rules[(size_t)row - 1]);
+        invalidate_auto_text_styling();
+        refresh_auto_rule_list(); lst_auto_style_rules_->setCurrentRow(row - 1); emit property_changed();
+    });
+    connect(btn_auto_rule_down_, &QPushButton::clicked, this, [this, invalidate_auto_text_styling, refresh_auto_rule_list](){
+        if (!layer_ || !lst_auto_style_rules_) return;
+        int row = lst_auto_style_rules_->currentRow();
+        if (row < 0 || row + 1 >= (int)layer_->rich_text.auto_style_rules.size()) return;
+        std::swap(layer_->rich_text.auto_style_rules[(size_t)row], layer_->rich_text.auto_style_rules[(size_t)row + 1]);
+        invalidate_auto_text_styling();
+        refresh_auto_rule_list(); lst_auto_style_rules_->setCurrentRow(row + 1); emit property_changed();
+    });
+    connect(lst_auto_style_rules_, &QListWidget::currentRowChanged, this, [this, load_rule_to_editor](int row){
+        if (!layer_ || row < 0 || row >= (int)layer_->rich_text.auto_style_rules.size()) return;
+        const auto &rule = layer_->rich_text.auto_style_rules[(size_t)row];
+        load_rule_to_editor(rule);
+    });
 }
 
 void PropertiesPanel::set_title(std::shared_ptr<Title> t)
@@ -3642,6 +4032,7 @@ void PropertiesPanel::load_values()
         if (type_options_box_) type_options_box_->setVisible(false);
         if (paragraph_box_) paragraph_box_->setVisible(false);
         if (dynamic_text_box_) dynamic_text_box_->setVisible(false);
+        if (auto_style_box_) auto_style_box_->setVisible(false);
         if (live_edit_box_) live_edit_box_->setVisible(false);
         if (bullets_box_) bullets_box_->setVisible(false);
         rect_box_->setVisible(false);
@@ -3711,7 +4102,7 @@ void PropertiesPanel::load_values()
         if (spn_rect_corner_br_) spn_rect_corner_br_->setValue(0.0);
         if (spn_rect_corner_bl_) spn_rect_corner_bl_->setValue(0.0);
         spn_size_->setValue(72);
-        if (cmb_font_style_) populate_font_style_combo(cmb_font_style_, cmb_font_->currentText(), QStringLiteral("Regular"));
+        if (cmb_font_style_) populate_font_style_combo(cmb_font_style_, cmb_font_->currentText(), obsgs_tr("OBSTitles.Regular"));
         chk_bold_->setChecked(false);
         chk_italic_->setChecked(false);
         if (chk_font_kerning_) chk_font_kerning_->setChecked(true);
@@ -3781,6 +4172,7 @@ void PropertiesPanel::load_values()
     if (type_options_box_) type_options_box_->setVisible(is_text_like);
     if (paragraph_box_) paragraph_box_->setVisible(is_text_like);
     if (dynamic_text_box_) dynamic_text_box_->setVisible(is_text_like);
+    if (auto_style_box_) auto_style_box_->setVisible(is_text_like);
     if (live_edit_box_) live_edit_box_->setVisible(is_rect || is_text_like);
     if (bullets_box_) bullets_box_->setVisible(false);
     text_box_->setTitle("Character");
@@ -3802,6 +4194,84 @@ void PropertiesPanel::load_values()
         }
     }
     txt_content_->setPlaceholderText(is_clock ? "H:i:s" : obsgs_tr("OBSTitles.EnterTextPlaceholder"));
+    if (cmb_auto_default_style_ && cmb_auto_rule_style_) {
+        obsgsp::StylePresetLibrary library;
+        const auto presets = library.presets(obsgsp::StylePresetKind::Text);
+        auto fill_combo = [&](QComboBox *combo, bool include_none, const QString &selected) {
+            QSignalBlocker blocker(combo);
+            combo->clear();
+            if (include_none) combo->addItem("None", QString());
+            for (const auto &preset : presets)
+                combo->addItem(preset.name + QStringLiteral(" — ") + preset.category, preset.id);
+            const int idx = combo->findData(selected);
+            if (idx >= 0) combo->setCurrentIndex(idx);
+        };
+        fill_combo(cmb_auto_default_style_, true, QString::fromStdString(layer_->rich_text.auto_default_style_preset_id));
+        const QString first_rule = layer_->rich_text.auto_style_rules.empty()
+            ? QString()
+            : QString::fromStdString(layer_->rich_text.auto_style_rules.front().style_preset_id);
+        fill_combo(cmb_auto_rule_style_, false, first_rule);
+        if (chk_auto_style_enabled_) chk_auto_style_enabled_->setChecked(layer_->rich_text.auto_style_enabled);
+        QSignalBlocker list_blocker(lst_auto_style_rules_);
+        lst_auto_style_rules_->clear();
+        int i = 1;
+        for (const auto &rule : layer_->rich_text.auto_style_rules) {
+            const QString preset_name = library.displayNameForId(QString::fromStdString(rule.style_preset_id));
+            const QString display_name = rule.display_name.empty() ? preset_name : QString::fromStdString(rule.display_name);
+            const QString rule_id = QString::fromStdString(rule.rule_id.empty() ? std::to_string(i) : rule.rule_id);
+            const QString from = auto_style_marker_label(rule.start_condition, rule.start_offset, rule.start_custom_chars);
+            const QString to = auto_style_marker_label(rule.end_condition, rule.end_offset ? rule.end_offset : rule.length, rule.end_custom_chars);
+            auto *item = new QListWidgetItem(QStringLiteral("%1. %2  •  %3 → %4  •  %5%6")
+                                             .arg(i++).arg(display_name).arg(from).arg(to)
+                                             .arg(QString::fromStdString(rule.conflict_mode.empty() ? std::string("override_previous") : rule.conflict_mode))
+                                             .arg(rule.enabled ? QString() : QStringLiteral("  [off]")),
+                                             lst_auto_style_rules_);
+            item->setData(Qt::UserRole, i - 2);
+            item->setToolTip(QStringLiteral("Rule ID: %1\nPreset: %2\nRange: %3 → %4\nConflict mode: %5\n%6")
+                             .arg(rule_id, preset_name, from, to,
+                                  QString::fromStdString(rule.conflict_mode.empty() ? std::string("override_previous") : rule.conflict_mode),
+                                  rule.enabled ? QStringLiteral("Enabled") : QStringLiteral("Disabled")));
+        }
+        if (!layer_->rich_text.auto_style_rules.empty()) {
+            lst_auto_style_rules_->setCurrentRow(0);
+            const auto &rule = layer_->rich_text.auto_style_rules.front();
+            int sidx = cmb_auto_rule_start_condition_->findData(QString::fromStdString(rule.start_condition.empty() ? std::string("text_start") : rule.start_condition));
+            int eidx = cmb_auto_rule_end_condition_->findData(QString::fromStdString(rule.end_condition.empty() ? std::string("character_index") : rule.end_condition));
+            if (chk_auto_rule_enabled_) chk_auto_rule_enabled_->setChecked(rule.enabled);
+            if (edt_auto_rule_name_) edt_auto_rule_name_->setText(QString::fromStdString(rule.display_name));
+            if (sidx >= 0) cmb_auto_rule_start_condition_->setCurrentIndex(sidx);
+            if (eidx >= 0) cmb_auto_rule_end_condition_->setCurrentIndex(eidx);
+            spn_auto_rule_start_offset_->setValue((int)rule.start_offset);
+            spn_auto_rule_end_offset_->setValue((int)(rule.end_offset ? rule.end_offset : rule.length));
+            edt_auto_rule_start_chars_->setText(QString::fromStdString(rule.start_custom_chars));
+            edt_auto_rule_end_chars_->setText(QString::fromStdString(rule.end_custom_chars));
+            if (cmb_auto_rule_conflict_mode_) { int cidx = cmb_auto_rule_conflict_mode_->findData(QString::fromStdString(rule.conflict_mode.empty() ? std::string("override_previous") : rule.conflict_mode)); if (cidx >= 0) cmb_auto_rule_conflict_mode_->setCurrentIndex(cidx); }
+            if (cmb_auto_rule_match_mode_) { int midx = cmb_auto_rule_match_mode_->findData(QString::fromStdString(rule.match_mode.empty() ? std::string("all_matches") : rule.match_mode)); if (midx >= 0) cmb_auto_rule_match_mode_->setCurrentIndex(midx); }
+            if (edt_auto_rule_excludes_) edt_auto_rule_excludes_->setText(auto_style_join_ids(rule.excludes_rule_ids));
+            if (chk_auto_rule_stop_processing_) chk_auto_rule_stop_processing_->setChecked(rule.stop_processing);
+            if (chk_auto_rule_require_stop_match_) chk_auto_rule_require_stop_match_->setChecked(rule.require_stop_match);
+            if (chk_auto_rule_include_start_marker_) chk_auto_rule_include_start_marker_->setChecked(rule.include_start_marker);
+            if (chk_auto_rule_include_end_marker_) chk_auto_rule_include_end_marker_->setChecked(rule.include_end_marker);
+            if (spn_auto_rule_chars_) spn_auto_rule_chars_->setValue((int)(rule.end_offset ? rule.end_offset : rule.length));
+        } else {
+            if (chk_auto_rule_enabled_) chk_auto_rule_enabled_->setChecked(true);
+            if (edt_auto_rule_name_) edt_auto_rule_name_->clear();
+            if (cmb_auto_rule_start_condition_) cmb_auto_rule_start_condition_->setCurrentIndex(0);
+            if (cmb_auto_rule_end_condition_) cmb_auto_rule_end_condition_->setCurrentIndex(cmb_auto_rule_end_condition_->findData("character_index"));
+            if (spn_auto_rule_start_offset_) spn_auto_rule_start_offset_->setValue(0);
+            if (spn_auto_rule_end_offset_) spn_auto_rule_end_offset_->setValue(0);
+            if (edt_auto_rule_start_chars_) edt_auto_rule_start_chars_->clear();
+            if (edt_auto_rule_end_chars_) edt_auto_rule_end_chars_->clear();
+            if (cmb_auto_rule_conflict_mode_) cmb_auto_rule_conflict_mode_->setCurrentIndex(0);
+            if (cmb_auto_rule_match_mode_) cmb_auto_rule_match_mode_->setCurrentIndex(0);
+            if (edt_auto_rule_excludes_) edt_auto_rule_excludes_->clear();
+            if (chk_auto_rule_stop_processing_) chk_auto_rule_stop_processing_->setChecked(false);
+            if (chk_auto_rule_require_stop_match_) chk_auto_rule_require_stop_match_->setChecked(true);
+            if (chk_auto_rule_include_start_marker_) chk_auto_rule_include_start_marker_->setChecked(true);
+            if (chk_auto_rule_include_end_marker_) chk_auto_rule_include_end_marker_->setChecked(false);
+            if (spn_auto_rule_chars_) spn_auto_rule_chars_->setValue(0);
+        }
+    }
     if (spn_text_fit_min_scale_) spn_text_fit_min_scale_->setVisible(is_text_like && layer_->text_overflow_mode == 2 && !is_ticker);
     if (lbl_text_fit_scale_) lbl_text_fit_scale_->setVisible(is_text_like && layer_->text_overflow_mode == 2 && !is_ticker);
     if (auto *dynamic_form = qobject_cast<QFormLayout *>(dynamic_text_box_ ? dynamic_text_box_->layout() : nullptr)) {
@@ -3846,7 +4316,7 @@ void PropertiesPanel::load_values()
     rect_box_->setVisible(is_text_like || is_rect || is_image);
     rect_box_->setTitle(QString());
     if (auto *shape_title = rect_box_->findChild<QLabel *>(QStringLiteral("OBSTitlesShapePanelTitle"))) {
-        shape_title->setText(is_rect ? QStringLiteral("Shape")
+        shape_title->setText(is_rect ? obsgs_tr("OBSTitles.Shape")
                             : is_image ? obsgs_tr("OBSTitles.ImageSize")
                                        : (is_clock ? obsgs_tr("OBSTitles.ClockBox")
                                                    : (is_ticker ? obsgs_tr("OBSTitles.TickerBox")
@@ -4126,10 +4596,7 @@ void PropertiesPanel::load_values()
 
     const QString panel_text = is_clock
         ? QString::fromStdString(layer_->clock_format)
-        : (!layer_->rich_text.empty() ? QString::fromStdString(layer_->rich_text.plain_text)
-                                      : (!layer_->rich_text_html.empty()
-                                             ? rich_text_plain_text(layer_->rich_text_html)
-                                             : QString::fromStdString(layer_->text_content)));
+        : QString::fromStdString((rich_text_document_ensure_canonical(*layer_), layer_->rich_text.plain_text));
     txt_content_->setPlainText(panel_text);
     int ticker_style_idx = cmb_ticker_style_->findData(layer_->ticker_style);
     cmb_ticker_style_->setCurrentIndex(ticker_style_idx >= 0 ? ticker_style_idx : 0);

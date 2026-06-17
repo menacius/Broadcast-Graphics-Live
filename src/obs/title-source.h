@@ -20,8 +20,6 @@ QImage render_title_to_image(const Title &title, double t);
 
 /* Source settings keys */
 #define PROP_TITLE_ID      "title_id"
-#define PROP_LOOP          "loop"
-#define PROP_SPEED         "speed"
 #define PROP_AUTO_ADVANCE  "auto_advance"
 #define PROP_SCENE_MASKS_GROUP "scene_masks"
 #define PROP_SCENE_MASK_PREFIX "scene_mask_"

@@ -920,12 +920,43 @@ static json rich_doc_to_json(const RichTextDocument &doc)
     json ranges = json::array();
     for (const auto &r : doc.ranges)
         ranges.push_back({{"start", r.start}, {"length", r.length}, {"format", rich_char_format_to_json(r.format)}});
+
+    /* Runtime edit history is intentionally not persisted. The previous
+     * implementation serialized RichTextTransaction::removed_text/inserted_text.
+     * Those strings are produced by byte-level diffs; with Greek/Unicode live
+     * cue edits the diff can legally start inside a UTF-8 codepoint, producing
+     * an invalid UTF-8 substring. nlohmann::json throws while dumping such a
+     * string, which crashed OBS when saving after editing live text cues.
+     *
+     * The title file only needs the canonical rich_text model (plain_text,
+     * ranges and auto-style rules). Undo/typing transactions are session-only.
+     */
     json transactions = json::array();
-    for (const auto &tr : doc.transactions) {
-        transactions.push_back({{"type", tr.type}, {"position", tr.position}, {"removed_text", tr.removed_text},
-                                {"inserted_text", tr.inserted_text},
-                                {"before_selection", {{"anchor", tr.before_selection.anchor}, {"head", tr.before_selection.head}}},
-                                {"after_selection", {{"anchor", tr.after_selection.anchor}, {"head", tr.after_selection.head}}}});
+
+    json auto_rules = json::array();
+    for (const auto &rule : doc.auto_style_rules) {
+        auto_rules.push_back({{"enabled", rule.enabled},
+                              {"style_preset_id", rule.style_preset_id},
+                              {"rule_id", rule.rule_id},
+                              {"display_name", rule.display_name},
+                              {"conflict_mode", rule.conflict_mode},
+                              {"match_mode", rule.match_mode},
+                              {"stop_processing", rule.stop_processing},
+                              {"excludes_rule_ids", rule.excludes_rule_ids},
+                              {"condition_type", rule.condition_type},
+                              {"start_condition", rule.start_condition},
+                              {"end_condition", rule.end_condition},
+                              {"start_offset", rule.start_offset},
+                              {"end_offset", rule.end_offset},
+                              {"start_custom_chars", rule.start_custom_chars},
+                              {"end_custom_chars", rule.end_custom_chars},
+                              {"require_stop_match", rule.require_stop_match},
+                              {"include_start_marker", rule.include_start_marker},
+                              {"include_end_marker", rule.include_end_marker},
+                              {"start", rule.start},
+                              {"length", rule.length},
+                              {"cached_mask", rule.cached_mask},
+                              {"cached_format", rich_char_format_to_json(rule.cached_format)}});
     }
     return {{"version", doc.version}, {"plain_text", doc.plain_text},
             {"default_format", rich_char_format_to_json(doc.default_format)},
@@ -933,6 +964,11 @@ static json rich_doc_to_json(const RichTextDocument &doc)
             {"has_typing_format", doc.has_typing_format},
             {"typing_format", rich_char_format_to_json(doc.has_typing_format ? doc.typing_format : doc.default_format)},
             {"blocks", blocks}, {"ranges", ranges},
+            {"auto_style_enabled", doc.auto_style_enabled},
+            {"auto_default_style_preset_id", doc.auto_default_style_preset_id},
+            {"auto_default_style_cached_mask", doc.auto_default_style_cached_mask},
+            {"auto_default_style_cached_format", rich_char_format_to_json(doc.auto_default_style_cached_format)},
+            {"auto_style_rules", auto_rules},
             {"selection", {{"anchor", doc.selection.anchor}, {"head", doc.selection.head}}},
             {"transactions", transactions}};
 }
@@ -957,6 +993,56 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
             r.length = (size_t)std::clamp(json_int(rj, "length", 0), 0, (int)kMaxTextLength);
             r.format = rj.contains("format") ? rich_char_format_from_json(rj["format"], doc.default_format) : doc.default_format;
             doc.ranges.push_back(r);
+        }
+    }
+    doc.auto_style_enabled = json_bool(j, "auto_style_enabled", false);
+    doc.auto_default_style_preset_id = bounded_string(j, "auto_default_style_preset_id", "", kMaxNameLength);
+    doc.auto_default_style_cached_mask = (uint32_t)std::clamp(json_int(j, "auto_default_style_cached_mask", 0), 0, (int)((1u << 19) - 1));
+    doc.auto_default_style_cached_format = j.contains("auto_default_style_cached_format")
+        ? rich_char_format_from_json(j["auto_default_style_cached_format"], doc.default_format)
+        : doc.default_format;
+    doc.auto_style_rules.clear();
+    if (j.contains("auto_style_rules") && j["auto_style_rules"].is_array()) {
+        for (size_t i = 0; i < std::min(j["auto_style_rules"].size(), (size_t)128); ++i) {
+            const auto &rj = j["auto_style_rules"][i];
+            if (!rj.is_object()) continue;
+            RichTextAutoStyleRule rule;
+            rule.enabled = json_bool(rj, "enabled", true);
+            rule.style_preset_id = bounded_string(rj, "style_preset_id", "", kMaxNameLength);
+            rule.rule_id = bounded_string(rj, "rule_id", "", kMaxNameLength);
+            rule.display_name = bounded_string(rj, "display_name", "", kMaxNameLength);
+            rule.conflict_mode = bounded_string(rj, "conflict_mode", "override_previous", kMaxNameLength);
+            rule.match_mode = bounded_string(rj, "match_mode", "all_matches", kMaxNameLength);
+            rule.stop_processing = json_bool(rj, "stop_processing", false);
+            rule.excludes_rule_ids.clear();
+            if (rj.contains("excludes_rule_ids") && rj["excludes_rule_ids"].is_array()) {
+                for (size_t xi = 0; xi < std::min(rj["excludes_rule_ids"].size(), (size_t)64); ++xi) {
+                    if (rj["excludes_rule_ids"][xi].is_string())
+                        rule.excludes_rule_ids.push_back(rj["excludes_rule_ids"][xi].get<std::string>());
+                }
+            }
+            if (rule.rule_id.empty()) rule.rule_id = std::to_string(i + 1);
+            rule.condition_type = bounded_string(rj, "condition_type", "range_markers", kMaxNameLength);
+            rule.start_condition = bounded_string(rj, "start_condition", "text_start", kMaxNameLength);
+            rule.end_condition = bounded_string(rj, "end_condition", "character_index", kMaxNameLength);
+            rule.start_offset = (size_t)std::clamp(json_int(rj, "start_offset", 0), 0, (int)kMaxTextLength);
+            rule.end_offset = (size_t)std::clamp(json_int(rj, "end_offset", json_int(rj, "length", 0)), 0, (int)kMaxTextLength);
+            rule.start_custom_chars = bounded_string(rj, "start_custom_chars", "", 16);
+            rule.end_custom_chars = bounded_string(rj, "end_custom_chars", "", 16);
+            rule.require_stop_match = json_bool(rj, "require_stop_match", true);
+            rule.include_start_marker = json_bool(rj, "include_start_marker", true);
+            rule.include_end_marker = json_bool(rj, "include_end_marker", false);
+            rule.start = (size_t)std::clamp(json_int(rj, "start", 0), 0, (int)kMaxTextLength);
+            rule.length = (size_t)std::clamp(json_int(rj, "length", 0), 0, (int)kMaxTextLength);
+            if (!rj.contains("start_condition") && !rj.contains("end_condition") && rule.condition_type == "start_to_char") {
+                rule.start_condition = "text_start";
+                rule.end_condition = "character_index";
+                rule.start_offset = 0;
+                rule.end_offset = rule.length;
+            }
+            rule.cached_mask = (uint32_t)std::clamp(json_int(rj, "cached_mask", 0), 0, (int)((1u << 19) - 1));
+            rule.cached_format = rj.contains("cached_format") ? rich_char_format_from_json(rj["cached_format"], doc.default_format) : doc.default_format;
+            doc.auto_style_rules.push_back(rule);
         }
     }
     if (j.contains("selection") && j["selection"].is_object()) {
@@ -1093,7 +1179,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["opacity"]  = aprop_to_json(l.opacity);
 
     j["text_content"]  = l.text_content;
-    j["rich_text_html"] = l.rich_text_html;
+    /* rich_text is the only style source of truth; do not serialize legacy HTML. */
     j["rich_text"] = rich_doc_to_json(l.rich_text);
     j["clock_format"]  = l.clock_format;
     j["expose_text"]   = l.expose_text;
@@ -1481,7 +1567,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->opacity.static_value = std::clamp(l->opacity.static_value, 0.0, 1.0);
 
     l->text_content  = bounded_string(j, "text_content", "Title", kMaxTextLength);
-    l->rich_text_html = bounded_string(j, "rich_text_html", "", kMaxTextLength * 16);
+    l->rich_text_html.clear();
     l->clock_format  = bounded_string(j, "clock_format", "H:i:s", kMaxNameLength);
     l->expose_text   = json_bool(j, "expose_text", false);
     l->font_family   = bounded_string(j, "font_family", "Helvetica Neue", kMaxNameLength);
@@ -1596,10 +1682,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->gradient_focal_y = (float)std::clamp(finite_or(json_double(j, "gradient_focal_y", l->gradient_center_y), l->gradient_center_y), -100.0, 100.0);
     l->gradient_stops = gradient_stops_from_json(j.value("gradient_stops", json::array()));
     l->rich_text = j.contains("rich_text") ? rich_doc_from_json(j["rich_text"], *l) : rich_text_document_from_layer_defaults(*l);
-    if (l->rich_text.plain_text.empty() && !l->text_content.empty())
-        l->rich_text = rich_text_document_from_layer_defaults(*l);
-    l->text_content = l->rich_text.plain_text;
-    rich_text_document_sync_layer_mirrors(*l);
+    rich_text_document_ensure_canonical(*l);
     l->background_enabled = json_bool(j, "background_enabled", false);
     l->background_color = json_color(j, "background_color", (uint32_t)0xFF000000);
     l->background_opacity = (float)std::clamp(finite_or(json_double(j, "background_opacity", 0.35), 0.35), 0.0, 1.0);
@@ -1959,6 +2042,7 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["loop_end"] = t.loop_end;
     jt["playback_mode"] = t.playback_mode;
     jt["loop_type"] = t.loop_type;
+    jt["cue_end_behavior"] = t.cue_end_behavior;
     jt["pause_time"] = t.pause_time;
     jt["bg_color"] = t.bg_color;
     jt["width"]    = t.width;
@@ -2022,6 +2106,7 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->loop_end = std::clamp(finite_or(json_double(jt, "loop_end", std::max(t->loop_start, t->duration - 1.0)), t->duration), t->loop_start, t->duration);
     t->playback_mode = std::clamp(json_int(jt, "playback_mode", 0), 0, 2);
     t->loop_type = std::clamp(json_int(jt, "loop_type", 0), 0, 1);
+    t->cue_end_behavior = std::clamp(json_int(jt, "cue_end_behavior", 0), 0, 1);
     t->pause_time = std::clamp(finite_or(json_double(jt, "pause_time", 0.0), 0.0), 0.0, t->duration);
     t->bg_color = json_color(jt, "bg_color", (uint32_t)0x00000000);
     t->width    = std::clamp(json_int(jt, "width", 1920), 1, kMaxCanvasDimension);
@@ -2150,7 +2235,13 @@ void TitleDataStore::save() const
             blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to open titles.json for saving");
             return;
         }
-        f << root.dump(2);
+        try {
+            f << root.dump(2, ' ', false, json::error_handler_t::replace);
+        } catch (const std::exception &e) {
+            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to serialize titles.json: %s", e.what());
+            std::remove(tmp_path.c_str());
+            return;
+        }
         if (!f.good()) {
             blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed while writing titles.json");
             std::remove(tmp_path.c_str());
@@ -2231,7 +2322,12 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
         if (error) *error = "Could not open the export file for writing.";
         return false;
     }
-    f << root.dump(2);
+    try {
+        f << root.dump(2, ' ', false, json::error_handler_t::replace);
+    } catch (const std::exception &e) {
+        if (error) *error = std::string("Failed to serialize the export file: ") + e.what();
+        return false;
+    }
     if (!f.good()) {
         if (error) *error = "Failed while writing the export file.";
         return false;

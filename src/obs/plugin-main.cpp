@@ -7,9 +7,12 @@
 #include "title-source.h"
 #include "title-dock.h"
 #include "title-hotkeys.h"
+#include "title-editor.h"
 #include "title-data.h"
 #include "title-localization.h"
 #include "title-logger.h"
+#include "title-preferences.h"
+#include "cache-manager.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <QMainWindow>
@@ -30,6 +33,12 @@ static void on_frontend_event(obs_frontend_event event, void *priv);
 static TitleDock *g_dock = nullptr;
 static QAction *g_dock_menu_action = nullptr;
 static bool g_frontend_ready = false;
+
+static void open_preferences_from_tools_menu(void *)
+{
+    QMainWindow *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+    TitleEditor::show_global_preferences(main);
+}
 
 
 static QMenu *find_docks_menu(QMainWindow *main)
@@ -94,7 +103,8 @@ bool obs_module_load(void)
     title_source_register();
     title_hotkeys_register();
 
-    /* 3. Defer dock and hotkey creation until the OBS UI is ready */
+    /* 3. Add global preferences entry and defer dock/hotkey creation until the OBS UI is ready */
+    obs_frontend_add_tools_menu_item("OBS Graphics Studio Pro Preferences", open_preferences_from_tools_menu, nullptr);
     obs_frontend_add_event_callback(on_frontend_event, nullptr);
 
     blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin loaded.");
@@ -106,6 +116,10 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
     title_hotkeys_unregister();
+    if (TitlePreferences::clear_cache_on_exit()) {
+        OGS_LOG_INFO("Plugin", QStringLiteral("Clearing frame cache on module unload"));
+        CacheManager::instance().clearAll();
+    }
     TitleDataStore::instance().save();
     obs_frontend_remove_event_callback(on_frontend_event, nullptr);
     destroy_dock_ui();
@@ -157,6 +171,10 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 
     if (event == OBS_FRONTEND_EVENT_EXIT) {
         OGS_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
+        if (TitlePreferences::clear_cache_on_exit()) {
+            OGS_LOG_INFO("Plugin", QStringLiteral("Clearing frame cache on OBS exit"));
+            CacheManager::instance().clearAll();
+        }
         g_frontend_ready = false;
         title_hotkeys_unregister();
         TitleDataStore::instance().save();

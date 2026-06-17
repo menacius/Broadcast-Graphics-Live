@@ -338,6 +338,7 @@ set(OBS_GSP_EDITOR_SOURCES
     src/editor/tools-sidebar.cpp
     src/editor/title-properties-panel.cpp
     src/editor/properties-panel.cpp
+    src/editor/style-presets.cpp
     src/editor/title-editor.cpp
 )
 set(OBS_GSP_EDITOR_HEADERS
@@ -347,6 +348,7 @@ set(OBS_GSP_EDITOR_HEADERS
     src/editor/tools-sidebar.h
     src/editor/title-properties-panel.h
     src/editor/properties-panel.h
+    src/editor/style-presets.h
     src/editor/title-editor-internal.h
     src/editor/title-editor.h
     src/editor/title-assets.h
