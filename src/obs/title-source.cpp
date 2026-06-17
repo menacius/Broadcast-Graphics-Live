@@ -284,6 +284,10 @@ struct TitleSourceData {
     uint32_t      scene_mask_alpha_h = 0;
     uint32_t      tex_w      = 0;
     uint32_t      tex_h      = 0;
+    qint64        last_cached_image_key = 0;
+    uint64_t      cache_hash_revision = std::numeric_limits<uint64_t>::max();
+    QString       cached_content_hash;
+    std::chrono::steady_clock::time_point cache_hash_last_verify;
 
     /* CPU render buffer */
     std::vector<uint8_t> pixel_buf;   /* BGRA row-major */
@@ -4008,32 +4012,92 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
     if (!motion || layer.type == LayerType::Clock)
         return false;
 
-    const int samples = std::clamp(motion->effect_samples, 2, 64);
+    const int configured_samples = std::clamp(motion->effect_samples, 2, 64);
     const double amount = std::clamp((double)motion->effect_opacity, 0.0, 1.0);
     const double shutter_angle = std::clamp((double)motion->effect_size, 0.0, 720.0);
     Layer base_layer = layer_without_motion_blur_effects(layer);
 
     auto paint_fast_motion = [&](auto render_sample, auto render_original) -> bool {
-        render_original(cr);
         const double frame_seconds = std::max(1.0 / 240.0, source_frame_duration());
         const double shutter_seconds = frame_seconds * shutter_angle / 360.0;
         const double title_duration = std::max(0.0, title.duration);
-        int used_samples = 0;
-        const double sample_alpha = amount / samples;
 
+        const double shutter_start = std::clamp(
+            title_time + shutter_seconds * (motion->effect_centered ? -0.5 : -1.0),
+            0.0, title_duration);
+        const double shutter_end = std::clamp(
+            title_time + shutter_seconds * (motion->effect_centered ? 0.5 : 0.0),
+            0.0, title_duration);
+
+        /* Sharp-edged bitmap/SVG layers expose low temporal sample counts as
+         * separated horizontal copies.  Scale the exposure density with the
+         * actual pixel travel over the shutter interval.  Roughly two samples
+         * per travelled pixel gives a continuous trail while retaining the
+         * user setting as the minimum quality level. */
+        const double start_lt = std::max(0.0, shutter_start - layer.in_time);
+        const double end_lt = std::max(0.0, shutter_end - layer.in_time);
+        const auto start_pos = layer.position.evaluate(start_lt);
+        const auto end_pos = layer.position.evaluate(end_lt);
+        const double travel_px = std::hypot(end_pos.x - start_pos.x, end_pos.y - start_pos.y);
+        const int adaptive_samples = (int)std::ceil(travel_px * 2.0) + 1;
+        const int samples = std::clamp(std::max(configured_samples, adaptive_samples), 2, 64);
+
+        std::vector<double> sample_times;
+        sample_times.reserve((size_t)samples);
         for (int i = 0; i < samples; ++i) {
-            const double f = samples == 1 ? 0.0 : (double)i / (double)(samples - 1);
-            const double shutter_pos = motion->effect_centered ? (f - 0.5) : (f - 1.0);
-            const double sample_time = std::clamp(title_time + shutter_seconds * shutter_pos, 0.0, title_duration);
+            // Midpoint sampling avoids overweighting both ends of the exposure.
+            const double f = ((double)i + 0.5) / (double)samples;
+            const double sample_time = shutter_start + (shutter_end - shutter_start) * f;
             if (!layer_chain_visible(title, layer, sample_time))
                 continue;
+            if (!sample_times.empty() && std::abs(sample_times.back() - sample_time) < 1e-8)
+                continue;
+            sample_times.push_back(sample_time);
+        }
 
+        if (sample_times.empty())
+            return true;
+
+        /* Motion blur must replace the sharp layer, not sit on top of it.
+         * Build an averaged temporal exposure first, then mix that exposure
+         * with the current sharp sample only when the effect opacity is below
+         * 100%.  The old path painted the current layer at full opacity and
+         * then added blurred samples over it, which looked like a smear effect
+         * attached to an otherwise sharp object.
+         */
+        const double mix = std::clamp(amount, 0.0, 1.0);
+
+        cairo_save(cr);
+        cairo_push_group(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+
+        if (mix < 1.0) {
             cairo_push_group(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+            render_original(cr);
+            cairo_pop_group_to_source(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+            cairo_paint_with_alpha(cr, 1.0 - mix);
+        }
+
+        cairo_push_group(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+        const double sample_alpha = 1.0 / (double)sample_times.size();
+        for (double sample_time : sample_times) {
+            cairo_push_group(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
             render_sample(cr, sample_time);
             cairo_pop_group_to_source(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
             cairo_paint_with_alpha(cr, sample_alpha);
-            ++used_samples;
         }
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, mix);
+
+        cairo_pop_group_to_source(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        cairo_paint(cr);
+        cairo_restore(cr);
 
         return true;
     };
@@ -4055,38 +4119,27 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
             });
     }
 
-    if (amount <= 0.0 || shutter_angle <= 0.0)
-        return render_cached_effect_layer(cr, data, title, base_layer, title_time, canvas_w, canvas_h);
-
-    if (gpu_effects_requested_for_source(data))
-        base_layer = layer_without_stackable_pixel_effects(base_layer);
-
-    const auto *cached = ensure_cached_effect_layer(
-        data, title, base_layer, title_time, canvas_w, canvas_h, "::motion-base", false,
-        gpu_effects_requested_for_source(data));
-    if (!cached)
-        return false;
-    if (cached->image.isNull())
+    if (amount <= 0.0 || shutter_angle <= 0.0) {
+        render_layer_unmasked_with_stackable_effects(cr, nullptr, title, base_layer,
+                                                     title_time, canvas_w, canvas_h);
         return true;
+    }
 
-    auto cached_surface = make_image_surface_for_const_qimage(cached->image);
-    if (!cached_surface)
-        return false;
-
+    /* Keep the OBS source path pixel-identical to the editor/prerender path.
+     * Reusing one cached raster for every shutter sample only samples the
+     * transform; it freezes animated size, opacity, effects, SVG raster size,
+     * image alpha and other time-dependent properties.  Rendering the base
+     * layer at each sample time fixes bitmap, bitmap-with-alpha and SVG motion
+     * blur and removes the editor/OBS mismatch.  Image decoding remains cached
+     * by load_cached_layer_image(), so this does not repeatedly read the file. */
     return paint_fast_motion(
         [&](cairo_t *sample_cr, double sample_time) {
-            cairo_save(sample_cr);
-            apply_layer_world_transform(sample_cr, title, layer, sample_time);
-            cairo_set_source_surface(sample_cr, cached_surface.get(), cached->origin.x(), cached->origin.y());
-            cairo_paint_with_alpha(sample_cr, std::clamp(layer_chain_opacity(title, layer, sample_time), 0.0, 1.0));
-            cairo_restore(sample_cr);
+            render_layer_unmasked_with_stackable_effects(sample_cr, nullptr, title, base_layer,
+                                                         sample_time, canvas_w, canvas_h);
         },
         [&](cairo_t *sample_cr) {
-            cairo_save(sample_cr);
-            apply_layer_world_transform(sample_cr, title, layer, title_time);
-            cairo_set_source_surface(sample_cr, cached_surface.get(), cached->origin.x(), cached->origin.y());
-            cairo_paint_with_alpha(sample_cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
-            cairo_restore(sample_cr);
+            render_layer_unmasked_with_stackable_effects(sample_cr, nullptr, title, base_layer,
+                                                         title_time, canvas_w, canvas_h);
         });
 }
 
@@ -4174,6 +4227,14 @@ static bool render_layer_with_local_blend_surface(cairo_t *cr, TitleSourceData *
                                                   int canvas_w, int canvas_h)
 {
     if (!cr || layer.mask_mode != MaskMode::None || layer.use_as_scene_mask)
+        return false;
+
+    /* Motion blur is temporal and must sample the layer with its real animated
+     * world transform.  The compact local blend surface intentionally
+     * neutralizes transforms, which made motion blur disappear (or differ) for
+     * bitmap/SVG layers using a non-Normal blend mode.  Let the full-canvas
+     * blend fallback handle these layers instead. */
+    if (layer_has_motion_blur(layer))
         return false;
 
     const double t = std::max(0.0, title_time - layer.in_time);
@@ -4349,6 +4410,7 @@ static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Tit
 static void render_title_frame(TitleSourceData *data,
                                 const Title &title, double t)
 {
+    data->last_cached_image_key = 0;
     uint32_t w = clamped_source_dimension(title.width);
     uint32_t h = clamped_source_dimension(title.height);
 
@@ -4412,7 +4474,7 @@ static void render_title_frame(TitleSourceData *data,
         if (!layer) continue;
 
         double layer_time = t;
-        if (background_persistence) {
+        if (background_persistence && !layer->ignore_persistence) {
             const int exposed_index = exposed_text_layer_index(exposed, layer);
             const bool persistent_text = exposed_index >= 0 && title.cue_text_persistence &&
                 exposed_index < (int)title.cue_persistent_text_columns.size() &&
@@ -4501,26 +4563,29 @@ static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image
         data->tex_h = h;
         data->pixel_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
         data->effect_layer_cache.clear();
+        data->last_cached_image_key = 0;
     }
 
-    const QImage frame = image.format() == QImage::Format_ARGB32_Premultiplied
-        ? image
-        : image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    for (int y = 0; y < frame.height(); ++y)
-        memcpy(data->pixel_buf.data() + (size_t)y * (size_t)w * 4,
-               frame.constScanLine(y),
-               (size_t)w * 4);
-    unpremultiply_bgra_for_obs(data->pixel_buf.data(),
-                               static_cast<size_t>(w) * static_cast<size_t>(h));
+    const qint64 image_key = image.cacheKey();
+    if (image_key != 0 && data->last_cached_image_key == image_key) {
+        data->dirty = false;
+        return true;
+    }
+
+    /* CacheManager guarantees straight-alpha ARGB32/BGRA frames. Upload the
+     * resident bytes directly: no per-frame format conversion, memcpy into a
+     * second 8 MB buffer, or scalar unpremultiply pass on the OBS tick thread. */
+    if (image.format() != QImage::Format_ARGB32 || image.bytesPerLine() != (int)w * 4)
+        return false;
     {
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         if (!data->texture)
             return false;
         obs_enter_graphics();
-        const uint8_t *ptr = data->pixel_buf.data();
-        gs_texture_set_image(data->texture, ptr, w * 4, false);
+        gs_texture_set_image(data->texture, image.constBits(), w * 4, false);
         obs_leave_graphics();
     }
+    data->last_cached_image_key = image_key;
     data->dirty = false;
     return true;
 }
@@ -4546,13 +4611,40 @@ QImage render_title_to_image(const Title &title, double t)
     cairo_set_operator(cr.get(), CAIRO_OPERATOR_OVER);
 
     const double clamped_time = std::clamp(t, 0.0, std::max(0.0, title.duration));
+
+    /*
+     * Keep the prerender/cache path pixel-identical to the live OBS source path.
+     * Background Persistence is not just UI/runtime state: it changes the
+     * rendered frame by holding non-exempt layers at the cue hold time while
+     * the cue animation continues. Older cache renders ignored these runtime
+     * flags, so cached/prerendered live-cue frames looked as if Background
+     * Persistence was disabled.
+     */
+    const bool background_persistence = title.cue_background_persistence &&
+        title.cue_persistence_transition && title.current_cue_row >= 0 && !title.live_text_rows.empty();
+    const double persistence_time = cue_persistence_hold_time(title);
+    const auto exposed = background_persistence ? exposed_text_layers(title)
+                                                : std::vector<std::shared_ptr<Layer>>();
+
     for (auto &layer : title.layers) {
-        if (!layer || !layer_chain_visible(title, *layer, clamped_time)) continue;
+        if (!layer) continue;
+
+        double layer_time = clamped_time;
+        if (background_persistence && !layer->ignore_persistence) {
+            const int exposed_index = exposed_text_layer_index(exposed, layer);
+            const bool persistent_text = exposed_index >= 0 && title.cue_text_persistence &&
+                exposed_index < (int)title.cue_persistent_text_columns.size() &&
+                title.cue_persistent_text_columns[exposed_index];
+            if (exposed_index < 0 || persistent_text)
+                layer_time = persistence_time;
+        }
+
+        if (!layer_chain_visible(title, *layer, layer_time)) continue;
         if (!layer_should_render_as_visible_content(title, *layer)) continue;
 
         if (layer->blend_mode == EffectBlendMode::Normal) {
-            render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
-        } else if (render_layer_with_local_blend_surface(cr.get(), nullptr, title, *layer, clamped_time, w, h)) {
+            render_layer_with_mask(cr.get(), nullptr, title, *layer, layer_time, w, h);
+        } else if (render_layer_with_local_blend_surface(cr.get(), nullptr, title, *layer, layer_time, w, h)) {
             continue;
         } else {
             CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h));
@@ -4561,11 +4653,11 @@ QImage render_title_to_image(const Title &title, double t)
                 cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
                 cairo_paint(layer_cr.get());
                 cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
-                render_layer_with_mask(layer_cr.get(), nullptr, title, *layer, clamped_time, w, h);
+                render_layer_with_mask(layer_cr.get(), nullptr, title, *layer, layer_time, w, h);
                 layer_cr.reset();
                 composite_layer_surface_with_mode(cr.get(), layer_surface.get(), layer->blend_mode);
             } else {
-                render_layer_with_mask(cr.get(), nullptr, title, *layer, clamped_time, w, h);
+                render_layer_with_mask(cr.get(), nullptr, title, *layer, layer_time, w, h);
             }
         }
     }
@@ -4657,6 +4749,9 @@ static void source_update(void *priv, obs_data_t *settings)
     data->last_clock_refresh = std::chrono::steady_clock::now();
     data->seen_store_revision = TitleDataStore::instance().revision();
     data->effect_layer_cache.clear();
+    data->cache_hash_revision = std::numeric_limits<uint64_t>::max();
+    data->cached_content_hash.clear();
+    data->cache_hash_last_verify = {};
     data->dirty    = true;
 }
 
@@ -4918,25 +5013,74 @@ static void source_video_tick(void *priv, float seconds)
         return;
     }
 
+    CacheManager &cache = CacheManager::instance();
+    const auto cache_verify_now = std::chrono::steady_clock::now();
+    const bool cache_verify_due = !data->playing && !data->cached_content_hash.isEmpty() && cache.cacheEnabled() &&
+        (data->cache_hash_last_verify.time_since_epoch().count() == 0 ||
+         cache_verify_now - data->cache_hash_last_verify >= std::chrono::seconds(1));
+    if (cache_verify_due) {
+        /* TitleDataStore revisions catch editor/runtime changes immediately.
+         * A low-frequency identity check also catches image assets replaced on
+         * disk without making every OBS tick walk and stat the title graph. */
+        const Title verify_snapshot = snapshot_title_for_render(*title);
+        const QString verified_hash = cache.contentHashForTitle(verify_snapshot);
+        data->cache_hash_last_verify = cache_verify_now;
+        if (verified_hash != data->cached_content_hash) {
+            data->cached_content_hash = verified_hash;
+            data->cache_hash_revision = revision;
+            data->last_cached_image_key = 0;
+            data->effect_layer_cache.clear();
+            data->dirty = true;
+        }
+    }
+
     if (data->dirty) {
-        Title render_snapshot = snapshot_title_for_render(*title);
-        auto render_title = std::make_shared<Title>(render_snapshot);
-        CacheManager &cache = CacheManager::instance();
+        /* Cached playback must remain a lookup + upload path. Avoid cloning the
+         * complete title/layer/keyframe graph for every video tick. A render
+         * snapshot is created only if the exact cached frame is unavailable and
+         * the uncached correctness fallback is actually needed. */
         const bool use_cached_source_frame = cache.cacheEnabled() &&
-            cache.titleCacheability(render_title) != TitleCacheability::NonCacheable;
+            cache.titleCacheability(title) != TitleCacheability::NonCacheable;
         if (use_cached_source_frame) {
-            QImage cached = cache.requestFrame(render_title, data->playhead, true);
-            const double pause_time = std::clamp(render_title->pause_time, 0.0, render_title->duration);
-            if (cached.isNull() && render_title->current_cue_row >= 0 &&
-                std::abs(data->playhead - pause_time) <= (0.5 / std::max(1.0, cache.effectiveFrameRate()))) {
-                cached = cache.requestLiveCueFrame(title, render_title->current_cue_row, true);
+            /* The content identity is stable for all timeline frames until the
+             * title-store revision changes. Do not serialize every layer and
+             * keyframe again on each OBS video tick. */
+            if (data->cached_content_hash.isEmpty() || data->cache_hash_revision != revision) {
+                const Title hash_snapshot = snapshot_title_for_render(*title);
+                data->cached_content_hash = cache.contentHashForTitle(hash_snapshot);
+                data->cache_hash_revision = revision;
+                data->cache_hash_last_verify = cache_verify_now;
             }
+            const QString frame_content_hash = data->cached_content_hash;
+            QImage cached;
+            /*
+             * Live text cues are stateful when Background Persistence or
+             * outro/intro cue playback is active. Use the live-cue range cache
+             * for every frame of the active row, not just for the pause frame;
+             * otherwise OBS falls back to normal title-cache frames during the
+             * transition and starts rendering missing persistence frames only
+             * after the cue is clicked.
+             */
+            const bool requested_live_cue_frame = title->current_cue_row >= 0;
+            if (requested_live_cue_frame)
+                cached = cache.requestLiveCueFrameRealtime(title, title->current_cue_row,
+                                                            data->playhead, frame_content_hash);
+            if (cached.isNull() && !requested_live_cue_frame)
+                cached = cache.requestFrameRealtime(title, data->playhead, frame_content_hash);
             if (!cached.isNull()) {
                 upload_cached_title_frame(data, cached);
             } else {
-                cache.reprioritize(render_title, data->playhead);
+                /* A cache miss must never invoke the heavy Cairo renderer from
+                 * the OBS video tick. Keep the last valid texture while the
+                 * background worker hydrates/renders the exact frame. Mixing
+                 * cached playback with synchronous fallback was able to do both
+                 * an 8 MB texture upload and a full title render in one tick,
+                 * which is precisely the rendering-lag failure this cache is
+                 * intended to prevent. */
+                data->dirty = true;
             }
         } else {
+            const Title render_snapshot = snapshot_title_for_render(*title);
             render_title_frame(data, render_snapshot, data->playhead);
         }
     }

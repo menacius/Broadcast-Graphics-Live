@@ -383,6 +383,47 @@ set(PLUGIN_HEADERS
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Source Files" FILES ${PLUGIN_SOURCES})
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Header Files" FILES ${PLUGIN_HEADERS})
 
+# ── LZ4 frame compression ───────────────────────────────────────────
+# Prefer a package supplied by OBS/vcpkg/the host. When none is installed,
+# build the pinned official LZ4 1.10.0 source directly so compressed disk
+# caching does not silently degrade to raw BGRA on a clean build machine.
+find_package(lz4 CONFIG QUIET)
+set(OBS_GSP_LZ4_TARGET "")
+if(TARGET lz4::lz4)
+  set(OBS_GSP_LZ4_TARGET lz4::lz4)
+elseif(TARGET LZ4::lz4)
+  set(OBS_GSP_LZ4_TARGET LZ4::lz4)
+else()
+  find_path(OBS_GSP_LZ4_INCLUDE_DIR NAMES lz4.h)
+  find_library(OBS_GSP_LZ4_LIBRARY NAMES lz4 liblz4)
+  if(OBS_GSP_LZ4_INCLUDE_DIR AND OBS_GSP_LZ4_LIBRARY)
+    add_library(OBS_GSP_LZ4 UNKNOWN IMPORTED)
+    set_target_properties(OBS_GSP_LZ4 PROPERTIES
+      IMPORTED_LOCATION "${OBS_GSP_LZ4_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${OBS_GSP_LZ4_INCLUDE_DIR}")
+    set(OBS_GSP_LZ4_TARGET OBS_GSP_LZ4)
+  else()
+    FetchContent_Declare(
+      obs_gsp_lz4_source
+      GIT_REPOSITORY https://github.com/lz4/lz4.git
+      GIT_TAG ebb370ca83af193212df4dcbadcc5d87bc0de2f0
+      GIT_PROGRESS FALSE
+    )
+    FetchContent_GetProperties(obs_gsp_lz4_source)
+    if(NOT obs_gsp_lz4_source_POPULATED)
+      FetchContent_Populate(obs_gsp_lz4_source)
+    endif()
+
+    add_library(obs_gsp_lz4 STATIC
+      "${obs_gsp_lz4_source_SOURCE_DIR}/lib/lz4.c")
+    target_include_directories(obs_gsp_lz4 PUBLIC
+      "${obs_gsp_lz4_source_SOURCE_DIR}/lib")
+    set_target_properties(obs_gsp_lz4 PROPERTIES
+      POSITION_INDEPENDENT_CODE ON)
+    set(OBS_GSP_LZ4_TARGET obs_gsp_lz4)
+  endif()
+endif()
+
 # ── Target ──────────────────────────────────────────────────────────
 add_library(obs-graphics-studio-pro MODULE
     ${PLUGIN_SOURCES}
@@ -414,6 +455,7 @@ target_link_libraries(obs-graphics-studio-pro PRIVATE
     ${PANGO_LIBRARIES}
     ${PANGOCAIRO_LIBRARIES}
     nlohmann_json::nlohmann_json
+    ${OBS_GSP_LZ4_TARGET}
 )
 
 if(CAIRO_CFLAGS_OTHER)
@@ -431,6 +473,9 @@ target_compile_definitions(obs-graphics-studio-pro PRIVATE
     PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
     PLUGIN_VERSION="${PROJECT_VERSION}"
 )
+if(OBS_GSP_LZ4_TARGET)
+    target_compile_definitions(obs-graphics-studio-pro PRIVATE OBS_GSP_HAVE_LZ4=1)
+endif()
 
 # ── OBS module helper (sets correct output name & install path) ──────
 # This macro is provided by the OBS cmake helpers:

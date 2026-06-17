@@ -11,16 +11,23 @@
 #include <QBuffer>
 #include <QDataStream>
 #include <QMutexLocker>
-#include <QCoreApplication>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QThread>
+#include <QPainter>
+#include <QVector>
+#include <QSet>
+
+#ifdef OBS_GSP_HAVE_LZ4
+#include <lz4.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <chrono>
+#include <thread>
 
 namespace {
 double cache_obs_frame_rate()
@@ -37,16 +44,32 @@ int cache_last_frame_for_title(const Title &title, double fps)
 }
 
 constexpr quint32 kRawFrameMagic = 0x4f475346; // OGSF
-constexpr quint16 kRawFrameVersion = 2;
-constexpr quint16 kRawFrameLegacyVersion = 1;
+constexpr quint16 kRawFrameVersion = 3;
 constexpr quint16 kFrameCodecRaw = 0;
 constexpr quint16 kFrameCodecLz4 = 1;
-constexpr QImage::Format kDiskFrameFormat = QImage::Format_ARGB32_Premultiplied;
+/* Cache payloads are straight-alpha BGRA, exactly as OBS expects for GS_BGRA.
+ * Premultiplied Cairo frames are converted once on the worker, never during
+ * realtime playback. */
+constexpr QImage::Format kDiskFrameFormat = QImage::Format_ARGB32;
 constexpr int kCacheTileSize = 256;
 
 static quint64 cache_image_bytes(const QImage &image)
 {
     return image.isNull() ? 0 : (quint64)image.bytesPerLine() * (quint64)image.height();
+}
+
+static std::shared_ptr<Title> immutable_title_snapshot(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return nullptr;
+    auto snapshot = std::make_shared<Title>(*title);
+    snapshot->layers.clear();
+    snapshot->layers.reserve(title->layers.size());
+    for (const auto &layer : title->layers) {
+        if (layer)
+            snapshot->layers.push_back(std::make_shared<Layer>(*layer));
+    }
+    return snapshot;
 }
 }
 
@@ -146,6 +169,18 @@ qsizetype RamFrameCache::count() const
     return frames_.size();
 }
 
+QVector<CacheFrameKey> RamFrameCache::keysForTitle(const QString &title_id) const
+{
+    QMutexLocker lock(&mutex_);
+    QVector<CacheFrameKey> keys;
+    keys.reserve(frames_.size());
+    for (auto it = frames_.constBegin(); it != frames_.constEnd(); ++it) {
+        if (it.key().title_id == title_id)
+            keys.push_back(it.key());
+    }
+    return keys;
+}
+
 quint64 RamFrameCache::imageBytes(const QImage &image) const
 {
     return cache_image_bytes(image);
@@ -168,6 +203,7 @@ DiskFrameCache::DiskFrameCache(QObject *parent) : QObject(parent)
 {
     cache_dir_ = TitlePreferences::cache_disk_location();
     QDir().mkpath(cache_dir_);
+    rebuildIndex();
     bytes_used_ = scanBytesUsed();
 }
 
@@ -179,11 +215,17 @@ QString DiskFrameCache::pathForKey(const CacheFrameKey &key) const
 
 bool DiskFrameCache::contains(const CacheFrameKey &key) const
 {
-    return QFileInfo::exists(pathForKey(key));
+    QMutexLocker lock(&mutex_);
+    /* Manifest-backed membership is kept in memory. This method is called by
+     * timeline/live-cue progress code and must not turn every frame query into
+     * a filesystem metadata lookup. The worker validates the actual file when
+     * it hydrates the payload. */
+    return indexed_keys_.contains(key.toString());
 }
 
 bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
 {
+    QMutexLocker lock(&mutex_);
     const QString path = pathForKey(key);
     if (!QFileInfo::exists(path))
         return false;
@@ -205,47 +247,59 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
     quint32 height = 0;
     quint32 row_bytes = 0;
     stream >> magic >> version >> format >> width >> height >> row_bytes;
+    const quint64 expected_row_bytes = static_cast<quint64>(width) * 4ull;
     if (stream.status() != QDataStream::Ok ||
         magic != kRawFrameMagic ||
-        (version != kRawFrameVersion && version != kRawFrameLegacyVersion) ||
+        version != kRawFrameVersion ||
         format != (quint16)kDiskFrameFormat ||
         width == 0 || height == 0 ||
         width != (quint32)key.width ||
         height != (quint32)key.height ||
-        row_bytes != width * 4)
+        expected_row_bytes > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
+        row_bytes != static_cast<quint32>(expected_row_bytes))
         return false;
 
-    quint32 raw_size = row_bytes * height;
+    const quint64 expected_raw_size = static_cast<quint64>(row_bytes) * static_cast<quint64>(height);
+    if (expected_raw_size == 0 || expected_raw_size > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
+        expected_raw_size > static_cast<quint64>(std::numeric_limits<int>::max()))
+        return false;
+    quint32 raw_size = static_cast<quint32>(expected_raw_size);
     quint32 payload_size = raw_size;
-    if (version == kRawFrameVersion) {
-        stream >> codec >> reserved >> raw_size >> payload_size;
-        if (stream.status() != QDataStream::Ok || raw_size != row_bytes * height ||
-            (codec != kFrameCodecRaw && codec != kFrameCodecLz4))
-            return false;
-        if (codec == kFrameCodecLz4)
-            return false;
-    }
+    stream >> codec >> reserved >> raw_size >> payload_size;
+    if (stream.status() != QDataStream::Ok || raw_size != expected_raw_size ||
+        (codec != kFrameCodecRaw && codec != kFrameCodecLz4))
+        return false;
 
     QImage loaded((int)width, (int)height, kDiskFrameFormat);
     if (loaded.isNull())
         return false;
 
-    if (version == kRawFrameLegacyVersion) {
-        for (quint32 y = 0; y < height; ++y) {
-            const qint64 read = file.read(reinterpret_cast<char *>(loaded.scanLine((int)y)), row_bytes);
-            if (read != (qint64)row_bytes)
-                return false;
-        }
+    if (payload_size > static_cast<quint32>(std::numeric_limits<int>::max()) ||
+        raw_size > static_cast<quint32>(std::numeric_limits<int>::max()))
+        return false;
+    const QByteArray payload = file.read(payload_size);
+    if (payload.size() != static_cast<int>(payload_size))
+        return false;
+    QByteArray raw;
+    if (codec == kFrameCodecRaw) {
+        raw = payload;
     } else {
-        const QByteArray payload = file.read(payload_size);
-        if (payload.size() != (int)payload_size)
+#ifdef OBS_GSP_HAVE_LZ4
+        raw.resize(static_cast<int>(raw_size));
+        const int decoded = LZ4_decompress_safe(payload.constData(), raw.data(),
+                                                static_cast<int>(payload.size()),
+                                                static_cast<int>(raw.size()));
+        if (decoded != static_cast<int>(raw.size()))
             return false;
-        const QByteArray raw = payload;
-        if (raw.size() != (int)raw_size)
-            return false;
-        for (quint32 y = 0; y < height; ++y)
-            memcpy(loaded.scanLine((int)y), raw.constData() + (int)y * (int)row_bytes, row_bytes);
+#else
+        return false;
+#endif
     }
+    if (raw.size() != static_cast<int>(raw_size))
+        return false;
+    for (quint32 y = 0; y < height; ++y)
+        memcpy(loaded.scanLine(static_cast<int>(y)),
+               raw.constData() + static_cast<int>(y * row_bytes), row_bytes);
 
     image = loaded;
     return true;
@@ -254,7 +308,10 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
 void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
 {
     if (image.isNull()) return;
+    QMutexLocker lock(&mutex_);
     QDir().mkpath(cache_dir_);
+    const QString indexed_key = key.toString();
+    const bool already_indexed = indexed_keys_.contains(indexed_key);
     const QString path = pathForKey(key);
     const QString temp_path = path + QStringLiteral(".tmp");
     QFile::remove(temp_path);
@@ -273,13 +330,36 @@ void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
         QFile::remove(temp_path);
         return;
     }
-    const quint32 row_bytes = (quint32)frame.width() * 4;
+    const quint64 row_bytes_64 = static_cast<quint64>(frame.width()) * 4ull;
+    const quint64 raw_size_64 = row_bytes_64 * static_cast<quint64>(frame.height());
+    if (row_bytes_64 > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
+        raw_size_64 > static_cast<quint64>(std::numeric_limits<int>::max())) {
+        file.close();
+        QFile::remove(temp_path);
+        return;
+    }
+    const quint32 row_bytes = static_cast<quint32>(row_bytes_64);
     QByteArray raw;
-    raw.resize((int)row_bytes * frame.height());
+    raw.resize(static_cast<int>(raw_size_64));
     for (int y = 0; y < frame.height(); ++y)
         memcpy(raw.data() + y * (int)row_bytes, frame.constScanLine(y), row_bytes);
-    const QByteArray payload = raw;
-    const quint16 codec = kFrameCodecRaw;
+    QByteArray payload = raw;
+    quint16 codec = kFrameCodecRaw;
+#ifdef OBS_GSP_HAVE_LZ4
+    if (raw.size() > 0 && raw.size() <= LZ4_MAX_INPUT_SIZE) {
+        QByteArray compressed;
+        const int raw_size = static_cast<int>(raw.size());
+        compressed.resize(LZ4_compressBound(raw_size));
+        const int compressed_size = LZ4_compress_default(raw.constData(), compressed.data(),
+                                                         raw_size,
+                                                         static_cast<int>(compressed.size()));
+        if (compressed_size > 0 && compressed_size < raw.size()) {
+            compressed.resize(compressed_size);
+            payload = compressed;
+            codec = kFrameCodecLz4;
+        }
+    }
+#endif
 
     QDataStream stream(&file);
     stream.setVersion(QDataStream::Qt_5_15);
@@ -312,7 +392,9 @@ void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
     if (QFile::rename(temp_path, path)) {
         const quint64 new_size = (quint64)QFileInfo(path).size();
         bytes_used_ = bytes_used_ - std::min(bytes_used_, previous_size) + new_size;
-        appendManifestEntry(key);
+        indexed_keys_[indexed_key] = key;
+        if (!already_indexed)
+            appendManifestEntry(key);
     } else {
         QFile::remove(temp_path);
     }
@@ -320,11 +402,74 @@ void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
 
 QVector<CacheFrameKey> DiskFrameCache::keysForTitle(const QString &title_id) const
 {
+    QMutexLocker lock(&mutex_);
     QVector<CacheFrameKey> keys;
+    keys.reserve(indexed_keys_.size());
+    for (auto it = indexed_keys_.cbegin(); it != indexed_keys_.cend(); ++it) {
+        if (it.value().title_id == title_id)
+            keys.push_back(it.value());
+    }
+    return keys;
+}
+
+void DiskFrameCache::remove(const CacheFrameKey &key)
+{
+    QMutexLocker lock(&mutex_);
+    const QString path = pathForKey(key);
+    const quint64 previous_size = QFileInfo(path).exists() ? (quint64)QFileInfo(path).size() : 0;
+    if (QFile::remove(path))
+        bytes_used_ -= std::min(bytes_used_, previous_size);
+    indexed_keys_.remove(key.toString());
+}
+
+void DiskFrameCache::clear()
+{
+    QMutexLocker lock(&mutex_);
+    QDir dir(cache_dir_);
+    if (!dir.exists()) {
+        indexed_keys_.clear();
+        bytes_used_ = 0;
+        return;
+    }
+    for (const QFileInfo &file : dir.entryInfoList(QStringList() << QStringLiteral("*.ogsf") << QStringLiteral("*.tmp"), QDir::Files))
+        QFile::remove(file.absoluteFilePath());
+    QFile::remove(manifestPath());
+    indexed_keys_.clear();
+    bytes_used_ = 0;
+}
+
+void DiskFrameCache::setCacheDirectory(const QString &path)
+{
+    QMutexLocker lock(&mutex_);
+    const QString clean = QDir::cleanPath(path);
+    if (clean.isEmpty() || clean == cache_dir_)
+        return;
+    cache_dir_ = clean;
+    QDir().mkpath(cache_dir_);
+    rebuildIndex();
+    bytes_used_ = scanBytesUsed();
+}
+
+QString DiskFrameCache::cacheDirectory() const
+{
+    QMutexLocker lock(&mutex_);
+    return cache_dir_;
+}
+
+quint64 DiskFrameCache::bytesUsed() const
+{
+    QMutexLocker lock(&mutex_);
+    return bytes_used_;
+}
+
+
+void DiskFrameCache::rebuildIndex()
+{
+    indexed_keys_.clear();
     QFile manifest(manifestPath());
     if (!manifest.open(QIODevice::ReadOnly))
-        return keys;
-    QSet<QString> seen;
+        return;
+
     while (!manifest.atEnd()) {
         const QJsonDocument doc = QJsonDocument::fromJson(manifest.readLine().trimmed());
         if (!doc.isObject())
@@ -332,56 +477,16 @@ QVector<CacheFrameKey> DiskFrameCache::keysForTitle(const QString &title_id) con
         const QJsonObject obj = doc.object();
         CacheFrameKey key;
         key.title_id = obj.value(QStringLiteral("title_id")).toString();
-        if (key.title_id != title_id)
-            continue;
         key.content_hash = obj.value(QStringLiteral("content_hash")).toString();
         key.frame = obj.value(QStringLiteral("frame")).toInt();
         key.width = obj.value(QStringLiteral("width")).toInt();
         key.height = obj.value(QStringLiteral("height")).toInt();
-        if (key.content_hash.isEmpty() || key.width <= 0 || key.height <= 0)
+        if (key.title_id.isEmpty() || key.content_hash.isEmpty() ||
+            key.frame < 0 || key.width <= 0 || key.height <= 0)
             continue;
-        if (!QFileInfo::exists(pathForKey(key)))
-            continue;
-        const QString id = key.toString();
-        if (seen.contains(id))
-            continue;
-        seen.insert(id);
-        keys.push_back(key);
+        if (QFileInfo::exists(pathForKey(key)))
+            indexed_keys_[key.toString()] = key;
     }
-    return keys;
-}
-
-void DiskFrameCache::remove(const CacheFrameKey &key)
-{
-    const QString path = pathForKey(key);
-    const quint64 previous_size = QFileInfo(path).exists() ? (quint64)QFileInfo(path).size() : 0;
-    if (QFile::remove(path))
-        bytes_used_ -= std::min(bytes_used_, previous_size);
-}
-
-void DiskFrameCache::clear()
-{
-    QDir dir(cache_dir_);
-    if (!dir.exists()) return;
-    for (const QFileInfo &file : dir.entryInfoList(QStringList() << QStringLiteral("*.ogsf") << QStringLiteral("*.tmp"), QDir::Files))
-        QFile::remove(file.absoluteFilePath());
-    QFile::remove(manifestPath());
-    bytes_used_ = 0;
-}
-
-void DiskFrameCache::setCacheDirectory(const QString &path)
-{
-    const QString clean = QDir::cleanPath(path);
-    if (clean.isEmpty() || clean == cache_dir_)
-        return;
-    cache_dir_ = clean;
-    QDir().mkpath(cache_dir_);
-    bytes_used_ = scanBytesUsed();
-}
-
-quint64 DiskFrameCache::bytesUsed() const
-{
-    return bytes_used_;
 }
 
 quint64 DiskFrameCache::scanBytesUsed() const
@@ -426,16 +531,31 @@ FrameCacheState CacheStateTracker::state(const CacheFrameKey &key) const
 
 FrameCacheState CacheStateTracker::stateForFrame(const QString &title_id, int frame) const
 {
+    auto rank = [](FrameCacheState state) {
+        switch (state) {
+        case FrameCacheState::Rendering: return 6;
+        case FrameCacheState::Queued: return 5;
+        case FrameCacheState::CachedRam: return 4;
+        case FrameCacheState::CachedDisk: return 3;
+        case FrameCacheState::Stale: return 2;
+        case FrameCacheState::Disabled: return 1;
+        case FrameCacheState::NotCached: return 0;
+        }
+        return 0;
+    };
+
     QMutexLocker lock(&mutex_);
     FrameCacheState best = FrameCacheState::NotCached;
+    int best_rank = 0;
     for (auto it = states_.cbegin(); it != states_.cend(); ++it) {
-        if (it.key().title_id == title_id && it.key().frame == frame) {
-            const FrameCacheState state = it.value();
-            if (state == FrameCacheState::Rendering) return state;
-            if (state == FrameCacheState::Queued) best = state;
-            else if (state == FrameCacheState::CachedRam) best = state;
-            else if (best != FrameCacheState::CachedRam && state == FrameCacheState::CachedDisk) best = state;
-            else if (best == FrameCacheState::NotCached && state == FrameCacheState::Stale) best = state;
+        if (it.key().title_id != title_id || it.key().frame != frame)
+            continue;
+        const int candidate_rank = rank(it.value());
+        if (candidate_rank > best_rank) {
+            best = it.value();
+            best_rank = candidate_rank;
+            if (best == FrameCacheState::Rendering)
+                break;
         }
     }
     return best;
@@ -486,6 +606,32 @@ void CacheStateTracker::clearTitle(const QString &title_id)
         emit stateChanged(title_id, first, last);
 }
 
+void CacheStateTracker::resetTransient(const QString &title_id)
+{
+    QHash<QString, QPair<int, int>> changed_ranges;
+    {
+        QMutexLocker lock(&mutex_);
+        for (auto it = states_.begin(); it != states_.end(); ++it) {
+            if (!title_id.isEmpty() && it.key().title_id != title_id)
+                continue;
+            if (it.value() != FrameCacheState::Queued && it.value() != FrameCacheState::Rendering)
+                continue;
+
+            const QString changed_title = it.key().title_id;
+            auto range_it = changed_ranges.find(changed_title);
+            if (range_it == changed_ranges.end()) {
+                changed_ranges.insert(changed_title, qMakePair(it.key().frame, it.key().frame));
+            } else {
+                range_it.value().first = std::min(range_it.value().first, it.key().frame);
+                range_it.value().second = std::max(range_it.value().second, it.key().frame);
+            }
+            it.value() = FrameCacheState::NotCached;
+        }
+    }
+    for (auto it = changed_ranges.cbegin(); it != changed_ranges.cend(); ++it)
+        emit stateChanged(it.key(), it.value().first, it.value().second);
+}
+
 void CacheStateTracker::clear()
 {
     {
@@ -512,21 +658,68 @@ bool RenderQueueManager::enqueue(const Job &job)
 {
     if (!job.title) return false;
     const QString key = job.key.toString();
+    bool changed = false;
     {
         QMutexLocker lock(&mutex_);
         if (!accepting_jobs_)
             return false;
-        if (queued_keys_.contains(key))
+        const QString token = QStringLiteral("%1:%2")
+            .arg(job.cache_epoch)
+            .arg(job.title_generation);
+        if (active_tokens_.value(key) == token)
             return false;
-        jobs_.push_back(job);
-        queued_keys_.insert(key);
-        std::sort(jobs_.begin(), jobs_.end(), [](const Job &a, const Job &b) {
-            if (a.priority != b.priority) return a.priority < b.priority;
-            return a.key.frame < b.key.frame;
-        });
+        for (Job &queued : jobs_) {
+            if (queued.key.toString() != key)
+                continue;
+            /* A realtime/live-cue request must be allowed to promote an existing
+             * background prerender job for the same content-addressed frame. */
+            if (job.live_cue && !queued.live_cue) {
+                queued.live_cue = true;
+                queued.force_render = queued.force_render || job.force_render;
+                queued.cue_row = job.cue_row;
+                queued.cue_state_key = job.cue_state_key;
+                queued.title = job.title;
+                queued.time = job.time;
+                queued.cache_epoch = job.cache_epoch;
+                queued.title_generation = job.title_generation;
+                changed = true;
+            }
+            if (job.realtime && !queued.realtime) {
+                queued.realtime = true;
+                queued.title = job.title;
+                queued.time = job.time;
+                queued.cache_epoch = job.cache_epoch;
+                queued.title_generation = job.title_generation;
+                changed = true;
+            }
+            if (job.force_render && !queued.force_render) {
+                queued.force_render = true;
+                changed = true;
+            }
+            if (job.priority < queued.priority) {
+                queued.priority = job.priority;
+                changed = true;
+            }
+            if (changed)
+                std::sort(jobs_.begin(), jobs_.end(), [](const Job &a, const Job &b) {
+                    if (a.priority != b.priority) return a.priority < b.priority;
+                    return a.key.frame < b.key.frame;
+                });
+            break;
+        }
+        if (!queued_keys_.contains(key)) {
+            jobs_.push_back(job);
+            queued_keys_.insert(key);
+            std::sort(jobs_.begin(), jobs_.end(), [](const Job &a, const Job &b) {
+                if (a.priority != b.priority) return a.priority < b.priority;
+                return a.key.frame < b.key.frame;
+            });
+            changed = true;
+        }
     }
-    emit queueChanged();
-    return true;
+    if (changed)
+        emit queueChanged();
+    return changed;
 }
 
 void RenderQueueManager::setAcceptingJobs(bool accepting)
@@ -622,22 +815,30 @@ bool RenderQueueManager::takeNext(Job &job)
         if (jobs_.empty())
             return false;
         job = jobs_.takeFirst();
-        queued_keys_.remove(job.key.toString());
+        const QString key = job.key.toString();
+        queued_keys_.remove(key);
+        active_tokens_[key] = QStringLiteral("%1:%2")
+            .arg(job.cache_epoch)
+            .arg(job.title_generation);
     }
     emit queueChanged();
     return true;
 }
 
-bool RenderQueueManager::takeNextLiveCue(Job &job)
+bool RenderQueueManager::takeNextUrgent(Job &job)
 {
     bool found = false;
     {
         QMutexLocker lock(&mutex_);
         for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
-            if (!it->live_cue)
+            if (!it->live_cue && !it->realtime)
                 continue;
             job = *it;
-            queued_keys_.remove(it->key.toString());
+            const QString key = it->key.toString();
+            queued_keys_.remove(key);
+            active_tokens_[key] = QStringLiteral("%1:%2")
+                .arg(job.cache_epoch)
+                .arg(job.title_generation);
             jobs_.erase(it);
             found = true;
             break;
@@ -658,6 +859,30 @@ int RenderQueueManager::queuedCount() const
 {
     QMutexLocker lock(&mutex_);
     return jobs_.size();
+}
+
+bool RenderQueueManager::hasAvailableJob(bool live_cue_only) const
+{
+    QMutexLocker lock(&mutex_);
+    if (!live_cue_only)
+        return !jobs_.isEmpty();
+    return std::any_of(jobs_.cbegin(), jobs_.cend(), [](const Job &job) {
+        return job.live_cue || job.realtime;
+    });
+}
+
+void RenderQueueManager::complete(const Job &job)
+{
+    {
+        QMutexLocker lock(&mutex_);
+        const QString key = job.key.toString();
+        const QString token = QStringLiteral("%1:%2")
+            .arg(job.cache_epoch)
+            .arg(job.title_generation);
+        if (active_tokens_.value(key) == token)
+            active_tokens_.remove(key);
+    }
+    emit queueChanged();
 }
 
 void RenderQueueManager::clear()
@@ -719,43 +944,123 @@ CacheManager::CacheManager(QObject *parent)
       queue_(this),
       invalidation_(this)
 {
-    cache_enabled_ = TitlePreferences::cache_enabled();
-    queue_.setAcceptingJobs(cache_enabled_);
-    worker_timer_.setInterval(1);
-    connect(&worker_timer_, &QTimer::timeout, this, &CacheManager::processNextJob);
-    connect(&queue_, &RenderQueueManager::queueChanged, this, &CacheManager::queueChanged);
+    cache_enabled_.store(TitlePreferences::cache_enabled());
+    paused_.store(!cache_enabled_.load());
+    queue_.setAcceptingJobs(cache_enabled_.load());
+    connect(&queue_, &RenderQueueManager::queueChanged, this, [this]() {
+        emit queueChanged();
+        wakeWorker();
+    });
     connect(&state_tracker_, &CacheStateTracker::stateChanged, this, &CacheManager::cacheStatesChanged);
     connect(&invalidation_, &CacheInvalidationManager::rangeInvalidated, this,
             [this](const QString &title_id, int first, int last) {
-                queue_.cancelRange(title_id, first, last);
+                /* An in-flight job is no longer valid after an edit. A per-title
+                 * generation closes the dequeue/cancel race without touching UI
+                 * objects or the renderer from the caller thread. */
+                {
+                    std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+                    bumpTitleGeneration(title_id);
+                    queue_.cancelTitle(title_id);
+                }
+                /* cancelTitle() removes all queued work for the generation, not
+                 * just the edited frame range. Relinquish every transient owner
+                 * before marking the actually edited range stale, otherwise an
+                 * unaffected cancelled frame (or cue row) can remain Queued
+                 * forever with no worker responsible for it. */
+                resetCancelledWorkState(title_id);
                 state_tracker_.markRange(title_id, first, last, FrameCacheState::Stale);
+                wakeWorker();
             });
     ram_cache_.setMaxBytes((quint64)TitlePreferences::cache_ram_limit_mb() * 1024ull * 1024ull);
-    QThread *app_thread = QCoreApplication::instance() ? QCoreApplication::instance()->thread() : nullptr;
-    if (app_thread && thread() != app_thread) {
-        worker_timer_.moveToThread(app_thread);
-        moveToThread(app_thread);
-    }
-    ensureWorkerTimerActive();
-    OGS_LOG_INFO("Cache", QStringLiteral("CacheManager initialized enabled=%1 ramLimitMb=%2 disk=%3")
-                              .arg(cache_enabled_)
+    worker_thread_ = std::thread(&CacheManager::workerLoop, this);
+    wakeWorker();
+    OGS_LOG_INFO("Cache", QStringLiteral("CacheManager initialized enabled=%1 ramLimitMb=%2 disk=%3 worker=background")
+                              .arg(cache_enabled_.load())
                               .arg(TitlePreferences::cache_ram_limit_mb())
                               .arg(disk_cache_.cacheDirectory()));
 }
 
-void CacheManager::ensureWorkerTimerActive()
+CacheManager::~CacheManager()
 {
-    if (QThread::currentThread() == worker_timer_.thread()) {
-        if (!worker_timer_.isActive())
-            worker_timer_.start();
-    } else {
-        QMetaObject::invokeMethod(&worker_timer_, "start", Qt::QueuedConnection);
+    worker_stop_.store(true);
+    worker_cv_.notify_all();
+    if (worker_thread_.joinable())
+        worker_thread_.join();
+}
+
+void CacheManager::wakeWorker()
+{
+    worker_cv_.notify_one();
+}
+
+quint64 CacheManager::titleGeneration(const QString &title_id) const
+{
+    std::lock_guard<std::mutex> lock(generation_mutex_);
+    return title_generations_.value(title_id, 0);
+}
+
+void CacheManager::bumpTitleGeneration(const QString &title_id)
+{
+    if (title_id.isEmpty())
+        return;
+    std::lock_guard<std::mutex> lock(generation_mutex_);
+    title_generations_[title_id] = title_generations_.value(title_id, 0) + 1;
+}
+
+bool CacheManager::jobIsCurrent(const RenderQueueManager::Job &job) const
+{
+    return cache_enabled_.load() &&
+           job.cache_epoch == cache_epoch_.load() &&
+           job.title_generation == titleGeneration(job.key.title_id);
+}
+
+std::shared_ptr<Title> CacheManager::snapshotForJob(const std::shared_ptr<Title> &title,
+                                                    const CacheFrameKey &key)
+{
+    if (!title)
+        return nullptr;
+    const QString snapshot_key = QStringLiteral("%1|%2|%3x%4")
+        .arg(key.title_id, key.content_hash)
+        .arg(key.width)
+        .arg(key.height);
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        auto it = job_snapshots_.find(snapshot_key);
+        if (it != job_snapshots_.end()) {
+            if (auto existing = it.value().lock())
+                return existing;
+            job_snapshots_.erase(it);
+        }
     }
+
+    auto snapshot = immutable_title_snapshot(title);
+    if (!snapshot)
+        return nullptr;
+    {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        /* Keep the lookup bounded across long editing sessions. Entries are
+         * weak: queued/in-flight jobs own snapshots, not this index. */
+        if (job_snapshots_.size() > 128) {
+            for (auto it = job_snapshots_.begin(); it != job_snapshots_.end();) {
+                if (it.value().expired())
+                    it = job_snapshots_.erase(it);
+                else
+                    ++it;
+            }
+        }
+        job_snapshots_[snapshot_key] = snapshot;
+    }
+    return snapshot;
 }
 
 double CacheManager::effectiveFrameRate() const
 {
     return cache_obs_frame_rate();
+}
+
+QString CacheManager::contentHashForTitle(const Title &title) const
+{
+    return contentHash(title);
 }
 
 int CacheManager::frameForTime(double t) const
@@ -774,6 +1079,8 @@ QString CacheManager::contentHash(const Title &title) const
     auto add = [&](const auto &value) {
         QByteArray bytes;
         QDataStream stream(&bytes, QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_5_15);
+        stream.setByteOrder(QDataStream::LittleEndian);
         stream << value;
         hash.addData(bytes);
     };
@@ -798,10 +1105,53 @@ QString CacheManager::contentHash(const Title &title) const
         add(f.indent_first_line); add(f.line_spacing); add(f.space_before);
         add(f.space_after); add(f.hyphenate);
     };
+    auto add_anim = [&](const AnimatedProperty &p) {
+        add(QString::fromStdString(p.name)); add(p.static_value); add((quint64)p.keyframes.size());
+        for (const auto &k : p.keyframes) {
+            add(k.time); add(k.value); add((int)k.easing); add(k.cx1); add(k.cy1); add(k.cx2); add(k.cy2);
+        }
+    };
+    auto add_anim_vec2 = [&](const AnimatedVec2Property &p) {
+        add(QString::fromStdString(p.name)); add(p.static_value.x); add(p.static_value.y); add((quint64)p.keyframes.size());
+        for (const auto &k : p.keyframes) {
+            add(k.time); add(k.value.x); add(k.value.y); add((int)k.easing); add(k.cx1); add(k.cy1); add(k.cx2); add(k.cy2);
+        }
+    };
+    auto add_gradient_stops = [&](const std::vector<GradientStop> &stops) {
+        add((quint64)stops.size());
+        for (const auto &stop : stops) { add((quint32)stop.color); add(stop.position); add(stop.opacity); }
+    };
+    auto add_effect = [&](const LayerEffect &e) {
+        add((int)e.type); add(e.enabled); add(e.brightness); add(e.contrast); add(e.saturation);
+        add((quint32)e.tint_color); add(e.tint_amount); add((quint32)e.effect_color);
+        add(e.effect_opacity); add(e.effect_size); add(e.effect_distance); add(e.effect_angle);
+        add(e.effect_spread); add(e.effect_falloff); add(e.effect_blur_type); add(e.effect_samples);
+        add(e.effect_centered); add((int)e.blend_mode); add(e.effect_fill_type); add(e.effect_join_style);
+        add(e.effect_on_front); add(e.effect_antialias); add(e.effect_owned_style_loaded);
+        add((quint32)e.effect_stroke_color); add(e.effect_stroke_width); add(e.effect_stroke_opacity);
+        add(e.effect_padding_left); add(e.effect_padding_right); add(e.effect_padding_top); add(e.effect_padding_bottom);
+        add(e.effect_corner_radius_tl); add(e.effect_corner_radius_tr); add(e.effect_corner_radius_br); add(e.effect_corner_radius_bl);
+        add(e.effect_corner_type); add(e.effect_gradient_type); add((quint32)e.effect_gradient_start_color);
+        add((quint32)e.effect_gradient_end_color); add(e.effect_gradient_start_pos); add(e.effect_gradient_end_pos);
+        add(e.effect_gradient_start_opacity); add(e.effect_gradient_end_opacity); add(e.effect_gradient_opacity);
+        add(e.effect_gradient_angle); add(e.effect_gradient_center_x); add(e.effect_gradient_center_y);
+        add(e.effect_gradient_scale); add(e.effect_gradient_focal_x); add(e.effect_gradient_focal_y);
+        add_anim(e.enabled_prop); add_anim(e.opacity_prop); add_anim(e.size_prop); add_anim(e.distance_prop);
+        add_anim(e.angle_prop); add_anim(e.spread_prop); add_anim(e.falloff_prop); add_anim(e.stroke_width_prop);
+        add_anim(e.stroke_opacity_prop); add_anim(e.padding_left_prop); add_anim(e.padding_right_prop);
+        add_anim(e.padding_top_prop); add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
+        add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop); add_anim(e.corner_radius_bl_prop);
+        add_anim(e.color_a); add_anim(e.color_r); add_anim(e.color_g); add_anim(e.color_b);
+        add_anim(e.stroke_color_a); add_anim(e.stroke_color_r); add_anim(e.stroke_color_g); add_anim(e.stroke_color_b);
+    };
     auto add_rich_text = [&](const RichTextDocument &rt) {
         add(rt.version); add(QString::fromStdString(rt.plain_text));
         add_char_format(rt.default_format); add_paragraph_format(rt.default_paragraph_format);
         add(rt.has_typing_format); if (rt.has_typing_format) add_char_format(rt.typing_format);
+        add((quint64)rt.blocks.size());
+        for (const auto &block : rt.blocks) {
+            add((quint64)block.start); add((quint64)block.length); add_paragraph_format(block.format);
+        }
         add((quint64)rt.ranges.size());
         for (const auto &r : rt.ranges) { add((quint64)r.start); add((quint64)r.length); add_char_format(r.format); }
         add(rt.auto_style_enabled); add(QString::fromStdString(rt.auto_default_style_preset_id));
@@ -817,66 +1167,282 @@ QString CacheManager::contentHash(const Title &title) const
             for (const auto &excluded_id : rule.excludes_rule_ids) add(QString::fromStdString(excluded_id));
             add(QString::fromStdString(rule.start_condition)); add(QString::fromStdString(rule.end_condition));
             add((quint64)rule.start_offset); add((quint64)rule.end_offset);
+            add(QString::fromStdString(rule.condition_type));
+            add((quint64)rule.start); add((quint64)rule.length);
             add(QString::fromStdString(rule.start_custom_chars)); add(QString::fromStdString(rule.end_custom_chars));
             add(rule.cached_mask); add_char_format(rule.cached_format);
         }
     };
-    add(QString::fromStdString(title.id));
-    add(QString::fromStdString(title.name));
+    /* Content hash intentionally tracks rendered pixels only. Title id/name are
+     * metadata and must not force a prerender rebuild when the visible output
+     * did not change. The title id is already part of CacheFrameKey. */
     add(title.width);
     add(title.height);
     add(title.duration);
     add(title.loop_start);
     add(title.loop_end);
+    add(title.pause_time);
     add(title.playback_mode);
     add(title.loop_type);
     add(title.cue_end_behavior);
+    add(title.cue_background_persistence);
+    add(title.cue_text_persistence);
+    add(title.cue_persistence_transition);
+
+    /* Cache keys describe rendered pixels, not the editable cue-list model.
+     * titleWithCueApplied()/apply_live_text_row() already copy the active cue
+     * text into the exposed layers before a frame is hashed. Hashing the full
+     * live_text_rows vector (and the numeric row indices) made an unrelated
+     * add/remove/reorder operation change every existing cue key, forcing all
+     * previously rendered rows and transition variants to render again.
+     *
+     * The renderer only needs to know whether a current cue exists and whether
+     * the cue list is non-empty for Background Persistence. The exact row
+     * number and pending row are playback-control state and do not alter pixels.
+     */
+    add(title.current_cue_row >= 0);
+    add(!title.live_text_rows.empty());
+    add((quint64)title.cue_persistent_text_columns.size());
+    for (bool persistent_col : title.cue_persistent_text_columns) add(persistent_col);
     add((quint32)title.bg_color);
     add((quint64)title.layers.size());
     for (const auto &layer : title.layers) {
         if (!layer) continue;
         add(QString::fromStdString(layer->id));
-        add(QString::fromStdString(layer->name));
         add((int)layer->type);
         add(layer->visible);
+        add(QString::fromStdString(layer->parent_id));
+        add(QString::fromStdString(layer->mask_source_id));
+        add((int)layer->mask_mode);
+        add((int)layer->blend_mode);
+        add(layer->use_as_scene_mask);
+        add(layer->effect_stack_respects_masks);
+        add(layer->expose_text);
+        add(layer->ignore_persistence);
         add(layer->in_time);
         add(layer->out_time);
+
+        add_anim_vec2(layer->position);
+        add_anim_vec2(layer->scale);
+        add_anim(layer->rotation);
+        add_anim(layer->opacity);
+        add_anim_vec2(layer->size);
+        add(layer->origin_x); add(layer->origin_y); add_anim_vec2(layer->origin_prop);
+
         add(QString::fromStdString(layer->text_content));
         add(QString::fromStdString(layer->rich_text_html));
         add_rich_text(layer->rich_text);
-        add(QString::fromStdString(layer->image_path));
-        add(layer->position.static_value.x);
-        add(layer->position.static_value.y);
-        add(layer->scale.static_value.x);
-        add(layer->scale.static_value.y);
-        add(layer->rotation.static_value);
-        add(layer->opacity.static_value);
-        add(layer->size.static_value.x);
-        add(layer->size.static_value.y);
-        add((quint32)layer->text_color);
+        add(QString::fromStdString(layer->clock_format));
+        add(layer->ticker_style); add(layer->ticker_speed); add(layer->ticker_line_hold); add(layer->ticker_direction);
         add(QString::fromStdString(layer->font_family)); add(QString::fromStdString(layer->font_style));
-        add(layer->font_size); add(layer->font_bold); add(layer->font_italic);
-        add(layer->text_underline); add(layer->text_strikethrough);
-        add(layer->char_tracking); add(layer->char_scale_x); add(layer->char_scale_y);
-        add(layer->baseline_shift); add(layer->fill_type); add(layer->gradient_type);
+        add(layer->font_size); add_anim(layer->font_size_prop);
+        add(layer->font_bold); add(layer->font_italic); add(layer->font_kerning);
+        add(layer->kerning_mode); add(layer->manual_kerning); add(layer->text_leading);
+        add(layer->char_tracking); add_anim(layer->char_tracking_prop);
+        add(layer->char_scale_x); add_anim(layer->char_scale_x_prop);
+        add(layer->char_scale_y); add_anim(layer->char_scale_y_prop);
+        add(layer->baseline_shift); add_anim(layer->baseline_shift_prop);
+        add(layer->text_style); add(layer->text_underline); add(layer->text_strikethrough);
+        add(layer->text_ligatures); add(layer->text_stylistic_alternates);
+        add(layer->text_fractions); add(layer->text_opentype_features);
+        add(QString::fromStdString(layer->text_language));
+        add(layer->text_overflow_mode); add(layer->text_fit_min_scale);
+        add(layer->text_box_width_to_text); add(layer->text_box_height_to_text);
+        add(layer->max_text_box_width); add(layer->max_text_box_height);
+        add((quint32)layer->text_color);
+        add_anim(layer->text_color_a); add_anim(layer->text_color_r);
+        add_anim(layer->text_color_g); add_anim(layer->text_color_b);
+
+        add(layer->align_h); add(layer->align_v);
+        add(layer->paragraph_indent_left); add_anim(layer->paragraph_indent_left_prop);
+        add(layer->paragraph_indent_right); add_anim(layer->paragraph_indent_right_prop);
+        add(layer->paragraph_indent_first_line); add_anim(layer->paragraph_indent_first_line_prop);
+        add(layer->paragraph_space_before); add_anim(layer->paragraph_space_before_prop);
+        add(layer->paragraph_space_after); add_anim(layer->paragraph_space_after_prop);
+        add(layer->paragraph_hyphenate);
+
+        add(layer->fill_type); add((quint32)layer->fill_color);
+        add_anim(layer->fill_color_a); add_anim(layer->fill_color_r);
+        add_anim(layer->fill_color_g); add_anim(layer->fill_color_b);
+        add(layer->gradient_type);
         add((quint32)layer->gradient_start_color); add((quint32)layer->gradient_end_color);
-        add(layer->gradient_start_pos); add(layer->gradient_end_pos); add(layer->gradient_angle);
-        add((quint32)layer->fill_color);
-        add((quint32)layer->stroke_color);
-        add((int)layer->effects.size());
+        add(layer->gradient_start_pos); add(layer->gradient_end_pos);
+        add(layer->gradient_start_opacity); add(layer->gradient_end_opacity); add(layer->gradient_opacity);
+        add(layer->gradient_angle); add(layer->gradient_center_x); add(layer->gradient_center_y);
+        add(layer->gradient_scale); add(layer->gradient_focal_x); add(layer->gradient_focal_y);
+        add_gradient_stops(layer->gradient_stops);
+
+        add(layer->outline_enabled); add(layer->stroke_fill_type); add((quint32)layer->stroke_color);
+        add(layer->stroke_width); add(layer->outline_opacity); add(layer->outline_join_style);
+        add(layer->outline_on_front); add(layer->outline_antialias);
+        add(layer->stroke_gradient_type);
+        add((quint32)layer->stroke_gradient_start_color); add((quint32)layer->stroke_gradient_end_color);
+        add(layer->stroke_gradient_start_pos); add(layer->stroke_gradient_end_pos);
+        add(layer->stroke_gradient_start_opacity); add(layer->stroke_gradient_end_opacity);
+        add(layer->stroke_gradient_opacity); add(layer->stroke_gradient_angle);
+        add(layer->stroke_gradient_center_x); add(layer->stroke_gradient_center_y);
+        add(layer->stroke_gradient_scale); add(layer->stroke_gradient_focal_x); add(layer->stroke_gradient_focal_y);
+        add_gradient_stops(layer->stroke_gradient_stops);
+
+        add(layer->background_enabled); add_anim(layer->background_enabled_prop);
+        add((quint32)layer->background_color); add(layer->background_opacity);
+        add_anim(layer->background_opacity_prop);
+        add(layer->background_padding_x); add_anim(layer->background_padding_x_prop);
+        add(layer->background_padding_y); add_anim(layer->background_padding_y_prop);
+        add(layer->background_padding_left); add_anim(layer->background_padding_left_prop);
+        add(layer->background_padding_right); add_anim(layer->background_padding_right_prop);
+        add(layer->background_padding_top); add_anim(layer->background_padding_top_prop);
+        add(layer->background_padding_bottom); add_anim(layer->background_padding_bottom_prop);
+        add(layer->background_corner_radius); add_anim(layer->background_corner_radius_prop);
+        add(layer->background_corner_radius_tl); add_anim(layer->background_corner_radius_tl_prop);
+        add(layer->background_corner_radius_tr); add_anim(layer->background_corner_radius_tr_prop);
+        add(layer->background_corner_radius_br); add_anim(layer->background_corner_radius_br_prop);
+        add(layer->background_corner_radius_bl); add_anim(layer->background_corner_radius_bl_prop);
+        add((int)layer->background_corner_type); add(layer->background_fill_type);
+        add((quint32)layer->background_stroke_color); add(layer->background_stroke_width);
+        add(layer->background_stroke_opacity); add(layer->background_stroke_fill_type);
+        add_anim(layer->background_stroke_width_prop); add_anim(layer->background_stroke_opacity_prop);
+        add_anim(layer->background_color_a); add_anim(layer->background_color_r);
+        add_anim(layer->background_color_g); add_anim(layer->background_color_b);
+        add_anim(layer->background_stroke_color_a); add_anim(layer->background_stroke_color_r);
+        add_anim(layer->background_stroke_color_g); add_anim(layer->background_stroke_color_b);
+        add(layer->background_gradient_type);
+        add((quint32)layer->background_gradient_start_color); add((quint32)layer->background_gradient_end_color);
+        add(layer->background_gradient_start_pos); add(layer->background_gradient_end_pos);
+        add(layer->background_gradient_start_opacity); add(layer->background_gradient_end_opacity);
+        add(layer->background_gradient_opacity); add(layer->background_gradient_angle);
+        add(layer->background_gradient_center_x); add(layer->background_gradient_center_y);
+        add(layer->background_gradient_scale); add(layer->background_gradient_focal_x); add(layer->background_gradient_focal_y);
+        add_gradient_stops(layer->background_gradient_stops);
+
+        add((int)layer->shape_type); add(layer->rect_width); add(layer->rect_height);
+        add(layer->shape_points); add(layer->shape_sides);
+        add(layer->shape_inner_radius); add(layer->shape_outer_radius); add(layer->shape_roundness);
+        add(layer->corner_radius); add(layer->corner_radius_tl); add(layer->corner_radius_tr);
+        add(layer->corner_radius_br); add(layer->corner_radius_bl); add((int)layer->corner_type);
+        add(layer->scale_stroke_with_shape); add(layer->scale_corners_with_shape);
+
+        /* Legacy shadow fields are still consumed when older projects have not
+         * yet been migrated into the stackable effects vector. */
+        add(layer->shadow_enabled); add((quint32)layer->shadow_color);
+        add(layer->shadow_opacity); add(layer->shadow_distance); add(layer->shadow_angle);
+        add(layer->shadow_blur); add(layer->shadow_spread); add((int)layer->shadow_blur_type);
+        add(layer->long_shadow_enabled); add((quint32)layer->long_shadow_color);
+        add(layer->long_shadow_opacity); add(layer->long_shadow_length); add(layer->long_shadow_angle);
+        add(layer->long_shadow_falloff); add((int)layer->long_shadow_blur_type); add(layer->long_shadow_blur);
+        add_anim(layer->shadow_enabled_prop); add_anim(layer->shadow_opacity_prop);
+        add_anim(layer->shadow_distance_prop); add_anim(layer->shadow_angle_prop);
+        add_anim(layer->shadow_blur_prop); add_anim(layer->shadow_spread_prop);
+        add_anim(layer->shadow_color_a); add_anim(layer->shadow_color_r);
+        add_anim(layer->shadow_color_g); add_anim(layer->shadow_color_b);
+
+        const QString image_path = QString::fromStdString(layer->image_path);
+        add(image_path); add((int)layer->scale_filter);
+        if (!image_path.isEmpty()) {
+            const QFileInfo image_info(image_path);
+            add(image_info.exists());
+            add(image_info.size());
+            add(image_info.lastModified().toMSecsSinceEpoch());
+        }
+
+        add((quint64)layer->effects.size());
+        for (const auto &effect : layer->effects) add_effect(effect);
     }
     return QString::fromLatin1(hash.result().toHex());
 }
 
 CacheFrameKey CacheManager::keyForFrame(const Title &title, int frame) const
 {
-    const int clamped_frame = std::clamp(frame, 0, cache_last_frame_for_title(title, effectiveFrameRate()));
+    const int clamped_frame = titleHasTimelineChanges(title)
+        ? std::clamp(frame, 0, cache_last_frame_for_title(title, effectiveFrameRate()))
+        : 0;
     return {QString::fromStdString(title.id), contentHash(title), clamped_frame, title.width, title.height};
 }
 
 CacheFrameKey CacheManager::keyForTime(const Title &title, double time) const
 {
-    return keyForFrame(title, frameForTime(std::clamp(time, 0.0, std::max(0.0, title.duration))));
+    return keyForTime(title, time, QString());
+}
+
+CacheFrameKey CacheManager::keyForTime(const Title &title, double time,
+                                        const QString &known_content_hash) const
+{
+    const int requested_frame = frameForTime(std::clamp(time, 0.0, std::max(0.0, title.duration)));
+    const int clamped_frame = titleHasTimelineChanges(title)
+        ? std::clamp(requested_frame, 0, cache_last_frame_for_title(title, effectiveFrameRate()))
+        : 0;
+    return {QString::fromStdString(title.id),
+            known_content_hash.isEmpty() ? contentHash(title) : known_content_hash,
+            clamped_frame, title.width, title.height};
+}
+
+QVector<CacheFrameKey> CacheManager::frameKeysForTitle(const Title &title) const
+{
+    const bool animated = titleHasTimelineChanges(title);
+    const int last_frame = animated ? cache_last_frame_for_title(title, effectiveFrameRate()) : 0;
+    const QString title_id = QString::fromStdString(title.id);
+    const QString content_hash = contentHash(title);
+    QVector<CacheFrameKey> keys;
+    keys.reserve(last_frame + 1);
+    for (int frame = 0; frame <= last_frame; ++frame)
+        keys.push_back({title_id, content_hash, frame, title.width, title.height});
+    return keys;
+}
+
+bool CacheManager::titleHasTimelineChanges(const Title &title) const
+{
+    for (const auto &layer : title.layers) {
+        if (!layer) continue;
+        if (layer->type == LayerType::Clock || layer->type == LayerType::Ticker)
+            return true;
+        auto animated = [](const auto &prop) { return !prop.keyframes.empty(); };
+        if (animated(layer->position) || animated(layer->scale) || animated(layer->rotation) ||
+            animated(layer->opacity) || animated(layer->size) || animated(layer->origin_prop) ||
+            animated(layer->font_size_prop) || animated(layer->char_tracking_prop) ||
+            animated(layer->char_scale_x_prop) || animated(layer->char_scale_y_prop) ||
+            animated(layer->baseline_shift_prop) || animated(layer->paragraph_indent_left_prop) ||
+            animated(layer->paragraph_indent_right_prop) || animated(layer->paragraph_indent_first_line_prop) ||
+            animated(layer->paragraph_space_before_prop) || animated(layer->paragraph_space_after_prop) ||
+            animated(layer->text_color_a) || animated(layer->text_color_r) ||
+            animated(layer->text_color_g) || animated(layer->text_color_b) ||
+            animated(layer->fill_color_a) || animated(layer->fill_color_r) ||
+            animated(layer->fill_color_g) || animated(layer->fill_color_b) ||
+            animated(layer->background_enabled_prop) || animated(layer->background_opacity_prop) ||
+            animated(layer->background_padding_x_prop) || animated(layer->background_padding_y_prop) ||
+            animated(layer->background_padding_left_prop) || animated(layer->background_padding_right_prop) ||
+            animated(layer->background_padding_top_prop) || animated(layer->background_padding_bottom_prop) ||
+            animated(layer->background_corner_radius_prop) || animated(layer->background_corner_radius_tl_prop) ||
+            animated(layer->background_corner_radius_tr_prop) || animated(layer->background_corner_radius_br_prop) ||
+            animated(layer->background_corner_radius_bl_prop) || animated(layer->background_stroke_width_prop) ||
+            animated(layer->background_stroke_opacity_prop) || animated(layer->background_color_a) ||
+            animated(layer->background_color_r) || animated(layer->background_color_g) ||
+            animated(layer->background_color_b) || animated(layer->background_stroke_color_a) ||
+            animated(layer->background_stroke_color_r) || animated(layer->background_stroke_color_g) ||
+            animated(layer->background_stroke_color_b) || animated(layer->shadow_enabled_prop) ||
+            animated(layer->shadow_opacity_prop) || animated(layer->shadow_distance_prop) ||
+            animated(layer->shadow_angle_prop) || animated(layer->shadow_blur_prop) ||
+            animated(layer->shadow_spread_prop) || animated(layer->shadow_color_a) ||
+            animated(layer->shadow_color_r) || animated(layer->shadow_color_g) ||
+            animated(layer->shadow_color_b))
+            return true;
+        for (const auto &effect : layer->effects) {
+            if (animated(effect.enabled_prop) || animated(effect.opacity_prop) || animated(effect.size_prop) ||
+                animated(effect.distance_prop) || animated(effect.angle_prop) || animated(effect.spread_prop) ||
+                animated(effect.falloff_prop) || animated(effect.stroke_width_prop) ||
+                animated(effect.stroke_opacity_prop) || animated(effect.padding_left_prop) ||
+                animated(effect.padding_right_prop) || animated(effect.padding_top_prop) ||
+                animated(effect.padding_bottom_prop) || animated(effect.corner_radius_tl_prop) ||
+                animated(effect.corner_radius_tr_prop) || animated(effect.corner_radius_br_prop) ||
+                animated(effect.corner_radius_bl_prop) || animated(effect.color_a) ||
+                animated(effect.color_r) || animated(effect.color_g) || animated(effect.color_b) ||
+                animated(effect.stroke_color_a) || animated(effect.stroke_color_r) ||
+                animated(effect.stroke_color_g) || animated(effect.stroke_color_b))
+                return true;
+        }
+        if (layer->in_time > 0.0 || layer->out_time < title.duration)
+            return true;
+    }
+    return false;
 }
 
 QImage CacheManager::renderUncachedFrame(const std::shared_ptr<Title> &title, double time) const
@@ -888,41 +1454,83 @@ QImage CacheManager::renderUncachedFrame(const std::shared_ptr<Title> &title, do
 
 QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double time, bool cached_only)
 {
-    if (!title) return QImage();
-    if (interactive_bypass_ || !cache_enabled_ || titleCacheability(title) == TitleCacheability::NonCacheable) {
+    if (!title)
+        return QImage();
+    if (interactive_bypass_.load() || !cache_enabled_.load() ||
+        titleCacheability(title) == TitleCacheability::NonCacheable) {
         return cached_only ? QImage() : renderUncachedFrame(title, time);
     }
-    const CacheFrameKey key = keyForTime(*title, time);
-    const FrameCacheState existing_state = state_tracker_.state(key);
+
+    const QString content_hash = contentHash(*title);
+    const CacheFrameKey key = keyForTime(*title, time, content_hash);
     QImage image;
-    if (existing_state != FrameCacheState::Stale && ram_cache_.get(key, image)) {
+    if (state_tracker_.state(key) != FrameCacheState::Stale && ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
         return image;
     }
-    if (existing_state != FrameCacheState::Stale && disk_cache_.get(key, image)) {
-        ram_cache_.put(key, image);
-        state_tracker_.setState(key, FrameCacheState::CachedDisk);
-        return image;
-    }
 
-    if (cached_only) {
-        queueFrame(title, time, RenderQueueManager::PriorityBand::Visible);
+    /* Preview and editor callers never synchronously hydrate disk frames or
+     * publish cache state from their thread. The worker performs the cache
+     * lookup/render, while the established uncached renderer remains the
+     * immediate correctness path until that exact RAM frame is ready. */
+    queueRealtimeJob(title, time, false, -1, QString(), content_hash);
+    return cached_only ? QImage() : renderUncachedFrame(title, time);
+}
+
+void CacheManager::queueRealtimeJob(const std::shared_ptr<Title> &title, double time,
+                                    bool live_cue, int cue_row, const QString &cue_state_key,
+                                    const QString &known_content_hash)
+{
+    if (!title || !cache_enabled_.load() || interactive_bypass_.load() ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
+        return;
+    const CacheFrameKey key = keyForTime(*title, time, known_content_hash);
+    const bool force_render = state_tracker_.state(key) == FrameCacheState::Stale;
+    RenderQueueManager::Job job;
+    job.key = key;
+    job.title = snapshotForJob(title, key);
+    job.time = timeForFrame(key.frame);
+    job.priority = live_cue ? static_cast<int>(RenderQueueManager::PriorityBand::LiveCue) * 100000
+                            : static_cast<int>(RenderQueueManager::PriorityBand::Visible) * 100000;
+    job.live_cue = live_cue;
+    job.realtime = true;
+    job.force_render = force_render;
+    job.cue_row = cue_row;
+    job.cue_state_key = cue_state_key;
+    job.cache_epoch = cache_epoch_.load();
+    job.title_generation = titleGeneration(key.title_id);
+    if (queue_.enqueue(job)) {
+        state_tracker_.setState(key, FrameCacheState::Queued);
+        wakeWorker();
+    }
+}
+
+QImage CacheManager::requestFrameRealtime(const std::shared_ptr<Title> &title, double time,
+                                              const QString &known_content_hash)
+{
+    if (!title || !cache_enabled_.load() || interactive_bypass_.load() ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
+        return QImage();
+    const CacheFrameKey key = keyForTime(*title, time, known_content_hash);
+    if (state_tracker_.state(key) == FrameCacheState::Stale) {
+        queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
         return QImage();
     }
-
-    queue_.cancelRange(key.title_id, key.frame, key.frame);
-    state_tracker_.setState(key, FrameCacheState::Rendering);
-    image = render_title_to_image(*title, timeForFrame(key.frame));
-    if (!image.isNull()) {
-        ram_cache_.put(key, image);
+    QImage image;
+    if (ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
+        return image;
     }
-    return image;
+    /* Never touch the filesystem from obs_source_video_tick. The worker will
+     * promote a matching disk frame to RAM, or render it when absent. */
+    queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
+    return QImage();
 }
 
 void CacheManager::restoreDiskStates(const std::shared_ptr<Title> &title)
 {
-    if (!title || !cache_enabled_)
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title || !cache_enabled_.load())
         return;
     const QString title_id = QString::fromStdString(title->id);
     const QString current_hash = contentHash(*title);
@@ -933,21 +1541,35 @@ void CacheManager::restoreDiskStates(const std::shared_ptr<Title> &title)
     }
     for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
         const CacheFrameKey key = liveCueKey(title, row);
-        const QString state_key = liveCueStateKey(key.title_id, row);
+        const QString state_key = liveCueStateKey(title, row);
         if (disk_cache_.contains(key))
             live_cue_states_[state_key] = FrameCacheState::CachedDisk;
     }
+    /* Establish the editor's visual baseline even when every frame came from
+     * disk. Without this, the first cue-list-only edit looked like an unknown
+     * visual change and invalidateAll() discarded every live-cue state. */
+    rememberVisualHash(*title, current_hash);
     emit diagnosticsChanged();
 }
 
-void CacheManager::queueFrame(const std::shared_ptr<Title> &title, double time, RenderQueueManager::PriorityBand band)
+void CacheManager::queueFrame(const std::shared_ptr<Title> &title, double time,
+                              RenderQueueManager::PriorityBand band)
+{
+    if (!title)
+        return;
+    queueFrameWithHash(title, time, band, contentHash(*title));
+}
+
+void CacheManager::queueFrameWithHash(const std::shared_ptr<Title> &title, double time,
+                                      RenderQueueManager::PriorityBand band,
+                                      const QString &known_content_hash)
 {
     if (!title) return;
-    if (interactive_bypass_ || !cache_enabled_ || titleCacheability(title) == TitleCacheability::NonCacheable)
+    if (interactive_bypass_.load() || !cache_enabled_.load() || titleCacheability(title) == TitleCacheability::NonCacheable)
         return;
     if (time < 0.0 || time > std::max(0.0, title->duration))
         return;
-    const CacheFrameKey key = keyForTime(*title, time);
+    const CacheFrameKey key = keyForTime(*title, time, known_content_hash);
     QImage ignored;
     const FrameCacheState existing_state = state_tracker_.state(key);
     if (existing_state != FrameCacheState::Stale &&
@@ -956,7 +1578,15 @@ void CacheManager::queueFrame(const std::shared_ptr<Title> &title, double time, 
     if (existing_state == FrameCacheState::Rendering || queue_.contains(key))
         return;
     const int band_offset = (int)band * 100000;
-    if (queue_.enqueue({key, std::make_shared<Title>(*title), timeForFrame(key.frame), band_offset + std::abs(key.frame), false, -1})) {
+    RenderQueueManager::Job job;
+    job.key = key;
+    job.title = snapshotForJob(title, key);
+    job.time = timeForFrame(key.frame);
+    job.priority = band_offset + std::abs(key.frame);
+    job.force_render = existing_state == FrameCacheState::Stale;
+    job.cache_epoch = cache_epoch_.load();
+    job.title_generation = titleGeneration(key.title_id);
+    if (queue_.enqueue(job)) {
         OGS_LOG_TRACE("Cache", QStringLiteral("Queued frame title=%1 frame=%2 time=%3 band=%4 key=%5")
                                    .arg(key.title_id)
                                    .arg(key.frame)
@@ -964,37 +1594,39 @@ void CacheManager::queueFrame(const std::shared_ptr<Title> &title, double time, 
                                    .arg((int)band)
                                    .arg(key.toString()));
         state_tracker_.setState(key, FrameCacheState::Queued);
-        ensureWorkerTimerActive();
+        wakeWorker();
     }
 }
 
 void CacheManager::queueRange(const std::shared_ptr<Title> &title, double start, double end, RenderQueueManager::PriorityBand band)
 {
     if (!title) return;
-    if (interactive_bypass_ || !cache_enabled_ || titleCacheability(title) == TitleCacheability::NonCacheable)
+    if (interactive_bypass_.load() || !cache_enabled_.load() || titleCacheability(title) == TitleCacheability::NonCacheable)
         return;
     if (end < start) std::swap(start, end);
     const int max_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
     const int first = std::clamp(frameForTime(std::clamp(start, 0.0, title->duration)), 0, max_frame);
     const int last = std::clamp(frameForTime(std::clamp(end, 0.0, title->duration)), 0, max_frame);
+    const QString content_hash = contentHash(*title);
     for (int frame = first; frame <= last; ++frame)
-        queueFrame(title, timeForFrame(frame), band);
+        queueFrameWithHash(title, timeForFrame(frame), band, content_hash);
 }
 
 void CacheManager::queueWholeTimeline(const std::shared_ptr<Title> &title)
 {
     if (!title) return;
-    if (interactive_bypass_ || !cache_enabled_ || titleCacheability(title) == TitleCacheability::NonCacheable)
+    if (interactive_bypass_.load() || !cache_enabled_.load() || titleCacheability(title) == TitleCacheability::NonCacheable)
         return;
     const int max_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
     const QString title_id = QString::fromStdString(title->id);
     const int start_frame = last_reprioritize_title_id_ == title_id
         ? std::clamp(last_reprioritize_frame_, 0, max_frame)
         : 0;
+    const QString content_hash = contentHash(*title);
     for (int frame = start_frame; frame <= max_frame; ++frame)
-        queueFrame(title, timeForFrame(frame), RenderQueueManager::PriorityBand::FullTimeline);
+        queueFrameWithHash(title, timeForFrame(frame), RenderQueueManager::PriorityBand::FullTimeline, content_hash);
     for (int frame = 0; frame < start_frame; ++frame)
-        queueFrame(title, timeForFrame(frame), RenderQueueManager::PriorityBand::FullTimeline);
+        queueFrameWithHash(title, timeForFrame(frame), RenderQueueManager::PriorityBand::FullTimeline, content_hash);
 }
 
 void CacheManager::queueWorkArea(const std::shared_ptr<Title> &title)
@@ -1006,7 +1638,7 @@ void CacheManager::queueWorkArea(const std::shared_ptr<Title> &title)
 void CacheManager::reprioritize(const std::shared_ptr<Title> &title, double current_time)
 {
     if (!title) return;
-    if (interactive_bypass_ || !cache_enabled_ || titleCacheability(title) == TitleCacheability::NonCacheable)
+    if (interactive_bypass_.load() || !cache_enabled_.load() || titleCacheability(title) == TitleCacheability::NonCacheable)
         return;
     const int max_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
     const int current = std::clamp(frameForTime(current_time), 0, max_frame);
@@ -1016,76 +1648,155 @@ void CacheManager::reprioritize(const std::shared_ptr<Title> &title, double curr
     last_reprioritize_title_id_ = title_id;
     last_reprioritize_frame_ = current;
     queue_.reprioritizeAround(title_id, current);
-    queueFrame(title, current_time, RenderQueueManager::PriorityBand::Visible);
+    const QString content_hash = contentHash(*title);
+    queueFrameWithHash(title, current_time, RenderQueueManager::PriorityBand::Visible, content_hash);
     const int lookahead = std::min(6, std::max(2, (int)std::round(effectiveFrameRate() / 4.0)));
     const int lookbehind = 2;
     for (int i = 1; i <= lookahead; ++i)
         if (current + i <= max_frame)
-            queueFrame(title, timeForFrame(current + i), RenderQueueManager::PriorityBand::AfterCurrent);
+            queueFrameWithHash(title, timeForFrame(current + i), RenderQueueManager::PriorityBand::AfterCurrent, content_hash);
     for (int i = 1; i <= lookbehind; ++i) {
         if (current - i >= 0)
-            queueFrame(title, timeForFrame(current - i), RenderQueueManager::PriorityBand::BeforeCurrent);
+            queueFrameWithHash(title, timeForFrame(current - i), RenderQueueManager::PriorityBand::BeforeCurrent, content_hash);
+    }
+}
+
+void CacheManager::resetCancelledWorkState(const QString &title_id)
+{
+    state_tracker_.resetTransient(title_id);
+
+    QVector<QPair<QString, int>> changed_rows;
+    {
+        std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+        for (auto it = live_cue_states_.begin(); it != live_cue_states_.end(); ++it) {
+            const QString state_key = it.key();
+            if (!title_id.isEmpty() && live_cue_title_ids_.value(state_key) != title_id)
+                continue;
+            if (it.value() != FrameCacheState::Queued && it.value() != FrameCacheState::Rendering)
+                continue;
+            it.value() = FrameCacheState::NotCached;
+            live_cue_progress_percent_[state_key] = liveCueStoredProgress(state_key);
+            live_cue_last_emit_states_.remove(state_key);
+            live_cue_last_emit_buckets_.remove(state_key);
+            changed_rows.push_back({live_cue_title_ids_.value(state_key),
+                                    live_cue_rows_.value(state_key, -1)});
+        }
+    }
+    for (const auto &changed : changed_rows) {
+        if (!changed.first.isEmpty() && changed.second >= 0)
+            emit liveCueStateChanged(changed.first, changed.second);
     }
 }
 
 void CacheManager::clearRam()
 {
-    ram_cache_.clear();
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        cache_epoch_.fetch_add(1);
+        queue_.clear();
+        ram_cache_.clear();
+    }
+    resetCancelledWorkState();
+    {
+        std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+        live_cue_known_keys_.clear();
+    }
     state_tracker_.clear();
+    wakeWorker();
     emit diagnosticsChanged();
 }
 
 void CacheManager::clearDisk()
 {
-    disk_cache_.clear();
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        cache_epoch_.fetch_add(1);
+        queue_.clear();
+        disk_cache_.clear();
+    }
+    resetCancelledWorkState();
     state_tracker_.clear();
+    wakeWorker();
     emit diagnosticsChanged();
 }
 
 void CacheManager::clearAll()
 {
-    queue_.clear();
-    ram_cache_.clear();
-    disk_cache_.clear();
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        cache_epoch_.fetch_add(1);
+        queue_.clear();
+        ram_cache_.clear();
+        disk_cache_.clear();
+    }
     state_tracker_.clear();
-    live_cue_states_.clear();
-    live_cue_progress_percent_.clear();
-    live_cue_rows_.clear();
-    live_cue_title_ids_.clear();
+    {
+        std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+        live_cue_states_.clear();
+        live_cue_progress_percent_.clear();
+        live_cue_last_emit_states_.clear();
+        live_cue_last_emit_buckets_.clear();
+        live_cue_required_keys_.clear();
+        live_cue_required_total_.clear();
+        live_cue_rendered_since_emit_.clear();
+        live_cue_total_by_key_.clear();
+        live_cue_done_by_key_.clear();
+        live_cue_rows_.clear();
+        live_cue_row_ids_.clear();
+        live_cue_title_ids_.clear();
+        live_cue_transition_state_keys_.clear();
+        live_cue_structure_row_ids_.clear();
+        live_cue_row_fingerprints_.clear();
+        live_cue_transition_signatures_.clear();
+        live_cue_known_keys_.clear();
+    }
+    wakeWorker();
     emit diagnosticsChanged();
 }
 
 void CacheManager::pausePrerender()
 {
-    paused_ = true;
+    paused_.store(true);
+    wakeWorker();
 }
 
 void CacheManager::setCacheEnabled(bool enabled)
 {
-    if (cache_enabled_ == enabled)
+    if (cache_enabled_.load() == enabled)
         return;
-    cache_enabled_ = enabled;
+
+    /* Invalidate every dequeued snapshot before changing externally visible
+     * state. The worker may finish its local render, but jobIsCurrent() prevents
+     * it from publishing into RAM/disk or touching live-cue state. */
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        cache_epoch_.fetch_add(1);
+        queue_.setAcceptingJobs(false);
+        cache_enabled_.store(enabled);
+        paused_.store(!enabled);
+        if (enabled)
+            queue_.setAcceptingJobs(true);
+    }
+    resetCancelledWorkState();
     OGS_LOG_INFO("Cache", QStringLiteral("Cache enabled changed to %1").arg(enabled));
     TitlePreferences::set_cache_enabled(enabled);
-    queue_.setAcceptingJobs(enabled);
-    if (!enabled)
-        paused_ = true;
-    else {
-        paused_ = false;
-        ensureWorkerTimerActive();
-    }
+
     state_tracker_.clear();
+    wakeWorker();
     emit cacheEnabledChanged(enabled);
     emit diagnosticsChanged();
 }
 
 void CacheManager::setInteractiveBypass(bool bypass)
 {
-    if (interactive_bypass_ == bypass)
+    if (interactive_bypass_.load() == bypass)
         return;
-    interactive_bypass_ = bypass;
+    interactive_bypass_.store(bypass);
     OGS_LOG_DEBUG("Cache", QStringLiteral("Interactive bypass changed to %1").arg(bypass));
-    queue_.setAcceptingJobs(cache_enabled_);
+    /* Keep accepting live-cue work. The worker predicate pauses only normal
+     * prerender jobs while the editor is manipulating the canvas. */
+    queue_.setAcceptingJobs(cache_enabled_.load());
+    wakeWorker();
 }
 
 void CacheManager::setRamCacheLimitMb(int megabytes)
@@ -1101,10 +1812,17 @@ void CacheManager::setDiskCacheLocation(const QString &path)
     const QString clean = QDir::cleanPath(path);
     if (clean.isEmpty())
         return;
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        cache_epoch_.fetch_add(1);
+        queue_.clear();
+        disk_cache_.setCacheDirectory(clean);
+    }
     TitlePreferences::set_cache_disk_location(clean);
-    disk_cache_.setCacheDirectory(clean);
+    resetCancelledWorkState();
     OGS_LOG_INFO("Cache", QStringLiteral("Disk cache location changed to %1").arg(clean));
     state_tracker_.clear();
+    wakeWorker();
     emit diagnosticsChanged();
 }
 
@@ -1122,7 +1840,7 @@ TitleCacheability CacheManager::titleCacheability(const std::shared_ptr<Title> &
 
 QString CacheManager::titleCacheabilityMessage(const std::shared_ptr<Title> &title) const
 {
-    if (!cache_enabled_)
+    if (!cache_enabled_.load())
         return obsgs_tr("OBSTitles.CacheDisabledMessage");
     if (titleCacheability(title) == TitleCacheability::NonCacheable)
         return obsgs_tr("OBSTitles.PrerenderDynamicUnavailable");
@@ -1151,32 +1869,214 @@ QVector<CacheTileRegion> CacheManager::tilesForRect(const QRect &rect, const QSi
     return tiles;
 }
 
+QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
+{
+    const QSize frame_size(std::max(1, title.width), std::max(1, title.height));
+    const QRect frame_rect(QPoint(0, 0), frame_size);
+    if (!layer.visible)
+        return QRect();
+
+    const double x = layer.position.static_value.x;
+    const double y = layer.position.static_value.y;
+    const double sx = std::max(0.01, std::abs(layer.scale.static_value.x));
+    const double sy = std::max(0.01, std::abs(layer.scale.static_value.y));
+    double w = std::max(1.0, layer.size.static_value.x * sx);
+    double h = std::max(1.0, layer.size.static_value.y * sy);
+
+    if (layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker) {
+        w = std::max(w, (double)std::max(1, layer.font_size) * std::max<size_t>(1, layer.text_content.size()) * 0.75 * sx);
+        h = std::max(h, (double)std::max(1, layer.font_size) * 1.6 * sy);
+    } else if (layer.type == LayerType::Image && w <= 1.0 && h <= 1.0) {
+        w = frame_size.width();
+        h = frame_size.height();
+    }
+
+    int pad = 8 + (int)std::ceil(std::max(0.0f, layer.stroke_width));
+    if (layer.background_enabled) {
+        pad += (int)std::ceil(std::max({layer.background_padding_x, layer.background_padding_y,
+                                        layer.background_padding_left, layer.background_padding_right,
+                                        layer.background_padding_top, layer.background_padding_bottom}));
+        pad += (int)std::ceil(std::max(0.0f, layer.background_stroke_width));
+    }
+    for (const auto &effect : layer.effects) {
+        if (!effect.enabled) continue;
+        pad += (int)std::ceil(std::max({effect.effect_size, effect.effect_distance,
+                                        effect.effect_spread, effect.effect_stroke_width,
+                                        effect.effect_padding_left, effect.effect_padding_right,
+                                        effect.effect_padding_top, effect.effect_padding_bottom, 0.0f}));
+    }
+
+    QRectF rect(x - pad, y - pad, w + pad * 2.0, h + pad * 2.0);
+    if (std::fmod(std::abs(layer.rotation.static_value), 360.0) > 0.001) {
+        const QPointF c = rect.center();
+        const double diag = std::hypot(rect.width(), rect.height());
+        rect = QRectF(c.x() - diag / 2.0, c.y() - diag / 2.0, diag, diag);
+    }
+    return rect.toAlignedRect().intersected(frame_rect);
+}
+
+QString CacheManager::tileStateKey(const QString &title_id, int frame) const
+{
+    return title_id + QLatin1Char(':') + QString::number(frame);
+}
+
+void CacheManager::markDirtyTiles(const QString &title_id, int first_frame, int last_frame, const QVector<CacheTileRegion> &tiles)
+{
+    if (title_id.isEmpty() || first_frame > last_frame || tiles.isEmpty())
+        return;
+    QMutexLocker lock(&dirty_tiles_mutex_);
+    for (int frame = first_frame; frame <= last_frame; ++frame) {
+        QSet<QString> &set = dirty_tiles_by_frame_[tileStateKey(title_id, frame)];
+        for (const auto &tile : tiles)
+            set.insert(QString::number(tile.tile_x) + QLatin1Char(',') + QString::number(tile.tile_y));
+    }
+}
+
+QVector<CacheTileRegion> CacheManager::dirtyTilesForKey(const CacheFrameKey &key) const
+{
+    QVector<CacheTileRegion> regions;
+    const QSize frame_size(std::max(1, key.width), std::max(1, key.height));
+    QSet<QString> ids;
+    {
+        QMutexLocker lock(&dirty_tiles_mutex_);
+        ids = dirty_tiles_by_frame_.value(tileStateKey(key.title_id, key.frame));
+    }
+    for (const QString &id : ids) {
+        const QStringList parts = id.split(QLatin1Char(','));
+        if (parts.size() != 2) continue;
+        bool ok_x = false, ok_y = false;
+        const int tx = parts[0].toInt(&ok_x);
+        const int ty = parts[1].toInt(&ok_y);
+        if (!ok_x || !ok_y) continue;
+        const QRect tile_rect(tx * kCacheTileSize, ty * kCacheTileSize, kCacheTileSize, kCacheTileSize);
+        regions.push_back({tx, ty, tile_rect.intersected(QRect(QPoint(0, 0), frame_size))});
+    }
+    return regions;
+}
+
+QImage CacheManager::mergeDirtyTiles(const CacheFrameKey &key, const QImage &previous, const QImage &fresh) const
+{
+    if (previous.isNull() || fresh.isNull() || previous.size() != fresh.size())
+        return fresh;
+    const QVector<CacheTileRegion> dirty_tiles = dirtyTilesForKey(key);
+    if (dirty_tiles.isEmpty())
+        return fresh;
+
+    QImage merged = previous.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QPainter painter(&merged);
+    for (const auto &tile : dirty_tiles) {
+        if (!tile.rect.isEmpty())
+            painter.drawImage(tile.rect, fresh, tile.rect);
+    }
+    painter.end();
+    {
+        QMutexLocker lock(&dirty_tiles_mutex_);
+        dirty_tiles_by_frame_.remove(tileStateKey(key.title_id, key.frame));
+    }
+    return merged;
+}
+
+void CacheManager::rememberVisualHash(const Title &title, const QString &known_hash)
+{
+    const QString title_id = QString::fromStdString(title.id);
+    const QString visual_hash = known_hash.isEmpty() ? contentHash(title) : known_hash;
+    QMutexLocker lock(&visual_hash_mutex_);
+    if (last_visual_hash_by_title_.value(title_id) == visual_hash &&
+        last_layer_rects_by_title_.contains(title_id))
+        return;
+
+    last_visual_hash_by_title_[title_id] = visual_hash;
+    QHash<QString, QRect> rects;
+    for (const auto &layer : title.layers) {
+        if (layer)
+            rects[QString::fromStdString(layer->id)] = layerDirtyRect(title, *layer);
+    }
+    last_layer_rects_by_title_[title_id] = rects;
+}
+
+bool CacheManager::visualHashUnchanged(const Title &title) const
+{
+    QMutexLocker lock(&visual_hash_mutex_);
+    const QString title_id = QString::fromStdString(title.id);
+    return last_visual_hash_by_title_.contains(title_id) &&
+           last_visual_hash_by_title_.value(title_id) == contentHash(title);
+}
+
 void CacheManager::resumePrerender()
 {
-    paused_ = false;
-    ensureWorkerTimerActive();
+    paused_.store(false);
+    wakeWorker();
 }
 
 void CacheManager::invalidateAll(const std::shared_ptr<Title> &title)
 {
+    if (!title) return;
+    if (visualHashUnchanged(*title)) {
+        OGS_LOG_TRACE("Cache", QStringLiteral("Skipped frame-cache invalidation for unchanged rendered title=%1; refreshing live-cue structure selectively")
+                                      .arg(QString::fromStdString(title->id)));
+        /* Structural cue-list edits do not change the title's currently rendered
+         * pixels. Clearing every live-cue state here defeated stable row IDs and
+         * forced all rows to render again after add/remove/reorder. Let the
+         * structure reconciler invalidate only added/removed/edited row states. */
+        refreshLiveCueStructure(title);
+        return;
+    }
+    const QSize frame_size(std::max(1, title->width), std::max(1, title->height));
+    markDirtyTiles(QString::fromStdString(title->id), 0, cache_last_frame_for_title(*title, effectiveFrameRate()),
+                   tilesForRect(QRect(QPoint(0, 0), frame_size), frame_size));
     invalidation_.invalidateAll(title);
     invalidateLiveCues(title);
 }
 
 void CacheManager::invalidateRange(const std::shared_ptr<Title> &title, double start, double end)
 {
+    if (!title) return;
+    if (visualHashUnchanged(*title)) {
+        OGS_LOG_TRACE("Cache", QStringLiteral("Skipped cache range invalidation for unchanged title=%1")
+                                      .arg(QString::fromStdString(title->id)));
+        return;
+    }
+    const int max_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
+    if (end < start) std::swap(start, end);
+    const int first = std::clamp(frameForTime(std::clamp(start, 0.0, title->duration)), 0, max_frame);
+    const int last = std::clamp(frameForTime(std::clamp(end, 0.0, title->duration)), 0, max_frame);
+    const QSize frame_size(std::max(1, title->width), std::max(1, title->height));
+    markDirtyTiles(QString::fromStdString(title->id), first, last,
+                   tilesForRect(QRect(QPoint(0, 0), frame_size), frame_size));
     invalidation_.invalidateRange(title, start, end);
 }
 
 void CacheManager::invalidateLayer(const std::shared_ptr<Title> &title, const std::string &layer_id)
 {
+    if (!title) return;
+    if (visualHashUnchanged(*title)) {
+        OGS_LOG_TRACE("Cache", QStringLiteral("Skipped layer invalidation for unchanged title=%1 layer=%2")
+                                      .arg(QString::fromStdString(title->id), QString::fromStdString(layer_id)));
+        return;
+    }
+    if (auto layer = title->find_layer(layer_id)) {
+        const int max_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
+        const int first = std::clamp(frameForTime(std::clamp(layer->in_time, 0.0, title->duration)), 0, max_frame);
+        const int last = std::clamp(frameForTime(std::clamp(layer->out_time, 0.0, title->duration)), 0, max_frame);
+        const QSize frame_size(std::max(1, title->width), std::max(1, title->height));
+        QRect dirty_rect = layerDirtyRect(*title, *layer);
+        {
+            QMutexLocker lock(&visual_hash_mutex_);
+            dirty_rect = dirty_rect.united(last_layer_rects_by_title_
+                .value(QString::fromStdString(title->id))
+                .value(QString::fromStdString(layer_id)));
+        }
+        markDirtyTiles(QString::fromStdString(title->id), first, last, tilesForRect(dirty_rect, frame_size));
+    }
     invalidation_.invalidateLayer(title, layer_id);
 }
 
 std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<Title> &title, int row) const
 {
-    if (!title || row < 0 || row >= (int)title->live_text_rows.size())
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return nullptr;
+
     auto cue_title = std::make_shared<Title>(*title);
     cue_title->layers.clear();
     cue_title->layers.reserve(title->layers.size());
@@ -1210,30 +2110,372 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
         }
         exposed = std::move(ordered);
     }
-    for (int col = 0; col < (int)exposed.size() && col < (int)cue_title->live_text_rows[row].size(); ++col) {
+
+    for (int col = 0; col < static_cast<int>(exposed.size()) &&
+         col < static_cast<int>(cue_title->live_text_rows[row].size()); ++col) {
         auto &target = exposed[col];
         if (!target)
             continue;
-
-        /* Live text cues must use the same rich-text source of truth as normal
-         * text layers. Do not rebuild the document from scalar defaults here:
-         * that discards auto-style rules, default auto style presets, conflict
-         * settings and manual range styles. Instead, replace only the cue text
-         * and preserve the styling/rule model. The renderer will resolve auto
-         * styles against this new plain_text exactly as it does in the editor. */
         const std::string cue_text = cue_title->live_text_rows[row][col];
         target->text_content = cue_text;
         if (target->rich_text.empty())
             target->rich_text = rich_text_document_from_layer_defaults(*target);
-
         RichTextCharFormat insertion_format = target->rich_text.has_typing_format
             ? target->rich_text.typing_format
             : target->rich_text.default_format;
         rich_text_document_replace_text(target->rich_text, cue_text, &insertion_format);
         target->rich_text_html.clear();
     }
+
+    /* Steady cue titles are deterministic. Runtime current/pending state must
+     * never leak into their cache identity, otherwise adding/removing a row
+     * changes every existing row's key. Stateful persistence transitions are
+     * represented by separate from->to cache states below. */
     cue_title->current_cue_row = row;
+    cue_title->pending_cue_row = -1;
+    cue_title->cue_persistence_transition = false;
+    cue_title->cue_persistent_text_columns.clear();
     return cue_title;
+}
+
+
+QVector<std::shared_ptr<Title>> CacheManager::liveCueVariants(const std::shared_ptr<Title> &title, int row) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    QVector<std::shared_ptr<Title>> variants;
+    if (auto steady = titleWithCueApplied(title, row))
+        variants.push_back(steady);
+    return variants;
+}
+
+QVector<std::shared_ptr<Title>> CacheManager::liveCueTransitionVariants(
+    const std::shared_ptr<Title> &title, int from_row, int to_row) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    QVector<std::shared_ptr<Title>> variants;
+    if (!title || from_row < 0 || to_row < 0 || from_row == to_row ||
+        from_row >= static_cast<int>(title->live_text_rows.size()) ||
+        to_row >= static_cast<int>(title->live_text_rows.size()))
+        return variants;
+
+    if (title->playback_mode != 1 && title->playback_mode != 2 && !title->cue_background_persistence)
+        return variants;
+
+    auto persistent_columns = [&](const std::shared_ptr<Title> &candidate) {
+        std::vector<bool> result;
+        if (!candidate || !candidate->cue_text_persistence)
+            return result;
+        size_t exposed_count = 0;
+        for (const auto &layer : candidate->layers) {
+            if (layer && (layer->type == LayerType::Text || layer->type == LayerType::Ticker) && layer->expose_text)
+                ++exposed_count;
+        }
+        result.assign(exposed_count, false);
+        for (size_t col = 0; col < result.size() &&
+             col < title->live_text_rows[static_cast<size_t>(from_row)].size() &&
+             col < title->live_text_rows[static_cast<size_t>(to_row)].size(); ++col) {
+            result[col] = title->live_text_rows[static_cast<size_t>(from_row)][col] ==
+                          title->live_text_rows[static_cast<size_t>(to_row)][col];
+        }
+        return result;
+    };
+
+    /* Outgoing phase: the previous cue remains applied while the title plays
+     * its outro. pending_cue_row is control state only; rendered identity comes
+     * from the applied previous-row pixels and persistence column mask. */
+    if (auto outgoing = titleWithCueApplied(title, from_row)) {
+        outgoing->current_cue_row = from_row;
+        outgoing->pending_cue_row = to_row;
+        outgoing->cue_persistence_transition = title->cue_background_persistence;
+        outgoing->cue_persistent_text_columns = persistent_columns(outgoing);
+        variants.push_back(outgoing);
+    }
+
+    /* Incoming phase: target cue text is applied, while persistent background
+     * layers (and unchanged text columns) are held exactly as in live playback. */
+    if (auto incoming = titleWithCueApplied(title, to_row)) {
+        incoming->current_cue_row = to_row;
+        incoming->pending_cue_row = -1;
+        incoming->cue_persistence_transition = title->cue_background_persistence;
+        incoming->cue_persistent_text_columns = persistent_columns(incoming);
+        variants.push_back(incoming);
+    }
+    return variants;
+}
+
+
+int CacheManager::liveCueVariantsProgress(const QVector<std::shared_ptr<Title>> &variants) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (variants.isEmpty())
+        return 0;
+    int total_frames = 0;
+    int cached_frames = 0;
+    QSet<CacheFrameKey> seen;
+    for (const auto &variant : variants) {
+        if (!variant)
+            continue;
+        for (const CacheFrameKey &frame_key : frameKeysForTitle(*variant)) {
+            if (seen.contains(frame_key))
+                continue;
+            seen.insert(frame_key);
+            ++total_frames;
+            QImage ignored;
+            if (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key))
+                ++cached_frames;
+        }
+    }
+    if (total_frames <= 0)
+        return 0;
+    return std::clamp((cached_frames * 100) / total_frames, 0, 100);
+}
+
+
+int CacheManager::liveCueStoredProgress(const QString &state_key) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    /* A manual rebuild is a new rendering generation even when its
+     * content-addressed frames are still resident from the previous one.
+     * Report generation completion, not old RAM/SSD residency, otherwise the
+     * badge stays at 100% and oscillates between Rendering and CachedRam. */
+    if (live_cue_total_by_key_.contains(state_key)) {
+        const int total = std::max(1, live_cue_total_by_key_.value(state_key));
+        const int done = std::clamp(live_cue_done_by_key_.value(state_key, 0), 0, total);
+        return std::clamp((done * 100) / total, 0, 100);
+    }
+    const auto keys = live_cue_required_keys_.value(state_key);
+    if (keys.isEmpty())
+        return live_cue_progress_percent_.value(state_key, 0);
+
+    int cached = 0;
+    for (const CacheFrameKey &frame_key : keys) {
+        QImage ignored;
+        if (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key))
+            ++cached;
+    }
+    const int total = std::max(1, static_cast<int>(keys.size()));
+    return std::clamp((cached * 100) / total, 0, 100);
+}
+
+FrameCacheState CacheManager::liveCueStoredState(const QString &state_key) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    const auto keys = live_cue_required_keys_.value(state_key);
+    if (keys.isEmpty())
+        return live_cue_states_.value(state_key, FrameCacheState::NotCached);
+
+    const FrameCacheState explicit_state = live_cue_states_.value(state_key, FrameCacheState::NotCached);
+    if (live_cue_total_by_key_.contains(state_key) &&
+        live_cue_done_by_key_.value(state_key, 0) < live_cue_total_by_key_.value(state_key)) {
+        return explicit_state == FrameCacheState::Rendering
+            ? FrameCacheState::Rendering
+            : FrameCacheState::Queued;
+    }
+    bool any_disk = false;
+    bool any_rendering = explicit_state == FrameCacheState::Rendering;
+    bool any_queued = explicit_state == FrameCacheState::Queued;
+    bool any_stale = explicit_state == FrameCacheState::Stale;
+    int cached = 0;
+
+    for (const CacheFrameKey &frame_key : keys) {
+        const FrameCacheState frame_state = state_tracker_.state(frame_key);
+        if (frame_state == FrameCacheState::Rendering)
+            any_rendering = true;
+        if (frame_state == FrameCacheState::Queued || queue_.contains(frame_key))
+            any_queued = true;
+        if (frame_state == FrameCacheState::Stale)
+            any_stale = true;
+        QImage ignored;
+        if (ram_cache_.get(frame_key, ignored)) {
+            ++cached;
+        } else if (disk_cache_.contains(frame_key)) {
+            ++cached;
+            any_disk = true;
+        }
+    }
+
+    if (any_rendering) return FrameCacheState::Rendering;
+    /* Shared content-addressed frames can complete through another cue state.
+     * Full residency is authoritative even if this state's advisory Queued flag
+     * has not yet received its own completion callback. */
+    if (cached >= static_cast<int>(keys.size())) return any_disk ? FrameCacheState::CachedDisk : FrameCacheState::CachedRam;
+    if (any_queued) return FrameCacheState::Queued;
+    if (cached > 0) return any_stale ? FrameCacheState::Stale : FrameCacheState::NotCached;
+    if (any_stale) return FrameCacheState::Stale;
+    return FrameCacheState::NotCached;
+}
+
+bool CacheManager::shouldEmitLiveCueUpdate(const QString &state_key, FrameCacheState state, int progress) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    const int bucket = progress >= 100 ? 100 : (progress / 25) * 25;
+
+    /* Queue-to-worker handoff must not be treated as a visible state change.
+     * Both states use the same four-stage progress presentation; emitting on
+     * every Queued <-> Rendering transition caused needless icon replacement
+     * and orange/yellow flicker while the percentage stayed in one bucket. */
+    const FrameCacheState visual_state =
+        (state == FrameCacheState::Queued || state == FrameCacheState::Rendering)
+            ? FrameCacheState::Rendering
+            : state;
+    const bool changed = !live_cue_last_emit_states_.contains(state_key) ||
+        live_cue_last_emit_states_.value(state_key) != visual_state ||
+        live_cue_last_emit_buckets_.value(state_key, -1) != bucket;
+    if (changed) {
+        live_cue_last_emit_states_[state_key] = visual_state;
+        live_cue_last_emit_buckets_[state_key] = bucket;
+    }
+    return changed;
+}
+
+bool CacheManager::isLiveCueKeyReferenced(const CacheFrameKey &key) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    return !liveCueStateReferencingKey(key).isEmpty();
+}
+
+QString CacheManager::liveCueStateReferencingKey(const CacheFrameKey &key,
+                                                  const QString &preferred_state) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    auto contains_key = [&](const QString &state_key) {
+        const QVector<CacheFrameKey> required = live_cue_required_keys_.value(state_key);
+        return !required.isEmpty() &&
+            std::find(required.cbegin(), required.cend(), key) != required.cend();
+    };
+    if (!preferred_state.isEmpty() && contains_key(preferred_state))
+        return preferred_state;
+    for (auto it = live_cue_required_keys_.constBegin(); it != live_cue_required_keys_.constEnd(); ++it) {
+        if (live_cue_title_ids_.value(it.key()) != key.title_id)
+            continue;
+        if (std::find(it.value().cbegin(), it.value().cend(), key) != it.value().cend())
+            return it.key();
+    }
+    return {};
+}
+
+void CacheManager::removeLiveCueState(const QString &state_key)
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    live_cue_states_.remove(state_key);
+    live_cue_progress_percent_.remove(state_key);
+    live_cue_last_emit_states_.remove(state_key);
+    live_cue_last_emit_buckets_.remove(state_key);
+    live_cue_required_keys_.remove(state_key);
+    live_cue_required_total_.remove(state_key);
+    live_cue_rendered_since_emit_.remove(state_key);
+    live_cue_total_by_key_.remove(state_key);
+    live_cue_done_by_key_.remove(state_key);
+    live_cue_rows_.remove(state_key);
+    live_cue_row_ids_.remove(state_key);
+    live_cue_title_ids_.remove(state_key);
+    live_cue_transition_state_keys_.remove(state_key);
+}
+
+void CacheManager::pruneUnreferencedLiveCueRam(const QString &title_id)
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    QSet<CacheFrameKey> referenced;
+    for (auto it = live_cue_required_keys_.constBegin(); it != live_cue_required_keys_.constEnd(); ++it) {
+        if (live_cue_title_ids_.value(it.key()) != title_id)
+            continue;
+        for (const CacheFrameKey &key : it.value())
+            referenced.insert(key);
+    }
+
+    /* Inspect every key ever registered by the live-cue cache, not just frames
+     * currently resident in RAM. Otherwise obsolete queued jobs continue to
+     * render after add/remove/edit, then repopulate RAM with superseded frames. */
+    QSet<CacheFrameKey> candidates;
+    for (const CacheFrameKey &key : live_cue_known_keys_) {
+        if (key.title_id == title_id)
+            candidates.insert(key);
+    }
+    for (const CacheFrameKey &key : ram_cache_.keysForTitle(title_id))
+        candidates.insert(key);
+
+    int cancelled_jobs = 0;
+    int removed_ram = 0;
+    int removed_keys = 0;
+    for (const CacheFrameKey &key : candidates) {
+        if (referenced.contains(key))
+            continue;
+        if (queue_.cancelKey(key))
+            ++cancelled_jobs;
+        QImage resident;
+        if (ram_cache_.get(key, resident)) {
+            ram_cache_.remove(key);
+            ++removed_ram;
+        }
+        if (disk_cache_.contains(key))
+            state_tracker_.setState(key, FrameCacheState::CachedDisk);
+        else
+            state_tracker_.setState(key, FrameCacheState::NotCached);
+        live_cue_known_keys_.remove(key);
+        ++removed_keys;
+    }
+
+    if (removed_keys > 0) {
+        OGS_LOG_INFO("LiveCue", QStringLiteral("Pruned superseded live cue work title=%1 keys=%2 ramFrames=%3 queuedJobs=%4")
+                                  .arg(title_id)
+                                  .arg(removed_keys)
+                                  .arg(removed_ram)
+                                  .arg(cancelled_jobs));
+        emit diagnosticsChanged();
+    }
+}
+
+FrameCacheState CacheManager::liveCueVariantsState(const QVector<std::shared_ptr<Title>> &variants, const QString &state_key) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (variants.isEmpty())
+        return FrameCacheState::NotCached;
+
+    const FrameCacheState explicit_state = live_cue_states_.value(state_key, FrameCacheState::NotCached);
+    bool any_disk = false;
+    bool any_rendering = explicit_state == FrameCacheState::Rendering;
+    bool any_queued = explicit_state == FrameCacheState::Queued;
+    bool any_stale = explicit_state == FrameCacheState::Stale;
+    int total = 0;
+    int cached = 0;
+
+    QSet<CacheFrameKey> seen;
+    for (const auto &variant : variants) {
+        if (!variant)
+            continue;
+        for (const CacheFrameKey &frame_key : frameKeysForTitle(*variant)) {
+            if (seen.contains(frame_key))
+                continue;
+            seen.insert(frame_key);
+            ++total;
+            const FrameCacheState frame_state = state_tracker_.state(frame_key);
+            if (frame_state == FrameCacheState::Rendering)
+                any_rendering = true;
+            if (frame_state == FrameCacheState::Queued || queue_.contains(frame_key))
+                any_queued = true;
+            if (frame_state == FrameCacheState::Stale)
+                any_stale = true;
+            QImage ignored;
+            if (ram_cache_.get(frame_key, ignored)) {
+                ++cached;
+            } else if (disk_cache_.contains(frame_key)) {
+                ++cached;
+                any_disk = true;
+            }
+        }
+    }
+
+    if (any_rendering)
+        return FrameCacheState::Rendering;
+    if (total > 0 && cached >= total)
+        return any_disk ? FrameCacheState::CachedDisk : FrameCacheState::CachedRam;
+    if (any_queued)
+        return FrameCacheState::Queued;
+    if (cached > 0)
+        return any_stale ? FrameCacheState::Stale : FrameCacheState::NotCached;
+    if (any_stale)
+        return FrameCacheState::Stale;
+    return FrameCacheState::NotCached;
 }
 
 CacheFrameKey CacheManager::liveCueKey(const std::shared_ptr<Title> &title, int row) const
@@ -1243,20 +2485,43 @@ CacheFrameKey CacheManager::liveCueKey(const std::shared_ptr<Title> &title, int 
     return keyForTime(*cue_title, std::clamp(cue_title->pause_time, 0.0, cue_title->duration));
 }
 
-QString CacheManager::liveCueStateKey(const QString &title_id, int row) const
+QString CacheManager::liveCueRowIdentity(const std::shared_ptr<Title> &title, int row) const
 {
-    return QStringLiteral("%1:live-cue:%2").arg(title_id).arg(row);
+    if (!title)
+        return {};
+    return QString::fromStdString(live_text_row_id(*title, row));
+}
+
+QString CacheManager::liveCueStateKey(const std::shared_ptr<Title> &title, int row) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title)
+        return {};
+    return QStringLiteral("%1:live-cue:%2")
+        .arg(QString::fromStdString(title->id))
+        .arg(liveCueRowIdentity(title, row));
+}
+
+QString CacheManager::liveCueTransitionStateKey(const std::shared_ptr<Title> &title,
+                                                int from_row, int to_row) const
+{
+    if (!title)
+        return {};
+    return QStringLiteral("%1:live-transition:%2:%3")
+        .arg(QString::fromStdString(title->id))
+        .arg(liveCueRowIdentity(title, from_row))
+        .arg(liveCueRowIdentity(title, to_row));
 }
 
 int CacheManager::liveCueRangeProgress(const std::shared_ptr<Title> &cue_title) const
 {
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cue_title)
         return 0;
-    const int max_frame = cache_last_frame_for_title(*cue_title, effectiveFrameRate());
-    const int total = std::max(1, max_frame + 1);
+    const auto keys = frameKeysForTitle(*cue_title);
+    const int total = std::max(1, static_cast<int>(keys.size()));
     int cached = 0;
-    for (int frame = 0; frame <= max_frame; ++frame) {
-        const CacheFrameKey frame_key = keyForFrame(*cue_title, frame);
+    for (const CacheFrameKey &frame_key : keys) {
         QImage ignored;
         if (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key))
             ++cached;
@@ -1266,20 +2531,20 @@ int CacheManager::liveCueRangeProgress(const std::shared_ptr<Title> &cue_title) 
 
 FrameCacheState CacheManager::liveCueRangeState(const std::shared_ptr<Title> &cue_title, const QString &state_key) const
 {
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cue_title)
         return FrameCacheState::NotCached;
 
     const FrameCacheState explicit_state = live_cue_states_.value(state_key, FrameCacheState::NotCached);
-    const int max_frame = cache_last_frame_for_title(*cue_title, effectiveFrameRate());
-    const int total = std::max(1, max_frame + 1);
+    const auto keys = frameKeysForTitle(*cue_title);
+    const int total = std::max(1, static_cast<int>(keys.size()));
     int cached = 0;
     bool any_disk = false;
     bool any_rendering = false;
     bool any_queued = false;
     bool any_stale = explicit_state == FrameCacheState::Stale;
 
-    for (int frame = 0; frame <= max_frame; ++frame) {
-        const CacheFrameKey frame_key = keyForFrame(*cue_title, frame);
+    for (const CacheFrameKey &frame_key : keys) {
         const FrameCacheState frame_state = state_tracker_.state(frame_key);
         if (frame_state == FrameCacheState::Rendering)
             any_rendering = true;
@@ -1299,10 +2564,10 @@ FrameCacheState CacheManager::liveCueRangeState(const std::shared_ptr<Title> &cu
 
     if (explicit_state == FrameCacheState::Rendering || any_rendering)
         return FrameCacheState::Rendering;
-    if (explicit_state == FrameCacheState::Queued || any_queued)
-        return FrameCacheState::Queued;
     if (cached >= total)
         return any_disk ? FrameCacheState::CachedDisk : FrameCacheState::CachedRam;
+    if (explicit_state == FrameCacheState::Queued || any_queued)
+        return FrameCacheState::Queued;
     if (cached > 0)
         return FrameCacheState::Queued;
     if (any_stale)
@@ -1310,115 +2575,268 @@ FrameCacheState CacheManager::liveCueRangeState(const std::shared_ptr<Title> &cu
     return FrameCacheState::NotCached;
 }
 
-void CacheManager::queueLiveCue(const std::shared_ptr<Title> &title, int row, bool urgent)
+void CacheManager::queueLiveCueVariantSet(
+    const std::shared_ptr<Title> &title, int row, const QString &state_key,
+    const QVector<std::shared_ptr<Title>> &variants, bool urgent)
 {
-    if (!cache_enabled_) {
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because cache is disabled").arg(row));
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title || state_key.isEmpty() || variants.isEmpty())
         return;
-    }
-    auto cue_title = titleWithCueApplied(title, row);
-    if (!cue_title) {
-        OGS_LOG_WARNING("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because cue title could not be created").arg(row));
-        return;
-    }
-    CacheFrameKey key = liveCueKey(title, row);
-    const QString state_key = liveCueStateKey(key.title_id, row);
+
+    const QString title_id = QString::fromStdString(title->id);
     live_cue_rows_[state_key] = row;
-    live_cue_title_ids_[state_key] = key.title_id;
-    const FrameCacheState existing_state = liveCueRangeState(cue_title, state_key);
+    live_cue_row_ids_[state_key] = liveCueRowIdentity(title, row);
+    live_cue_title_ids_[state_key] = title_id;
+    if (state_key.contains(QStringLiteral(":live-transition:")))
+        live_cue_transition_state_keys_.insert(state_key);
+    else
+        live_cue_transition_state_keys_.remove(state_key);
+
+    struct RequiredFrame {
+        CacheFrameKey key;
+        std::shared_ptr<Title> title;
+        int variant_index = 0;
+    };
+    QVector<RequiredFrame> required_frames;
+    QVector<CacheFrameKey> required_keys;
+    QSet<CacheFrameKey> required_seen;
+    int variant_index = 0;
+    for (const auto &variant_title : variants) {
+        if (!variant_title) {
+            ++variant_index;
+            continue;
+        }
+        for (const CacheFrameKey &frame_key : frameKeysForTitle(*variant_title)) {
+            if (required_seen.contains(frame_key))
+                continue;
+            required_seen.insert(frame_key);
+            required_keys.push_back(frame_key);
+            required_frames.push_back({frame_key, variant_title, variant_index});
+            live_cue_known_keys_.insert(frame_key);
+        }
+        ++variant_index;
+    }
+    if (required_keys.isEmpty())
+        return;
+
+    const QVector<CacheFrameKey> old_required = live_cue_required_keys_.value(state_key);
+    const bool requirements_changed = !live_cue_required_keys_.contains(state_key) || old_required != required_keys;
+    live_cue_required_keys_[state_key] = required_keys;
+    live_cue_required_total_[state_key] = static_cast<int>(required_keys.size());
+    if (urgent) {
+        /* Manual refresh owns an independent progress generation. Existing
+         * resident frames may still be used by playback, but they must not
+         * count as completed work for the new rebuild. */
+        live_cue_total_by_key_[state_key] = static_cast<int>(required_keys.size());
+        live_cue_done_by_key_[state_key] = 0;
+        live_cue_last_emit_states_.remove(state_key);
+        live_cue_last_emit_buckets_.remove(state_key);
+    }
+    if (requirements_changed) {
+        live_cue_rendered_since_emit_.remove(state_key);
+        live_cue_last_emit_states_.remove(state_key);
+        live_cue_last_emit_buckets_.remove(state_key);
+    }
+
+    const FrameCacheState existing_state = liveCueStoredState(state_key);
+    const int existing_progress = liveCueStoredProgress(state_key);
     const bool busy = existing_state == FrameCacheState::Queued || existing_state == FrameCacheState::Rendering;
-    OGS_LOG_DEBUG("LiveCue", QStringLiteral("queueLiveCue title=%1 row=%2 urgent=%3 state=%4 busy=%5 frameKey=%6 stateKey=%7")
-                                .arg(key.title_id)
-                                .arg(row)
-                                .arg(urgent)
-                                .arg((int)existing_state)
-                                .arg(busy)
-                                .arg(key.toString())
+    OGS_LOG_DEBUG("LiveCue", QStringLiteral("queueLiveCueState title=%1 row=%2 transition=%3 urgent=%4 state=%5 busy=%6 requiredFrames=%7 progress=%8 stateKey=%9")
+                                .arg(title_id).arg(row)
+                                .arg(live_cue_transition_state_keys_.contains(state_key))
+                                .arg(urgent).arg((int)existing_state).arg(busy)
+                                .arg(static_cast<int>(required_keys.size())).arg(existing_progress)
                                 .arg(state_key));
+
     if (!urgent && (existing_state == FrameCacheState::CachedRam || existing_state == FrameCacheState::CachedDisk)) {
         live_cue_states_[state_key] = existing_state;
         live_cue_progress_percent_[state_key] = 100;
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Live cue row already fully prerendered title=%1 row=%2 readyState=%3")
-                                    .arg(key.title_id).arg(row).arg((int)existing_state));
-        emit liveCueStateChanged(key.title_id, row);
         return;
     }
-    if (existing_state == FrameCacheState::Rendering)
+    if (!requirements_changed && existing_state == FrameCacheState::Rendering)
         return;
-    const int max_frame = cache_last_frame_for_title(*cue_title, effectiveFrameRate());
+
     int queued = 0;
-    for (int frame = 0; frame <= max_frame; ++frame) {
-        const CacheFrameKey frame_key = keyForFrame(*cue_title, frame);
+    for (const RequiredFrame &required : required_frames) {
         QImage ignored;
-        if (!urgent && (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key)))
+        if (!urgent && (ram_cache_.get(required.key, ignored) || disk_cache_.contains(required.key)))
             continue;
         if (urgent)
-            queue_.cancelKey(frame_key);
-        else if (queue_.contains(frame_key))
+            queue_.cancelKey(required.key);
+        else if (queue_.contains(required.key))
             continue;
+
         const int priority = urgent
-            ? (std::numeric_limits<int>::min() / 2) + frame
-            : -1000000 + row * 10000 + frame;
-        if (queue_.enqueue({frame_key, cue_title, timeForFrame(frame), priority, true, row}))
+            ? (std::numeric_limits<int>::min() / 2) + required.variant_index * 100000 + required.key.frame
+            : -1000000 + std::max(0, row) * 100000 + required.variant_index * 1000 + required.key.frame;
+        RenderQueueManager::Job job;
+        job.key = required.key;
+        job.title = required.title;
+        job.time = timeForFrame(required.key.frame);
+        job.priority = priority;
+        job.live_cue = true;
+        job.force_render = urgent || live_cue_states_.value(state_key, FrameCacheState::NotCached) == FrameCacheState::Stale;
+        job.cue_row = row;
+        job.cue_state_key = state_key;
+        job.cache_epoch = cache_epoch_.load();
+        job.title_generation = titleGeneration(required.key.title_id);
+        if (queue_.enqueue(job))
             ++queued;
     }
+
+    const int progress = liveCueStoredProgress(state_key);
     if (queued > 0) {
         ++live_cue_stats_.misses;
-        emit diagnosticsChanged();
         live_cue_states_[state_key] = FrameCacheState::Queued;
-        live_cue_progress_percent_[state_key] = liveCueRangeProgress(cue_title);
-        OGS_LOG_INFO("LiveCue", QStringLiteral("Queued live cue row range title=%1 row=%2 urgent=%3 queuedFrames=%4 progress=%5 stateKey=%6 pauseKey=%7")
-                                  .arg(key.title_id).arg(row).arg(urgent).arg(queued)
-                                  .arg(live_cue_progress_percent_.value(state_key))
-                                  .arg(state_key, key.toString()));
-        emit liveCueStateChanged(key.title_id, row);
-        ensureWorkerTimerActive();
+        live_cue_progress_percent_[state_key] = progress;
+        OGS_LOG_INFO("LiveCue", QStringLiteral("Queued live cue state title=%1 row=%2 transition=%3 queuedFrames=%4 requiredFrames=%5 progress=%6 stateKey=%7")
+                                  .arg(title_id).arg(row)
+                                  .arg(live_cue_transition_state_keys_.contains(state_key))
+                                  .arg(queued).arg(static_cast<int>(required_keys.size()))
+                                  .arg(progress).arg(state_key));
+        emit liveCueStateChanged(title_id, row);
+        emit diagnosticsChanged();
+        wakeWorker();
+    } else {
+        const FrameCacheState resolved_state = liveCueStoredState(state_key);
+        live_cue_states_[state_key] = resolved_state;
+        live_cue_progress_percent_[state_key] = progress;
+        if (shouldEmitLiveCueUpdate(state_key, resolved_state, progress))
+            emit liveCueStateChanged(title_id, row);
     }
+
+    if (requirements_changed)
+        pruneUnreferencedLiveCueRam(title_id);
+}
+
+void CacheManager::queueLiveCue(const std::shared_ptr<Title> &title, int row, bool urgent)
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load()) {
+        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because cache is disabled").arg(row));
+        return;
+    }
+    const auto variants = liveCueVariants(title, row);
+    if (variants.isEmpty()) {
+        OGS_LOG_WARNING("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because steady cue variant could not be created").arg(row));
+        return;
+    }
+    queueLiveCueVariantSet(title, row, liveCueStateKey(title, row), variants, urgent);
+
+    /* A cue request must also make its currently reachable transition ready.
+     * Previously the dock could wait forever on isLiveCueReady(): it detected a
+     * missing active->target transition but queueLiveCue() queued only the
+     * steady target state. */
+    if (title && title->current_cue_row >= 0 && title->current_cue_row != row &&
+        title->current_cue_row < static_cast<int>(title->live_text_rows.size()) &&
+        (title->playback_mode == 1 || title->playback_mode == 2 || title->cue_background_persistence)) {
+        queueLiveCueTransition(title, title->current_cue_row, row, urgent);
+    }
+}
+
+void CacheManager::queueLiveCueTransition(const std::shared_ptr<Title> &title,
+                                          int from_row, int to_row, bool urgent)
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    const auto variants = liveCueTransitionVariants(title, from_row, to_row);
+    if (variants.isEmpty())
+        return;
+    queueLiveCueVariantSet(title, to_row,
+                           liveCueTransitionStateKey(title, from_row, to_row),
+                           variants, urgent);
 }
 
 void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
 {
-    if (!title) return;
-    const CacheFrameKey key = liveCueKey(title, row);
-    const QString state_key = liveCueStateKey(key.title_id, row);
-    auto cue_title = titleWithCueApplied(title, row);
-    if (cue_title) {
-        const int max_frame = cache_last_frame_for_title(*cue_title, effectiveFrameRate());
-        for (int frame = 0; frame <= max_frame; ++frame) {
-            const CacheFrameKey frame_key = keyForFrame(*cue_title, frame);
-            queue_.cancelKey(frame_key);
-            ram_cache_.remove(frame_key);
-            disk_cache_.remove(frame_key);
-        }
+    std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
+        return;
+
+    const QString title_id = QString::fromStdString(title->id);
+    const QString row_id = liveCueRowIdentity(title, row);
+    QVector<QString> rebuild_states;
+    /* A row's manual refresh must rebuild only its steady state. Transition
+     * pairs belong to title-level prerendering and must not drive the status
+     * badges of unrelated rows to Queued (100%). They remain valid until the
+     * row content actually changes, at which point refreshLiveCueStructure()
+     * invalidates only the affected transition pairs. */
+    const QString steady_state_key = liveCueStateKey(title, row);
+    if (live_cue_title_ids_.value(steady_state_key) == title_id ||
+        live_cue_required_keys_.contains(steady_state_key))
+        rebuild_states.push_back(steady_state_key);
+
+    QSet<CacheFrameKey> rebuild_keys;
+    for (const QString &state_key : rebuild_states) {
+        for (const CacheFrameKey &old_key : live_cue_required_keys_.value(state_key))
+            rebuild_keys.insert(old_key);
+        removeLiveCueState(state_key);
     }
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Manual live cue cache rebuild title=%1 row=%2 stateKey=%3 frameKey=%4")
-                              .arg(key.title_id).arg(row).arg(state_key, key.toString()));
-    live_cue_states_[state_key] = FrameCacheState::NotCached;
-    live_cue_progress_percent_[state_key] = 0;
-    queueLiveCue(title, row, true);
+
+    /* Drop only frames that became unreferenced after removing the selected
+     * row's steady/transition states. Content-addressed frames shared by an
+     * unaffected state remain valid and must not be destroyed. Manual rebuild
+     * still removes unshared disk entries so the selected state is regenerated. */
+    int removed_frames = 0;
+    for (const CacheFrameKey &frame_key : rebuild_keys) {
+        if (isLiveCueKeyReferenced(frame_key))
+            continue;
+        queue_.cancelKey(frame_key);
+        ram_cache_.remove(frame_key);
+        disk_cache_.remove(frame_key);
+        live_cue_known_keys_.remove(frame_key);
+        state_tracker_.setState(frame_key, FrameCacheState::NotCached);
+        ++removed_frames;
+    }
+
+    OGS_LOG_INFO("LiveCue", QStringLiteral("Manual live cue cache rebuild title=%1 row=%2 removedFrames=%3 candidateFrames=%4 removedStates=%5")
+                              .arg(title_id).arg(row)
+                              .arg(removed_frames)
+                              .arg(static_cast<int>(rebuild_keys.size()))
+                              .arg(static_cast<int>(rebuild_states.size())));
+
+    queueLiveCueVariantSet(title, row, steady_state_key, liveCueVariants(title, row), true);
+    pruneUnreferencedLiveCueRam(title_id);
 }
 
-QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, bool queue_if_missing)
+
+QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, double time, bool queue_if_missing)
 {
-    if (!cache_enabled_ || !title || row < 0 || row >= (int)title->live_text_rows.size())
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return QImage();
-    const CacheFrameKey key = liveCueKey(title, row);
-    const QString state_key = liveCueStateKey(key.title_id, row);
-    live_cue_rows_[state_key] = row;
-    live_cue_title_ids_[state_key] = key.title_id;
+
+    std::shared_ptr<Title> cue_title;
+    const bool exact_runtime_state = title->pending_cue_row >= 0 ||
+        (title->cue_persistence_transition && title->current_cue_row == row);
+    if (exact_runtime_state)
+        cue_title = immutable_title_snapshot(title);
+    else
+        cue_title = titleWithCueApplied(title, row);
+    if (!cue_title)
+        return QImage();
+
+    const double clamped_time = std::clamp(time, 0.0, std::max(0.0, cue_title->duration));
+    const CacheFrameKey key = keyForTime(*cue_title, clamped_time);
+    QString state_key = liveCueStateKey(title, row);
+
+    /* Runtime transition snapshots are matched by their exact content-addressed
+     * key. This avoids relying on mutable row indices or on a remembered
+     * previous row after the incoming phase has begun. */
+    for (auto it = live_cue_required_keys_.constBegin(); it != live_cue_required_keys_.constEnd(); ++it) {
+        if (live_cue_title_ids_.value(it.key()) != key.title_id)
+            continue;
+        if (std::find(it.value().cbegin(), it.value().cend(), key) != it.value().cend()) {
+            state_key = it.key();
+            break;
+        }
+    }
+
     const FrameCacheState existing_state = live_cue_states_.value(state_key, FrameCacheState::NotCached);
     const bool busy = existing_state == FrameCacheState::Queued || existing_state == FrameCacheState::Rendering;
-    auto cue_title = titleWithCueApplied(title, row);
     QImage image;
     if (existing_state != FrameCacheState::Stale && ram_cache_.get(key, image)) {
-        if (!busy) {
-            const int progress = liveCueRangeProgress(cue_title);
-            live_cue_states_[state_key] = progress >= 100 ? FrameCacheState::CachedRam
-                                                          : liveCueRangeState(cue_title, state_key);
-            live_cue_progress_percent_[state_key] = progress;
-        }
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Live cue RAM hit title=%1 row=%2 busy=%3")
-                                    .arg(key.title_id).arg(row).arg(busy));
+        live_cue_known_keys_.insert(key);
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
         emit diagnosticsChanged();
@@ -1426,31 +2844,69 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
     }
     if (existing_state != FrameCacheState::Stale && disk_cache_.get(key, image)) {
         ram_cache_.put(key, image);
-        if (!busy) {
-            const int progress = liveCueRangeProgress(cue_title);
-            live_cue_states_[state_key] = progress >= 100 ? FrameCacheState::CachedRam
-                                                          : liveCueRangeState(cue_title, state_key);
-            live_cue_progress_percent_[state_key] = progress;
-        }
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Live cue disk hit title=%1 row=%2 busy=%3")
-                                    .arg(key.title_id).arg(row).arg(busy));
+        live_cue_known_keys_.insert(key);
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
         emit diagnosticsChanged();
         return image;
     }
-    if (queue_if_missing)
-        queueLiveCue(title, row);
-    OGS_LOG_DEBUG("LiveCue", QStringLiteral("Live cue cache miss title=%1 row=%2 queue=%3")
-                                .arg(key.title_id).arg(row).arg(queue_if_missing));
+
+    if (queue_if_missing) {
+        if (title->pending_cue_row >= 0 && title->current_cue_row >= 0 &&
+            title->current_cue_row != title->pending_cue_row) {
+            queueLiveCueTransition(title, title->current_cue_row, title->pending_cue_row);
+        } else {
+            queueLiveCue(title, row);
+        }
+    }
+    OGS_LOG_DEBUG("LiveCue", QStringLiteral("Live cue cache miss title=%1 row=%2 frame=%3 transition=%4 busy=%5 queue=%6 stateKey=%7")
+                                .arg(key.title_id).arg(row).arg(key.frame)
+                                .arg(live_cue_transition_state_keys_.contains(state_key))
+                                .arg(busy).arg(queue_if_missing).arg(state_key));
     return QImage();
+}
+
+QImage CacheManager::requestLiveCueFrameRealtime(const std::shared_ptr<Title> &title, int row, double time,
+                                                     const QString &known_content_hash)
+{
+    if (!cache_enabled_.load() || interactive_bypass_.load() || !title || row < 0 ||
+        row >= static_cast<int>(title->live_text_rows.size()))
+        return QImage();
+
+    /* Realtime playback must use the exact same runtime title snapshot as the
+     * proven uncached source path. Re-applying a row here can discard an
+     * in-progress persistence transition and can also make the caller-provided
+     * content hash describe a different title than the rendered frame. */
+    /* Lookup uses only immutable frame-key fields plus the caller's already
+     * validated content hash. Do not deep-copy the complete title graph on
+     * every OBS video tick; queueRealtimeJob snapshots only on a true miss. */
+    const double clamped_time = std::clamp(time, 0.0, std::max(0.0, title->duration));
+    const CacheFrameKey key = keyForTime(*title, clamped_time, known_content_hash);
+    QImage image;
+    if (state_tracker_.state(key) != FrameCacheState::Stale && ram_cache_.get(key, image))
+        return image;
+
+    /* Realtime source requests are deliberately opportunistic normal jobs. The
+     * editor's live-cue state machine remains the authority for row progress,
+     * while the worker can still hydrate/render the exact transition snapshot. */
+    queueRealtimeJob(title, clamped_time, false, row, QString(), known_content_hash);
+    return QImage();
+}
+
+QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, bool queue_if_missing)
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title)
+        return QImage();
+    return requestLiveCueFrame(title, row, std::clamp(title->pause_time, 0.0, title->duration), queue_if_missing);
 }
 
 void CacheManager::preloadLiveCues(const std::shared_ptr<Title> &title, int current_row, int nearby_count)
 {
-    if (!cache_enabled_) return;
-    if (!title || title->live_text_rows.empty()) return;
-    const int count = (int)title->live_text_rows.size();
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title || title->live_text_rows.empty())
+        return;
+    const int count = static_cast<int>(title->live_text_rows.size());
     const int current = std::clamp(current_row, 0, count - 1);
     queueLiveCue(title, current);
     for (int i = 1; i <= std::max(1, nearby_count); ++i) {
@@ -1461,37 +2917,70 @@ void CacheManager::preloadLiveCues(const std::shared_ptr<Title> &title, int curr
 
 FrameCacheState CacheManager::liveCueState(const std::shared_ptr<Title> &title, int row) const
 {
-    if (!cache_enabled_)
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load())
         return FrameCacheState::Disabled;
-    if (!title || row < 0 || row >= (int)title->live_text_rows.size())
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return FrameCacheState::NotCached;
-    const CacheFrameKey key = liveCueKey(title, row);
-    const QString state_key = liveCueStateKey(key.title_id, row);
-    return liveCueRangeState(titleWithCueApplied(title, row), state_key);
+
+    /* Row badges describe only the row's steady prerender state. Transition
+     * variants are independent title-level work and are represented by the
+     * aggregate cache status. Mixing them here caused every row to display
+     * Queued (100%) whenever one row refresh created new transition work. */
+    const QString steady_key = liveCueStateKey(title, row);
+    return live_cue_required_keys_.contains(steady_key)
+        ? liveCueStoredState(steady_key)
+        : liveCueVariantsState(liveCueVariants(title, row), steady_key);
 }
 
 int CacheManager::liveCueProgressPercent(const std::shared_ptr<Title> &title, int row) const
 {
-    if (!cache_enabled_)
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load())
         return 100;
-    if (!title || row < 0 || row >= (int)title->live_text_rows.size())
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return 0;
-    const CacheFrameKey key = liveCueKey(title, row);
-    const QString state_key = liveCueStateKey(key.title_id, row);
-    const FrameCacheState state = liveCueState(title, row);
-    if (state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk)
-        return 100;
-    if (state == FrameCacheState::Disabled)
-        return 100;
-    return std::clamp(std::max(live_cue_progress_percent_.value(state_key, 0),
-                               liveCueRangeProgress(titleWithCueApplied(title, row))),
-                      0, 100);
+
+    /* Keep per-row progress isolated from persistence transition pairs. The
+     * aggregate progress API continues to include all transition frames. */
+    const QString steady_key = liveCueStateKey(title, row);
+    if (live_cue_total_by_key_.contains(steady_key))
+        return liveCueStoredProgress(steady_key);
+
+    const auto keys = live_cue_required_keys_.value(steady_key);
+    if (keys.isEmpty())
+        return 0;
+
+    int cached = 0;
+    for (const CacheFrameKey &key : keys) {
+        QImage ignored;
+        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+            ++cached;
+    }
+    return std::clamp((cached * 100) / static_cast<int>(keys.size()), 0, 100);
 }
 
 bool CacheManager::isLiveCueReady(const std::shared_ptr<Title> &title, int row)
 {
-    const FrameCacheState state = liveCueState(title, row);
-    const bool ready = state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk;
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
+        return false;
+
+    const QString steady_key = liveCueStateKey(title, row);
+    const FrameCacheState steady = live_cue_required_keys_.contains(steady_key)
+        ? liveCueStoredState(steady_key) : FrameCacheState::NotCached;
+    bool ready = steady == FrameCacheState::CachedRam || steady == FrameCacheState::CachedDisk;
+
+    const int active_row = title->current_cue_row;
+    if (ready && active_row >= 0 && active_row != row &&
+        active_row < static_cast<int>(title->live_text_rows.size()) &&
+        (title->playback_mode == 1 || title->playback_mode == 2 || title->cue_background_persistence)) {
+        const QString transition_key = liveCueTransitionStateKey(title, active_row, row);
+        const FrameCacheState transition = live_cue_required_keys_.contains(transition_key)
+            ? liveCueStoredState(transition_key) : FrameCacheState::NotCached;
+        ready = transition == FrameCacheState::CachedRam || transition == FrameCacheState::CachedDisk;
+    }
+
     if (ready) {
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
@@ -1500,145 +2989,586 @@ bool CacheManager::isLiveCueReady(const std::shared_ptr<Title> &title, int row)
     return ready;
 }
 
+FrameCacheState CacheManager::liveCueAggregateState(const std::shared_ptr<Title> &title) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load())
+        return FrameCacheState::Disabled;
+    if (!title)
+        return FrameCacheState::NotCached;
+    const QString title_id = QString::fromStdString(title->id);
+    bool any = false, queued = false, rendering = false, stale = false, disk = false;
+    for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
+        if (it.value() != title_id)
+            continue;
+        any = true;
+        const FrameCacheState state = liveCueStoredState(it.key());
+        stale |= state == FrameCacheState::Stale;
+        rendering |= state == FrameCacheState::Rendering;
+        queued |= state == FrameCacheState::Queued || state == FrameCacheState::NotCached;
+        disk |= state == FrameCacheState::CachedDisk;
+    }
+    if (!any) return FrameCacheState::NotCached;
+    if (stale) return FrameCacheState::Stale;
+    if (rendering) return FrameCacheState::Rendering;
+    if (queued) return FrameCacheState::Queued;
+    return disk ? FrameCacheState::CachedDisk : FrameCacheState::CachedRam;
+}
+
+int CacheManager::liveCueAggregateProgressPercent(const std::shared_ptr<Title> &title) const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load())
+        return 100;
+    if (!title)
+        return 0;
+    const QString title_id = QString::fromStdString(title->id);
+    QSet<CacheFrameKey> keys;
+    for (auto it = live_cue_required_keys_.constBegin(); it != live_cue_required_keys_.constEnd(); ++it) {
+        if (live_cue_title_ids_.value(it.key()) != title_id)
+            continue;
+        for (const CacheFrameKey &key : it.value())
+            keys.insert(key);
+    }
+    if (keys.isEmpty())
+        return 0;
+    int cached = 0;
+    for (const CacheFrameKey &key : keys) {
+        QImage ignored;
+        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+            ++cached;
+    }
+    return std::clamp((cached * 100) / static_cast<int>(keys.size()), 0, 100);
+}
+
+
 void CacheManager::invalidateLiveCue(const std::shared_ptr<Title> &title, int row)
 {
-    if (!title) return;
-    const CacheFrameKey key = liveCueKey(title, row);
-    const QString state_key = liveCueStateKey(key.title_id, row);
-    live_cue_rows_[state_key] = row;
-    live_cue_title_ids_[state_key] = key.title_id;
-    auto cue_title = titleWithCueApplied(title, row);
-    if (cue_title) {
-        const int max_frame = cache_last_frame_for_title(*cue_title, effectiveFrameRate());
-        for (int frame = 0; frame <= max_frame; ++frame) {
-            const CacheFrameKey frame_key = keyForFrame(*cue_title, frame);
-            queue_.cancelKey(frame_key);
-            ram_cache_.remove(frame_key);
-            disk_cache_.remove(frame_key);
-        }
+    std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
+        return;
+
+    ensure_live_text_row_ids(*title);
+    const QString title_id = QString::fromStdString(title->id);
+    const QString row_id = liveCueRowIdentity(title, row);
+    QVector<QString> affected_states;
+    for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
+        if (it.value() != title_id)
+            continue;
+        const QString state_key = it.key();
+        if (live_cue_row_ids_.value(state_key) == row_id ||
+            state_key.contains(QStringLiteral(":%1:").arg(row_id)) ||
+            state_key.endsWith(QStringLiteral(":%1").arg(row_id)))
+            affected_states.push_back(state_key);
     }
+    for (const QString &state_key : affected_states)
+        removeLiveCueState(state_key);
+
     ++live_cue_stats_.invalidations;
-    live_cue_states_[state_key] = FrameCacheState::NotCached;
-    live_cue_progress_percent_[state_key] = 0;
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Invalidated live cue title=%1 row=%2 stateKey=%3")
-                              .arg(key.title_id).arg(row).arg(state_key));
-    emit diagnosticsChanged();
+    pruneUnreferencedLiveCueRam(title_id);
     queueLiveCue(title, row);
-    emit liveCueStateChanged(QString::fromStdString(title->id), row);
+    for (int other = 0; other < static_cast<int>(title->live_text_rows.size()); ++other) {
+        if (other == row)
+            continue;
+        queueLiveCueTransition(title, row, other);
+        queueLiveCueTransition(title, other, row);
+    }
+    OGS_LOG_INFO("LiveCue", QStringLiteral("Invalidated live cue identity title=%1 row=%2 rowId=%3 removedStates=%4")
+                              .arg(title_id).arg(row).arg(row_id)
+                              .arg(static_cast<int>(affected_states.size())));
+    emit diagnosticsChanged();
+    emit liveCueStateChanged(title_id, row);
 }
 
 void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
 {
-    if (!title) return;
-    for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
-        const CacheFrameKey key = liveCueKey(title, row);
-        const QString state_key = liveCueStateKey(key.title_id, row);
-        live_cue_rows_[state_key] = row;
-        live_cue_title_ids_[state_key] = key.title_id;
-        ++live_cue_stats_.invalidations;
-        live_cue_states_[state_key] = FrameCacheState::Stale;
-        live_cue_progress_percent_[state_key] = 0;
-        emit liveCueStateChanged(QString::fromStdString(title->id), row);
+    std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!title)
+        return;
+    const QString title_id = QString::fromStdString(title->id);
+    QVector<QString> state_keys;
+    for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
+        if (it.value() == title_id)
+            state_keys.push_back(it.key());
     }
+    for (const QString &state_key : state_keys) {
+        const int row = live_cue_rows_.value(state_key, -1);
+        removeLiveCueState(state_key);
+        if (row >= 0)
+            emit liveCueStateChanged(title_id, row);
+    }
+    live_cue_structure_row_ids_.remove(title_id);
+    live_cue_row_fingerprints_.remove(title_id);
+    live_cue_transition_signatures_.remove(title_id);
+    ++live_cue_stats_.invalidations;
+    pruneUnreferencedLiveCueRam(title_id);
     emit diagnosticsChanged();
+}
+
+void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
+{
+    std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title)
+        return;
+
+    const QString title_id = QString::fromStdString(title->id);
+    if (live_cue_structure_refresh_in_progress_.contains(title_id)) {
+        OGS_LOG_TRACE("LiveCue", QStringLiteral("Skipped re-entrant live cue structure refresh title=%1")
+                                      .arg(title_id));
+        return;
+    }
+
+    struct RefreshGuard {
+        QSet<QString> &set;
+        QString id;
+        RefreshGuard(QSet<QString> &target, const QString &title_id) : set(target), id(title_id)
+        {
+            set.insert(id);
+        }
+        ~RefreshGuard()
+        {
+            set.remove(id);
+        }
+    } refresh_guard(live_cue_structure_refresh_in_progress_, title_id);
+
+    ensure_live_text_row_ids(*title);
+    const int row_count = static_cast<int>(title->live_text_rows.size());
+    QSet<QString> current_ids;
+    QHash<QString, int> index_by_id;
+    QHash<QString, QString> current_fingerprints;
+    for (int row = 0; row < row_count; ++row) {
+        const QString row_id = liveCueRowIdentity(title, row);
+        current_ids.insert(row_id);
+        index_by_id.insert(row_id, row);
+        QCryptographicHash hash(QCryptographicHash::Sha1);
+        for (const std::string &cell : title->live_text_rows[static_cast<size_t>(row)]) {
+            const QByteArray bytes = QByteArray::fromStdString(cell);
+            hash.addData(bytes);
+            hash.addData("\0", 1);
+        }
+        current_fingerprints.insert(row_id, QString::fromLatin1(hash.result().toHex()));
+    }
+
+    QCryptographicHash signature_hash(QCryptographicHash::Sha1);
+    auto add_sig = [&](const QByteArray &value) { signature_hash.addData(value); signature_hash.addData("\0", 1); };
+    add_sig(QByteArray::number(title->playback_mode));
+    add_sig(QByteArray::number(title->cue_background_persistence));
+    add_sig(QByteArray::number(title->cue_text_persistence));
+    add_sig(QByteArray::number(title->pause_time, 'g', 17));
+    add_sig(QByteArray::number(title->loop_start, 'g', 17));
+    add_sig(QByteArray::number(title->loop_end, 'g', 17));
+    add_sig(QByteArray::number(title->duration, 'g', 17));
+    const QString transition_signature = QString::fromLatin1(signature_hash.result().toHex());
+
+    const QSet<QString> previous_ids = live_cue_structure_row_ids_.value(title_id);
+    const QHash<QString, QString> previous_fingerprints = live_cue_row_fingerprints_.value(title_id);
+    const bool settings_changed = live_cue_transition_signatures_.value(title_id) != transition_signature;
+
+    QSet<QString> added_ids = current_ids;
+    for (const QString &id : previous_ids)
+        added_ids.remove(id);
+    QSet<QString> removed_ids = previous_ids;
+    for (const QString &id : current_ids)
+        removed_ids.remove(id);
+    QSet<QString> changed_ids;
+    for (const QString &id : current_ids) {
+        if (previous_fingerprints.contains(id) && previous_fingerprints.value(id) != current_fingerprints.value(id))
+            changed_ids.insert(id);
+    }
+    if (settings_changed && !previous_ids.isEmpty())
+        changed_ids.unite(current_ids);
+
+    QVector<QString> obsolete_states;
+    auto state_involves_any = [&](const QString &state_key, const QSet<QString> &ids) {
+        const QString destination_id = live_cue_row_ids_.value(state_key);
+        for (const QString &id : ids) {
+            if (destination_id == id ||
+                state_key.contains(QStringLiteral(":%1:").arg(id)) ||
+                state_key.endsWith(QStringLiteral(":%1").arg(id)))
+                return true;
+        }
+        return false;
+    };
+
+    for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
+        if (it.value() != title_id)
+            continue;
+        const QString state_key = it.key();
+        if (state_involves_any(state_key, removed_ids) ||
+            state_involves_any(state_key, changed_ids)) {
+            obsolete_states.push_back(state_key);
+            continue;
+        }
+        const QString destination_id = live_cue_row_ids_.value(state_key);
+        if (index_by_id.contains(destination_id))
+            live_cue_rows_[state_key] = index_by_id.value(destination_id);
+    }
+    for (const QString &state_key : obsolete_states)
+        removeLiveCueState(state_key);
+
+    /* Cancel obsolete queued work and evict orphan RAM before registering new
+     * states. Doing this afterwards allowed an old job with the same content
+     * key to block the replacement job, then finish against a deleted row. */
+    pruneUnreferencedLiveCueRam(title_id);
+
+    QSet<QString> affected_ids = added_ids;
+    affected_ids.unite(changed_ids);
+    if (previous_ids.isEmpty())
+        affected_ids = current_ids;
+
+    for (const QString &row_id : affected_ids) {
+        if (!index_by_id.contains(row_id))
+            continue;
+        queueLiveCue(title, index_by_id.value(row_id));
+    }
+
+    /* Transition states are independent from row-ready states. Adding a row
+     * creates only the new from/to pairs involving that row; existing rows stay
+     * ready and keep their cache icons. Editing a row rebuilds only pairs that
+     * actually include that stable row identity. */
+    for (const QString &affected_id : affected_ids) {
+        if (!index_by_id.contains(affected_id))
+            continue;
+        const int affected_row = index_by_id.value(affected_id);
+        for (int other = 0; other < row_count; ++other) {
+            if (other == affected_row)
+                continue;
+            queueLiveCueTransition(title, affected_row, other);
+            queueLiveCueTransition(title, other, affected_row);
+        }
+    }
+
+    live_cue_structure_row_ids_[title_id] = current_ids;
+    live_cue_row_fingerprints_[title_id] = current_fingerprints;
+    live_cue_transition_signatures_[title_id] = transition_signature;
+    pruneUnreferencedLiveCueRam(title_id);
+    OGS_LOG_INFO("LiveCue", QStringLiteral("Refreshed live cue structure title=%1 rows=%2 added=%3 changed=%4 removed=%5 removedStates=%6")
+                              .arg(title_id).arg(row_count)
+                              .arg(static_cast<int>(added_ids.size()))
+                              .arg(static_cast<int>(changed_ids.size()))
+                              .arg(static_cast<int>(removed_ids.size()))
+                              .arg(static_cast<int>(obsolete_states.size())));
+    emit diagnosticsChanged();
+}
+
+void CacheManager::cancelTitleWork(const QString &title_id)
+{
+    if (title_id.isEmpty())
+        return;
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        bumpTitleGeneration(title_id);
+        queue_.cancelTitle(title_id);
+    }
+    resetCancelledWorkState(title_id);
+    wakeWorker();
+    OGS_LOG_DEBUG("Cache", QStringLiteral("Cancelled pending/in-flight title cache work title=%1").arg(title_id));
+}
+
+void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
+{
+    std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (title_id.isEmpty())
+        return;
+    bumpTitleGeneration(title_id);
+    queue_.cancelTitle(title_id);
+
+    QVector<QString> state_keys;
+    for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
+        if (it.value() == title_id)
+            state_keys.push_back(it.key());
+    }
+    for (const QString &state_key : state_keys)
+        removeLiveCueState(state_key);
+
+    const auto ram_keys = ram_cache_.keysForTitle(title_id);
+    for (const CacheFrameKey &key : ram_keys)
+        ram_cache_.remove(key);
+    if (remove_disk) {
+        const auto disk_keys = disk_cache_.keysForTitle(title_id);
+        for (const CacheFrameKey &key : disk_keys)
+            disk_cache_.remove(key);
+    }
+    for (auto it = live_cue_known_keys_.begin(); it != live_cue_known_keys_.end();) {
+        if ((*it).title_id == title_id)
+            it = live_cue_known_keys_.erase(it);
+        else
+            ++it;
+    }
+    state_tracker_.clearTitle(title_id);
+    live_cue_structure_row_ids_.remove(title_id);
+    live_cue_row_fingerprints_.remove(title_id);
+    live_cue_transition_signatures_.remove(title_id);
+    OGS_LOG_INFO("Cache", QStringLiteral("Removed title cache title=%1 ramFrames=%2 states=%3 disk=%4")
+                            .arg(title_id).arg(static_cast<int>(ram_keys.size()))
+                            .arg(static_cast<int>(state_keys.size())).arg(remove_disk));
+    emit diagnosticsChanged();
+}
+
+
+CachePlaybackSettings CacheManager::playbackSettings() const
+{
+    QMutexLocker lock(&playback_settings_mutex_);
+    return playback_settings_;
+}
+
+LiveCueCacheStats CacheManager::liveCueStats() const
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    return live_cue_stats_;
 }
 
 void CacheManager::setPlaybackSettings(const CachePlaybackSettings &settings)
 {
+    QMutexLocker lock(&playback_settings_mutex_);
     playback_settings_ = settings;
 }
 
-void CacheManager::processNextJob()
+void CacheManager::abandonJobState(const RenderQueueManager::Job &job,
+                                         const QString &live_state_key)
 {
-    if (!cache_enabled_) return;
-    if (has_active_render_job_)
-        return;
-    RenderQueueManager::Job job;
-    const bool normal_prerender_paused = paused_ || interactive_bypass_;
-    if (normal_prerender_paused) {
-        if (!queue_.takeNextLiveCue(job))
+    if (job.live_cue) {
+        std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+        const QString state_key = liveCueStateReferencingKey(job.key, live_state_key);
+        if (state_key.isEmpty() ||
+            live_cue_states_.value(state_key, FrameCacheState::NotCached) != FrameCacheState::Rendering)
             return;
-    } else if (!queue_.takeNext(job)) {
+
+        bool replacement_queued = false;
+        for (const CacheFrameKey &required : live_cue_required_keys_.value(state_key)) {
+            if (queue_.contains(required)) {
+                replacement_queued = true;
+                break;
+            }
+        }
+        const FrameCacheState next_state = replacement_queued
+            ? FrameCacheState::Queued
+            : FrameCacheState::NotCached;
+        const int progress = liveCueStoredProgress(state_key);
+        const int signal_row = live_cue_rows_.value(state_key, job.cue_row);
+        live_cue_states_[state_key] = next_state;
+        live_cue_progress_percent_[state_key] = progress;
+        live_cue_last_emit_states_.remove(state_key);
+        live_cue_last_emit_buckets_.remove(state_key);
+        if (signal_row >= 0)
+            emit liveCueStateChanged(job.key.title_id, signal_row);
         return;
     }
-    OGS_LOG_DEBUG(job.live_cue ? "LiveCue" : "Cache",
-                  QStringLiteral("Dequeued render job title=%1 frame=%2 liveCue=%3 row=%4 time=%5 key=%6")
-                      .arg(job.key.title_id)
-                      .arg(job.key.frame)
-                      .arg(job.live_cue)
-                      .arg(job.cue_row)
-                      .arg(job.time, 0, 'f', 3)
-                      .arg(job.key.toString()));
 
-    const QString live_state_key = job.live_cue ? liveCueStateKey(job.key.title_id, job.cue_row) : QString();
-    const bool was_stale = job.live_cue
-        ? live_cue_states_.value(live_state_key, FrameCacheState::NotCached) == FrameCacheState::Stale
-        : state_tracker_.state(job.key) == FrameCacheState::Stale;
+    if (state_tracker_.state(job.key) != FrameCacheState::Rendering)
+        return;
+    state_tracker_.setState(job.key, queue_.contains(job.key)
+        ? FrameCacheState::Queued
+        : FrameCacheState::NotCached);
+}
 
+void CacheManager::workerLoop()
+{
+    while (!worker_stop_.load()) {
+        {
+            std::unique_lock<std::mutex> lock(worker_wait_mutex_);
+            worker_cv_.wait(lock, [this]() {
+                if (worker_stop_.load())
+                    return true;
+                if (!cache_enabled_.load())
+                    return false;
+                const bool live_only = paused_.load() || interactive_bypass_.load();
+                return queue_.hasAvailableJob(live_only);
+            });
+        }
+        if (worker_stop_.load())
+            break;
+        if (!cache_enabled_.load())
+            continue;
+
+        RenderQueueManager::Job job;
+        const bool urgent_only = paused_.load() || interactive_bypass_.load();
+        const bool have_job = urgent_only ? queue_.takeNextUrgent(job) : queue_.takeNext(job);
+        if (!have_job)
+            continue;
+
+        renderJob(job);
+        queue_.complete(job);
+        /* A tiny cooperative gap keeps long full-timeline prerenders from
+         * monopolising a CPU core while OBS is composing realtime frames. */
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+void CacheManager::renderJob(RenderQueueManager::Job job)
+{
+    if (!job.title || !jobIsCurrent(job))
+        return;
+
+    QString live_state_key = job.cue_state_key;
+    bool was_stale = false;
     if (job.live_cue) {
-        if (live_cue_states_.value(live_state_key, FrameCacheState::NotCached) != FrameCacheState::Rendering) {
-            live_cue_states_[live_state_key] = FrameCacheState::Rendering;
-            live_cue_progress_percent_[live_state_key] = 50;
-            OGS_LOG_INFO("LiveCue", QStringLiteral("Live cue rendering title=%1 row=%2 stateKey=%3")
-                                      .arg(job.key.title_id).arg(job.cue_row).arg(live_state_key));
-            emit liveCueStateChanged(job.key.title_id, job.cue_row);
+        std::lock_guard<std::recursive_mutex> lock(live_cue_mutex_);
+        const QString rebound_state = liveCueStateReferencingKey(job.key, live_state_key);
+        if (rebound_state.isEmpty()) {
+            OGS_LOG_DEBUG("LiveCue", QStringLiteral("Discarded obsolete background job title=%1 row=%2 stateKey=%3 frameKey=%4")
+                                        .arg(job.key.title_id).arg(job.cue_row)
+                                        .arg(live_state_key, job.key.toString()));
+            return;
+        }
+        live_state_key = rebound_state;
+        job.cue_state_key = rebound_state;
+        job.cue_row = live_cue_rows_.value(rebound_state, job.cue_row);
+        was_stale = job.force_render ||
+            live_cue_states_.value(rebound_state, FrameCacheState::NotCached) == FrameCacheState::Stale;
+        if (live_cue_states_.value(rebound_state, FrameCacheState::NotCached) != FrameCacheState::Rendering) {
+            live_cue_states_[rebound_state] = FrameCacheState::Rendering;
+            live_cue_progress_percent_[rebound_state] = liveCueStoredProgress(rebound_state);
+            if (shouldEmitLiveCueUpdate(rebound_state, FrameCacheState::Rendering,
+                                        live_cue_progress_percent_.value(rebound_state)))
+                emit liveCueStateChanged(job.key.title_id, job.cue_row);
         }
     } else {
+        was_stale = job.force_render || state_tracker_.state(job.key) == FrameCacheState::Stale;
         state_tracker_.setState(job.key, FrameCacheState::Rendering);
     }
 
-    active_render_job_ = job;
-    active_render_was_stale_ = was_stale;
-    has_active_render_job_ = true;
-    QTimer::singleShot(16, this, &CacheManager::renderActiveJob);
-}
+    OGS_LOG_DEBUG(job.live_cue ? "LiveCue" : "Cache",
+                  QStringLiteral("Background job title=%1 frame=%2 liveCue=%3 realtime=%4 row=%5 time=%6 key=%7")
+                      .arg(job.key.title_id).arg(job.key.frame).arg(job.live_cue).arg(job.realtime)
+                      .arg(job.cue_row).arg(job.time, 0, 'f', 3).arg(job.key.toString()));
 
-void CacheManager::renderActiveJob()
-{
-    if (!has_active_render_job_)
-        return;
-
-    const RenderQueueManager::Job job = active_render_job_;
-    const bool was_stale = active_render_was_stale_;
     QImage image;
-    if (was_stale || (!ram_cache_.get(job.key, image) && !disk_cache_.get(job.key, image)))
-        image = render_title_to_image(*job.title, job.time);
-    if (!image.isNull()) {
-        ram_cache_.put(job.key, image);
-        disk_cache_.put(job.key, image);
-        if (job.live_cue) {
-            const QString live_state_key = liveCueStateKey(job.key.title_id, job.cue_row);
-            const int progress = liveCueRangeProgress(job.title);
-            const FrameCacheState next_state = progress >= 100
-                ? FrameCacheState::CachedRam
-                : liveCueRangeState(job.title, live_state_key);
-            live_cue_states_[live_state_key] = next_state;
-            live_cue_progress_percent_[live_state_key] = progress;
-            OGS_LOG_INFO("LiveCue", QStringLiteral("Live cue frame rendered title=%1 row=%2 progress=%3 state=%4 stateKey=%5 frameKey=%6")
-                                      .arg(job.key.title_id).arg(job.cue_row).arg(progress).arg((int)next_state)
-                                      .arg(live_state_key, job.key.toString()));
-            emit liveCueStateChanged(job.key.title_id, job.cue_row);
+    QImage previous;
+    bool loaded_from_disk = false;
+    bool had_previous = ram_cache_.get(job.key, previous);
+    if (!had_previous) {
+        had_previous = disk_cache_.get(job.key, previous);
+        loaded_from_disk = had_previous;
+    }
+    if (was_stale || !had_previous) {
+        const QImage fresh = render_title_to_image(*job.title, job.time);
+        if (was_stale && had_previous) {
+            const QImage merge_previous = previous.format() == QImage::Format_ARGB32_Premultiplied
+                ? previous
+                : previous.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            image = mergeDirtyTiles(job.key, merge_previous, fresh);
         } else {
-            state_tracker_.setState(job.key, FrameCacheState::CachedRam);
-            emit frameReady(job.key.title_id, job.key.frame);
+            image = fresh;
         }
-        has_active_render_job_ = false;
-        emit diagnosticsChanged();
-        ensureWorkerTimerActive();
+        loaded_from_disk = false;
+    } else {
+        image = previous;
+    }
+
+    /* Cairo/QPainter produce premultiplied ARGB. Convert once on the worker to
+     * straight-alpha BGRA (QImage::Format_ARGB32 on little-endian systems),
+     * which is the byte layout consumed by OBS GS_BGRA. This removes the full
+     * 1920x1080 conversion/unpremultiply pass from every playback tick. */
+    if (!image.isNull() && image.format() != kDiskFrameFormat)
+        image = image.convertToFormat(kDiskFrameFormat);
+
+    /* Serialize the final validity check with every invalidation/clear/remove
+     * publication. Without this gate, a job could pass jobIsCurrent(), then an
+     * edit could clear the caches, and the obsolete frame could be inserted
+     * immediately afterwards. */
+    std::unique_lock<std::recursive_mutex> publication_lock(publication_mutex_);
+    if (!jobIsCurrent(job)) {
+        publication_lock.unlock();
+        abandonJobState(job, live_state_key);
         return;
     }
+
+    /* A live-cue frame is valid only while at least one current cue state still
+     * references its content-addressed key. Keep the live state locked through
+     * the cache/state commit so a row refresh cannot detach the key between
+     * validation and publication. */
+    std::unique_lock<std::recursive_mutex> live_publish_lock;
+    QVector<QString> publish_live_states;
+    if (job.live_cue) {
+        live_publish_lock = std::unique_lock<std::recursive_mutex>(live_cue_mutex_);
+        const QString rebound_state = liveCueStateReferencingKey(job.key, live_state_key);
+        if (rebound_state.isEmpty()) {
+            OGS_LOG_DEBUG("LiveCue", QStringLiteral("Discarded obsolete completed job title=%1 row=%2 stateKey=%3 frameKey=%4")
+                                        .arg(job.key.title_id).arg(job.cue_row)
+                                        .arg(live_state_key, job.key.toString()));
+            return;
+        }
+        live_state_key = rebound_state;
+        job.cue_state_key = rebound_state;
+        job.cue_row = live_cue_rows_.value(rebound_state, job.cue_row);
+        publish_live_states.push_back(rebound_state);
+        /* One content-addressed frame may satisfy multiple steady/transition
+         * states. Update every owner at commit time; otherwise the non-owning
+         * rows can remain visually stuck at Queued (100%) even though all of
+         * their required frames are resident. */
+        for (auto it = live_cue_required_keys_.cbegin(); it != live_cue_required_keys_.cend(); ++it) {
+            if (it.key() == rebound_state || live_cue_title_ids_.value(it.key()) != job.key.title_id)
+                continue;
+            if (std::find(it.value().cbegin(), it.value().cend(), job.key) != it.value().cend())
+                publish_live_states.push_back(it.key());
+        }
+    }
+
+    if (image.isNull()) {
+        if (job.live_cue) {
+            for (const QString &state_key : publish_live_states) {
+                const int signal_row = live_cue_rows_.value(state_key, job.cue_row);
+                live_cue_states_[state_key] = FrameCacheState::Stale;
+                live_cue_progress_percent_[state_key] = 0;
+                live_cue_last_emit_states_.remove(state_key);
+                live_cue_last_emit_buckets_.remove(state_key);
+                if (signal_row >= 0)
+                    emit liveCueStateChanged(job.key.title_id, signal_row);
+            }
+        } else {
+            state_tracker_.setState(job.key, FrameCacheState::Stale);
+        }
+        emit diagnosticsChanged();
+        return;
+    }
+
+    ram_cache_.put(job.key, image);
+    if (!loaded_from_disk)
+        disk_cache_.put(job.key, image);
+    /* The editor invalidation baseline must describe the editable title, not
+     * an applied live-cue/transition variant or an OBS runtime snapshot. */
+    if (!job.live_cue && !job.realtime)
+        rememberVisualHash(*job.title, job.key.content_hash);
 
     if (job.live_cue) {
-        const QString live_state_key = liveCueStateKey(job.key.title_id, job.cue_row);
-        live_cue_states_[live_state_key] = FrameCacheState::Stale;
-        live_cue_progress_percent_[live_state_key] = 0;
-        OGS_LOG_WARNING("LiveCue", QStringLiteral("Live cue render failed title=%1 row=%2 stateKey=%3 frameKey=%4")
-                                     .arg(job.key.title_id).arg(job.cue_row).arg(live_state_key, job.key.toString()));
-        emit liveCueStateChanged(job.key.title_id, job.cue_row);
+        live_cue_known_keys_.insert(job.key);
+        for (const QString &state_key : publish_live_states) {
+            const int signal_row = live_cue_rows_.value(state_key, job.cue_row);
+            if (job.force_render && live_cue_total_by_key_.contains(state_key)) {
+                const int total = std::max(1, live_cue_total_by_key_.value(state_key));
+                live_cue_done_by_key_[state_key] = std::min(
+                    total, live_cue_done_by_key_.value(state_key, 0) + 1);
+            }
+            const int progress = liveCueStoredProgress(state_key);
+            /* Drop the transient owner before deriving residency. This preserves
+             * the RAM-vs-disk distinction instead of reporting CachedRam merely
+             * because the final completed frame was promoted into RAM. */
+            live_cue_states_[state_key] = FrameCacheState::NotCached;
+            FrameCacheState next_state = liveCueStoredState(state_key);
+            const bool manual_rebuild_active = live_cue_total_by_key_.contains(state_key) &&
+                live_cue_done_by_key_.value(state_key, 0) < live_cue_total_by_key_.value(state_key);
+            if (manual_rebuild_active) {
+                next_state = FrameCacheState::Rendering;
+            } else if (live_cue_total_by_key_.contains(state_key)) {
+                live_cue_total_by_key_.remove(state_key);
+                live_cue_done_by_key_.remove(state_key);
+                /* Re-evaluate now that the temporary generation overlay has
+                 * ended, so the final state accurately reports RAM vs disk. */
+                next_state = liveCueStoredState(state_key);
+            }
+            live_cue_states_[state_key] = next_state;
+            live_cue_progress_percent_[state_key] = progress;
+            if (signal_row >= 0 && shouldEmitLiveCueUpdate(state_key, next_state, progress))
+                emit liveCueStateChanged(job.key.title_id, signal_row);
+        }
     } else {
-        state_tracker_.setState(job.key, FrameCacheState::Stale);
+        state_tracker_.setState(job.key, FrameCacheState::CachedRam);
+        emit frameReady(job.key.title_id, job.key.frame);
     }
-    has_active_render_job_ = false;
     emit diagnosticsChanged();
-    ensureWorkerTimerActive();
 }

@@ -2105,7 +2105,11 @@ void CanvasPreview::render_to_pixmap()
      * frame cache is intentionally bypassed here because rich-text auto styling
      * changes can happen without a text-content change, and the inline editor is
      * visually transparent over the canvas-rendered text. */
-    if (!inline_text_layer_id_.empty())
+    const bool live_corner_radius_drag =
+        corner_radius_drag_.active &&
+        (drag_mode_ == DragMode::CornerRadiusTL || drag_mode_ == DragMode::CornerRadiusTR ||
+         drag_mode_ == DragMode::CornerRadiusBR || drag_mode_ == DragMode::CornerRadiusBL);
+    if (!inline_text_layer_id_.empty() || live_corner_radius_drag)
         image = CacheManager::instance().renderUncachedFrame(title_, playhead_);
     else
         image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);

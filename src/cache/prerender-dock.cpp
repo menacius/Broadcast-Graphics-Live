@@ -1,6 +1,8 @@
 #include "prerender-dock.h"
 #include "title-localization.h"
 
+#include <algorithm>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -8,9 +10,19 @@
 #include <QGridLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QVBoxLayout>
+
+namespace {
+constexpr const char *kPrerenderStartModeKey = "Prerender/StartMode";
+constexpr const char *kPrerenderPlaybackModeKey = "Prerender/PlaybackMode";
+constexpr const char *kPrerenderSkipFramesKey = "Prerender/SkipFrames";
+constexpr const char *kPrerenderSpeedPercentKey = "Prerender/SpeedPercent";
+constexpr const char *kPrerenderPlayAfterRenderingKey = "Prerender/PlayAfterRendering";
+constexpr const char *kPrerenderPlayEveryFrameKey = "Prerender/PlayEveryFrame";
+}
 
 PrerenderDock::PrerenderDock(QWidget *parent)
     : QWidget(parent)
@@ -55,6 +67,8 @@ void PrerenderDock::buildUi()
     cache_enabled_->setChecked(CacheManager::instance().cacheEnabled());
     form->addRow(QString(), cache_enabled_);
 
+    QSettings prerender_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+
     skip_frames_ = new QSpinBox(this);
     skip_frames_->setRange(0, 30);
     form->addRow(obsgs_tr("OBSTitles.SkipFrames"), skip_frames_);
@@ -65,11 +79,19 @@ void PrerenderDock::buildUi()
     speed_percent_->setSuffix(QStringLiteral("%"));
     form->addRow(obsgs_tr("OBSTitles.Speed"), speed_percent_);
 
-    cached_only_ = new QCheckBox(obsgs_tr("OBSTitles.PlayCachedFramesOnly"), this);
+    cached_only_ = new QCheckBox(obsgs_tr("OBSTitles.PlayAfterRendering"), this);
     form->addRow(QString(), cached_only_);
 
     play_every_frame_ = new QCheckBox(obsgs_tr("OBSTitles.PlayEveryFrameEvenIfSlow"), this);
     form->addRow(QString(), play_every_frame_);
+
+    start_mode_->setCurrentIndex(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderStartModeKey), 0).toInt(), 0, start_mode_->count() - 1));
+    playback_mode_->setCurrentIndex(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderPlaybackModeKey), 0).toInt(), 0, playback_mode_->count() - 1));
+    skip_frames_->setValue(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderSkipFramesKey), 0).toInt(), skip_frames_->minimum(), skip_frames_->maximum()));
+    speed_percent_->setValue(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderSpeedPercentKey), 100.0).toDouble(), speed_percent_->minimum(), speed_percent_->maximum()));
+    cached_only_->setChecked(prerender_settings.value(QString::fromUtf8(kPrerenderPlayAfterRenderingKey), false).toBool());
+    play_every_frame_->setChecked(prerender_settings.value(QString::fromUtf8(kPrerenderPlayEveryFrameKey), false).toBool());
+
     root->addLayout(form);
 
     auto *grid = new QGridLayout();
@@ -136,6 +158,14 @@ void PrerenderDock::applySettings()
     settings.cached_frames_only = cached_only_ && cached_only_->isChecked();
     settings.play_every_frame = play_every_frame;
     CacheManager::instance().setPlaybackSettings(settings);
+
+    QSettings prerender_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    if (start_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderStartModeKey), start_mode_->currentIndex());
+    if (playback_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlaybackModeKey), playback_mode_->currentIndex());
+    if (skip_frames_) prerender_settings.setValue(QString::fromUtf8(kPrerenderSkipFramesKey), skip_frames_->value());
+    if (speed_percent_) prerender_settings.setValue(QString::fromUtf8(kPrerenderSpeedPercentKey), speed_percent_->value());
+    if (cached_only_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlayAfterRenderingKey), cached_only_->isChecked());
+    if (play_every_frame_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlayEveryFrameKey), play_every_frame_->isChecked());
 }
 
 void PrerenderDock::updateCacheEnabled(bool enabled)

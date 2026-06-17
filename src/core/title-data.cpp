@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
 #include <stdexcept>
 #include <cstdio>
 #include <limits>
@@ -584,6 +585,32 @@ void TitleDataStore::notify_change()
 void TitleDataStore::touch_runtime_change()
 {
     revision_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ensure_live_text_row_ids(Title &title)
+{
+    if (title.live_text_row_ids.size() > title.live_text_rows.size())
+        title.live_text_row_ids.resize(title.live_text_rows.size());
+
+    std::set<std::string> used;
+    for (size_t i = 0; i < title.live_text_rows.size(); ++i) {
+        if (i >= title.live_text_row_ids.size())
+            title.live_text_row_ids.push_back({});
+        std::string &id = title.live_text_row_ids[i];
+        if (id.empty() || used.count(id))
+            id = TitleDataStore::make_uuid();
+        used.insert(id);
+    }
+}
+
+std::string live_text_row_id(const Title &title, int row)
+{
+    if (row < 0 || row >= static_cast<int>(title.live_text_rows.size()))
+        return {};
+    if (row < static_cast<int>(title.live_text_row_ids.size()) &&
+        !title.live_text_row_ids[static_cast<size_t>(row)].empty())
+        return title.live_text_row_ids[static_cast<size_t>(row)];
+    return std::string("legacy-row-") + std::to_string(row);
 }
 
 std::shared_ptr<Title> TitleDataStore::create_title(const std::string &name)
@@ -1183,6 +1210,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["rich_text"] = rich_doc_to_json(l.rich_text);
     j["clock_format"]  = l.clock_format;
     j["expose_text"]   = l.expose_text;
+    j["ignore_persistence"] = l.ignore_persistence;
     j["font_family"]   = l.font_family;
     j["font_style"]    = l.font_style;
     j["font_size"]     = l.font_size;
@@ -1570,6 +1598,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->rich_text_html.clear();
     l->clock_format  = bounded_string(j, "clock_format", "H:i:s", kMaxNameLength);
     l->expose_text   = json_bool(j, "expose_text", false);
+    l->ignore_persistence = !l->expose_text && json_bool(j, "ignore_persistence", false);
     l->font_family   = bounded_string(j, "font_family", "Helvetica Neue", kMaxNameLength);
     l->font_style    = bounded_string(j, "font_style", "Regular", kMaxNameLength);
     l->font_size     = std::clamp(json_int(j, "font_size", 72), 1, 512);
@@ -2081,6 +2110,7 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     for (const auto &row : t.live_text_rows)
         live_rows.push_back(row);
     jt["live_text_rows"] = live_rows;
+    jt["live_text_row_ids"] = t.live_text_row_ids;
     jt["live_text_column_order"] = t.live_text_column_order;
     jt["live_text_header_state"] = t.live_text_header_state;
     jt["external_data_enabled"] = t.external_data_enabled;
@@ -2163,6 +2193,21 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
             t->live_text_rows.push_back(std::move(row));
         }
     }
+    if (jt.contains("live_text_row_ids") && jt["live_text_row_ids"].is_array()) {
+        const size_t count = std::min(jt["live_text_row_ids"].size(), kMaxLiveTextRows);
+        t->live_text_row_ids.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (!jt["live_text_row_ids"][i].is_string()) {
+                t->live_text_row_ids.push_back({});
+                continue;
+            }
+            std::string row_id = jt["live_text_row_ids"][i].get<std::string>();
+            if (row_id.size() > kMaxNameLength)
+                row_id.resize(kMaxNameLength);
+            t->live_text_row_ids.push_back(std::move(row_id));
+        }
+    }
+    ensure_live_text_row_ids(*t);
     if (jt.contains("live_text_column_order") && jt["live_text_column_order"].is_array()) {
         const size_t count = std::min(jt["live_text_column_order"].size(), kMaxLiveTextColumns);
         t->live_text_column_order.reserve(count);

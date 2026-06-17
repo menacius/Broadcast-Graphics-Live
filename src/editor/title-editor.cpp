@@ -2533,6 +2533,15 @@ void TitleEditor::new_title_contents()
 bool TitleEditor::persist_title_changes(bool update_preview_screenshot, bool show_saved_status)
 {
     if (!title_) return false;
+
+    /* Saving can replace/copy the stored Title while a deferred cache render is
+     * still holding the same title identity. Cancel only pending work for this
+     * title first; cached frames remain available and are selectively
+     * invalidated after the save through the normal modification path. */
+    const QString cache_title_id = QString::fromStdString(
+        editing_title_id_.empty() ? title_->id : editing_title_id_);
+    CacheManager::instance().cancelTitleWork(cache_title_id);
+
     auto stored = TitleDataStore::instance().get_title(editing_title_id_.empty() ? title_->id : editing_title_id_);
     if (!stored) {
         stored = TitleDataStore::instance().create_title(title_->name);
@@ -3146,6 +3155,7 @@ void TitleEditor::restore_undo_snapshot(int index)
     title_->width = snapshot->width;
     title_->height = snapshot->height;
     title_->live_text_rows = snapshot->live_text_rows;
+    title_->live_text_row_ids = snapshot->live_text_row_ids;
     title_->live_text_column_order = snapshot->live_text_column_order;
     title_->live_text_header_state = snapshot->live_text_header_state;
     title_->external_data_enabled = snapshot->external_data_enabled;

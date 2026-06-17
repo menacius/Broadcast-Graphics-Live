@@ -225,6 +225,7 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
         for (size_t i = old_size; i < exposed.size(); ++i)
             row[i] = exposed[i]->text_content;
     }
+    ensure_live_text_row_ids(*title);
 }
 
 static QString live_cue_cache_text(FrameCacheState state)
@@ -265,8 +266,12 @@ static QString live_cue_cache_tooltip(FrameCacheState state)
 static QColor live_cue_cache_color(FrameCacheState state)
 {
     switch (state) {
-    case FrameCacheState::Queued: return QColor(230, 138, 33);
-    case FrameCacheState::Rendering: return QColor(255, 214, 63);
+    /* Queued and Rendering are a single visual progress phase.  Giving them
+     * different tints made the same bucket flicker orange/yellow every time
+     * ownership moved between the queue and worker.  The four SVG shapes, not
+     * the scheduler's transient state, now communicate prerender progress. */
+    case FrameCacheState::Queued:
+    case FrameCacheState::Rendering: return QColor(255, 202, 74);
     case FrameCacheState::CachedRam: return QColor(39, 186, 103);
     case FrameCacheState::CachedDisk: return QColor(74, 144, 226);
     case FrameCacheState::Stale: return QColor(214, 90, 90);
@@ -306,6 +311,77 @@ static const char *live_cue_cache_icon_name(FrameCacheState state, int progress_
     default:
         return "cache-queued-0-25.svg";
     }
+}
+
+static QIcon obs_icon(const char *file_name, const QColor &color);
+static QIcon title_list_status_icon(bool has_exposed_text, bool has_scene_mask);
+
+struct LiveCueAggregateCacheStatus {
+    FrameCacheState state = FrameCacheState::NotCached;
+    int progress_percent = 0;
+    int ready_rows = 0;
+    int total_rows = 0;
+};
+
+static LiveCueAggregateCacheStatus aggregate_live_cue_cache_status(const std::shared_ptr<Title> &title)
+{
+    LiveCueAggregateCacheStatus status;
+    if (!title || title->live_text_rows.empty()) {
+        status.state = CacheManager::instance().cacheEnabled()
+            ? FrameCacheState::NotCached
+            : FrameCacheState::Disabled;
+        return status;
+    }
+
+    status.total_rows = static_cast<int>(title->live_text_rows.size());
+    if (!CacheManager::instance().cacheEnabled()) {
+        status.state = FrameCacheState::Disabled;
+        return status;
+    }
+
+    for (int row = 0; row < status.total_rows; ++row) {
+        const FrameCacheState row_state = CacheManager::instance().liveCueState(title, row);
+        if (row_state == FrameCacheState::CachedRam || row_state == FrameCacheState::CachedDisk)
+            ++status.ready_rows;
+    }
+
+    /* Aggregate progress includes steady row frames and the independent
+     * Background Persistence/outro transition-pair states. Row icons remain
+     * stable when a new row is added; only the title-level badge reflects the
+     * newly required transition work. */
+    status.progress_percent = CacheManager::instance().liveCueAggregateProgressPercent(title);
+    status.state = CacheManager::instance().liveCueAggregateState(title);
+    return status;
+}
+
+
+static QString aggregate_live_cue_cache_tooltip(const LiveCueAggregateCacheStatus &status)
+{
+    if (status.total_rows <= 0)
+        return obsgs_tr("OBSTitles.LiveCueNotCachedTooltip");
+    return QStringLiteral("%1 (%2%, %3/%4 cues)")
+        .arg(live_cue_cache_text(status.state))
+        .arg(status.progress_percent)
+        .arg(status.ready_rows)
+        .arg(status.total_rows);
+}
+
+static QIcon title_list_combined_status_icon(bool has_exposed_text, bool has_scene_mask,
+                                             const LiveCueAggregateCacheStatus &cache_status)
+{
+    constexpr int gap = 3;
+    const int width = kTitleListIconExtent * 2 + gap;
+    QPixmap pixmap(width, kTitleListIconExtent);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    const QPixmap type_pixmap = title_list_status_icon(has_exposed_text, has_scene_mask).pixmap(kTitleListIconExtent, kTitleListIconExtent);
+    const QPixmap cache_pixmap = obs_icon(live_cue_cache_icon_name(cache_status.state, cache_status.progress_percent),
+                                          live_cue_cache_color(cache_status.state)).pixmap(kTitleListIconExtent, kTitleListIconExtent);
+    painter.drawPixmap(0, 0, type_pixmap);
+    painter.drawPixmap(kTitleListIconExtent + gap, 0, cache_pixmap);
+    painter.end();
+    return QIcon(pixmap);
 }
 
 static QToolButton *centered_cell_tool_button(QTableWidget *table, int row, int col, const char *object_name)
@@ -531,6 +607,21 @@ public:
     std::function<void(const QString &)> editing_finished;
 
 protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+            !event->modifiers().testFlag(Qt::ShiftModifier)) {
+            if (editing_finished)
+                editing_finished(toPlainText());
+            focusNextChild();
+            event->accept();
+            return;
+        }
+
+        // A literal newline is intentionally available only through Shift+Enter.
+        QPlainTextEdit::keyPressEvent(event);
+    }
+
     void focusOutEvent(QFocusEvent *event) override
     {
         QPlainTextEdit::focusOutEvent(event);
@@ -1244,7 +1335,8 @@ static QString elide_to_two_lines(const QString &text, const QFontMetrics &fm, i
     return first + QLatin1Char(' ') + fm.elidedText(rest, Qt::ElideRight, width);
 }
 
-static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, bool has_scene_mask)
+static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, bool has_scene_mask,
+                                  const LiveCueAggregateCacheStatus &cache_status)
 {
     const QSize thumb_size(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight);
     QPixmap composed(thumb_size);
@@ -1268,11 +1360,14 @@ static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, boo
 
     const QPixmap type_pixmap = title_list_status_icon(has_exposed_text, has_scene_mask).pixmap(QSize(18, 18));
     QRect badge_rect(5, 5, 24, 24);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(22, 22, 22, 210));
-    painter.drawRoundedRect(badge_rect, 4, 4);
     if (!type_pixmap.isNull())
         painter.drawPixmap(badge_rect.center() - QPoint(type_pixmap.width() / 2, type_pixmap.height() / 2), type_pixmap);
+
+    const QPixmap cache_pixmap = obs_icon(live_cue_cache_icon_name(cache_status.state, cache_status.progress_percent),
+                                          live_cue_cache_color(cache_status.state)).pixmap(QSize(18, 18));
+    QRect cache_badge_rect(thumb_size.width() - 29, 5, 24, 24);
+    if (!cache_pixmap.isNull())
+        painter.drawPixmap(cache_badge_rect.center() - QPoint(cache_pixmap.width() / 2, cache_pixmap.height() / 2), cache_pixmap);
     painter.end();
 
     return QIcon(composed);
@@ -2021,14 +2116,17 @@ TitleDock::TitleDock(QWidget *parent)
     live_refresh_timer_->start();
     connect(&CacheManager::instance(), &CacheManager::liveCueStateChanged, this,
             [this](const QString &title_id, int row) {
-                if (title_id != QString::fromStdString(selected_id()) || updating_exposed_text_)
+                if (title_id != QString::fromStdString(selected_id()) || updating_exposed_text_) {
+                    QTimer::singleShot(0, this, [this, title_id]() { update_title_list_cache_icon(title_id); });
                     return;
+                }
                 auto title = TitleDataStore::instance().get_title(selected_id());
                 if (!title || !text_table_ || row < 0 || row >= text_table_->rowCount()) {
                     populate_exposed_text();
                     return;
                 }
                 update_live_text_cache_cell(title, row);
+                QTimer::singleShot(0, this, [this, title_id]() { update_title_list_cache_icon(title_id); });
                 if (cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row &&
                     CacheManager::instance().isLiveCueReady(title, row)) {
                     OGS_LOG_INFO("LiveCueUI", QStringLiteral("Armed cue row prerender complete; cueing title=%1 row=%2")
@@ -2040,8 +2138,10 @@ TitleDock::TitleDock(QWidget *parent)
             });
     connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this,
             [this](bool) {
-                if (!updating_exposed_text_)
+                if (!updating_exposed_text_) {
+                    populate_list();
                     populate_exposed_text();
+                }
             });
 }
 
@@ -2105,18 +2205,26 @@ void TitleDock::update_live_text_cache_cell(const std::shared_ptr<Title> &title,
     const int progress_percent = CacheManager::instance().liveCueProgressPercent(title, row);
     const QColor color = live_cue_cache_color(state);
     const char *icon_name = live_cue_cache_icon_name(state, progress_percent);
-    OGS_LOG_DEBUG("LiveCueUI", QStringLiteral("Update cache cell title=%1 row=%2 state=%3 progress=%4 icon=%5")
-                                     .arg(QString::fromStdString(title->id))
-                                     .arg(row)
-                                     .arg((int)state)
-                                     .arg(progress_percent)
-                                     .arg(QString::fromUtf8(icon_name)));
-    button->setIcon(obs_icon(icon_name, color));
-    button->setToolTip(QStringLiteral("%1\n%2")
-                           .arg(state == FrameCacheState::Queued || state == FrameCacheState::Rendering
-                                    ? QStringLiteral("%1 (%2%)").arg(live_cue_cache_text(state)).arg(progress_percent)
-                                    : live_cue_cache_text(state),
-                                live_cue_cache_tooltip(state)));
+    const QString visual_key = QStringLiteral("%1:%2")
+                                   .arg(QString::fromUtf8(icon_name))
+                                   .arg(color.rgba());
+    if (button->property("ogsCacheVisualKey").toString() != visual_key) {
+        OGS_LOG_DEBUG("LiveCueUI", QStringLiteral("Update cache cell title=%1 row=%2 state=%3 progress=%4 icon=%5")
+                                         .arg(QString::fromStdString(title->id))
+                                         .arg(row)
+                                         .arg((int)state)
+                                         .arg(progress_percent)
+                                         .arg(QString::fromUtf8(icon_name)));
+        button->setIcon(obs_icon(icon_name, color));
+        button->setProperty("ogsCacheVisualKey", visual_key);
+    }
+    const QString tooltip = QStringLiteral("%1\n%2")
+                                .arg(state == FrameCacheState::Queued || state == FrameCacheState::Rendering
+                                         ? QStringLiteral("%1 (%2%)").arg(live_cue_cache_text(state)).arg(progress_percent)
+                                         : live_cue_cache_text(state),
+                                     live_cue_cache_tooltip(state));
+    if (button->toolTip() != tooltip)
+        button->setToolTip(tooltip);
     button->setEnabled(true);
     button->setCursor(state == FrameCacheState::Disabled ? Qt::ArrowCursor : Qt::PointingHandCursor);
     button->setStyleSheet(QStringLiteral(
@@ -2143,6 +2251,102 @@ void TitleDock::update_live_text_cache_cells()
     for (int row = 0; row < text_table_->rowCount(); ++row) {
         update_live_text_cache_cell(title, row);
         update_live_text_select_cell_status(row);
+    }
+}
+
+
+void TitleDock::update_live_text_runtime_status_fast(const std::shared_ptr<Title> &title, int primary_row, int previous_row)
+{
+    if (!title || !text_table_)
+        return;
+
+    const QString title_id = QString::fromStdString(title->id);
+    auto exposed = exposed_text_layers(title);
+    const int cue_col = exposed.empty() ? 1 : (int)exposed.size() + 2;
+
+    auto update_row = [this, title, title_id, cue_col](int row) {
+        if (row < 0 || !text_table_ || row >= text_table_->rowCount())
+            return;
+        update_live_text_select_cell_status(row);
+        update_live_text_cache_cell(title, row);
+        if (auto *cue = live_cue_button(text_table_, row, cue_col)) {
+            const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
+                cache_waiting_cue_row_ == row;
+            cue->setIcon(obs_icon("cue.svg", live_cue_state_color(row == title->current_cue_row,
+                                                                   row == title->pending_cue_row || waiting_for_prerender)));
+        }
+    };
+
+    update_row(primary_row);
+    update_row(previous_row);
+    if (title->pending_cue_row >= 0 && title->pending_cue_row != primary_row && title->pending_cue_row != previous_row)
+        update_row(title->pending_cue_row);
+
+    if (auto *cue_table = dynamic_cast<LiveTextCueTable *>(text_table_))
+        cue_table->viewport()->update();
+    text_table_->viewport()->update();
+
+    // The aggregate cache badge can be comparatively expensive on titles with many cue rows
+    // because it queries every cue.  Defer it so row/program feedback stays immediate.
+    QTimer::singleShot(0, this, [this, title_id]() { update_title_list_cache_icon(title_id); });
+}
+
+
+void TitleDock::update_live_text_runtime_status(const std::shared_ptr<Title> &title)
+{
+    if (!title || !text_table_)
+        return;
+
+    const QString title_id = QString::fromStdString(title->id);
+    auto exposed = exposed_text_layers(title);
+    const int cue_col = exposed.empty() ? 1 : (int)exposed.size() + 2;
+
+    for (int row = 0; row < text_table_->rowCount(); ++row) {
+        update_live_text_select_cell_status(row);
+        update_live_text_cache_cell(title, row);
+
+        auto *cue = live_cue_button(text_table_, row, cue_col);
+        if (!cue)
+            continue;
+        const bool waiting_for_prerender = cache_waiting_title_id_ == title_id &&
+            cache_waiting_cue_row_ == row;
+        cue->setIcon(obs_icon("cue.svg", live_cue_state_color(row == title->current_cue_row,
+                                                               row == title->pending_cue_row || waiting_for_prerender)));
+    }
+
+    update_title_list_cache_icon(title_id);
+
+    if (auto *cue_table = dynamic_cast<LiveTextCueTable *>(text_table_))
+        cue_table->viewport()->update();
+    text_table_->viewport()->update();
+}
+
+void TitleDock::update_title_list_cache_icon(const QString &title_id)
+{
+    if (!list_ || title_id.isEmpty())
+        return;
+
+    auto title = TitleDataStore::instance().get_title(title_id.toStdString());
+    if (!title)
+        return;
+
+    const bool has_exposed_text = title_has_exposed_text(title);
+    const bool has_scene_mask = title_has_scene_mask(title);
+    const LiveCueAggregateCacheStatus cache_status = aggregate_live_cue_cache_status(title);
+    for (int i = 0; i < list_->count(); ++i) {
+        auto *item = list_->item(i);
+        if (!item || item->data(Qt::UserRole).toString() != title_id)
+            continue;
+        if (template_icon_view_) {
+            item->setIcon(title_icon_view_icon(*title, has_exposed_text, has_scene_mask, cache_status));
+            item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
+        } else {
+            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status));
+        }
+        item->setToolTip(QStringLiteral("%1\n%2")
+                             .arg(obsgs_tr("OBSTitles.LayerCountTooltipFormat").arg(title->layers.size()).arg(title->duration),
+                                  aggregate_live_cue_cache_tooltip(cache_status)));
+        break;
     }
 }
 
@@ -2737,7 +2941,7 @@ void TitleDock::update_template_view_mode()
         }
     } else {
         list_->setViewMode(QListView::ListMode);
-        list_->setIconSize(QSize(kTitleListIconExtent, kTitleListIconExtent));
+        list_->setIconSize(QSize(kTitleListIconExtent * 2 + 3, kTitleListIconExtent));
         list_->setGridSize(QSize());
         list_->setResizeMode(QListView::Fixed);
         list_->setMovement(QListView::Static);
@@ -2821,19 +3025,21 @@ void TitleDock::populate_list()
         auto *item = new QListWidgetItem(QString::fromStdString(t->name));
         const bool has_exposed_text = title_has_exposed_text(t);
         const bool has_scene_mask = title_has_scene_mask(t);
+        const LiveCueAggregateCacheStatus cache_status = aggregate_live_cue_cache_status(t);
         if (template_icon_view_) {
-            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask));
+            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask, cache_status));
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
             item->setTextAlignment(Qt::AlignHCenter);
         } else {
-            item->setIcon(title_list_status_icon(has_exposed_text, has_scene_mask));
+            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status));
             item->setSizeHint(QSize());
             item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         }
         item->setData(Qt::UserRole, QString::fromStdString(t->id));
         // Layer count hint as tooltip
-        item->setToolTip(
-            obsgs_tr("OBSTitles.LayerCountTooltipFormat").arg(t->layers.size()).arg(t->duration));
+        item->setToolTip(QStringLiteral("%1\n%2")
+            .arg(obsgs_tr("OBSTitles.LayerCountTooltipFormat").arg(t->layers.size()).arg(t->duration),
+                 aggregate_live_cue_cache_tooltip(cache_status)));
         list_->addItem(item);
     }
 
@@ -3104,8 +3310,10 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
 
     TitleDataStore::instance().save();
     TitleDataStore::instance().touch_runtime_change();
-    for (int target_row : target_rows)
-        CacheManager::instance().invalidateLiveCue(title, target_row);
+    /* A row can also be the previous/outgoing side of another row's persistence
+     * transition, so refresh the pairwise requirement sets once. Stable keys
+     * ensure that only variants affected by the edited text are regenerated. */
+    CacheManager::instance().refreshLiveCueStructure(title);
     seen_store_revision_ = TitleDataStore::instance().revision();
     updating_exposed_text_ = false;
 }
@@ -3259,7 +3467,8 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
                                     .arg(cache_waiting_title_id_).arg(row));
         CacheManager::instance().queueLiveCue(title, row);
         CacheManager::instance().preloadLiveCues(title, row, 2);
-        populate_exposed_text();
+        update_live_text_runtime_status_fast(title, row);
+        QTimer::singleShot(0, this, [this, title, row]() { update_live_text_runtime_status_fast(title, row); });
         return false;
     }
 
@@ -3321,7 +3530,8 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     TitleDataStore::instance().touch_runtime_change();
     CacheManager::instance().preloadLiveCues(title, row, 2);
     updating_exposed_text_ = false;
-    populate_exposed_text();
+    update_live_text_runtime_status_fast(title, row, previous_row);
+    QTimer::singleShot(0, this, [this, title, row, previous_row]() { update_live_text_runtime_status_fast(title, row, previous_row); });
     return true;
 }
 
@@ -3596,6 +3806,11 @@ void TitleDock::populate_exposed_text()
         return;
     }
 
+    /* Reconcile stable row IDs/cache states before creating row widgets. This
+     * prevents a freshly rebuilt table from briefly binding old numeric-row
+     * states to the new row order after delete/re-add/reorder operations. */
+    CacheManager::instance().refreshLiveCueStructure(title);
+
     text_table_->setRowCount((int)title->live_text_rows.size());
     text_table_->setColumnCount((int)exposed.size() + 3);
 
@@ -3645,8 +3860,6 @@ void TitleDock::populate_exposed_text()
             connect(cue, &QToolButton::clicked, this, [this, row]() { cue_live_text_row(row, true); });
         }
     }
-    const int current = title->current_cue_row >= 0 ? title->current_cue_row : 0;
-    CacheManager::instance().preloadLiveCues(title, current, 2);
     apply_live_text_row_heights();
     adjust_live_text_table_columns(first_width_fit_for_title);
     update_playlist_controls();
@@ -3746,12 +3959,14 @@ void TitleDock::on_import_live_text_data()
     for (auto &row : imported_rows)
         row.resize(exposed.size());
     title->live_text_rows = std::move(imported_rows);
+    title->live_text_row_ids.clear();
     normalize_live_text_rows(title, exposed);
     title->current_cue_row = -1;
     title->pending_cue_row = -1;
     ++title->cue_revision;
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
+    CacheManager::instance().refreshLiveCueStructure(title);
     populate_exposed_text();
     status_lbl_->setText(obsgs_tr("OBSTitles.ImportedStatusFormat").arg(QFileInfo(path).fileName()));
 }
@@ -3789,7 +4004,6 @@ void TitleDock::on_import_append_live_text_data()
 
     auto exposed = exposed_text_layers(title);
     normalize_live_text_rows(title, exposed);
-    const int first_added_row = (int)title->live_text_rows.size();
     for (auto &row : imported_rows) {
         row.resize(exposed.size());
         title->live_text_rows.push_back(std::move(row));
@@ -3797,8 +4011,7 @@ void TitleDock::on_import_append_live_text_data()
     normalize_live_text_rows(title, exposed);
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
-    for (int row = first_added_row; row < (int)title->live_text_rows.size(); ++row)
-        CacheManager::instance().invalidateLiveCue(title, row);
+    CacheManager::instance().refreshLiveCueStructure(title);
     populate_exposed_text();
     status_lbl_->setText(obsgs_tr("OBSTitles.ImportedStatusFormat").arg(QFileInfo(path).fileName()));
 }
@@ -3878,11 +4091,15 @@ void TitleDock::on_add_live_text_row()
     row.resize(exposed.size());
 
     title->live_text_rows.push_back(std::move(row));
+    title->live_text_row_ids.push_back(TitleDataStore::make_uuid());
     const int added_row = (int)title->live_text_rows.size() - 1;
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
-    CacheManager::instance().invalidateLiveCue(title, added_row);
-    CacheManager::instance().preloadLiveCues(title, added_row, 1);
+
+    /* Adding a row creates only the transition variants to/from that row.
+     * Refresh all requirement sets so those new states are queued, while stable
+     * content-addressed keys reuse every previously rendered frame. */
+    CacheManager::instance().refreshLiveCueStructure(title);
     populate_exposed_text();
     apply_live_text_row_selection({added_row}, false);
     update_live_text_cache_cell(title, added_row);
@@ -3903,6 +4120,8 @@ void TitleDock::on_delete_live_text_rows()
         if (row < 0 || row >= (int)title->live_text_rows.size())
             continue;
         title->live_text_rows.erase(title->live_text_rows.begin() + row);
+        if (row < static_cast<int>(title->live_text_row_ids.size()))
+            title->live_text_row_ids.erase(title->live_text_row_ids.begin() + row);
         if (title->current_cue_row == row)
             title->current_cue_row = -1;
         else if (title->current_cue_row > row)
@@ -3917,6 +4136,7 @@ void TitleDock::on_delete_live_text_rows()
     normalize_live_text_rows(title, exposed_now);
     TitleDataStore::instance().save();
     TitleDataStore::instance().notify_change();
+    CacheManager::instance().refreshLiveCueStructure(title);
     updating_exposed_text_ = false;
     populate_exposed_text();
     if (!title->live_text_rows.empty())
@@ -3950,14 +4170,19 @@ void TitleDock::on_move_live_text_row_up()
     }
     if (!moved) return;
 
+    ensure_live_text_row_ids(*title);
     std::vector<std::vector<std::string>> reordered;
+    std::vector<std::string> reordered_ids;
     reordered.reserve(title->live_text_rows.size());
+    reordered_ids.reserve(title->live_text_row_ids.size());
     std::vector<int> new_index(row_count, -1);
     for (int visual = 0; visual < row_count; ++visual) {
         new_index[order[visual]] = visual;
         reordered.push_back(std::move(title->live_text_rows[order[visual]]));
+        reordered_ids.push_back(std::move(title->live_text_row_ids[order[visual]]));
     }
     title->live_text_rows = std::move(reordered);
+    title->live_text_row_ids = std::move(reordered_ids);
     if (title->current_cue_row >= 0 && title->current_cue_row < row_count)
         title->current_cue_row = new_index[title->current_cue_row];
     if (title->pending_cue_row >= 0 && title->pending_cue_row < row_count)
@@ -3972,6 +4197,7 @@ void TitleDock::on_move_live_text_row_up()
 
     TitleDataStore::instance().save();
     TitleDataStore::instance().touch_runtime_change();
+    CacheManager::instance().refreshLiveCueStructure(title);
     seen_store_revision_ = TitleDataStore::instance().revision();
     populate_exposed_text();
     apply_live_text_row_selection(moved_rows, restore_checked);
@@ -4004,14 +4230,19 @@ void TitleDock::on_move_live_text_row_down()
     }
     if (!moved) return;
 
+    ensure_live_text_row_ids(*title);
     std::vector<std::vector<std::string>> reordered;
+    std::vector<std::string> reordered_ids;
     reordered.reserve(title->live_text_rows.size());
+    reordered_ids.reserve(title->live_text_row_ids.size());
     std::vector<int> new_index(row_count, -1);
     for (int visual = 0; visual < row_count; ++visual) {
         new_index[order[visual]] = visual;
         reordered.push_back(std::move(title->live_text_rows[order[visual]]));
+        reordered_ids.push_back(std::move(title->live_text_row_ids[order[visual]]));
     }
     title->live_text_rows = std::move(reordered);
+    title->live_text_row_ids = std::move(reordered_ids);
     if (title->current_cue_row >= 0 && title->current_cue_row < row_count)
         title->current_cue_row = new_index[title->current_cue_row];
     if (title->pending_cue_row >= 0 && title->pending_cue_row < row_count)
@@ -4026,6 +4257,7 @@ void TitleDock::on_move_live_text_row_down()
 
     TitleDataStore::instance().save();
     TitleDataStore::instance().touch_runtime_change();
+    CacheManager::instance().refreshLiveCueStructure(title);
     seen_store_revision_ = TitleDataStore::instance().revision();
     populate_exposed_text();
     apply_live_text_row_selection(moved_rows, restore_checked);
@@ -4615,8 +4847,10 @@ void TitleDock::on_delete()
         if (confirmation.delete_sources)
             delete_title_sources_for_ids(ids);
 
-        for (const auto &id : ids)
+        for (const auto &id : ids) {
+            CacheManager::instance().removeTitleCache(QString::fromStdString(id), false);
             TitleDataStore::instance().delete_title(id);
+        }
         TitleDataStore::instance().save();
         populate_list();
         if (list_ && list_->count() > 0)

@@ -191,6 +191,7 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
         for (size_t i = old_size; i < exposed.size(); ++i)
             row[i] = exposed[i]->text_content;
     }
+    ensure_live_text_row_ids(*title);
 }
 
 

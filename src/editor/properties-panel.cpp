@@ -896,6 +896,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_expose_text_ = new QCheckBox(obsgs_tr("OBSTitles.ExposeInDock"), inner);
     chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
     style_checkbox(chk_expose_text_);
+    chk_ignore_persistence_ = new QCheckBox(obsgs_tr("OBSTitles.IgnorePersistence"), inner);
+    chk_ignore_persistence_->setToolTip(obsgs_tr("OBSTitles.IgnorePersistenceTooltip"));
+    style_checkbox(chk_ignore_persistence_);
     cmb_ticker_style_ = new QComboBox(inner);
     cmb_ticker_style_->addItem(obsgs_tr("OBSTitles.TickerHorizontal"), 0);
     cmb_ticker_style_->addItem(obsgs_tr("OBSTitles.TickerVerticalLine"), 1);
@@ -1121,6 +1124,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
     add_form_row(live_edit_form, obsgs_tr("OBSTitles.SceneMask"), chk_scene_mask_);
     add_form_row(live_edit_form, obsgs_tr("OBSTitles.DockEditing"), chk_expose_text_);
+    add_form_row(live_edit_form, obsgs_tr("OBSTitles.Persistence"), chk_ignore_persistence_);
     vl->addWidget(live_edit_box_);
 
     /* ── Bullets and Numbering ── */
@@ -1927,7 +1931,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             });
     connect(chk_expose_text_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
-                if (can_edit()) { layer_->expose_text = v; emit_change(); }
+                if (can_edit()) {
+                    layer_->expose_text = v;
+                    if (v) layer_->ignore_persistence = false;
+                    load_values();
+                    emit_change();
+                }
+            });
+    connect(chk_ignore_persistence_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->ignore_persistence = !layer_->expose_text && v;
+                    load_values();
+                    emit_change();
+                }
             });
     connect(chk_scene_mask_, &QCheckBox::toggled,
             this, [this, can_edit, emit_change](bool v){
@@ -4312,6 +4329,11 @@ void PropertiesPanel::load_values()
             if (auto *label = live_form->labelForField(chk_expose_text_))
                 label->setVisible(show_expose_to_dock);
         }
+        if (chk_ignore_persistence_) {
+            chk_ignore_persistence_->setVisible(true);
+            if (auto *label = live_form->labelForField(chk_ignore_persistence_))
+                label->setVisible(true);
+        }
     }
     rect_box_->setVisible(is_text_like || is_rect || is_image);
     rect_box_->setTitle(QString());
@@ -4567,6 +4589,7 @@ void PropertiesPanel::load_values()
     set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
     set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
     set_vec_kf_icon(btn_kf_scale_y_, layer_->scale);
+    set_vec_kf_icon(btn_kf_transform_size_, layer_->size);
     set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
     set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
     set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
@@ -4765,7 +4788,19 @@ void PropertiesPanel::load_values()
         double scale = horizontal_fit_scale(preview_font, preview_rect, display_text_for_style(*layer_), *layer_, lt);
         lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat").arg((int)std::round(scale * 100.0)));
     }
-    chk_expose_text_->setChecked(layer_->expose_text);
+    {
+        QSignalBlocker block(chk_expose_text_);
+        chk_expose_text_->setChecked(layer_->expose_text);
+    }
+    if (chk_ignore_persistence_) {
+        const bool can_ignore_persistence = !layer_->expose_text;
+        QSignalBlocker block(chk_ignore_persistence_);
+        chk_ignore_persistence_->setEnabled(can_ignore_persistence);
+        chk_ignore_persistence_->setChecked(can_ignore_persistence && layer_->ignore_persistence);
+        chk_ignore_persistence_->setToolTip(can_ignore_persistence
+            ? obsgs_tr("OBSTitles.IgnorePersistenceTooltip")
+            : obsgs_tr("OBSTitles.IgnorePersistenceDisabledTooltip"));
+    }
     if (chk_scene_mask_) chk_scene_mask_->setChecked(layer_->use_as_scene_mask);
     if (grp_text_align_) {
         QSignalBlocker block(grp_text_align_);

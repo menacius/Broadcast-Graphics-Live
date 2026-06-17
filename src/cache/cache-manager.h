@@ -6,7 +6,6 @@
 #include <QImage>
 #include <QHash>
 #include <QSet>
-#include <QTimer>
 #include <QMutex>
 #include <QDateTime>
 #include <QRect>
@@ -14,6 +13,10 @@
 #include <memory>
 #include <functional>
 #include <vector>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 enum class FrameCacheState {
     NotCached,
@@ -85,6 +88,7 @@ public:
     quint64 maxBytes() const;
     quint64 bytesUsed() const;
     qsizetype count() const;
+    QVector<CacheFrameKey> keysForTitle(const QString &title_id) const;
 
 private:
     quint64 imageBytes(const QImage &image) const;
@@ -108,15 +112,18 @@ public:
     void remove(const CacheFrameKey &key);
     void clear();
     void setCacheDirectory(const QString &path);
-    QString cacheDirectory() const { return cache_dir_; }
+    QString cacheDirectory() const;
     quint64 bytesUsed() const;
 
 private:
     QString pathForKey(const CacheFrameKey &key) const;
     QString manifestPath() const;
     void appendManifestEntry(const CacheFrameKey &key) const;
+    void rebuildIndex();
     quint64 scanBytesUsed() const;
+    mutable QMutex mutex_;
     QString cache_dir_;
+    QHash<QString, CacheFrameKey> indexed_keys_;
     quint64 bytes_used_ = 0;
 };
 
@@ -129,6 +136,7 @@ public:
     void setState(const CacheFrameKey &key, FrameCacheState state);
     void markRange(const QString &title_id, int first_frame, int last_frame, FrameCacheState state);
     void clearTitle(const QString &title_id);
+    void resetTransient(const QString &title_id = QString());
     void clear();
     QHash<int, FrameCacheState> titleStates(const QString &title_id) const;
 
@@ -158,7 +166,12 @@ public:
         double time = 0.0;
         int priority = 0;
         bool live_cue = false;
+        bool realtime = false;
+        bool force_render = false;
         int cue_row = -1;
+        QString cue_state_key;
+        quint64 cache_epoch = 0;
+        quint64 title_generation = 0;
     };
 
     explicit RenderQueueManager(QObject *parent = nullptr);
@@ -169,9 +182,11 @@ public:
     bool cancelKey(const CacheFrameKey &key);
     void reprioritizeAround(const QString &title_id, int current_frame);
     bool takeNext(Job &job);
-    bool takeNextLiveCue(Job &job);
+    bool takeNextUrgent(Job &job);
     bool contains(const CacheFrameKey &key) const;
     int queuedCount() const;
+    bool hasAvailableJob(bool live_cue_only) const;
+    void complete(const Job &job);
     void clear();
 
 signals:
@@ -181,6 +196,7 @@ private:
     mutable QMutex mutex_;
     QVector<Job> jobs_;
     QSet<QString> queued_keys_;
+    QHash<QString, QString> active_tokens_;
     bool accepting_jobs_ = true;
 };
 
@@ -205,6 +221,9 @@ public:
     static CacheManager &instance();
 
     QImage requestFrame(const std::shared_ptr<Title> &title, double time, bool cached_only = false);
+    QImage requestFrameRealtime(const std::shared_ptr<Title> &title, double time,
+                                const QString &known_content_hash = QString());
+    QString contentHashForTitle(const Title &title) const;
     void queueFrame(const std::shared_ptr<Title> &title, double time, RenderQueueManager::PriorityBand band);
     void queueRange(const std::shared_ptr<Title> &title, double start, double end, RenderQueueManager::PriorityBand band);
     void queueWholeTimeline(const std::shared_ptr<Title> &title);
@@ -212,14 +231,15 @@ public:
     void reprioritize(const std::shared_ptr<Title> &title, double current_time);
     void restoreDiskStates(const std::shared_ptr<Title> &title);
     QImage renderUncachedFrame(const std::shared_ptr<Title> &title, double time) const;
+    bool titleHasTimelineChanges(const Title &title) const;
 
     void clearRam();
     void clearDisk();
     void clearAll();
     void pausePrerender();
     void resumePrerender();
-    bool prerenderPaused() const { return paused_; }
-    bool cacheEnabled() const { return cache_enabled_; }
+    bool prerenderPaused() const { return paused_.load(); }
+    bool cacheEnabled() const { return cache_enabled_.load(); }
     void setCacheEnabled(bool enabled);
     void setInteractiveBypass(bool bypass);
     void setRamCacheLimitMb(int megabytes);
@@ -237,17 +257,25 @@ public:
 
     void queueLiveCue(const std::shared_ptr<Title> &title, int row, bool urgent = false);
     void cacheLiveCueNow(const std::shared_ptr<Title> &title, int row);
+    QImage requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, double time, bool queue_if_missing = true);
+    QImage requestLiveCueFrameRealtime(const std::shared_ptr<Title> &title, int row, double time,
+                                       const QString &known_content_hash = QString());
     QImage requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, bool queue_if_missing = true);
     void preloadLiveCues(const std::shared_ptr<Title> &title, int current_row, int nearby_count);
     FrameCacheState liveCueState(const std::shared_ptr<Title> &title, int row) const;
     int liveCueProgressPercent(const std::shared_ptr<Title> &title, int row) const;
     bool isLiveCueReady(const std::shared_ptr<Title> &title, int row);
+    FrameCacheState liveCueAggregateState(const std::shared_ptr<Title> &title) const;
+    int liveCueAggregateProgressPercent(const std::shared_ptr<Title> &title) const;
+    void removeTitleCache(const QString &title_id, bool remove_disk = false);
+    void cancelTitleWork(const QString &title_id);
     void invalidateLiveCue(const std::shared_ptr<Title> &title, int row);
     void invalidateLiveCues(const std::shared_ptr<Title> &title);
-    LiveCueCacheStats liveCueStats() const { return live_cue_stats_; }
+    void refreshLiveCueStructure(const std::shared_ptr<Title> &title);
+    LiveCueCacheStats liveCueStats() const;
 
     CacheStateTracker *stateTracker() { return &state_tracker_; }
-    CachePlaybackSettings playbackSettings() const { return playback_settings_; }
+    CachePlaybackSettings playbackSettings() const;
     void setPlaybackSettings(const CachePlaybackSettings &settings);
     double effectiveFrameRate() const;
 
@@ -259,43 +287,109 @@ signals:
     void cacheEnabledChanged(bool enabled);
     void diagnosticsChanged();
 
-private slots:
-    void processNextJob();
-    void renderActiveJob();
-
 private:
     explicit CacheManager(QObject *parent = nullptr);
+    ~CacheManager() override;
     CacheFrameKey keyForFrame(const Title &title, int frame) const;
     CacheFrameKey keyForTime(const Title &title, double time) const;
+    CacheFrameKey keyForTime(const Title &title, double time, const QString &known_content_hash) const;
+    QVector<CacheFrameKey> frameKeysForTitle(const Title &title) const;
     QString contentHash(const Title &title) const;
     QVector<CacheTileRegion> tilesForRect(const QRect &rect, const QSize &frame_size) const;
+    QRect layerDirtyRect(const Title &title, const Layer &layer) const;
+    QString tileStateKey(const QString &title_id, int frame) const;
+    void markDirtyTiles(const QString &title_id, int first_frame, int last_frame, const QVector<CacheTileRegion> &tiles);
+    QVector<CacheTileRegion> dirtyTilesForKey(const CacheFrameKey &key) const;
+    QImage mergeDirtyTiles(const CacheFrameKey &key, const QImage &previous, const QImage &fresh) const;
+    void rememberVisualHash(const Title &title, const QString &known_hash = QString());
+    bool visualHashUnchanged(const Title &title) const;
     std::shared_ptr<Title> titleWithCueApplied(const std::shared_ptr<Title> &title, int row) const;
+    QVector<std::shared_ptr<Title>> liveCueVariants(const std::shared_ptr<Title> &title, int row) const;
+    QVector<std::shared_ptr<Title>> liveCueTransitionVariants(const std::shared_ptr<Title> &title, int from_row, int to_row) const;
+    void queueLiveCueTransition(const std::shared_ptr<Title> &title, int from_row, int to_row, bool urgent = false);
+    void queueLiveCueVariantSet(const std::shared_ptr<Title> &title, int row, const QString &state_key,
+                                const QVector<std::shared_ptr<Title>> &variants, bool urgent);
+    QString liveCueRowIdentity(const std::shared_ptr<Title> &title, int row) const;
+    QString liveCueStateKey(const std::shared_ptr<Title> &title, int row) const;
+    QString liveCueTransitionStateKey(const std::shared_ptr<Title> &title, int from_row, int to_row) const;
+    int liveCueVariantsProgress(const QVector<std::shared_ptr<Title>> &variants) const;
+    FrameCacheState liveCueVariantsState(const QVector<std::shared_ptr<Title>> &variants, const QString &state_key) const;
     CacheFrameKey liveCueKey(const std::shared_ptr<Title> &title, int row) const;
-    QString liveCueStateKey(const QString &title_id, int row) const;
     int liveCueRangeProgress(const std::shared_ptr<Title> &cue_title) const;
     FrameCacheState liveCueRangeState(const std::shared_ptr<Title> &cue_title, const QString &state_key) const;
+    int liveCueStoredProgress(const QString &state_key) const;
+    FrameCacheState liveCueStoredState(const QString &state_key) const;
+    bool shouldEmitLiveCueUpdate(const QString &state_key, FrameCacheState state, int progress) const;
+    bool isLiveCueKeyReferenced(const CacheFrameKey &key) const;
+    QString liveCueStateReferencingKey(const CacheFrameKey &key, const QString &preferred_state = QString()) const;
+    void pruneUnreferencedLiveCueRam(const QString &title_id);
+    void removeLiveCueState(const QString &state_key);
     int frameForTime(double t) const;
     double timeForFrame(int frame) const;
-    void ensureWorkerTimerActive();
+    void wakeWorker();
+    void workerLoop();
+    void renderJob(RenderQueueManager::Job job);
+    void abandonJobState(const RenderQueueManager::Job &job, const QString &live_state_key);
+    void resetCancelledWorkState(const QString &title_id = QString());
+    void queueRealtimeJob(const std::shared_ptr<Title> &title, double time,
+                          bool live_cue, int cue_row, const QString &cue_state_key,
+                          const QString &known_content_hash = QString());
+    void queueFrameWithHash(const std::shared_ptr<Title> &title, double time,
+                            RenderQueueManager::PriorityBand band,
+                            const QString &known_content_hash);
+    quint64 titleGeneration(const QString &title_id) const;
+    void bumpTitleGeneration(const QString &title_id);
+    bool jobIsCurrent(const RenderQueueManager::Job &job) const;
+    std::shared_ptr<Title> snapshotForJob(const std::shared_ptr<Title> &title,
+                                          const CacheFrameKey &key);
 
     RamFrameCache ram_cache_;
     DiskFrameCache disk_cache_;
     CacheStateTracker state_tracker_;
     RenderQueueManager queue_;
     CacheInvalidationManager invalidation_;
-    QTimer worker_timer_;
-    bool paused_ = false;
-    bool cache_enabled_ = true;
-    bool interactive_bypass_ = false;
+    std::atomic_bool paused_{false};
+    std::atomic_bool cache_enabled_{true};
+    std::atomic_bool interactive_bypass_{false};
+    std::atomic_bool worker_stop_{false};
+    std::atomic<quint64> cache_epoch_{1};
+    std::thread worker_thread_;
+    mutable std::mutex worker_wait_mutex_;
+    std::condition_variable worker_cv_;
+    /* Serializes the final job-current check with cache publication and every
+     * epoch/generation-changing clear/invalidation operation. */
+    mutable std::recursive_mutex publication_mutex_;
+    mutable std::mutex generation_mutex_;
+    QHash<QString, quint64> title_generations_;
+    mutable std::mutex snapshot_mutex_;
+    QHash<QString, std::weak_ptr<Title>> job_snapshots_;
     QString last_reprioritize_title_id_;
     int last_reprioritize_frame_ = -1;
+    mutable QMutex playback_settings_mutex_;
     CachePlaybackSettings playback_settings_;
+    mutable std::recursive_mutex live_cue_mutex_;
     QHash<QString, FrameCacheState> live_cue_states_;
     QHash<QString, int> live_cue_progress_percent_;
+    mutable QHash<QString, FrameCacheState> live_cue_last_emit_states_;
+    mutable QHash<QString, int> live_cue_last_emit_buckets_;
+    QHash<QString, QVector<CacheFrameKey>> live_cue_required_keys_;
+    QHash<QString, int> live_cue_required_total_;
+    QHash<QString, int> live_cue_rendered_since_emit_;
+    QHash<QString, int> live_cue_total_by_key_;
+    QHash<QString, int> live_cue_done_by_key_;
     QHash<QString, int> live_cue_rows_;
+    QHash<QString, QString> live_cue_row_ids_;
     QHash<QString, QString> live_cue_title_ids_;
+    QSet<QString> live_cue_transition_state_keys_;
+    QHash<QString, QSet<QString>> live_cue_structure_row_ids_;
+    QHash<QString, QHash<QString, QString>> live_cue_row_fingerprints_;
+    QHash<QString, QString> live_cue_transition_signatures_;
+    QSet<QString> live_cue_structure_refresh_in_progress_;
+    QSet<CacheFrameKey> live_cue_known_keys_;
     LiveCueCacheStats live_cue_stats_;
-    RenderQueueManager::Job active_render_job_;
-    bool has_active_render_job_ = false;
-    bool active_render_was_stale_ = false;
+    mutable QMutex dirty_tiles_mutex_;
+    mutable QHash<QString, QSet<QString>> dirty_tiles_by_frame_;
+    mutable QMutex visual_hash_mutex_;
+    QHash<QString, QString> last_visual_hash_by_title_;
+    QHash<QString, QHash<QString, QRect>> last_layer_rects_by_title_;
 };

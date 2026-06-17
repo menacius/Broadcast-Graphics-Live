@@ -99,6 +99,7 @@ struct Layer {
     RichTextDocument rich_text; /* Structured source-of-truth rich text document. */
     std::string clock_format  = "H:i:s";  /* PHP date()-style format for clock layers */
     bool        expose_text    = false;
+    bool        ignore_persistence = false; /* Let this layer continue animating during Background Persistence holds. Disabled for exposed dock text. */
     std::string font_family   = "Helvetica Neue";
     std::string font_style    = "Regular";
     int         font_size     = 72;

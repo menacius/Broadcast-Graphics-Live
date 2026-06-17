@@ -86,6 +86,9 @@ private:
     void populate_exposed_text();
     void update_live_text_cache_cell(const std::shared_ptr<Title> &title, int row);
     void update_live_text_cache_cells();
+    void update_live_text_runtime_status(const std::shared_ptr<Title> &title);
+    void update_live_text_runtime_status_fast(const std::shared_ptr<Title> &title, int primary_row, int previous_row = -1);
+    void update_title_list_cache_icon(const QString &title_id);
     void update_live_text_select_cell_status(int row);
     void adjust_live_text_table_columns(bool fill_to_viewport = false);
     void install_obs_state_callbacks();

@@ -56,6 +56,7 @@ struct Title {
      * de-duplicated, and persisted with the template rather than pushed on every drag. */
     std::vector<std::string> editor_recent_color_hexes;
     std::vector<std::vector<std::string>> live_text_rows;
+    std::vector<std::string> live_text_row_ids; /* persistent stable IDs parallel to live_text_rows */
     std::vector<std::string> live_text_column_order; /* exposed text layer IDs by logical cue column */
     std::string live_text_header_state; /* base64-encoded dock header layout */
     std::string preview_screenshot_png_base64; /* manually captured title-list thumbnail */
@@ -74,6 +75,9 @@ struct Title {
     void remove_layer(const std::string &layer_id);
     void move_layer(const std::string &layer_id, int delta);
 };
+
+void ensure_live_text_row_ids(Title &title);
+std::string live_text_row_id(const Title &title, int row);
 
 struct TitleTemplateExportMetadata {
     std::string title;
