@@ -2135,7 +2135,7 @@ TitleDock::TitleDock(QWidget *parent)
                 update_live_text_cache_cell(title, row);
                 QTimer::singleShot(0, this, [this, title_id]() { update_title_list_cache_icon(title_id); });
                 if (cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row &&
-                    CacheManager::instance().isLiveCueReady(title, row)) {
+                    CacheManager::instance().prepareLiveCueForPlayback(title, row)) {
                     OGS_LOG_INFO("LiveCueUI", QStringLiteral("Armed cue row prerender complete; cueing title=%1 row=%2")
                                                 .arg(title_id).arg(row));
                     cache_waiting_cue_row_ = -1;
@@ -3473,15 +3473,26 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
 
     const bool require_cached_cue = CacheManager::instance().cacheEnabled() &&
         CacheManager::instance().titleCacheability(title) != TitleCacheability::NonCacheable;
-    if (require_cached_cue && !CacheManager::instance().isLiveCueReady(title, row)) {
+    if (require_cached_cue && !CacheManager::instance().prepareLiveCueForPlayback(title, row)) {
         cache_waiting_cue_row_ = row;
         cache_waiting_title_id_ = QString::fromStdString(title->id);
         OGS_LOG_INFO("LiveCueUI", QStringLiteral("Armed cue row waiting for prerender title=%1 row=%2")
                                     .arg(cache_waiting_title_id_).arg(row));
-        CacheManager::instance().queueLiveCue(title, row);
+        /* prepareLiveCueForPlayback() has already queued high-priority disk
+         * hydration (or missing renders) for the exact steady/transition state.
+         * Nearby rows remain ordinary background work. */
         CacheManager::instance().preloadLiveCues(title, row, 2);
         update_live_text_runtime_status_fast(title, row);
-        QTimer::singleShot(0, this, [this, title, row]() { update_live_text_runtime_status_fast(title, row); });
+        QTimer::singleShot(0, this, [this, title, row]() {
+            update_live_text_runtime_status_fast(title, row);
+            const QString title_id = QString::fromStdString(title->id);
+            if (cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row &&
+                CacheManager::instance().prepareLiveCueForPlayback(title, row)) {
+                cache_waiting_cue_row_ = -1;
+                cache_waiting_title_id_.clear();
+                cue_live_text_row(row, false);
+            }
+        });
         return false;
     }
 

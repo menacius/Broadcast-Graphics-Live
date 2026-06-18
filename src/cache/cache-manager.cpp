@@ -1275,6 +1275,11 @@ QString CacheManager::contentHashForTitle(const Title &title) const
     return contentHash(title);
 }
 
+bool CacheManager::visualStateCurrent(const Title &title) const
+{
+    return visualHashUnchanged(title);
+}
+
 int CacheManager::frameForTime(double t) const
 {
     return std::max(0, (int)std::round(t * effectiveFrameRate()));
@@ -1875,10 +1880,19 @@ QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double ti
         return image;
     }
 
-    /* Preview and editor callers never synchronously hydrate disk frames or
-     * publish cache state from their thread. The worker performs the cache
-     * lookup/render, while the established uncached renderer remains the
-     * immediate correctness path until that exact RAM frame is ready. */
+    /* The editor is allowed to synchronously promote its currently visible
+     * frame from the persistent disk cache. This is a bounded single-frame
+     * LZ4 read and prevents reopening an editor session from falling through
+     * to the uncached renderer while the worker slowly hydrates the timeline.
+     * OBS video_tick continues to use requestFrameRealtime(), which never
+     * touches the filesystem. */
+    if (state_tracker_.state(key) != FrameCacheState::Stale && disk_cache_.get(key, image)) {
+        ram_cache_.put(key, image);
+        state_tracker_.setState(key, FrameCacheState::CachedRam);
+        emit diagnosticsChanged();
+        return image;
+    }
+
     queueRealtimeJob(title, time, false, -1, QString(), content_hash);
     return cached_only ? QImage() : renderUncachedFrame(title, time);
 }
@@ -3040,7 +3054,8 @@ FrameCacheState CacheManager::liveCueRangeState(const std::shared_ptr<Title> &cu
 
 void CacheManager::queueLiveCueVariantSet(
     const std::shared_ptr<Title> &title, int row, const QString &state_key,
-    const QVector<std::shared_ptr<Title>> &variants, bool urgent)
+    const QVector<std::shared_ptr<Title>> &variants, bool urgent,
+    bool hydrate_disk_to_ram)
 {
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load() || !title || state_key.isEmpty() || variants.isEmpty())
@@ -3111,7 +3126,7 @@ void CacheManager::queueLiveCueVariantSet(
                                 .arg(static_cast<int>(required_keys.size())).arg(existing_progress)
                                 .arg(state_key));
 
-    if (!urgent && (existing_state == FrameCacheState::CachedRam || existing_state == FrameCacheState::CachedDisk)) {
+    if (!urgent && !hydrate_disk_to_ram && (existing_state == FrameCacheState::CachedRam || existing_state == FrameCacheState::CachedDisk)) {
         live_cue_states_[state_key] = existing_state;
         live_cue_progress_percent_[state_key] = 100;
         return;
@@ -3122,23 +3137,34 @@ void CacheManager::queueLiveCueVariantSet(
     int queued = 0;
     for (const RequiredFrame &required : required_frames) {
         QImage ignored;
-        if (!urgent && (ram_cache_.get(required.key, ignored) || disk_cache_.contains(required.key)))
+        const bool in_ram = ram_cache_.get(required.key, ignored);
+        const bool on_disk = !in_ram && disk_cache_.contains(required.key);
+        if (in_ram)
+            continue;
+        if (!urgent && !hydrate_disk_to_ram && on_disk)
             continue;
         if (urgent)
             queue_.cancelKey(required.key);
         else if (queue_.contains(required.key))
             continue;
 
-        const int priority = urgent
-            ? (std::numeric_limits<int>::min() / 2) + required.variant_index * 100000 + required.key.frame
-            : -1000000 + std::max(0, row) * 100000 + required.variant_index * 1000 + required.key.frame;
+        /* Playback hydration outranks all background prerender work, but it is
+         * not a forced rebuild: renderJob() will load the existing sparse/LZ4
+         * payload from disk and publish it into the shared RAM cache. */
+        const int priority = hydrate_disk_to_ram
+            ? (std::numeric_limits<int>::min() / 3) + required.variant_index * 100000 + required.key.frame
+            : urgent
+                ? (std::numeric_limits<int>::min() / 2) + required.variant_index * 100000 + required.key.frame
+                : -1000000 + std::max(0, row) * 100000 + required.variant_index * 1000 + required.key.frame;
         RenderQueueManager::Job job;
         job.key = required.key;
         job.title = required.title;
         job.time = timeForFrame(required.key.frame);
         job.priority = priority;
         job.live_cue = true;
-        job.force_render = urgent || live_cue_states_.value(state_key, FrameCacheState::NotCached) == FrameCacheState::Stale;
+        job.realtime = hydrate_disk_to_ram;
+        job.force_render = !hydrate_disk_to_ram &&
+            (urgent || live_cue_states_.value(state_key, FrameCacheState::NotCached) == FrameCacheState::Stale);
         job.cue_row = row;
         job.cue_state_key = state_key;
         job.cache_epoch = cache_epoch_.load();
@@ -3423,6 +3449,52 @@ int CacheManager::liveCueProgressPercent(const std::shared_ptr<Title> &title, in
             ++cached;
     }
     return std::clamp((cached * 100) / static_cast<int>(keys.size()), 0, 100);
+}
+
+bool CacheManager::liveCueStateFullyResidentInRam(const QString &state_key) const
+{
+    const QVector<CacheFrameKey> keys = live_cue_required_keys_.value(state_key);
+    if (keys.isEmpty())
+        return false;
+    QImage ignored;
+    for (const CacheFrameKey &key : keys) {
+        if (!ram_cache_.get(key, ignored))
+            return false;
+    }
+    return true;
+}
+
+bool CacheManager::prepareLiveCueForPlayback(const std::shared_ptr<Title> &title, int row)
+{
+    apply_persisted_live_cue_persistence(title);
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title || row < 0 ||
+        row >= static_cast<int>(title->live_text_rows.size()))
+        return false;
+
+    const QString steady_key = liveCueStateKey(title, row);
+    const auto steady_variants = liveCueVariants(title, row);
+    queueLiveCueVariantSet(title, row, steady_key, steady_variants, false, true);
+
+    QVector<QString> required_states{steady_key};
+    const int active_row = title->current_cue_row;
+    if (active_row >= 0 && active_row != row &&
+        active_row < static_cast<int>(title->live_text_rows.size()) &&
+        (title->playback_mode == 1 || title->playback_mode == 2 || title->cue_background_persistence)) {
+        const QString transition_key = liveCueTransitionStateKey(title, active_row, row);
+        const auto transition_variants = liveCueTransitionVariants(title, active_row, row);
+        queueLiveCueVariantSet(title, row, transition_key, transition_variants, false, true);
+        required_states.push_back(transition_key);
+    }
+
+    bool ready = true;
+    for (const QString &state_key : required_states)
+        ready = ready && liveCueStateFullyResidentInRam(state_key);
+
+    OGS_LOG_INFO("LiveCue", QStringLiteral("Playback hydration title=%1 row=%2 states=%3 ready=%4")
+                              .arg(QString::fromStdString(title->id)).arg(row)
+                              .arg(required_states.size()).arg(ready));
+    return ready;
 }
 
 bool CacheManager::isLiveCueReady(const std::shared_ptr<Title> &title, int row)

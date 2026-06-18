@@ -3,6 +3,7 @@
 #include "style-presets.h"
 
 #include <QClipboard>
+#include <QScopedValueRollback>
 #include <QDesktopServices>
 #include <QFile>
 #include <QFileInfo>
@@ -142,6 +143,8 @@ QWidget *TitleEditor::create_effects_panel()
     effects_panel_ = new EffectsPanel(this);
     connect(effects_panel_, &EffectsPanel::property_changed,
             this, [this](bool push_undo_snapshot) {
+                if (updating_layer_panels_)
+                    return;
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
@@ -1813,6 +1816,8 @@ void TitleEditor::build_ui()
 
     connect(props_, &PropertiesPanel::property_changed,
             this, [this](bool push_undo_snapshot) {
+                if (updating_layer_panels_)
+                    return;
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
@@ -4455,6 +4460,7 @@ void TitleEditor::open_default_sidebar_color_popup(bool foreground)
 
 void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playhead)
 {
+    QScopedValueRollback<bool> panel_update_guard(updating_layer_panels_, true);
     if (layer_props_dock_) {
         layer_props_dock_->setWindowTitle(layer
             ? obsgs_tr("OBSTitles.PropertiesNamed").arg(QString::fromStdString(layer->name))
@@ -4500,6 +4506,17 @@ void TitleEditor::on_playhead_changed(double t)
 
 void TitleEditor::on_title_modified(bool push_undo)
 {
+    /* Several Qt controls emit value-changed signals while a newly selected
+     * layer is being reflected into the properties/effects panels. Selection
+     * itself is UI state and must never dirty, save, invalidate, or rerender
+     * the title. Compare against the last rendered/restored visual identity
+     * before entering the modification pipeline. Genuine edits have already
+     * changed the model here and therefore continue normally. */
+    if (title_ && CacheManager::instance().visualStateCurrent(*title_)) {
+        OGS_LOG_TRACE("Editor", QStringLiteral("Ignored selection-only property notification title=%1")
+                                   .arg(QString::fromStdString(title_->id)));
+        return;
+    }
     if (title_) set_dirty(true);
     schedule_cache_invalidation();
     canvas_->refresh_preview();

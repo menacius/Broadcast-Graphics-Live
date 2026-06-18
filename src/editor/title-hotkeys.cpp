@@ -1,7 +1,10 @@
 #include "title-hotkeys.h"
 #include "title-data.h"
+#include "cache/cache-manager.h"
 #include <obs-module.h>
 #include <QSettings>
+#include <QTimer>
+#include <QSet>
 #include <QString>
 
 #include <algorithm>
@@ -50,6 +53,7 @@ std::map<std::string, std::string> g_persisted_hotkey_bindings;
 bool g_hotkeys_active = false;
 uint64_t g_change_callback_id = 0;
 bool g_hotkey_section_source_registered = false;
+QSet<QString> g_pending_cue_hydration;
 
 constexpr const char *kHotkeySectionSourceId = "obs_graphics_studio_pro_hotkey_section";
 constexpr const char *kDockSettingsGroup = "TitleDock";
@@ -318,6 +322,23 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
     } else {
         if (row < 0 || row >= (int)title->live_text_rows.size()) return;
         apply_persistence_settings_to_title(title, exposed);
+
+        CacheManager &cache = CacheManager::instance();
+        if (cache.cacheEnabled() &&
+            cache.titleCacheability(title) != TitleCacheability::NonCacheable &&
+            !cache.prepareLiveCueForPlayback(title, row)) {
+            const QString hydration_key = QStringLiteral("%1:%2")
+                .arg(QString::fromStdString(title->id)).arg(row);
+            if (!g_pending_cue_hydration.contains(hydration_key)) {
+                g_pending_cue_hydration.insert(hydration_key);
+                const std::string title_id = title->id;
+                QTimer::singleShot(25, [title_id, row, hydration_key]() {
+                    g_pending_cue_hydration.remove(hydration_key);
+                    cue_title_row(TitleDataStore::instance().get_title(title_id), row);
+                });
+            }
+            return;
+        }
         const bool is_active_cue = title->current_cue_row == row;
         const bool is_pending_cue = title->pending_cue_row == row;
         const int previous_row = title->current_cue_row >= 0 ? title->current_cue_row : title->pending_cue_row;

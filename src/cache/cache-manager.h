@@ -232,6 +232,7 @@ public:
     QImage requestFrameRealtime(const std::shared_ptr<Title> &title, double time,
                                 const QString &known_content_hash = QString());
     QString contentHashForTitle(const Title &title) const;
+    bool visualStateCurrent(const Title &title) const;
     void queueFrame(const std::shared_ptr<Title> &title, double time, RenderQueueManager::PriorityBand band);
     void queueRange(const std::shared_ptr<Title> &title, double start, double end, RenderQueueManager::PriorityBand band);
     void queueWholeTimeline(const std::shared_ptr<Title> &title);
@@ -273,6 +274,10 @@ public:
     FrameCacheState liveCueState(const std::shared_ptr<Title> &title, int row) const;
     int liveCueProgressPercent(const std::shared_ptr<Title> &title, int row) const;
     bool isLiveCueReady(const std::shared_ptr<Title> &title, int row);
+    // Playback readiness is stricter than badge readiness: disk-resident frames
+    // are valid cache data, but a cue must not start until every frame in the
+    // reachable steady/transition state has been promoted to RAM.
+    bool prepareLiveCueForPlayback(const std::shared_ptr<Title> &title, int row);
     FrameCacheState liveCueAggregateState(const std::shared_ptr<Title> &title) const;
     int liveCueAggregateProgressPercent(const std::shared_ptr<Title> &title) const;
     void removeTitleCache(const QString &title_id, bool remove_disk = false);
@@ -320,7 +325,9 @@ private:
     QVector<std::shared_ptr<Title>> liveCueTransitionVariants(const std::shared_ptr<Title> &title, int from_row, int to_row) const;
     void queueLiveCueTransition(const std::shared_ptr<Title> &title, int from_row, int to_row, bool urgent = false);
     void queueLiveCueVariantSet(const std::shared_ptr<Title> &title, int row, const QString &state_key,
-                                const QVector<std::shared_ptr<Title>> &variants, bool urgent);
+                                const QVector<std::shared_ptr<Title>> &variants, bool urgent,
+                                bool hydrate_disk_to_ram = false);
+    bool liveCueStateFullyResidentInRam(const QString &state_key) const;
     QString liveCueRowIdentity(const std::shared_ptr<Title> &title, int row) const;
     QString liveCueStateKey(const std::shared_ptr<Title> &title, int row) const;
     QString liveCueTransitionStateKey(const std::shared_ptr<Title> &title, int from_row, int to_row) const;

@@ -262,6 +262,7 @@ private:
     int              undo_index_ = -1;
     bool             restoring_undo_ = false;
     bool             live_editing_ = false;
+    bool             updating_layer_panels_ = false;
     bool             panels_locked_ = false;
     bool             restoring_editor_layout_ = false;
     bool             editor_layout_save_suppressed_ = false;
