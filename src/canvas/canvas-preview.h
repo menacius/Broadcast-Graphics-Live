@@ -264,6 +264,8 @@ private:
     QPointF pan_start_view_;
     QPointF pan_start_offset_;
     QPixmap frame_pixmap_;
+    QPoint frame_pixmap_canvas_offset_;
+    QSize frame_pixmap_canvas_size_;
     bool dirty_ = true;
     bool safe_guides_visible_ = false;
     bool rulers_visible_ = false;

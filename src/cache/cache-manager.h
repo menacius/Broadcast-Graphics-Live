@@ -91,11 +91,19 @@ public:
     QVector<CacheFrameKey> keysForTitle(const QString &title_id) const;
 
 private:
+    struct PayloadEntry {
+        QImage image;
+        quint64 bytes = 0;
+        qsizetype references = 0;
+    };
+
     quint64 imageBytes(const QImage &image) const;
+    quint64 payloadId(const QImage &image) const;
+    void releaseKeyLocked(const CacheFrameKey &key);
     void evictIfNeeded();
     mutable QMutex mutex_;
-    QHash<CacheFrameKey, QImage> frames_;
-    QHash<CacheFrameKey, quint64> frame_bytes_;
+    QHash<CacheFrameKey, quint64> key_payload_ids_;
+    QHash<quint64, PayloadEntry> payloads_;
     QVector<CacheFrameKey> lru_;
     quint64 max_bytes_ = 512ull * 1024ull * 1024ull;
     quint64 bytes_used_ = 0;
@@ -295,12 +303,16 @@ private:
     CacheFrameKey keyForTime(const Title &title, double time, const QString &known_content_hash) const;
     QVector<CacheFrameKey> frameKeysForTitle(const Title &title) const;
     QString contentHash(const Title &title) const;
+    QString evaluatedVisualStateHash(const Title &title, double time, const QString &known_content_hash) const;
+    QString adaptiveVisualStateHash(const Title &title, double time, const QString &known_content_hash) const;
+    QString temporalStateKey(const CacheFrameKey &key, const QString &visual_state_hash) const;
     QVector<CacheTileRegion> tilesForRect(const QRect &rect, const QSize &frame_size) const;
     QRect layerDirtyRect(const Title &title, const Layer &layer) const;
     QString tileStateKey(const QString &title_id, int frame) const;
     void markDirtyTiles(const QString &title_id, int first_frame, int last_frame, const QVector<CacheTileRegion> &tiles);
     QVector<CacheTileRegion> dirtyTilesForKey(const CacheFrameKey &key) const;
     QImage mergeDirtyTiles(const CacheFrameKey &key, const QImage &previous, const QImage &fresh) const;
+    QImage renderDirtyTiles(const RenderQueueManager::Job &job, const QImage &previous) const;
     void rememberVisualHash(const Title &title, const QString &known_hash = QString());
     bool visualHashUnchanged(const Title &title) const;
     std::shared_ptr<Title> titleWithCueApplied(const std::shared_ptr<Title> &title, int row) const;
@@ -362,6 +374,9 @@ private:
     mutable std::mutex generation_mutex_;
     QHash<QString, quint64> title_generations_;
     mutable std::mutex snapshot_mutex_;
+    mutable QMutex temporal_dedup_mutex_;
+    QHash<QString, CacheFrameKey> temporal_canonical_keys_;
+    QHash<QString, CacheFrameKey> adaptive_canonical_keys_;
     QHash<QString, std::weak_ptr<Title>> job_snapshots_;
     QString last_reprioritize_title_id_;
     int last_reprioritize_frame_ = -1;

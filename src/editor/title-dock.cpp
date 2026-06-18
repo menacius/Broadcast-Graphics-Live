@@ -2116,6 +2116,13 @@ TitleDock::TitleDock(QWidget *parent)
     live_refresh_timer_->start();
     connect(&CacheManager::instance(), &CacheManager::liveCueStateChanged, this,
             [this](const QString &title_id, int row) {
+                if (title_id.isEmpty() && row < 0) {
+                    QTimer::singleShot(0, this, [this]() {
+                        populate_list();
+                        populate_exposed_text();
+                    });
+                    return;
+                }
                 if (title_id != QString::fromStdString(selected_id()) || updating_exposed_text_) {
                     QTimer::singleShot(0, this, [this, title_id]() { update_title_list_cache_icon(title_id); });
                     return;
@@ -2864,10 +2871,13 @@ void TitleDock::build_ui()
                 act_text_persistence_->setChecked(false);
             }
         }
-        if (auto title = TitleDataStore::instance().get_title(selected_id()))
-            apply_persistence_settings_to_title(title);
-        update_persistence_controls();
         save_dock_settings();
+        if (auto title = TitleDataStore::instance().get_title(selected_id())) {
+            apply_persistence_settings_to_title(title);
+            CacheManager::instance().refreshLiveCueStructure(title);
+        }
+        update_persistence_controls();
+        populate_exposed_text();
     });
     connect(act_text_persistence_, &QAction::toggled, this, [this](bool checked) {
         text_persistence_ = background_persistence_ && checked;
@@ -2875,10 +2885,13 @@ void TitleDock::build_ui()
             QSignalBlocker block(act_text_persistence_);
             act_text_persistence_->setChecked(text_persistence_);
         }
-        if (auto title = TitleDataStore::instance().get_title(selected_id()))
-            apply_persistence_settings_to_title(title);
-        update_persistence_controls();
         save_dock_settings();
+        if (auto title = TitleDataStore::instance().get_title(selected_id())) {
+            apply_persistence_settings_to_title(title);
+            CacheManager::instance().refreshLiveCueStructure(title);
+        }
+        update_persistence_controls();
+        populate_exposed_text();
     });
     connect(text_table_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
         if (item && item->column() == 0)

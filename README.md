@@ -252,3 +252,6 @@ A title contains metadata, timeline/playback settings, canvas size, editor defau
 - Improve GPU rendering/filter integration and performance for complex compositions.
 - Refine template/library workflows and live-data integrations.
 - Continue hardening undo/redo, multi-select editing, effect-stack ordering, and advanced keyframe controls.
+
+### Sparse cached playback: direct crop drawing
+Cached alpha-bounded payloads are now uploaded and drawn directly at their canvas offsets in OBS, and the editor preview uses the same sparse metadata instead of stretching cropped images over the full canvas.

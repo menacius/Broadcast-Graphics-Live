@@ -2097,7 +2097,12 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
 }
 void CanvasPreview::render_to_pixmap()
 {
-    if (!title_) { frame_pixmap_ = QPixmap(); return; }
+    if (!title_) {
+        frame_pixmap_ = QPixmap();
+        frame_pixmap_canvas_offset_ = QPoint();
+        frame_pixmap_canvas_size_ = QSize();
+        return;
+    }
 
     const CachePlaybackSettings settings = CacheManager::instance().playbackSettings();
     QImage image;
@@ -2113,8 +2118,19 @@ void CanvasPreview::render_to_pixmap()
         image = CacheManager::instance().renderUncachedFrame(title_, playhead_);
     else
         image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);
-    if (!image.isNull())
+    if (!image.isNull()) {
+        bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
+        const int crop_x = image.text(QStringLiteral("obs_gsp_canvas_x")).toInt(&ok_x);
+        const int crop_y = image.text(QStringLiteral("obs_gsp_canvas_y")).toInt(&ok_y);
+        const int canvas_w = image.text(QStringLiteral("obs_gsp_canvas_width")).toInt(&ok_w);
+        const int canvas_h = image.text(QStringLiteral("obs_gsp_canvas_height")).toInt(&ok_h);
+        const bool sparse = ok_x && ok_y && ok_w && ok_h && crop_x >= 0 && crop_y >= 0 &&
+            canvas_w > 0 && canvas_h > 0 &&
+            crop_x + image.width() <= canvas_w && crop_y + image.height() <= canvas_h;
         frame_pixmap_ = QPixmap::fromImage(image);
+        frame_pixmap_canvas_offset_ = sparse ? QPoint(crop_x, crop_y) : QPoint();
+        frame_pixmap_canvas_size_ = sparse ? QSize(canvas_w, canvas_h) : image.size();
+    }
     dirty_ = false;
 }
 
@@ -2381,7 +2397,11 @@ void CanvasPreview::paintEvent(QPaintEvent *)
                     p.drawRect(cx, cy, 12, 12);
     }
 
-    p.drawPixmap(ox, oy, dw, dh, frame_pixmap_);
+    const int pix_x = ox + static_cast<int>(std::round(frame_pixmap_canvas_offset_.x() * scale));
+    const int pix_y = oy + static_cast<int>(std::round(frame_pixmap_canvas_offset_.y() * scale));
+    const int pix_w = static_cast<int>(std::round(frame_pixmap_.width() * scale));
+    const int pix_h = static_cast<int>(std::round(frame_pixmap_.height() * scale));
+    p.drawPixmap(pix_x, pix_y, pix_w, pix_h, frame_pixmap_);
 
     p.save();
     p.setClipRect(QRectF(ox, oy, dw, dh));
@@ -2718,10 +2738,12 @@ bool CanvasPreview::sample_color_at_view(const QPointF &view_pt, QColor &color)
     const QImage image = frame_pixmap_.toImage();
     if (image.isNull()) return false;
 
-    const int x = (int)std::floor(canvas.x());
-    const int y = (int)std::floor(canvas.y());
-    if (x < 0 || y < 0 || x >= image.width() || y >= image.height())
-        return false;
+    const int x = (int)std::floor(canvas.x()) - frame_pixmap_canvas_offset_.x();
+    const int y = (int)std::floor(canvas.y()) - frame_pixmap_canvas_offset_.y();
+    if (x < 0 || y < 0 || x >= image.width() || y >= image.height()) {
+        color = QColor(Qt::transparent);
+        return true;
+    }
 
     color = image.pixelColor(x, y);
     return color.isValid();

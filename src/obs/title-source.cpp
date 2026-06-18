@@ -282,8 +282,15 @@ struct TitleSourceData {
     std::unique_ptr<TitleGpuFilterPipeline> gpu_filter_pipeline;
     uint32_t      scene_mask_alpha_w = 0;
     uint32_t      scene_mask_alpha_h = 0;
+    /* Logical source canvas dimensions remain independent from the cached
+     * texture payload dimensions. Sparse cached frames upload only their
+     * alpha bounds and are drawn at texture_crop_{x,y}. */
     uint32_t      tex_w      = 0;
     uint32_t      tex_h      = 0;
+    uint32_t      texture_w  = 0;
+    uint32_t      texture_h  = 0;
+    int32_t       texture_crop_x = 0;
+    int32_t       texture_crop_y = 0;
     qint64        last_cached_image_key = 0;
     uint64_t      cache_hash_revision = std::numeric_limits<uint64_t>::max();
     QString       cached_content_hash;
@@ -3041,8 +3048,15 @@ static bool layer_effect_requires_stack_surface(const LayerEffect &effect)
     case LayerEffectType::InnerGlow:
     case LayerEffectType::InnerShadow:
     case LayerEffectType::Blur:
-    case LayerEffectType::MotionBlur:
         return true;
+    case LayerEffectType::MotionBlur:
+        /* Motion blur is temporal, not a post-render image-space filter.
+         * Treating it as a stack-surface effect makes static bitmap/SVG
+         * layers look like multiple overlaid copies even when they do not
+         * move, because some code paths used a cached raster and applied a
+         * directional smear.  Keep it out of the stack-surface pipeline and
+         * let render_motion_blurred_layer() handle it consistently. */
+        return false;
     case LayerEffectType::BrightnessContrast:
         return std::abs(effect.brightness) > 0.0001f || std::abs(effect.contrast - 1.0f) > 0.0001f;
     case LayerEffectType::Saturation:
@@ -3644,9 +3658,10 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
             invalidate_subject_alpha();
             break;
         case LayerEffectType::MotionBlur:
-            apply_directional_motion_blur(surface, resolved);
-            invalidate_alpha_cache();
-            invalidate_subject_alpha();
+            /* Temporal motion blur is rendered earlier by
+             * render_motion_blurred_layer().  Re-applying it here as a
+             * directional image-space blur produces the static horizontal
+             * "multiple copies" artifact on PNG/SVG layers. */
             break;
         case LayerEffectType::Glow: {
             const auto &alpha = subject_alpha_for_surface();
@@ -4366,7 +4381,9 @@ static void render_layer_with_mask(cairo_t *cr, TitleSourceData *data, const Tit
     cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_CLEAR);
     cairo_paint(mask_cr.get());
     cairo_set_operator(mask_cr.get(), CAIRO_OPERATOR_OVER);
-    const bool effects_after_mask = layer.effect_stack_respects_masks && layer_has_stackable_pixel_effects(layer);
+    const bool effects_after_mask = layer.effect_stack_respects_masks &&
+                                    layer_has_stackable_pixel_effects(layer) &&
+                                    !layer_has_motion_blur(layer);
     if (effects_after_mask) {
         Layer base_layer = layer_without_stackable_pixel_effects(layer);
         render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
@@ -4415,7 +4432,9 @@ static void render_title_frame(TitleSourceData *data,
     uint32_t h = clamped_source_dimension(title.height);
 
     /* (Re)allocate buffer & texture if size changed */
-    if (data->tex_w != w || data->tex_h != h) {
+    if (data->tex_w != w || data->tex_h != h ||
+        data->texture_w != w || data->texture_h != h ||
+        data->texture_crop_x != 0 || data->texture_crop_y != 0) {
         bool texture_created = false;
         {
             std::lock_guard<std::mutex> lock(data->texture_mutex);
@@ -4433,6 +4452,10 @@ static void render_title_frame(TitleSourceData *data,
         if (!texture_created) {
             data->tex_w = 0;
             data->tex_h = 0;
+            data->texture_w = 0;
+            data->texture_h = 0;
+            data->texture_crop_x = 0;
+            data->texture_crop_y = 0;
             data->pixel_buf.clear();
             data->dirty = false;
             return;
@@ -4440,6 +4463,10 @@ static void render_title_frame(TitleSourceData *data,
 
         data->tex_w = w;
         data->tex_h = h;
+        data->texture_w = w;
+        data->texture_h = h;
+        data->texture_crop_x = 0;
+        data->texture_crop_y = 0;
         data->pixel_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
         data->effect_layer_cache.clear();
     }
@@ -4537,20 +4564,52 @@ static void render_title_frame(TitleSourceData *data,
     data->dirty = false;
 }
 
+static bool cached_sparse_frame_metadata(const QImage &image, int &x, int &y, int &canvas_width, int &canvas_height)
+{
+    bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
+    x = image.text(QStringLiteral("obs_gsp_canvas_x")).toInt(&ok_x);
+    y = image.text(QStringLiteral("obs_gsp_canvas_y")).toInt(&ok_y);
+    canvas_width = image.text(QStringLiteral("obs_gsp_canvas_width")).toInt(&ok_w);
+    canvas_height = image.text(QStringLiteral("obs_gsp_canvas_height")).toInt(&ok_h);
+    return ok_x && ok_y && ok_w && ok_h && x >= 0 && y >= 0 &&
+           canvas_width > 0 && canvas_height > 0 &&
+           x + image.width() <= canvas_width && y + image.height() <= canvas_height;
+}
+
 static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image)
 {
     if (!data || image.isNull())
         return false;
-    const uint32_t w = clamped_source_dimension(image.width());
-    const uint32_t h = clamped_source_dimension(image.height());
-    if (data->tex_w != w || data->tex_h != h) {
+
+    const qint64 image_key = image.cacheKey();
+    if (image_key != 0 && data->last_cached_image_key == image_key) {
+        data->dirty = false;
+        return true;
+    }
+
+    int crop_x = 0, crop_y = 0, canvas_width = 0, canvas_height = 0;
+    const bool sparse = cached_sparse_frame_metadata(image, crop_x, crop_y, canvas_width, canvas_height);
+    const uint32_t canvas_w = clamped_source_dimension(sparse ? canvas_width : image.width());
+    const uint32_t canvas_h = clamped_source_dimension(sparse ? canvas_height : image.height());
+    const uint32_t payload_w = clamped_source_dimension(image.width());
+    const uint32_t payload_h = clamped_source_dimension(image.height());
+
+    const bool texture_layout_changed =
+        data->tex_w != canvas_w || data->tex_h != canvas_h ||
+        data->texture_w != payload_w || data->texture_h != payload_h ||
+        data->texture_crop_x != (sparse ? crop_x : 0) ||
+        data->texture_crop_y != (sparse ? crop_y : 0);
+
+    if (texture_layout_changed) {
         bool texture_created = false;
         {
             std::lock_guard<std::mutex> lock(data->texture_mutex);
             obs_enter_graphics();
             if (data->texture) gs_texture_destroy(data->texture);
             if (data->scene_mask_alpha_texture) gs_texture_destroy(data->scene_mask_alpha_texture);
-            data->texture = gs_texture_create(w, h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+            /* Upload only the cropped payload. The logical OBS source size is
+             * still the full title canvas returned by source_get_width/height. */
+            data->texture = gs_texture_create(payload_w, payload_h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
             data->scene_mask_alpha_texture = nullptr;
             data->scene_mask_alpha_w = 0;
             data->scene_mask_alpha_h = 0;
@@ -4559,30 +4618,28 @@ static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image
         }
         if (!texture_created)
             return false;
-        data->tex_w = w;
-        data->tex_h = h;
-        data->pixel_buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 0);
+        data->tex_w = canvas_w;
+        data->tex_h = canvas_h;
+        data->texture_w = payload_w;
+        data->texture_h = payload_h;
+        data->texture_crop_x = sparse ? crop_x : 0;
+        data->texture_crop_y = sparse ? crop_y : 0;
+        data->pixel_buf.clear();
         data->effect_layer_cache.clear();
         data->last_cached_image_key = 0;
     }
 
-    const qint64 image_key = image.cacheKey();
-    if (image_key != 0 && data->last_cached_image_key == image_key) {
-        data->dirty = false;
-        return true;
-    }
-
-    /* CacheManager guarantees straight-alpha ARGB32/BGRA frames. Upload the
-     * resident bytes directly: no per-frame format conversion, memcpy into a
-     * second 8 MB buffer, or scalar unpremultiply pass on the OBS tick thread. */
-    if (image.format() != QImage::Format_ARGB32 || image.bytesPerLine() != (int)w * 4)
+    if (image.format() != QImage::Format_ARGB32 ||
+        image.bytesPerLine() < static_cast<int>(payload_w) * 4)
         return false;
+
     {
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         if (!data->texture)
             return false;
         obs_enter_graphics();
-        gs_texture_set_image(data->texture, image.constBits(), w * 4, false);
+        gs_texture_set_image(data->texture, image.constBits(),
+                             static_cast<uint32_t>(image.bytesPerLine()), false);
         obs_leave_graphics();
     }
     data->last_cached_image_key = image_key;
@@ -4590,18 +4647,28 @@ static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image
     return true;
 }
 
-QImage render_title_to_image(const Title &title, double t)
+static QImage render_title_region_impl(const Title &title, double t, const QRect &requested_region)
 {
-    const int w = std::max(1, title.width);
-    const int h = std::max(1, title.height);
-    QImage image(w, h, QImage::Format_ARGB32_Premultiplied);
+    const int canvas_w = std::max(1, title.width);
+    const int canvas_h = std::max(1, title.height);
+    const QRect canvas_rect(0, 0, canvas_w, canvas_h);
+    const QRect region = requested_region.intersected(canvas_rect);
+    if (region.isEmpty())
+        return QImage();
 
+    QImage image(region.width(), region.height(), QImage::Format_ARGB32_Premultiplied);
     auto surface = make_image_surface_for_qimage(image);
     auto cr = make_cairo_context(surface.get());
     if (!surface || !cr) {
         image.fill(Qt::transparent);
         return image;
     }
+
+    /* The renderer continues to use absolute canvas coordinates. Translate the
+     * destination context so only the requested tile/region is rasterized. */
+    cairo_translate(cr.get(), -region.x(), -region.y());
+    cairo_rectangle(cr.get(), region.x(), region.y(), region.width(), region.height());
+    cairo_clip(cr.get());
 
     double br, bg, bb, ba;
     unpack_color(title.bg_color, br, bg, bb, ba);
@@ -4611,15 +4678,6 @@ QImage render_title_to_image(const Title &title, double t)
     cairo_set_operator(cr.get(), CAIRO_OPERATOR_OVER);
 
     const double clamped_time = std::clamp(t, 0.0, std::max(0.0, title.duration));
-
-    /*
-     * Keep the prerender/cache path pixel-identical to the live OBS source path.
-     * Background Persistence is not just UI/runtime state: it changes the
-     * rendered frame by holding non-exempt layers at the cue hold time while
-     * the cue animation continues. Older cache renders ignored these runtime
-     * flags, so cached/prerendered live-cue frames looked as if Background
-     * Persistence was disabled.
-     */
     const bool background_persistence = title.cue_background_persistence &&
         title.cue_persistence_transition && title.current_cue_row >= 0 && !title.live_text_rows.empty();
     const double persistence_time = cue_persistence_hold_time(title);
@@ -4643,21 +4701,30 @@ QImage render_title_to_image(const Title &title, double t)
         if (!layer_should_render_as_visible_content(title, *layer)) continue;
 
         if (layer->blend_mode == EffectBlendMode::Normal) {
-            render_layer_with_mask(cr.get(), nullptr, title, *layer, layer_time, w, h);
-        } else if (render_layer_with_local_blend_surface(cr.get(), nullptr, title, *layer, layer_time, w, h)) {
-            continue;
+            render_layer_with_mask(cr.get(), nullptr, title, *layer, layer_time, canvas_w, canvas_h);
         } else {
-            CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h));
+            /* Non-normal blend modes need their canvas-sized local surface for
+             * mathematically correct composition. The destination is still
+             * clipped to the dirty region, so unchanged output pixels are not
+             * copied or stored. */
+            if (render_layer_with_local_blend_surface(cr.get(), nullptr, title, *layer,
+                                                      layer_time, canvas_w, canvas_h))
+                continue;
+
+            CairoSurfacePtr layer_surface(cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+                                                                     canvas_w, canvas_h));
             auto layer_cr = make_cairo_context(layer_surface.get());
             if (layer_surface && cairo_surface_status(layer_surface.get()) == CAIRO_STATUS_SUCCESS && layer_cr) {
                 cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_CLEAR);
                 cairo_paint(layer_cr.get());
                 cairo_set_operator(layer_cr.get(), CAIRO_OPERATOR_OVER);
-                render_layer_with_mask(layer_cr.get(), nullptr, title, *layer, layer_time, w, h);
+                render_layer_with_mask(layer_cr.get(), nullptr, title, *layer, layer_time,
+                                       canvas_w, canvas_h);
                 layer_cr.reset();
                 composite_layer_surface_with_mode(cr.get(), layer_surface.get(), layer->blend_mode);
             } else {
-                render_layer_with_mask(cr.get(), nullptr, title, *layer, layer_time, w, h);
+                render_layer_with_mask(cr.get(), nullptr, title, *layer, layer_time,
+                                       canvas_w, canvas_h);
             }
         }
     }
@@ -4665,6 +4732,33 @@ QImage render_title_to_image(const Title &title, double t)
     cr.reset();
     cairo_surface_flush(surface.get());
     return image;
+}
+
+QImage render_title_region_to_image(const Title &title, double t, const QRect &region)
+{
+    const QRect canvas_rect(0, 0, std::max(1, title.width), std::max(1, title.height));
+    const QRect clipped = region.intersected(canvas_rect);
+    if (clipped.isEmpty())
+        return QImage();
+
+    /* Advanced blend modes use canvas-sized intermediate surfaces whose source
+     * coordinate system must remain anchored at (0,0). Preserve exact output
+     * for those uncommon cases and use true regional rasterization for the
+     * normal-compositing path used by lower thirds and bug graphics. */
+    if (clipped != canvas_rect) {
+        for (const auto &layer : title.layers) {
+            if (layer && layer->blend_mode != EffectBlendMode::Normal)
+                return render_title_region_impl(title, t, canvas_rect).copy(clipped);
+        }
+    }
+    return render_title_region_impl(title, t, clipped);
+}
+
+QImage render_title_to_image(const Title &title, double t)
+{
+    return render_title_region_impl(title, t,
+                                    QRect(0, 0, std::max(1, title.width),
+                                          std::max(1, title.height)));
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -5405,12 +5499,18 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         if (!data->texture) return;
 
+        /* Sparse cached textures occupy only their visible alpha bounds. Draw
+         * them in full-canvas coordinates instead of stretching the payload. */
+        gs_matrix_push();
+        gs_matrix_translate3f(static_cast<float>(data->texture_crop_x),
+                              static_cast<float>(data->texture_crop_y), 0.0f);
+
         bool rendered_with_gpu_pipeline = false;
         if (TitlePreferences::use_gpu() && TitlePreferences::gpu_available()) {
             if (!data->gpu_filter_pipeline)
                 data->gpu_filter_pipeline = std::make_unique<TitleGpuFilterPipeline>();
             rendered_with_gpu_pipeline = data->gpu_filter_pipeline->render(
-                data->texture, data->tex_w, data->tex_h, effect_usage);
+                data->texture, data->texture_w, data->texture_h, effect_usage);
             if (rendered_with_gpu_pipeline) {
                 TitlePreferences::set_gpu_available(true);
             } else {
@@ -5424,16 +5524,16 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
 
         if (!rendered_with_gpu_pipeline) {
             gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-            if (!eff) return;
-
-            gs_eparam_t *image = gs_effect_get_param_by_name(eff, "image");
-            if (!image) return;
-
-            gs_effect_set_texture(image, data->texture);
-
-            while (gs_effect_loop(eff, "Draw"))
-                gs_draw_sprite(data->texture, 0, 0, 0);
+            if (eff) {
+                gs_eparam_t *image = gs_effect_get_param_by_name(eff, "image");
+                if (image) {
+                    gs_effect_set_texture(image, data->texture);
+                    while (gs_effect_loop(eff, "Draw"))
+                        gs_draw_sprite(data->texture, 0, data->texture_w, data->texture_h);
+                }
+            }
         }
+        gs_matrix_pop();
     }
 
     if (title)

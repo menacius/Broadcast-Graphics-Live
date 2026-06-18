@@ -17,6 +17,7 @@
 #include <QPainter>
 #include <QVector>
 #include <QSet>
+#include <QSettings>
 
 #ifdef OBS_GSP_HAVE_LZ4
 #include <lz4.h>
@@ -44,7 +45,7 @@ int cache_last_frame_for_title(const Title &title, double fps)
 }
 
 constexpr quint32 kRawFrameMagic = 0x4f475346; // OGSF
-constexpr quint16 kRawFrameVersion = 3;
+constexpr quint16 kRawFrameVersion = 4;
 constexpr quint16 kFrameCodecRaw = 0;
 constexpr quint16 kFrameCodecLz4 = 1;
 /* Cache payloads are straight-alpha BGRA, exactly as OBS expects for GS_BGRA.
@@ -53,9 +54,135 @@ constexpr quint16 kFrameCodecLz4 = 1;
 constexpr QImage::Format kDiskFrameFormat = QImage::Format_ARGB32;
 constexpr int kCacheTileSize = 256;
 
+constexpr const char *kSparseCanvasX = "obs_gsp_canvas_x";
+constexpr const char *kSparseCanvasY = "obs_gsp_canvas_y";
+constexpr const char *kSparseCanvasWidth = "obs_gsp_canvas_width";
+constexpr const char *kSparseCanvasHeight = "obs_gsp_canvas_height";
+
+static void set_sparse_frame_metadata(QImage &image, int x, int y, int canvas_width, int canvas_height)
+{
+    image.setText(QString::fromLatin1(kSparseCanvasX), QString::number(x));
+    image.setText(QString::fromLatin1(kSparseCanvasY), QString::number(y));
+    image.setText(QString::fromLatin1(kSparseCanvasWidth), QString::number(canvas_width));
+    image.setText(QString::fromLatin1(kSparseCanvasHeight), QString::number(canvas_height));
+}
+
+static QRect alpha_bounds(const QImage &image)
+{
+    if (image.isNull())
+        return QRect();
+    const QImage argb = image.format() == QImage::Format_ARGB32
+        ? image
+        : image.convertToFormat(QImage::Format_ARGB32);
+    int left = argb.width();
+    int top = argb.height();
+    int right = -1;
+    int bottom = -1;
+    for (int y = 0; y < argb.height(); ++y) {
+        const QRgb *row = reinterpret_cast<const QRgb *>(argb.constScanLine(y));
+        int row_left = argb.width();
+        int row_right = -1;
+        for (int x = 0; x < argb.width(); ++x) {
+            if (qAlpha(row[x]) != 0) {
+                row_left = x;
+                break;
+            }
+        }
+        if (row_left == argb.width())
+            continue;
+        for (int x = argb.width() - 1; x >= row_left; --x) {
+            if (qAlpha(row[x]) != 0) {
+                row_right = x;
+                break;
+            }
+        }
+        left = std::min(left, row_left);
+        right = std::max(right, row_right);
+        top = std::min(top, y);
+        bottom = y;
+    }
+    return right >= left && bottom >= top
+        ? QRect(left, top, right - left + 1, bottom - top + 1)
+        : QRect();
+}
+
+static bool sparse_frame_metadata(const QImage &image, int &x, int &y, int &canvas_width, int &canvas_height)
+{
+    bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
+    x = image.text(QString::fromLatin1(kSparseCanvasX)).toInt(&ok_x);
+    y = image.text(QString::fromLatin1(kSparseCanvasY)).toInt(&ok_y);
+    canvas_width = image.text(QString::fromLatin1(kSparseCanvasWidth)).toInt(&ok_w);
+    canvas_height = image.text(QString::fromLatin1(kSparseCanvasHeight)).toInt(&ok_h);
+    return ok_x && ok_y && ok_w && ok_h && x >= 0 && y >= 0 &&
+           canvas_width > 0 && canvas_height > 0 &&
+           x + image.width() <= canvas_width && y + image.height() <= canvas_height;
+}
+
+static QImage expand_sparse_frame(const QImage &image, int expected_width, int expected_height)
+{
+    int x = 0, y = 0, canvas_width = 0, canvas_height = 0;
+    if (!sparse_frame_metadata(image, x, y, canvas_width, canvas_height))
+        return image;
+    if (canvas_width != expected_width || canvas_height != expected_height)
+        return QImage();
+    QImage full(canvas_width, canvas_height, kDiskFrameFormat);
+    full.fill(Qt::transparent);
+    QPainter painter(&full);
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.drawImage(x, y, image);
+    painter.end();
+    return full;
+}
+
+static QImage make_sparse_frame(const QImage &full_frame, int canvas_width, int canvas_height)
+{
+    if (full_frame.isNull())
+        return QImage();
+    QImage straight = full_frame.format() == kDiskFrameFormat
+        ? full_frame
+        : full_frame.convertToFormat(kDiskFrameFormat);
+    const QRect bounds = alpha_bounds(straight);
+    if (bounds.isEmpty()) {
+        QImage empty(1, 1, kDiskFrameFormat);
+        empty.fill(Qt::transparent);
+        set_sparse_frame_metadata(empty, 0, 0, canvas_width, canvas_height);
+        return empty;
+    }
+    QImage cropped = straight.copy(bounds);
+    set_sparse_frame_metadata(cropped, bounds.x(), bounds.y(), canvas_width, canvas_height);
+    return cropped;
+}
+
 static quint64 cache_image_bytes(const QImage &image)
 {
     return image.isNull() ? 0 : (quint64)image.bytesPerLine() * (quint64)image.height();
+}
+
+static void apply_persisted_live_cue_persistence(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return;
+
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QStringLiteral("TitleDock"));
+    const bool background = settings.value(QStringLiteral("backgroundPersistence"), false).toBool();
+    const bool text = background && settings.value(QStringLiteral("textPersistence"), false).toBool();
+    settings.endGroup();
+
+    bool has_exposed = false;
+    for (const auto &layer : title->layers) {
+        if (layer && (layer->type == LayerType::Text || layer->type == LayerType::Ticker) && layer->expose_text) {
+            has_exposed = true;
+            break;
+        }
+    }
+
+    title->cue_background_persistence = background && has_exposed;
+    title->cue_text_persistence = title->cue_background_persistence && text;
+    if (!title->cue_background_persistence)
+        title->cue_persistence_transition = false;
+    if (!title->cue_text_persistence)
+        title->cue_persistent_text_columns.clear();
 }
 
 static std::shared_ptr<Title> immutable_title_snapshot(const std::shared_ptr<Title> &title)
@@ -101,26 +228,48 @@ RamFrameCache::RamFrameCache(QObject *parent) : QObject(parent) {}
 bool RamFrameCache::get(const CacheFrameKey &key, QImage &image) const
 {
     QMutexLocker lock(&mutex_);
-    auto it = frames_.find(key);
-    if (it == frames_.end())
+    const auto key_it = key_payload_ids_.constFind(key);
+    if (key_it == key_payload_ids_.constEnd())
+        return false;
+    const auto payload_it = payloads_.constFind(key_it.value());
+    if (payload_it == payloads_.constEnd() || payload_it->image.isNull())
         return false;
     auto *self = const_cast<RamFrameCache *>(this);
     self->lru_.removeAll(key);
     self->lru_.push_back(key);
-    image = it.value();
-    return !image.isNull();
+    image = payload_it->image;
+    return true;
 }
 
 void RamFrameCache::put(const CacheFrameKey &key, const QImage &image)
 {
-    if (image.isNull()) return;
+    if (image.isNull())
+        return;
+
     QMutexLocker lock(&mutex_);
-    const quint64 bytes = imageBytes(image);
-    if (frame_bytes_.contains(key))
-        bytes_used_ -= frame_bytes_.value(key);
-    frames_.insert(key, image);
-    frame_bytes_.insert(key, bytes);
-    bytes_used_ += bytes;
+    const quint64 payload_id = payloadId(image);
+    const auto existing_key = key_payload_ids_.constFind(key);
+    if (existing_key != key_payload_ids_.constEnd() && existing_key.value() == payload_id) {
+        lru_.removeAll(key);
+        lru_.push_back(key);
+        return;
+    }
+
+    releaseKeyLocked(key);
+
+    auto payload_it = payloads_.find(payload_id);
+    if (payload_it == payloads_.end()) {
+        PayloadEntry entry;
+        entry.image = image; // QImage is implicitly shared: no pixel copy here.
+        entry.bytes = imageBytes(image);
+        entry.references = 1;
+        payloads_.insert(payload_id, entry);
+        bytes_used_ += entry.bytes;
+    } else {
+        ++payload_it->references;
+    }
+
+    key_payload_ids_.insert(key, payload_id);
     lru_.removeAll(key);
     lru_.push_back(key);
     evictIfNeeded();
@@ -129,17 +278,14 @@ void RamFrameCache::put(const CacheFrameKey &key, const QImage &image)
 void RamFrameCache::remove(const CacheFrameKey &key)
 {
     QMutexLocker lock(&mutex_);
-    bytes_used_ -= frame_bytes_.value(key, 0);
-    frame_bytes_.remove(key);
-    lru_.removeAll(key);
-    frames_.remove(key);
+    releaseKeyLocked(key);
 }
 
 void RamFrameCache::clear()
 {
     QMutexLocker lock(&mutex_);
-    frames_.clear();
-    frame_bytes_.clear();
+    key_payload_ids_.clear();
+    payloads_.clear();
     lru_.clear();
     bytes_used_ = 0;
 }
@@ -166,15 +312,15 @@ quint64 RamFrameCache::bytesUsed() const
 qsizetype RamFrameCache::count() const
 {
     QMutexLocker lock(&mutex_);
-    return frames_.size();
+    return key_payload_ids_.size();
 }
 
 QVector<CacheFrameKey> RamFrameCache::keysForTitle(const QString &title_id) const
 {
     QMutexLocker lock(&mutex_);
     QVector<CacheFrameKey> keys;
-    keys.reserve(frames_.size());
-    for (auto it = frames_.constBegin(); it != frames_.constEnd(); ++it) {
+    keys.reserve(key_payload_ids_.size());
+    for (auto it = key_payload_ids_.constBegin(); it != key_payload_ids_.constEnd(); ++it) {
         if (it.key().title_id == title_id)
             keys.push_back(it.key());
     }
@@ -186,16 +332,42 @@ quint64 RamFrameCache::imageBytes(const QImage &image) const
     return cache_image_bytes(image);
 }
 
+quint64 RamFrameCache::payloadId(const QImage &image) const
+{
+    /* cacheKey() identifies the implicitly shared QImage backing store. It is
+     * stable across shallow copies and changes whenever Qt detaches/modifies
+     * the pixels, which is exactly the identity required for RAM accounting. */
+    return static_cast<quint64>(image.cacheKey());
+}
+
+void RamFrameCache::releaseKeyLocked(const CacheFrameKey &key)
+{
+    const auto key_it = key_payload_ids_.find(key);
+    if (key_it == key_payload_ids_.end()) {
+        lru_.removeAll(key);
+        return;
+    }
+
+    const quint64 payload_id = key_it.value();
+    key_payload_ids_.erase(key_it);
+    lru_.removeAll(key);
+
+    auto payload_it = payloads_.find(payload_id);
+    if (payload_it == payloads_.end())
+        return;
+    if (--payload_it->references <= 0) {
+        bytes_used_ -= std::min(bytes_used_, payload_it->bytes);
+        payloads_.erase(payload_it);
+    }
+}
+
 void RamFrameCache::evictIfNeeded()
 {
     while (bytes_used_ > max_bytes_ && !lru_.isEmpty()) {
         const CacheFrameKey victim = lru_.takeFirst();
-        auto it = frames_.find(victim);
-        if (it == frames_.end())
-            continue;
-        bytes_used_ -= frame_bytes_.value(victim, 0);
-        frame_bytes_.remove(victim);
-        frames_.erase(it);
+        /* Removing an alias is free until the last reference is evicted. Keep
+         * walking the LRU until enough unique payloads have actually gone. */
+        releaseKeyLocked(victim);
     }
 }
 
@@ -243,18 +415,27 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
     quint16 format = 0;
     quint16 codec = 0;
     quint16 reserved = 0;
+    quint32 canvas_width = 0;
+    quint32 canvas_height = 0;
+    qint32 crop_x = 0;
+    qint32 crop_y = 0;
     quint32 width = 0;
     quint32 height = 0;
     quint32 row_bytes = 0;
-    stream >> magic >> version >> format >> width >> height >> row_bytes;
+    stream >> magic >> version >> format
+           >> canvas_width >> canvas_height
+           >> crop_x >> crop_y >> width >> height >> row_bytes;
     const quint64 expected_row_bytes = static_cast<quint64>(width) * 4ull;
     if (stream.status() != QDataStream::Ok ||
         magic != kRawFrameMagic ||
         version != kRawFrameVersion ||
         format != (quint16)kDiskFrameFormat ||
+        canvas_width != (quint32)key.width ||
+        canvas_height != (quint32)key.height ||
         width == 0 || height == 0 ||
-        width != (quint32)key.width ||
-        height != (quint32)key.height ||
+        crop_x < 0 || crop_y < 0 ||
+        static_cast<quint64>(crop_x) + width > canvas_width ||
+        static_cast<quint64>(crop_y) + height > canvas_height ||
         expected_row_bytes > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
         row_bytes != static_cast<quint32>(expected_row_bytes))
         return false;
@@ -301,6 +482,9 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
         memcpy(loaded.scanLine(static_cast<int>(y)),
                raw.constData() + static_cast<int>(y * row_bytes), row_bytes);
 
+    set_sparse_frame_metadata(loaded, crop_x, crop_y,
+                              static_cast<int>(canvas_width),
+                              static_cast<int>(canvas_height));
     image = loaded;
     return true;
 }
@@ -325,7 +509,16 @@ void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
     const QImage frame = image.format() == kDiskFrameFormat
         ? image
         : image.convertToFormat(kDiskFrameFormat);
-    if (frame.width() != key.width || frame.height() != key.height) {
+    bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
+    const int crop_x = frame.text(QString::fromLatin1(kSparseCanvasX)).toInt(&ok_x);
+    const int crop_y = frame.text(QString::fromLatin1(kSparseCanvasY)).toInt(&ok_y);
+    const int canvas_width = frame.text(QString::fromLatin1(kSparseCanvasWidth)).toInt(&ok_w);
+    const int canvas_height = frame.text(QString::fromLatin1(kSparseCanvasHeight)).toInt(&ok_h);
+    if (!ok_x || !ok_y || !ok_w || !ok_h ||
+        canvas_width != key.width || canvas_height != key.height ||
+        crop_x < 0 || crop_y < 0 ||
+        crop_x + frame.width() > canvas_width ||
+        crop_y + frame.height() > canvas_height) {
         file.close();
         QFile::remove(temp_path);
         return;
@@ -367,6 +560,10 @@ void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
     stream << kRawFrameMagic
            << kRawFrameVersion
            << (quint16)kDiskFrameFormat
+           << (quint32)canvas_width
+           << (quint32)canvas_height
+           << (qint32)crop_x
+           << (qint32)crop_y
            << (quint32)frame.width()
            << (quint32)frame.height()
            << row_bytes
@@ -484,8 +681,23 @@ void DiskFrameCache::rebuildIndex()
         if (key.title_id.isEmpty() || key.content_hash.isEmpty() ||
             key.frame < 0 || key.width <= 0 || key.height <= 0)
             continue;
-        if (QFileInfo::exists(pathForKey(key)))
+        const QString path = pathForKey(key);
+        QFile frame_file(path);
+        if (!frame_file.open(QIODevice::ReadOnly))
+            continue;
+        QDataStream frame_stream(&frame_file);
+        frame_stream.setVersion(QDataStream::Qt_5_15);
+        frame_stream.setByteOrder(QDataStream::LittleEndian);
+        quint32 magic = 0;
+        quint16 version = 0;
+        frame_stream >> magic >> version;
+        if (frame_stream.status() == QDataStream::Ok &&
+            magic == kRawFrameMagic && version == kRawFrameVersion) {
             indexed_keys_[key.toString()] = key;
+        } else {
+            frame_file.close();
+            QFile::remove(path);
+        }
     }
 }
 
@@ -1351,6 +1563,200 @@ QString CacheManager::contentHash(const Title &title) const
     return QString::fromLatin1(hash.result().toHex());
 }
 
+
+QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
+                                               const QString &known_content_hash) const
+{
+    /* The immutable content hash identifies the title/cue variant. This second,
+     * deliberately small hash identifies only the values that can change at a
+     * timeline sample. Equal hashes therefore mean equal renderer input and an
+     * already rendered frame can be reused without invoking Cairo again. */
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    hash.addData((known_content_hash.isEmpty() ? contentHash(title) : known_content_hash).toUtf8());
+    auto add = [&](const auto &value) {
+        QByteArray bytes;
+        QDataStream stream(&bytes, QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_5_15);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream << value;
+        hash.addData(bytes);
+    };
+    auto add_anim = [&](const AnimatedProperty &p) {
+        if (p.is_animated()) add(p.evaluate(time));
+    };
+    auto add_vec = [&](const AnimatedVec2Property &p) {
+        if (!p.is_animated()) return;
+        const Vec2Value v = p.evaluate(time);
+        add(v.x); add(v.y);
+    };
+    auto add_effect = [&](const LayerEffect &e) {
+        add_anim(e.enabled_prop); add_anim(e.opacity_prop); add_anim(e.size_prop);
+        add_anim(e.distance_prop); add_anim(e.angle_prop); add_anim(e.spread_prop);
+        add_anim(e.falloff_prop); add_anim(e.stroke_width_prop); add_anim(e.stroke_opacity_prop);
+        add_anim(e.padding_left_prop); add_anim(e.padding_right_prop); add_anim(e.padding_top_prop);
+        add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
+        add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop);
+        add_anim(e.corner_radius_bl_prop); add_anim(e.color_a); add_anim(e.color_r);
+        add_anim(e.color_g); add_anim(e.color_b); add_anim(e.stroke_color_a);
+        add_anim(e.stroke_color_r); add_anim(e.stroke_color_g); add_anim(e.stroke_color_b);
+    };
+
+    for (const auto &layer : title.layers) {
+        if (!layer) continue;
+        /* Visibility boundaries are renderer state even when no numeric
+         * property is animated. Hash the resolved active flag, not raw time. */
+        add(layer->visible && time >= layer->in_time && time <= layer->out_time);
+        add_vec(layer->position); add_vec(layer->scale); add_anim(layer->rotation);
+        add_anim(layer->opacity); add_vec(layer->size); add_vec(layer->origin_prop);
+        add_anim(layer->font_size_prop); add_anim(layer->char_tracking_prop);
+        add_anim(layer->char_scale_x_prop); add_anim(layer->char_scale_y_prop);
+        add_anim(layer->baseline_shift_prop); add_anim(layer->text_color_a);
+        add_anim(layer->text_color_r); add_anim(layer->text_color_g); add_anim(layer->text_color_b);
+        add_anim(layer->paragraph_indent_left_prop); add_anim(layer->paragraph_indent_right_prop);
+        add_anim(layer->paragraph_indent_first_line_prop); add_anim(layer->paragraph_space_before_prop);
+        add_anim(layer->paragraph_space_after_prop); add_anim(layer->fill_color_a);
+        add_anim(layer->fill_color_r); add_anim(layer->fill_color_g); add_anim(layer->fill_color_b);
+        add_anim(layer->background_enabled_prop); add_anim(layer->background_opacity_prop);
+        add_anim(layer->background_padding_x_prop); add_anim(layer->background_padding_y_prop);
+        add_anim(layer->background_padding_left_prop); add_anim(layer->background_padding_right_prop);
+        add_anim(layer->background_padding_top_prop); add_anim(layer->background_padding_bottom_prop);
+        add_anim(layer->background_corner_radius_prop); add_anim(layer->background_corner_radius_tl_prop);
+        add_anim(layer->background_corner_radius_tr_prop); add_anim(layer->background_corner_radius_br_prop);
+        add_anim(layer->background_corner_radius_bl_prop); add_anim(layer->background_stroke_width_prop);
+        add_anim(layer->background_stroke_opacity_prop); add_anim(layer->background_color_a);
+        add_anim(layer->background_color_r); add_anim(layer->background_color_g);
+        add_anim(layer->background_color_b); add_anim(layer->background_stroke_color_a);
+        add_anim(layer->background_stroke_color_r); add_anim(layer->background_stroke_color_g);
+        add_anim(layer->background_stroke_color_b); add_anim(layer->shadow_enabled_prop);
+        add_anim(layer->shadow_opacity_prop); add_anim(layer->shadow_distance_prop);
+        add_anim(layer->shadow_angle_prop); add_anim(layer->shadow_blur_prop);
+        add_anim(layer->shadow_spread_prop); add_anim(layer->shadow_color_a);
+        add_anim(layer->shadow_color_r); add_anim(layer->shadow_color_g); add_anim(layer->shadow_color_b);
+        for (const auto &effect : layer->effects) add_effect(effect);
+    }
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+
+QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
+                                              const QString &known_content_hash) const
+{
+    /* Conservative perceptual sampling. Values are quantized below a visible
+     * pixel/opacity threshold so extremely slow animation can share a sample
+     * while visibility boundaries and discrete states remain exact. */
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    hash.addData((known_content_hash.isEmpty() ? contentHash(title) : known_content_hash).toUtf8());
+    auto add = [&](const auto &value) {
+        QByteArray bytes;
+        QDataStream stream(&bytes, QIODevice::WriteOnly);
+        stream.setVersion(QDataStream::Qt_5_15);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream << value;
+        hash.addData(bytes);
+    };
+    auto quant = [](double value, double step) -> qint64 {
+        if (!std::isfinite(value) || step <= 0.0)
+            return 0;
+        return qRound64(value / step);
+    };
+    auto add_anim = [&](const AnimatedProperty &p, double step) {
+        if (p.is_animated()) add(quant(p.evaluate(time), step));
+    };
+    auto add_vec = [&](const AnimatedVec2Property &p, double step) {
+        if (!p.is_animated()) return;
+        const Vec2Value v = p.evaluate(time);
+        add(quant(v.x, step)); add(quant(v.y, step));
+    };
+    auto add_effect = [&](const LayerEffect &e) {
+        add_anim(e.enabled_prop, 1.0);
+        add_anim(e.opacity_prop, 0.002);
+        add_anim(e.size_prop, 0.25);
+        add_anim(e.distance_prop, 0.25);
+        add_anim(e.angle_prop, 0.05);
+        add_anim(e.spread_prop, 0.25);
+        add_anim(e.falloff_prop, 0.002);
+        add_anim(e.stroke_width_prop, 0.25);
+        add_anim(e.stroke_opacity_prop, 0.002);
+        add_anim(e.padding_left_prop, 0.25); add_anim(e.padding_right_prop, 0.25);
+        add_anim(e.padding_top_prop, 0.25); add_anim(e.padding_bottom_prop, 0.25);
+        add_anim(e.corner_radius_tl_prop, 0.25); add_anim(e.corner_radius_tr_prop, 0.25);
+        add_anim(e.corner_radius_br_prop, 0.25); add_anim(e.corner_radius_bl_prop, 0.25);
+        add_anim(e.color_a, 1.0 / 255.0); add_anim(e.color_r, 1.0 / 255.0);
+        add_anim(e.color_g, 1.0 / 255.0); add_anim(e.color_b, 1.0 / 255.0);
+        add_anim(e.stroke_color_a, 1.0 / 255.0); add_anim(e.stroke_color_r, 1.0 / 255.0);
+        add_anim(e.stroke_color_g, 1.0 / 255.0); add_anim(e.stroke_color_b, 1.0 / 255.0);
+    };
+
+    for (const auto &layer : title.layers) {
+        if (!layer) continue;
+        add(layer->visible && time >= layer->in_time && time <= layer->out_time);
+        add_vec(layer->position, 0.25);
+        add_vec(layer->scale, 0.0005);
+        add_anim(layer->rotation, 0.05);
+        add_anim(layer->opacity, 0.002);
+        add_vec(layer->size, 0.25);
+        add_vec(layer->origin_prop, 0.25);
+        add_anim(layer->font_size_prop, 0.10);
+        add_anim(layer->char_tracking_prop, 0.10);
+        add_anim(layer->char_scale_x_prop, 0.0005);
+        add_anim(layer->char_scale_y_prop, 0.0005);
+        add_anim(layer->baseline_shift_prop, 0.10);
+        add_anim(layer->text_color_a, 1.0 / 255.0); add_anim(layer->text_color_r, 1.0 / 255.0);
+        add_anim(layer->text_color_g, 1.0 / 255.0); add_anim(layer->text_color_b, 1.0 / 255.0);
+        add_anim(layer->paragraph_indent_left_prop, 0.25);
+        add_anim(layer->paragraph_indent_right_prop, 0.25);
+        add_anim(layer->paragraph_indent_first_line_prop, 0.25);
+        add_anim(layer->paragraph_space_before_prop, 0.25);
+        add_anim(layer->paragraph_space_after_prop, 0.25);
+        add_anim(layer->fill_color_a, 1.0 / 255.0); add_anim(layer->fill_color_r, 1.0 / 255.0);
+        add_anim(layer->fill_color_g, 1.0 / 255.0); add_anim(layer->fill_color_b, 1.0 / 255.0);
+        add_anim(layer->background_enabled_prop, 1.0);
+        add_anim(layer->background_opacity_prop, 0.002);
+        add_anim(layer->background_padding_x_prop, 0.25);
+        add_anim(layer->background_padding_y_prop, 0.25);
+        add_anim(layer->background_padding_left_prop, 0.25);
+        add_anim(layer->background_padding_right_prop, 0.25);
+        add_anim(layer->background_padding_top_prop, 0.25);
+        add_anim(layer->background_padding_bottom_prop, 0.25);
+        add_anim(layer->background_corner_radius_prop, 0.25);
+        add_anim(layer->background_corner_radius_tl_prop, 0.25);
+        add_anim(layer->background_corner_radius_tr_prop, 0.25);
+        add_anim(layer->background_corner_radius_br_prop, 0.25);
+        add_anim(layer->background_corner_radius_bl_prop, 0.25);
+        add_anim(layer->background_stroke_width_prop, 0.25);
+        add_anim(layer->background_stroke_opacity_prop, 0.002);
+        add_anim(layer->background_color_a, 1.0 / 255.0);
+        add_anim(layer->background_color_r, 1.0 / 255.0);
+        add_anim(layer->background_color_g, 1.0 / 255.0);
+        add_anim(layer->background_color_b, 1.0 / 255.0);
+        add_anim(layer->background_stroke_color_a, 1.0 / 255.0);
+        add_anim(layer->background_stroke_color_r, 1.0 / 255.0);
+        add_anim(layer->background_stroke_color_g, 1.0 / 255.0);
+        add_anim(layer->background_stroke_color_b, 1.0 / 255.0);
+        add_anim(layer->shadow_enabled_prop, 1.0);
+        add_anim(layer->shadow_opacity_prop, 0.002);
+        add_anim(layer->shadow_distance_prop, 0.25);
+        add_anim(layer->shadow_angle_prop, 0.05);
+        add_anim(layer->shadow_blur_prop, 0.25);
+        add_anim(layer->shadow_spread_prop, 0.25);
+        add_anim(layer->shadow_color_a, 1.0 / 255.0);
+        add_anim(layer->shadow_color_r, 1.0 / 255.0);
+        add_anim(layer->shadow_color_g, 1.0 / 255.0);
+        add_anim(layer->shadow_color_b, 1.0 / 255.0);
+        for (const auto &effect : layer->effects) add_effect(effect);
+    }
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+QString CacheManager::temporalStateKey(const CacheFrameKey &key,
+                                       const QString &visual_state_hash) const
+{
+    return QStringLiteral("%1|%2|%3x%4|%5")
+        .arg(key.title_id, key.content_hash)
+        .arg(key.width).arg(key.height)
+        .arg(visual_state_hash);
+}
+
 CacheFrameKey CacheManager::keyForFrame(const Title &title, int frame) const
 {
     const int clamped_frame = titleHasTimelineChanges(title)
@@ -1695,6 +2101,9 @@ void CacheManager::clearRam()
         cache_epoch_.fetch_add(1);
         queue_.clear();
         ram_cache_.clear();
+        QMutexLocker dedup_lock(&temporal_dedup_mutex_);
+        temporal_canonical_keys_.clear();
+        adaptive_canonical_keys_.clear();
     }
     resetCancelledWorkState();
     {
@@ -1703,6 +2112,7 @@ void CacheManager::clearRam()
     }
     state_tracker_.clear();
     wakeWorker();
+    emit liveCueStateChanged(QString(), -1);
     emit diagnosticsChanged();
 }
 
@@ -1713,10 +2123,14 @@ void CacheManager::clearDisk()
         cache_epoch_.fetch_add(1);
         queue_.clear();
         disk_cache_.clear();
+        QMutexLocker dedup_lock(&temporal_dedup_mutex_);
+        temporal_canonical_keys_.clear();
+        adaptive_canonical_keys_.clear();
     }
     resetCancelledWorkState();
     state_tracker_.clear();
     wakeWorker();
+    emit liveCueStateChanged(QString(), -1);
     emit diagnosticsChanged();
 }
 
@@ -1728,6 +2142,9 @@ void CacheManager::clearAll()
         queue_.clear();
         ram_cache_.clear();
         disk_cache_.clear();
+        QMutexLocker dedup_lock(&temporal_dedup_mutex_);
+        temporal_canonical_keys_.clear();
+        adaptive_canonical_keys_.clear();
     }
     state_tracker_.clear();
     {
@@ -1751,6 +2168,7 @@ void CacheManager::clearAll()
         live_cue_known_keys_.clear();
     }
     wakeWorker();
+    emit liveCueStateChanged(QString(), -1);
     emit diagnosticsChanged();
 }
 
@@ -1973,6 +2391,51 @@ QImage CacheManager::mergeDirtyTiles(const CacheFrameKey &key, const QImage &pre
         QMutexLocker lock(&dirty_tiles_mutex_);
         dirty_tiles_by_frame_.remove(tileStateKey(key.title_id, key.frame));
     }
+    return merged;
+}
+
+
+QImage CacheManager::renderDirtyTiles(const RenderQueueManager::Job &job,
+                                      const QImage &previous) const
+{
+    if (!job.title || previous.isNull())
+        return QImage();
+
+    const QVector<CacheTileRegion> dirty_tiles = dirtyTilesForKey(job.key);
+    if (dirty_tiles.isEmpty())
+        return QImage();
+
+    QImage merged = previous.format() == QImage::Format_ARGB32_Premultiplied
+        ? previous.copy()
+        : previous.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QPainter painter(&merged);
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+
+    qsizetype rendered_pixels = 0;
+    for (const auto &tile : dirty_tiles) {
+        if (tile.rect.isEmpty())
+            continue;
+        const QImage tile_image = render_title_region_to_image(*job.title, job.time, tile.rect);
+        if (tile_image.isNull())
+            continue;
+        painter.drawImage(tile.rect.topLeft(), tile_image);
+        rendered_pixels += qsizetype(tile.rect.width()) * qsizetype(tile.rect.height());
+    }
+    painter.end();
+
+    {
+        QMutexLocker lock(&dirty_tiles_mutex_);
+        dirty_tiles_by_frame_.remove(tileStateKey(job.key.title_id, job.key.frame));
+    }
+
+    const qsizetype full_pixels = qsizetype(std::max(1, job.key.width)) *
+                                  qsizetype(std::max(1, job.key.height));
+    OGS_LOG_TRACE(job.live_cue ? "LiveCue" : "Cache",
+                  QStringLiteral("Dirty-region render title=%1 frame=%2 tiles=%3 pixels=%4/%5 (%6%)")
+                      .arg(job.key.title_id).arg(job.key.frame).arg(dirty_tiles.size())
+                      .arg(rendered_pixels).arg(full_pixels)
+                      .arg(full_pixels > 0 ? (100.0 * double(rendered_pixels) / double(full_pixels)) : 0.0,
+                           0, 'f', 1));
     return merged;
 }
 
@@ -2711,6 +3174,7 @@ void CacheManager::queueLiveCueVariantSet(
 
 void CacheManager::queueLiveCue(const std::shared_ptr<Title> &title, int row, bool urgent)
 {
+    apply_persisted_live_cue_persistence(title);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load()) {
         OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because cache is disabled").arg(row));
@@ -2737,6 +3201,7 @@ void CacheManager::queueLiveCue(const std::shared_ptr<Title> &title, int row, bo
 void CacheManager::queueLiveCueTransition(const std::shared_ptr<Title> &title,
                                           int from_row, int to_row, bool urgent)
 {
+    apply_persisted_live_cue_persistence(title);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     const auto variants = liveCueTransitionVariants(title, from_row, to_row);
     if (variants.isEmpty())
@@ -3109,6 +3574,7 @@ void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
 
 void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
 {
+    apply_persisted_live_cue_persistence(title);
     std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load() || !title)
@@ -3440,20 +3906,91 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
     QImage image;
     QImage previous;
     bool loaded_from_disk = false;
-    bool had_previous = ram_cache_.get(job.key, previous);
+    bool temporal_reuse = false;
+    CacheFrameKey temporal_canonical_key;
+    bool have_temporal_canonical_key = false;
+    const QString visual_state_hash = evaluatedVisualStateHash(*job.title, job.time, job.key.content_hash);
+    const QString temporal_key = temporalStateKey(job.key, visual_state_hash);
+    const QString adaptive_state_hash = adaptiveVisualStateHash(*job.title, job.time, job.key.content_hash);
+    const QString adaptive_key = temporalStateKey(job.key, QStringLiteral("adaptive:") + adaptive_state_hash);
+
+    /* Jobs are consumed serially by the prerender worker. Once the first frame
+     * for a visual state has been published, later timeline frames can reuse
+     * it without executing the renderer. The frame key/state remains distinct
+     * so progress, seeking and invalidation retain frame-level semantics. */
+    if (!was_stale && !job.force_render) {
+        CacheFrameKey canonical_key;
+        bool have_canonical = false;
+        {
+            QMutexLocker lock(&temporal_dedup_mutex_);
+            const auto it = temporal_canonical_keys_.constFind(temporal_key);
+            if (it != temporal_canonical_keys_.constEnd()) {
+                canonical_key = it.value();
+                have_canonical = true;
+            }
+        }
+        if (have_canonical && !(canonical_key == job.key)) {
+            temporal_canonical_key = canonical_key;
+            have_temporal_canonical_key = true;
+            if (ram_cache_.get(canonical_key, image)) {
+                temporal_reuse = true;
+            } else if (disk_cache_.get(canonical_key, image)) {
+                temporal_reuse = true;
+                loaded_from_disk = true;
+            }
+            if (temporal_reuse) {
+                OGS_LOG_TRACE(job.live_cue ? "LiveCue" : "Cache",
+                              QStringLiteral("Temporal frame reuse title=%1 frame=%2 canonicalFrame=%3 state=%4")
+                                  .arg(job.key.title_id).arg(job.key.frame)
+                                  .arg(canonical_key.frame).arg(visual_state_hash.left(12)));
+            }
+        }
+    }
+
+    if (!temporal_reuse && !was_stale && !job.force_render && !job.realtime) {
+        CacheFrameKey canonical_key;
+        bool have_canonical = false;
+        {
+            QMutexLocker lock(&temporal_dedup_mutex_);
+            const auto it = adaptive_canonical_keys_.constFind(adaptive_key);
+            if (it != adaptive_canonical_keys_.constEnd()) {
+                canonical_key = it.value();
+                have_canonical = true;
+            }
+        }
+        if (have_canonical && !(canonical_key == job.key)) {
+            temporal_canonical_key = canonical_key;
+            have_temporal_canonical_key = true;
+            if (ram_cache_.get(canonical_key, image)) {
+                temporal_reuse = true;
+            } else if (disk_cache_.get(canonical_key, image)) {
+                temporal_reuse = true;
+                loaded_from_disk = true;
+            }
+            if (temporal_reuse) {
+                OGS_LOG_TRACE(job.live_cue ? "LiveCue" : "Cache",
+                              QStringLiteral("Adaptive frame reuse title=%1 frame=%2 canonicalFrame=%3 state=%4")
+                                  .arg(job.key.title_id).arg(job.key.frame)
+                                  .arg(canonical_key.frame).arg(adaptive_state_hash.left(12)));
+            }
+        }
+    }
+
+    bool had_previous = temporal_reuse || ram_cache_.get(job.key, previous);
     if (!had_previous) {
         had_previous = disk_cache_.get(job.key, previous);
         loaded_from_disk = had_previous;
     }
-    if (was_stale || !had_previous) {
-        const QImage fresh = render_title_to_image(*job.title, job.time);
+    if (temporal_reuse) {
+        /* image already references the canonical QImage payload. */
+    } else if (was_stale || !had_previous) {
         if (was_stale && had_previous) {
-            const QImage merge_previous = previous.format() == QImage::Format_ARGB32_Premultiplied
-                ? previous
-                : previous.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-            image = mergeDirtyTiles(job.key, merge_previous, fresh);
+            const QImage expanded_previous = expand_sparse_frame(previous, job.key.width, job.key.height);
+            image = renderDirtyTiles(job, expanded_previous);
+            if (image.isNull())
+                image = render_title_to_image(*job.title, job.time);
         } else {
-            image = fresh;
+            image = render_title_to_image(*job.title, job.time);
         }
         loaded_from_disk = false;
     } else {
@@ -3464,8 +4001,13 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
      * straight-alpha BGRA (QImage::Format_ARGB32 on little-endian systems),
      * which is the byte layout consumed by OBS GS_BGRA. This removes the full
      * 1920x1080 conversion/unpremultiply pass from every playback tick. */
-    if (!image.isNull() && image.format() != kDiskFrameFormat)
-        image = image.convertToFormat(kDiskFrameFormat);
+    if (!image.isNull()) {
+        int sparse_x = 0, sparse_y = 0, sparse_w = 0, sparse_h = 0;
+        if (!sparse_frame_metadata(image, sparse_x, sparse_y, sparse_w, sparse_h))
+            image = make_sparse_frame(image, job.key.width, job.key.height);
+        else if (image.format() != kDiskFrameFormat)
+            image = image.convertToFormat(kDiskFrameFormat);
+    }
 
     /* Serialize the final validity check with every invalidation/clear/remove
      * publication. Without this gate, a job could pass jobIsCurrent(), then an
@@ -3527,9 +4069,26 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
         return;
     }
 
+    /* If the canonical payload had fallen out of RAM and was restored from
+     * disk for an alias, promote the canonical key as well. Both puts retain
+     * the same implicitly-shared backing store and are charged only once. */
+    if (temporal_reuse && loaded_from_disk && have_temporal_canonical_key)
+        ram_cache_.put(temporal_canonical_key, image);
     ram_cache_.put(job.key, image);
     if (!loaded_from_disk)
         disk_cache_.put(job.key, image);
+    {
+        QMutexLocker lock(&temporal_dedup_mutex_);
+        if (!temporal_canonical_keys_.contains(temporal_key))
+            temporal_canonical_keys_.insert(temporal_key, job.key);
+        if (!job.realtime && !adaptive_canonical_keys_.contains(adaptive_key))
+            adaptive_canonical_keys_.insert(adaptive_key, job.key);
+        /* Bound stale content generations during long editing sessions. */
+        if (temporal_canonical_keys_.size() + adaptive_canonical_keys_.size() > 65536) {
+            temporal_canonical_keys_.clear();
+            adaptive_canonical_keys_.clear();
+        }
+    }
     /* The editor invalidation baseline must describe the editable title, not
      * an applied live-cue/transition variant or an OBS runtime snapshot. */
     if (!job.live_cue && !job.realtime)
