@@ -42,8 +42,8 @@ enum class CachePlaybackMode {
 
 struct CachePlaybackSettings {
     bool from_beginning = false;
-    bool loop = true;
-    bool ping_pong = false;
+    CachePlaybackMode mode = CachePlaybackMode::Loop;
+    bool follow_title_playback_mode = false;
     bool cached_frames_only = false;
     bool play_every_frame = false;
     int skip_frames = 0;
@@ -246,6 +246,8 @@ public:
     void restoreDiskStates(const std::shared_ptr<Title> &title);
     QImage renderUncachedFrame(const std::shared_ptr<Title> &title, double time) const;
     bool titleHasTimelineChanges(const Title &title) const;
+    FrameCacheState displayStateForFrame(const std::shared_ptr<Title> &title, int frame) const;
+    bool displayFrameIsStatic(const std::shared_ptr<Title> &title, int frame) const;
 
     void clearRam();
     void clearDisk();

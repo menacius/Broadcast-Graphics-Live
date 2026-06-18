@@ -42,6 +42,7 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
 $PluginName = "obs-graphics-studio-pro"
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
 $ObsArchDir = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "32bit" } else { "64bit" }
+$VcpkgTriplet = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "x86-windows" } else { "x64-windows" }
 $PluginDllName = "$PluginName.dll"
 $ObsPluginRoot = Join-Path $InstallRoot $PluginName
 $ObsPluginBin = Join-Path $ObsPluginRoot "bin\$ObsArchDir"
@@ -214,6 +215,7 @@ $CmakeArgs = @(
     "-G", $Generator,
     "-A", $Architecture,
     "-DCMAKE_TOOLCHAIN_FILE=$($VcpkgToolchain.Replace('\', '/'))",
+    "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet",
     "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))",
     "-DOBS_GSP_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
 )

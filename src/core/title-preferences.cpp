@@ -19,6 +19,7 @@ constexpr const char *kSettingsGroup = "Rendering";
 constexpr const char *kLoggingGroup = "Logging";
 constexpr const char *kTimelineColorGroup = "TimelineColors";
 constexpr const char *kAppearanceGroup = "Appearance";
+constexpr const char *kCanvasHelperColorGroup = "CanvasHelperColors";
 constexpr const char *kUseGpuKey = "useGpu";
 constexpr const char *kCacheEnabledKey = "cacheEnabled";
 constexpr const char *kCacheRamLimitMbKey = "cacheRamLimitMb";
@@ -54,6 +55,38 @@ QString timeline_color_key(TitlePreferences::TimelineColorRole role)
         return QStringLiteral("loop");
     }
     return QStringLiteral("textLayer");
+}
+
+
+QString canvas_helper_color_key(TitlePreferences::CanvasHelperColorRole role)
+{
+    switch (role) {
+    case TitlePreferences::CanvasHelperColorRole::Guides:
+        return QStringLiteral("guides");
+    case TitlePreferences::CanvasHelperColorRole::ActiveGuide:
+        return QStringLiteral("activeGuide");
+    case TitlePreferences::CanvasHelperColorRole::RulerMouseIndicator:
+        return QStringLiteral("rulerMouseIndicator");
+    case TitlePreferences::CanvasHelperColorRole::HoverBoundingBox:
+        return QStringLiteral("hoverBoundingBox");
+    case TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox:
+        return QStringLiteral("selectionBoundingBox");
+    case TitlePreferences::CanvasHelperColorRole::TextBoundingBox:
+        return QStringLiteral("textBoundingBox");
+    case TitlePreferences::CanvasHelperColorRole::SnapLines:
+        return QStringLiteral("snapLines");
+    case TitlePreferences::CanvasHelperColorRole::CanvasSnapLines:
+        return QStringLiteral("canvasSnapLines");
+    case TitlePreferences::CanvasHelperColorRole::ObjectSnapLines:
+        return QStringLiteral("objectSnapLines");
+    case TitlePreferences::CanvasHelperColorRole::CanvasBorder:
+        return QStringLiteral("canvasBorder");
+    case TitlePreferences::CanvasHelperColorRole::ActionSafe:
+        return QStringLiteral("actionSafe");
+    case TitlePreferences::CanvasHelperColorRole::GraphicsSafe:
+        return QStringLiteral("graphicsSafe");
+    }
+    return QStringLiteral("guides");
 }
 
 } // namespace
@@ -333,6 +366,61 @@ void set_scene_mask_color(const QColor &color)
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kAppearanceGroup));
     settings.setValue(QString::fromUtf8(kSceneMaskColorKey), color);
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
+
+QColor default_canvas_helper_color(CanvasHelperColorRole role)
+{
+    switch (role) {
+    case CanvasHelperColorRole::Guides:
+        return QColor(0, 160, 255, 210);
+    case CanvasHelperColorRole::ActiveGuide:
+        return QColor(255, 220, 0, 240);
+    case CanvasHelperColorRole::RulerMouseIndicator:
+        return QColor(0, 120, 255, 220);
+    case CanvasHelperColorRole::HoverBoundingBox:
+        return QColor(0, 122, 255, 135);
+    case CanvasHelperColorRole::SelectionBoundingBox:
+        return QColor(0, 120, 255, 230);
+    case CanvasHelperColorRole::TextBoundingBox:
+        return QColor(255, 220, 0, 255);
+    case CanvasHelperColorRole::SnapLines:
+        return QColor(0, 220, 255, 235);
+    case CanvasHelperColorRole::CanvasSnapLines:
+        return QColor(0, 210, 110, 235);
+    case CanvasHelperColorRole::ObjectSnapLines:
+        return QColor(235, 45, 55, 235);
+    case CanvasHelperColorRole::CanvasBorder:
+        return QColor(0, 120, 255, 220);
+    case CanvasHelperColorRole::ActionSafe:
+        return QColor(0, 200, 255, 190);
+    case CanvasHelperColorRole::GraphicsSafe:
+        return QColor(255, 220, 0, 190);
+    }
+    return QColor(0, 160, 255, 210);
+}
+
+QColor canvas_helper_color(CanvasHelperColorRole role)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kCanvasHelperColorGroup));
+    const QColor fallback = default_canvas_helper_color(role);
+    const QColor color = settings.value(canvas_helper_color_key(role), fallback).value<QColor>();
+    settings.endGroup();
+    return color.isValid() ? color : fallback;
+}
+
+void set_canvas_helper_color(CanvasHelperColorRole role, const QColor &color)
+{
+    if (!color.isValid())
+        return;
+
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kCanvasHelperColorGroup));
+    settings.setValue(canvas_helper_color_key(role), color);
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);

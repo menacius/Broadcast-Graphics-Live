@@ -60,7 +60,7 @@ void PrerenderDock::buildUi()
     form->addRow(obsgs_tr("OBSTitles.Start"), start_mode_);
 
     playback_mode_ = new QComboBox(this);
-    playback_mode_->addItems({obsgs_tr("OBSTitles.Loop"), obsgs_tr("OBSTitles.PingPongLoop"), obsgs_tr("OBSTitles.PlayOnce")});
+    playback_mode_->addItems({obsgs_tr("OBSTitles.Loop"), obsgs_tr("OBSTitles.PingPongLoop"), obsgs_tr("OBSTitles.PlayOnce"), obsgs_tr("OBSTitles.PlaybackMode")});
     form->addRow(obsgs_tr("OBSTitles.Mode"), playback_mode_);
 
     cache_enabled_ = new QCheckBox(obsgs_tr("OBSTitles.EnableCache"), this);
@@ -151,8 +151,11 @@ void PrerenderDock::applySettings()
 
     CachePlaybackSettings settings;
     settings.from_beginning = start_mode_ && start_mode_->currentIndex() == 1;
-    settings.loop = playback_mode_ && playback_mode_->currentIndex() == 0;
-    settings.ping_pong = playback_mode_ && playback_mode_->currentIndex() == 1;
+    const int playback_index = playback_mode_ ? playback_mode_->currentIndex() : 0;
+    settings.mode = playback_index == 1 ? CachePlaybackMode::PingPong
+                  : playback_index == 2 ? CachePlaybackMode::PlayOnce
+                                        : CachePlaybackMode::Loop;
+    settings.follow_title_playback_mode = playback_index == 3;
     settings.skip_frames = play_every_frame ? 0 : (skip_frames_ ? skip_frames_->value() : 0);
     settings.speed_percent = play_every_frame ? 100.0 : (speed_percent_ ? speed_percent_->value() : 100.0);
     settings.cached_frames_only = cached_only_ && cached_only_->isChecked();

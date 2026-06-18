@@ -175,10 +175,20 @@ set(QT_LIBS Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VE
 
 # ── Find Cairo + Pango ──────────────────────────────────────────────
 find_package(PkgConfig QUIET)
+set(OBS_GSP_TEXT_RENDER_TARGETS "")
 if(PKG_CONFIG_FOUND)
-  pkg_check_modules(CAIRO    QUIET cairo)
-  pkg_check_modules(PANGO    QUIET pango)
-  pkg_check_modules(PANGOCAIRO QUIET pangocairo)
+  # IMPORTED_TARGET is important on Windows/MSVC: it preserves the vcpkg
+  # library directories and transitive link dependencies. Linking the raw
+  # *_LIBRARIES values can otherwise emit only `cairo.lib`, with no /LIBPATH.
+  pkg_check_modules(CAIRO QUIET IMPORTED_TARGET cairo)
+  pkg_check_modules(PANGO QUIET IMPORTED_TARGET pango)
+  pkg_check_modules(PANGOCAIRO QUIET IMPORTED_TARGET pangocairo)
+  if(TARGET PkgConfig::CAIRO AND TARGET PkgConfig::PANGO AND TARGET PkgConfig::PANGOCAIRO)
+    list(APPEND OBS_GSP_TEXT_RENDER_TARGETS
+      PkgConfig::CAIRO
+      PkgConfig::PANGO
+      PkgConfig::PANGOCAIRO)
+  endif()
 endif()
 
 if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
@@ -230,6 +240,23 @@ if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
     get_filename_component(PANGOCAIRO_PARENT_DIR "${PANGOCAIRO_INCLUDE_DIR}" DIRECTORY)
     set(PANGOCAIRO_INCLUDE_DIRS ${PANGOCAIRO_INCLUDE_DIR} ${PANGOCAIRO_PARENT_DIR})
     set(PANGOCAIRO_LIBRARIES ${PANGOCAIRO_LIBRARY})
+
+    add_library(OBS_GSP_CAIRO UNKNOWN IMPORTED)
+    set_target_properties(OBS_GSP_CAIRO PROPERTIES
+      IMPORTED_LOCATION "${CAIRO_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CAIRO_INCLUDE_DIRS}")
+    add_library(OBS_GSP_PANGO UNKNOWN IMPORTED)
+    set_target_properties(OBS_GSP_PANGO PROPERTIES
+      IMPORTED_LOCATION "${PANGO_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${PANGO_INCLUDE_DIRS}"
+      INTERFACE_LINK_LIBRARIES "${GLIB_LIBRARY};${GOBJECT_LIBRARY};${HARFBUZZ_LIBRARY}")
+    add_library(OBS_GSP_PANGOCAIRO UNKNOWN IMPORTED)
+    set_target_properties(OBS_GSP_PANGOCAIRO PROPERTIES
+      IMPORTED_LOCATION "${PANGOCAIRO_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${PANGOCAIRO_INCLUDE_DIRS}"
+      INTERFACE_LINK_LIBRARIES "OBS_GSP_CAIRO;OBS_GSP_PANGO")
+    list(APPEND OBS_GSP_TEXT_RENDER_TARGETS
+      OBS_GSP_CAIRO OBS_GSP_PANGO OBS_GSP_PANGOCAIRO)
     
     message(STATUS "Native Cairo found: ${CAIRO_LIBRARY}")
     message(STATUS "Native Pango found: ${PANGO_LIBRARY}")
@@ -451,9 +478,7 @@ target_link_libraries(obs-graphics-studio-pro PRIVATE
     OBS::libobs
     OBS::obs-frontend-api
     ${QT_LIBS}
-    ${CAIRO_LIBRARIES}
-    ${PANGO_LIBRARIES}
-    ${PANGOCAIRO_LIBRARIES}
+    ${OBS_GSP_TEXT_RENDER_TARGETS}
     nlohmann_json::nlohmann_json
     ${OBS_GSP_LZ4_TARGET}
 )

@@ -73,11 +73,13 @@ public:
     void set_guides_visible(bool visible);
     void set_guides_locked(bool locked);
     void set_show_guide_coordinates(bool visible);
+    void set_canvas_border_visible(bool visible);
     void clear_user_guides();
     bool rulers_visible() const { return rulers_visible_; }
     bool guides_visible() const { return guides_visible_; }
     bool guides_locked() const { return guides_locked_; }
     bool show_guide_coordinates() const { return show_guide_coordinates_; }
+    bool canvas_border_visible() const { return canvas_border_visible_; }
     void set_snap_enabled(bool enabled);
     void set_snap_to_guides(bool enabled);
     void set_snap_to_grid(bool enabled);
@@ -188,6 +190,8 @@ private:
     QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
     QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
     DragMode hit_test_selected(const QPointF &view_pt) const;
+    bool active_draw_tool_can_manipulate_selected() const;
+    void set_cursor_for_drag_mode(DragMode mode, bool dragging);
     bool gradient_handles_visible() const;
     bool layer_supports_gradient_handles(const Layer &layer) const;
     GradientHandleGeometry gradient_handle_geometry(const Layer &layer) const;
@@ -242,6 +246,12 @@ private:
     bool handle_external_canvas_mime(const QMimeData *mime, const QPointF &canvas_pt);
     QString canvas_drag_tooltip_text() const;
     void draw_canvas_drag_tooltip(QPainter &p);
+    QRect snap_cursor_update_rect() const;
+    QRect final_snap_cursor_update_rect() const;
+    QRect canvas_drag_tooltip_update_rect() const;
+    void clear_draw_tool_snap_cursor();
+    void update_draw_tool_snap_cursor(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    void draw_snap_cursor_indicator(QPainter &p);
     void update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
     void begin_text_edit(const std::shared_ptr<Layer> &layer);
     void commit_text_edit(bool accept_changes = true);
@@ -251,7 +261,14 @@ private:
     void refresh_inline_text_edit(bool mark_dirty, bool emit_changed);
     double inline_text_visual_scale(const Layer &layer) const;
     QRectF inline_text_document_local_rect(const Layer &layer) const;
+    std::shared_ptr<Layer> layer_at_view_pos(const QPointF &view_pt) const;
     std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
+    void update_hover_layer(const QPointF &view_pt);
+    void draw_hover_layer_box(QPainter &p);
+    void draw_canvas_border(QPainter &p, const QRectF &canvas_rect);
+    void draw_ruler_mouse_indicators(QPainter &p, const QRectF &canvas_rect);
+    void invalidate_checkerboard_cache();
+    void draw_static_checkerboard(QPainter &p, const QRect &canvas_rect_px);
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -273,6 +290,10 @@ private:
     bool guides_visible_ = true;
     bool guides_locked_ = false;
     bool show_guide_coordinates_ = true;
+    bool canvas_border_visible_ = true;
+    bool mouse_inside_canvas_ = false;
+    QPointF last_mouse_view_pos_;
+    std::string hovered_layer_id_;
     std::vector<double> vertical_guides_;
     std::vector<double> horizontal_guides_;
     bool dragging_new_guide_ = false;
@@ -280,6 +301,8 @@ private:
     int dragging_guide_index_ = -1;
     double dragging_guide_value_ = 0.0;
     int checkerboard_pattern_ = 1;
+    QPixmap checkerboard_tile_;
+    int checkerboard_tile_pattern_ = -1;
     CanvasTool active_tool_ = CanvasTool::Selection;
     ShapeType active_shape_type_ = ShapeType::Rectangle;
     LayerType active_text_layer_type_ = LayerType::Text;
@@ -295,6 +318,10 @@ private:
     QPointF shape_draw_current_canvas_;
     QRectF shape_draw_current_rect_;
     Qt::KeyboardModifiers shape_draw_modifiers_ = Qt::NoModifier;
+    bool snap_cursor_visible_ = false;
+    QPointF snap_cursor_canvas_;
+    bool final_snap_cursor_visible_ = false;
+    QPointF final_snap_cursor_canvas_;
     QRect last_toolbar_preview_update_rect_;
     bool color_picker_tooltip_visible_ = false;
     bool gradient_tool_dragging_ = false;

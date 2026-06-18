@@ -12,6 +12,8 @@
 #include <QStandardPaths>
 #include <QUrl>
 
+#include <algorithm>
+
 namespace {
 constexpr int kCanvasRulerThickness = 24;
 constexpr double kCanvasGuideHitTolerancePx = 5.0;
@@ -19,6 +21,7 @@ constexpr const char *kEditorRulersVisibleKey = "rulersVisible";
 constexpr const char *kEditorGuidesVisibleKey = "guidesVisible";
 constexpr const char *kEditorGuidesLockedKey = "guidesLocked";
 constexpr const char *kEditorGuideCoordinatesVisibleKey = "guideCoordinatesVisible";
+constexpr const char *kEditorCanvasBorderVisibleKey = "canvasBorderVisible";
 constexpr const char *kEditorVerticalGuidesKey = "verticalGuides";
 constexpr const char *kEditorHorizontalGuidesKey = "horizontalGuides";
 
@@ -40,6 +43,21 @@ std::vector<double> guide_values_from_strings(const QStringList &values)
         if (ok && std::isfinite(v)) out.push_back(v);
     }
     return out;
+}
+
+QColor editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole role)
+{
+    return TitlePreferences::canvas_helper_color(role);
+}
+
+TitlePreferences::CanvasHelperColorRole snap_feedback_role_from_label(const QString &label)
+{
+    if (label == obsgs_tr("OBSTitles.ObjectEdge") ||
+        label == obsgs_tr("OBSTitles.ObjectCenter") ||
+        label == obsgs_tr("OBSTitles.Spacing")) {
+        return TitlePreferences::CanvasHelperColorRole::ObjectSnapLines;
+    }
+    return TitlePreferences::CanvasHelperColorRole::CanvasSnapLines;
 }
 
 bool layer_is_shape_sized(const Layer &layer)
@@ -343,6 +361,7 @@ void CanvasPreview::load_ruler_guide_settings()
     guides_visible_ = settings.value(QString::fromUtf8(kEditorGuidesVisibleKey), true).toBool();
     guides_locked_ = settings.value(QString::fromUtf8(kEditorGuidesLockedKey), false).toBool();
     show_guide_coordinates_ = settings.value(QString::fromUtf8(kEditorGuideCoordinatesVisibleKey), true).toBool();
+    canvas_border_visible_ = settings.value(QString::fromUtf8(kEditorCanvasBorderVisibleKey), true).toBool();
     vertical_guides_ = guide_values_from_strings(settings.value(QString::fromUtf8(kEditorVerticalGuidesKey)).toStringList());
     horizontal_guides_ = guide_values_from_strings(settings.value(QString::fromUtf8(kEditorHorizontalGuidesKey)).toStringList());
     settings.endGroup();
@@ -356,6 +375,7 @@ void CanvasPreview::save_ruler_guide_settings() const
     settings.setValue(QString::fromUtf8(kEditorGuidesVisibleKey), guides_visible_);
     settings.setValue(QString::fromUtf8(kEditorGuidesLockedKey), guides_locked_);
     settings.setValue(QString::fromUtf8(kEditorGuideCoordinatesVisibleKey), show_guide_coordinates_);
+    settings.setValue(QString::fromUtf8(kEditorCanvasBorderVisibleKey), canvas_border_visible_);
     settings.setValue(QString::fromUtf8(kEditorVerticalGuidesKey), guide_values_to_strings(vertical_guides_));
     settings.setValue(QString::fromUtf8(kEditorHorizontalGuidesKey), guide_values_to_strings(horizontal_guides_));
     settings.endGroup();
@@ -391,6 +411,14 @@ void CanvasPreview::set_show_guide_coordinates(bool visible)
 {
     if (show_guide_coordinates_ == visible) return;
     show_guide_coordinates_ = visible;
+    save_ruler_guide_settings();
+    update();
+}
+
+void CanvasPreview::set_canvas_border_visible(bool visible)
+{
+    if (canvas_border_visible_ == visible) return;
+    canvas_border_visible_ = visible;
     save_ruler_guide_settings();
     update();
 }
@@ -496,6 +524,7 @@ int CanvasPreview::zoom_percent() const
 void CanvasPreview::set_checkerboard_pattern(int pattern)
 {
     checkerboard_pattern_ = std::clamp(pattern, 0, 5);
+    invalidate_checkerboard_cache();
     QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
     settings.setValue(QString::fromUtf8(kEditorCanvasTransparencyKey), checkerboard_pattern_);
@@ -1347,6 +1376,47 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
     if (layer_path.contains(view_pt)) return DragMode::Move;
     return DragMode::None;
 }
+
+bool CanvasPreview::active_draw_tool_can_manipulate_selected() const
+{
+    if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text)
+        return false;
+    const auto layers = selected_layers();
+    if (layers.empty())
+        return false;
+    for (const auto &layer : layers) {
+        if (!layer || layer->locked || !layer->visible)
+            return false;
+        if (playhead_ < layer->in_time || playhead_ > layer->out_time)
+            return false;
+        if (active_tool_ == CanvasTool::Shape) {
+            if (!(layer->type == LayerType::Shape || layer->type == LayerType::SolidRect))
+                return false;
+        } else if (active_tool_ == CanvasTool::Text) {
+            if (!is_canvas_text_layer(*layer))
+                return false;
+        }
+    }
+    return true;
+}
+
+void CanvasPreview::set_cursor_for_drag_mode(DragMode mode, bool dragging)
+{
+    if (mode == DragMode::Move) setCursor(dragging ? Qt::ClosedHandCursor : Qt::OpenHandCursor);
+    else if (mode == DragMode::Origin) setCursor(Qt::CrossCursor);
+    else if (mode == DragMode::Rotate) setCursor(canvas_rotation_cursor());
+    else if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
+    else if (mode == DragMode::GradientStart || mode == DragMode::GradientEnd ||
+             mode == DragMode::GradientRadius) setCursor(Qt::SizeAllCursor);
+    else if (mode == DragMode::CornerRadiusTL || mode == DragMode::CornerRadiusTR ||
+             mode == DragMode::CornerRadiusBR || mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
+    else if (mode == DragMode::ResizeN || mode == DragMode::ResizeS) setCursor(Qt::SizeVerCursor);
+    else if (mode == DragMode::ResizeE || mode == DragMode::ResizeW) setCursor(Qt::SizeHorCursor);
+    else if (mode == DragMode::ResizeNE || mode == DragMode::ResizeSW) setCursor(Qt::SizeBDiagCursor);
+    else if (mode != DragMode::None) setCursor(Qt::SizeFDiagCursor);
+    else unsetCursor();
+}
+
 void CanvasPreview::begin_marquee(const QPointF &view_pt, Qt::KeyboardModifiers)
 {
     drag_mode_ = DragMode::Marquee;
@@ -1701,9 +1771,55 @@ QPointF CanvasPreview::snap_delta_for_bounds(const QRectF &start_bounds, const Q
 
 QPointF CanvasPreview::snap_canvas_point(const QPointF &canvas_pt, bool snap_x, bool snap_y, bool allow_snap)
 {
-    QRectF point_bounds(canvas_pt, QSizeF(0.0, 0.0));
-    QPointF delta = snap_delta_for_bounds(point_bounds, QPointF(0.0, 0.0), snap_x, snap_y, allow_snap);
-    return canvas_pt + delta;
+    // Point snapping is used by draw-tool hover/start feedback.  Do not route it
+    // through snap_delta_for_bounds(): a zero-size QRectF is invalid in Qt, so
+    // that path clears the feedback and returns the raw point.  Resolve each
+    // axis directly so hover can show the Adobe-style snap dot + helper lines
+    // before the first mouse press.
+    if (!allow_snap || !title_ || !snap_settings_.enabled) {
+        clear_snap_feedback();
+        return canvas_pt;
+    }
+
+    snap_feedback_.clear();
+    QPointF snapped = canvas_pt;
+    const double tolerance = 6.0 / std::max(0.1, view_scale());
+
+    auto snap_axis = [&](bool x_axis) {
+        std::vector<double> targets;
+        std::vector<QString> labels;
+        collect_snap_targets(x_axis, targets, labels);
+        collect_spacing_targets(x_axis, targets, labels);
+        if (targets.empty())
+            return;
+
+        const double value = x_axis ? canvas_pt.x() : canvas_pt.y();
+        double best_distance = tolerance + 1.0;
+        double best_target = value;
+        QString best_label;
+        for (size_t i = 0; i < targets.size(); ++i) {
+            const double distance = std::abs(targets[i] - value);
+            if (distance < best_distance) {
+                best_distance = distance;
+                best_target = targets[i];
+                best_label = labels[i];
+            }
+        }
+
+        if (best_distance <= tolerance) {
+            if (x_axis)
+                snapped.setX(best_target);
+            else
+                snapped.setY(best_target);
+            add_snap_feedback(x_axis, best_target, best_label);
+        }
+    };
+
+    if (snap_x)
+        snap_axis(true);
+    if (snap_y)
+        snap_axis(false);
+    return snapped;
 }
 
 static QRectF editor_modifier_rect(const QPointF &anchor, const QPointF &current,
@@ -2337,6 +2453,7 @@ void CanvasPreview::draw_rulers(QPainter &p, const QRectF &canvas_rect, double s
             p.restore();
         }
     }
+    draw_ruler_mouse_indicators(p, canvas_rect);
     p.restore();
 }
 
@@ -2359,7 +2476,7 @@ void CanvasPreview::draw_user_guides(QPainter &p, const QRectF &canvas_rect)
     if (!guides_visible_ || !title_) return;
     p.save();
     p.setRenderHint(QPainter::Antialiasing, false);
-    QPen pen(QColor(0, 160, 255, 210), 1.0, Qt::DashLine);
+    QPen pen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::Guides), 1.0, Qt::DashLine);
     pen.setDashPattern({4.0, 3.0});
     p.setPen(pen);
     for (double x_value : vertical_guides_) {
@@ -2371,7 +2488,7 @@ void CanvasPreview::draw_user_guides(QPainter &p, const QRectF &canvas_rect)
         p.drawLine(QPointF(canvas_rect.left(), y), QPointF(canvas_rect.right(), y));
     }
     if (dragging_new_guide_ || dragging_guide_index_ >= 0) {
-        QPen active_pen(QColor(255, 220, 0, 240), 1.0, Qt::DashLine);
+        QPen active_pen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::ActiveGuide), 1.0, Qt::DashLine);
         active_pen.setDashPattern({6.0, 3.0});
         p.setPen(active_pen);
         if (dragging_guide_x_axis_) {
@@ -2384,6 +2501,54 @@ void CanvasPreview::draw_user_guides(QPainter &p, const QRectF &canvas_rect)
             draw_guide_coordinate(p, QPointF(canvas_rect.left(), y), false, dragging_guide_value_);
         }
     }
+    p.restore();
+}
+
+
+void CanvasPreview::invalidate_checkerboard_cache()
+{
+    checkerboard_tile_ = QPixmap();
+    checkerboard_tile_pattern_ = -1;
+}
+
+void CanvasPreview::draw_static_checkerboard(QPainter &p, const QRect &canvas_rect_px)
+{
+    if (canvas_rect_px.isEmpty())
+        return;
+
+    auto checkerboard_colors = [this]() {
+        if (checkerboard_pattern_ == 3)
+            return std::pair<QColor, QColor>(Qt::white, Qt::white);
+        if (checkerboard_pattern_ == 4)
+            return std::pair<QColor, QColor>(Qt::black, Qt::black);
+        if (checkerboard_pattern_ == 5)
+            return std::pair<QColor, QColor>(QColor(0x80, 0x80, 0x80), QColor(0x80, 0x80, 0x80));
+        if (checkerboard_pattern_ == 0)
+            return std::pair<QColor, QColor>(QColor(0xee, 0xee, 0xee), QColor(0xc8, 0xc8, 0xc8));
+        if (checkerboard_pattern_ == 2)
+            return std::pair<QColor, QColor>(QColor(0x1f, 0x1f, 0x1f), QColor(0x36, 0x36, 0x36));
+        return std::pair<QColor, QColor>(QColor(0x33, 0x33, 0x33), QColor(0x4a, 0x4a, 0x4a));
+    };
+
+    constexpr int checker_size = 12;
+    constexpr int tile_size = checker_size * 2;
+    if (checkerboard_tile_.isNull() || checkerboard_tile_pattern_ != checkerboard_pattern_) {
+        const auto [checker_a, checker_b] = checkerboard_colors();
+        checkerboard_tile_ = QPixmap(tile_size, tile_size);
+        checkerboard_tile_.fill(checker_a);
+        if (checker_a != checker_b) {
+            QPainter tile_painter(&checkerboard_tile_);
+            tile_painter.setPen(Qt::NoPen);
+            tile_painter.setBrush(checker_b);
+            tile_painter.drawRect(0, 0, checker_size, checker_size);
+            tile_painter.drawRect(checker_size, checker_size, checker_size, checker_size);
+        }
+        checkerboard_tile_pattern_ = checkerboard_pattern_;
+    }
+
+    p.save();
+    p.setClipRect(canvas_rect_px);
+    p.drawTiledPixmap(canvas_rect_px, checkerboard_tile_, QPoint(0, 0));
     p.restore();
 }
 
@@ -2408,30 +2573,9 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     int ox = (int)origin.x();
     int oy = (int)origin.y();
 
-    auto checkerboard_colors = [this]() {
-        if (checkerboard_pattern_ == 3)
-            return std::pair<QColor, QColor>(Qt::white, Qt::white);
-        if (checkerboard_pattern_ == 4)
-            return std::pair<QColor, QColor>(Qt::black, Qt::black);
-        if (checkerboard_pattern_ == 5)
-            return std::pair<QColor, QColor>(QColor(0x80, 0x80, 0x80), QColor(0x80, 0x80, 0x80));
-        if (checkerboard_pattern_ == 0)
-            return std::pair<QColor, QColor>(QColor(0xee, 0xee, 0xee), QColor(0xc8, 0xc8, 0xc8));
-        if (checkerboard_pattern_ == 2)
-            return std::pair<QColor, QColor>(QColor(0x1f, 0x1f, 0x1f), QColor(0x36, 0x36, 0x36));
-        return std::pair<QColor, QColor>(QColor(0x33, 0x33, 0x33), QColor(0x4a, 0x4a, 0x4a));
-    };
-    const auto [checker_a, checker_b] = checkerboard_colors();
-    p.setPen(Qt::NoPen);
-    p.setBrush(QBrush(checker_a));
-    p.drawRect(ox, oy, dw, dh);
-    if (checker_a != checker_b) {
-        p.setBrush(QBrush(checker_b));
-        for (int cy = oy; cy < oy + dh; cy += 12)
-            for (int cx = ox; cx < ox + dw; cx += 12)
-                if ((((cx - ox) / 12) + ((cy - oy) / 12)) % 2 == 0)
-                    p.drawRect(cx, cy, 12, 12);
-    }
+    const QRectF canvas_rect_f(ox, oy, dw, dh);
+    const QRect canvas_rect_px = canvas_rect_f.toAlignedRect();
+    draw_static_checkerboard(p, canvas_rect_px);
 
     if (!frame_pixmap_.isNull()) {
         const int pix_x = ox + static_cast<int>(std::round(frame_pixmap_canvas_offset_.x() * scale));
@@ -2495,20 +2639,22 @@ void CanvasPreview::paintEvent(QPaintEvent *)
             p.setPen(QPen(color, 1.0, Qt::DashLine));
             p.drawRect(r);
         };
-        draw_guide(OBS_ACTION_SAFE_PERCENT, QColor(0, 200, 255, 190));
-        draw_guide(OBS_GRAPHICS_SAFE_PERCENT, QColor(255, 220, 0, 190));
+        draw_guide(OBS_ACTION_SAFE_PERCENT, editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::ActionSafe));
+        draw_guide(OBS_GRAPHICS_SAFE_PERCENT, editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::GraphicsSafe));
     }
 
     draw_user_guides(p, QRectF(ox, oy, dw, dh));
+    draw_hover_layer_box(p);
 
     if (!snap_feedback_.empty()) {
         p.save();
         p.setRenderHint(QPainter::Antialiasing, false);
-        QPen guide_pen(QColor(0, 220, 255, 235), 1.0, Qt::DashLine);
-        guide_pen.setDashPattern({5.0, 3.0});
-        p.setPen(guide_pen);
         p.setBrush(QColor(0, 20, 30, 180));
         for (const auto &feedback : snap_feedback_) {
+            QPen guide_pen(editor_canvas_helper_color(snap_feedback_role_from_label(feedback.label)), 1.0, Qt::DashLine);
+            guide_pen.setDashPattern({5.0, 3.0});
+            guide_pen.setCosmetic(true);
+            p.setPen(guide_pen);
             if (feedback.x_axis) {
                 double x = canvas_to_view(QPointF(feedback.value, 0.0)).x();
                 p.drawLine(QPointF(x, oy), QPointF(x, oy + dh));
@@ -2540,12 +2686,18 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
         const bool editing_text_layer = !inline_text_layer_id_.empty() &&
             inline_text_layer_id_ == layer.id && is_canvas_text_layer(layer);
-        const QColor outline_color = editing_text_layer
-            ? QColor(255, 220, 0, handles ? 255 : 210)
-            : QColor(0, 120, 255, handles ? 230 : 150);
-        const QColor handle_stroke_color = editing_text_layer
-            ? QColor(255, 220, 0, 255)
-            : QColor(0, 120, 255, 255);
+        QColor text_box_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::TextBoundingBox);
+        if (!handles && text_box_color.alpha() > 210)
+            text_box_color.setAlpha(210);
+        QColor selection_box_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+        if (!handles && selection_box_color.alpha() > 150)
+            selection_box_color.setAlpha(150);
+        const QColor outline_color = editing_text_layer ? text_box_color : selection_box_color;
+        QColor handle_stroke_color = editing_text_layer
+            ? editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::TextBoundingBox)
+            : editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+        if (handle_stroke_color.alpha() < 180)
+            handle_stroke_color.setAlpha(180);
 
         p.save();
         p.setBrush(Qt::NoBrush);
@@ -2579,7 +2731,6 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
             if (gradient_handles_visible())
                 draw_gradient_handles(p, layer);
-            draw_corner_radius_handles(p, layer);
         }
         p.restore();
     };
@@ -2595,9 +2746,9 @@ void CanvasPreview::paintEvent(QPaintEvent *)
             QRectF view_bounds(canvas_to_view(bounds.topLeft()), canvas_to_view(bounds.bottomRight()));
             view_bounds = view_bounds.normalized();
             p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(QColor(0, 160, 255, 240), 1.5, Qt::SolidLine));
+            p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.5, Qt::SolidLine));
             p.drawRect(view_bounds);
-            p.setPen(QPen(QColor(0, 120, 255, 255), 1.0));
+            p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.0));
             p.setBrush(QColor(255, 255, 255));
             const QPointF points[] = {
                 view_bounds.topLeft(), QPointF(view_bounds.center().x(), view_bounds.top()), view_bounds.topRight(),
@@ -2613,6 +2764,7 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     }
 
     draw_toolbar_preview(p);
+    draw_snap_cursor_indicator(p);
 
     if (drag_mode_ == DragMode::Rotate) {
         QPointF pivot = canvas_to_view(drag_rotation_pivot_canvas_);
@@ -2634,13 +2786,16 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     if (drag_mode_ == DragMode::Marquee && marquee_active_) {
         QRectF marquee(drag_start_view_, drag_current_view_);
         marquee = marquee.normalized();
-        p.setBrush(QColor(0, 120, 255, 45));
-        p.setPen(QPen(QColor(0, 160, 255, 220), 1.0, Qt::DashLine));
+        QColor marquee_fill = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+        marquee_fill.setAlpha(std::min(marquee_fill.alpha(), 45));
+        p.setBrush(marquee_fill);
+        p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.0, Qt::DashLine));
         p.drawRect(marquee);
     }
 
     draw_canvas_drag_tooltip(p);
     draw_color_picker_tooltip(p);
+    draw_canvas_border(p, QRectF(ox, oy, dw, dh));
     draw_rulers(p, QRectF(ox, oy, dw, dh), scale, origin);
 }
 double CanvasPreview::toolbar_draw_aspect_ratio() const
@@ -2865,6 +3020,17 @@ void CanvasPreview::draw_color_picker_tooltip(QPainter &p)
 
 QString CanvasPreview::canvas_drag_tooltip_text() const
 {
+    if (drawing_shape_) {
+        const QRectF rect = shape_draw_current_rect_.isValid()
+                                ? shape_draw_current_rect_.normalized()
+                                : toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_).normalized();
+        if (drawing_shape_changed_ && rect.isValid() && !rect.isEmpty()) {
+            return obsgs_tr("OBSTitles.SizePixelReadout")
+                .arg(std::round(rect.width()), 0, 'f', 0)
+                .arg(std::round(rect.height()), 0, 'f', 0);
+        }
+    }
+
     if (drag_mode_ == DragMode::None || drag_mode_ == DragMode::Marquee || !drag_changed_)
         return QString();
 
@@ -2955,16 +3121,136 @@ void CanvasPreview::draw_canvas_drag_tooltip(QPainter &p)
     p.restore();
 }
 
+
+QRect CanvasPreview::snap_cursor_update_rect() const
+{
+    if (!snap_cursor_visible_)
+        return QRect();
+    const QPointF view_pt = canvas_to_view(snap_cursor_canvas_);
+    return QRectF(view_pt.x() - 12.0, view_pt.y() - 12.0, 24.0, 24.0).toAlignedRect();
+}
+
+QRect CanvasPreview::final_snap_cursor_update_rect() const
+{
+    if (!final_snap_cursor_visible_)
+        return QRect();
+    const QPointF view_pt = canvas_to_view(final_snap_cursor_canvas_);
+    return QRectF(view_pt.x() - 12.0, view_pt.y() - 12.0, 24.0, 24.0).toAlignedRect();
+}
+
+QRect CanvasPreview::canvas_drag_tooltip_update_rect() const
+{
+    const QString text = canvas_drag_tooltip_text();
+    if (text.isEmpty())
+        return QRect();
+
+    const QFontMetrics fm(font());
+    const int width = fm.horizontalAdvance(text) + 18;
+    const int height = std::max(24, fm.height() + 8);
+    QPointF pos = drag_current_view_ + QPointF(14.0, 22.0);
+    if (pos.x() + width + 6 > rect().right())
+        pos.setX(drag_current_view_.x() - width - 14.0);
+    if (pos.y() + height + 6 > rect().bottom())
+        pos.setY(drag_current_view_.y() - height - 14.0);
+    pos.setX(std::max(6.0, pos.x()));
+    pos.setY(std::max(6.0, pos.y()));
+    return QRectF(pos, QSizeF(width, height)).toAlignedRect().adjusted(-3, -3, 3, 3);
+}
+
+void CanvasPreview::clear_draw_tool_snap_cursor()
+{
+    const bool had_cursor = snap_cursor_visible_;
+    const bool had_final_cursor = final_snap_cursor_visible_;
+    const bool had_feedback = !snap_feedback_.empty();
+    const QRect old_rect = snap_cursor_update_rect().united(final_snap_cursor_update_rect());
+    snap_cursor_visible_ = false;
+    final_snap_cursor_visible_ = false;
+    snap_feedback_.clear();
+    if (had_cursor || had_final_cursor)
+        update(old_rect.adjusted(-2, -2, 2, 2));
+    if (had_feedback)
+        update();
+}
+
+void CanvasPreview::update_draw_tool_snap_cursor(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    if (!title_ || drawing_shape_ ||
+        (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text)) {
+        clear_draw_tool_snap_cursor();
+        return;
+    }
+
+    const bool had_feedback = !snap_feedback_.empty();
+    const QRect old_rect = snap_cursor_update_rect();
+    const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
+    const QPointF snapped = snap_canvas_point(view_to_canvas(view_pt), true, true, allow_snap);
+    const bool show = allow_snap && snap_settings_.enabled && !snap_feedback_.empty();
+    snap_cursor_visible_ = show;
+    snap_cursor_canvas_ = snapped;
+
+    const QRect new_rect = snap_cursor_update_rect();
+    QRect dirty = old_rect.united(new_rect);
+    if (!dirty.isEmpty())
+        update(dirty.adjusted(-4, -4, 4, 4));
+    // Snap helpers can span the whole canvas/ruler area, so repaint the full
+    // preview when hover feedback appears, disappears, or changes.  This keeps
+    // the Adobe-style snapped dot and helper lines visible before mouse press.
+    if (had_feedback || !snap_feedback_.empty())
+        update();
+}
+
+void CanvasPreview::draw_snap_cursor_indicator(QPainter &p)
+{
+    if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text && !drawing_shape_)
+        return;
+    if (!snap_cursor_visible_ && !final_snap_cursor_visible_)
+        return;
+
+    auto role = TitlePreferences::CanvasHelperColorRole::CanvasSnapLines;
+    for (const auto &feedback : snap_feedback_) {
+        if (snap_feedback_role_from_label(feedback.label) == TitlePreferences::CanvasHelperColorRole::ObjectSnapLines) {
+            role = TitlePreferences::CanvasHelperColorRole::ObjectSnapLines;
+            break;
+        }
+    }
+    QColor color = editor_canvas_helper_color(role);
+    if (!color.isValid())
+        color = QColor(0, 210, 110, 220);
+    QColor fill = color;
+    fill.setAlpha(std::min(80, std::max(32, color.alpha() / 3)));
+
+    auto draw_circle = [&](const QPointF &canvas_pt, double radius, bool filled) {
+        const QPointF pt = canvas_to_view(canvas_pt);
+        QPen pen(color, 1.5, Qt::SolidLine);
+        pen.setCosmetic(true);
+        p.setPen(pen);
+        p.setBrush(filled ? fill : Qt::NoBrush);
+        p.drawEllipse(pt, radius, radius);
+    };
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    if (snap_cursor_visible_)
+        draw_circle(snap_cursor_canvas_, 5.0, true);
+    if (final_snap_cursor_visible_)
+        draw_circle(final_snap_cursor_canvas_, 5.0, true);
+    p.restore();
+}
+
 void CanvasPreview::update_shape_drawing(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
     if (!drawing_shape_) return;
 
-    const QRect old_update_rect = last_toolbar_preview_update_rect_;
+    const QRect old_update_rect = last_toolbar_preview_update_rect_
+                                      .united(snap_cursor_update_rect())
+                                      .united(final_snap_cursor_update_rect())
+                                      .united(canvas_drag_tooltip_update_rect());
+    drag_current_view_ = view_pt;
     shape_draw_current_canvas_ = view_to_canvas(view_pt);
     shape_draw_modifiers_ = modifiers;
     const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
-    if (allow_snap)
-        snap_feedback_.clear();
+    final_snap_cursor_visible_ = false;
+    snap_feedback_.clear();
 
     const QPointF raw_current = shape_draw_current_canvas_;
     QRectF raw_rect = toolbar_draw_rect(raw_current, shape_draw_modifiers_);
@@ -3014,18 +3300,170 @@ void CanvasPreview::update_shape_drawing(const QPointF &view_pt, Qt::KeyboardMod
             snapped_current.setY(raw_current.y() + snapped - raw_rect.bottom());
 
         shape_draw_current_canvas_ = snapped_current;
+        final_snap_cursor_visible_ = !snap_feedback_.empty();
+        final_snap_cursor_canvas_ = shape_draw_current_canvas_;
         raw_rect = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
     }
     shape_draw_current_rect_ = raw_rect.normalized();
     drawing_shape_changed_ = shape_draw_current_rect_.width() >= 2.0 || shape_draw_current_rect_.height() >= 2.0;
 
-    last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
+    last_toolbar_preview_update_rect_ = toolbar_preview_update_rect()
+                                           .united(snap_cursor_update_rect())
+                                           .united(final_snap_cursor_update_rect())
+                                           .united(canvas_drag_tooltip_update_rect());
     QRect repaint_rect = old_update_rect.united(last_toolbar_preview_update_rect_);
     if (repaint_rect.isEmpty())
         repaint_rect = this->rect();
-    update(repaint_rect);
+    update(repaint_rect.adjusted(-4, -4, 4, 4));
 }
 
+
+std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) const
+{
+    if (!title_) return nullptr;
+    const QPointF canvas = view_to_canvas(view_pt);
+    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (!layer || !layer->visible || layer->locked) continue;
+        if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
+        const QRectF local_rect = layer_local_rect(*layer);
+        if (!local_rect.isValid() || local_rect.isEmpty()) continue;
+        if (local_rect.contains(canvas_to_layer(*layer, canvas)))
+            return layer;
+    }
+    return nullptr;
+}
+
+void CanvasPreview::update_hover_layer(const QPointF &view_pt)
+{
+    last_mouse_view_pos_ = view_pt;
+    mouse_inside_canvas_ = title_ && canvas_view_rect().contains(view_pt);
+
+    std::string next_hover;
+    if (mouse_inside_canvas_ && drag_mode_ == DragMode::None && !drawing_shape_ &&
+        inline_text_layer_id_.empty()) {
+        const bool selection_hover = active_tool_ == CanvasTool::Selection;
+        const bool draw_tool_hover = active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text;
+        if (selection_hover || draw_tool_hover) {
+            if (auto layer = layer_at_view_pos(view_pt)) {
+                if (selection_hover ||
+                    (active_tool_ == CanvasTool::Shape &&
+                     (layer->type == LayerType::Shape || layer->type == LayerType::SolidRect)) ||
+                    (active_tool_ == CanvasTool::Text && is_canvas_text_layer(*layer))) {
+                    next_hover = layer->id;
+                }
+            }
+        }
+    }
+
+    const bool hover_changed = hovered_layer_id_ != next_hover;
+    if (hover_changed) {
+        hovered_layer_id_ = next_hover;
+        update();
+    }
+
+    if (rulers_visible_) {
+        QRect ruler_dirty = ruler_top_rect().toAlignedRect().united(ruler_left_rect().toAlignedRect());
+        if (!ruler_dirty.isEmpty()) {
+            // Keep cursor indicators visually locked to the mouse.  update() is
+            // intentionally asynchronous and can lag a few milliseconds behind
+            // high-frequency mouse move events, so force an immediate repaint of
+            // only the lightweight ruler strip.
+            repaint(ruler_dirty.adjusted(-2, -2, 2, 2));
+        } else if (!hover_changed) {
+            update();
+        }
+    } else if (!hover_changed) {
+        // No repaint is needed for ordinary mouse motion when neither the hover
+        // outline nor ruler indicators changed.
+    }
+}
+
+void CanvasPreview::draw_hover_layer_box(QPainter &p)
+{
+    if (!title_ || hovered_layer_id_.empty()) return;
+    if (drag_mode_ != DragMode::None || drawing_shape_) return;
+
+    const bool hovered_is_selected =
+        std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), hovered_layer_id_) != selected_layer_ids_.end() ||
+        sel_layer_id_ == hovered_layer_id_;
+
+    auto it = std::find_if(title_->layers.begin(), title_->layers.end(), [this](const std::shared_ptr<Layer> &layer) {
+        return layer && layer->id == hovered_layer_id_;
+    });
+    if (it == title_->layers.end() || !*it) return;
+    const Layer &layer = **it;
+    if (!layer.visible || layer.locked) return;
+    if (playhead_ < layer.in_time || playhead_ > layer.out_time) return;
+
+    const QRectF box = layer_local_rect(layer);
+    if (!box.isValid() || box.isEmpty()) return;
+
+    auto layer_point_to_view = [&](const QPointF &pt) {
+        return canvas_to_view(layer_to_canvas(layer, pt));
+    };
+
+    QPolygonF outline;
+    outline << layer_point_to_view(box.topLeft())
+            << layer_point_to_view(box.topRight())
+            << layer_point_to_view(box.bottomRight())
+            << layer_point_to_view(box.bottomLeft());
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    if (!hovered_is_selected) {
+        QPen pen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::HoverBoundingBox), 1.0, Qt::SolidLine);
+        pen.setCosmetic(true);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolygon(outline);
+    }
+    if (layer_supports_corner_radius_handles(layer))
+        draw_corner_radius_handles(p, layer);
+    p.restore();
+}
+
+void CanvasPreview::draw_canvas_border(QPainter &p, const QRectF &canvas_rect)
+{
+    if (!canvas_border_visible_ || !canvas_rect.isValid() || canvas_rect.isEmpty()) return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    QPen pen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::CanvasBorder), 1.0, Qt::SolidLine);
+    pen.setCosmetic(true);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(canvas_rect.adjusted(0.5, 0.5, -0.5, -0.5));
+    p.restore();
+}
+
+void CanvasPreview::draw_ruler_mouse_indicators(QPainter &p, const QRectF &canvas_rect)
+{
+    if (!rulers_visible_ || !title_ || !mouse_inside_canvas_) return;
+    if (!canvas_rect.contains(last_mouse_view_pos_)) return;
+
+    const double x = std::clamp(last_mouse_view_pos_.x(), canvas_rect.left(), canvas_rect.right());
+    const double y = std::clamp(last_mouse_view_pos_.y(), canvas_rect.top(), canvas_rect.bottom());
+    const QRectF top = ruler_top_rect();
+    const QRectF left = ruler_left_rect();
+    if (!top.isValid() || !left.isValid()) return;
+
+    QColor accent = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::RulerMouseIndicator);
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+    QPen pen(accent, 1.0, Qt::SolidLine);
+    pen.setCosmetic(true);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    // Illustrator-style cursor indicators: simple guide lines only, without
+    // numeric labels.  The ruler repaint is forced from mouseMoveEvent so these
+    // lines track the pointer immediately instead of waiting for a deferred
+    // widget update.
+    p.drawLine(QPointF(x, top.top()), QPointF(x, top.bottom()));
+    p.drawLine(QPointF(left.left(), y), QPointF(left.right(), y));
+    p.restore();
+}
 
 std::shared_ptr<Layer> CanvasPreview::text_layer_at_view_pos(const QPointF &view_pt) const
 {
@@ -3717,6 +4155,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     if (ev->button() != Qt::LeftButton) return;
 
     if (active_tool_ == CanvasTool::ColorPicker) {
+        clear_draw_tool_snap_cursor();
         update_color_picker_tooltip(ev->pos());
         if (color_picker_tooltip_visible_)
             emit color_picked(color_picker_tooltip_color_);
@@ -3731,7 +4170,25 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         }
     }
 
-    if (active_tool_ == CanvasTool::Text) {
+    bool begin_draw_tool_layer_manipulation = false;
+    if ((active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) &&
+        active_draw_tool_can_manipulate_selected()) {
+        drag_mode_ = hit_test_selected(ev->pos());
+
+        // With the Shape tool active, dragging the body of an existing shape should
+        // not move it.  Body drag remains reserved for drawing a new shape, while
+        // explicit handles (resize/rotate/origin/corner radius) still manipulate
+        // the selected shape.  Text keeps its existing body-move behavior.
+        if (active_tool_ == CanvasTool::Shape && drag_mode_ == DragMode::Move)
+            drag_mode_ = DragMode::None;
+
+        if (drag_mode_ != DragMode::None) {
+            begin_draw_tool_layer_manipulation = true;
+            clear_draw_tool_snap_cursor();
+        }
+    }
+
+    if (!begin_draw_tool_layer_manipulation && active_tool_ == CanvasTool::Text) {
         if (auto layer = text_layer_at_view_pos(ev->pos())) {
             emit layer_clicked(layer->id);
             begin_text_edit(layer);
@@ -3740,15 +4197,20 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         }
     }
 
-    if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) {
+    if (!begin_draw_tool_layer_manipulation &&
+        (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text)) {
         drawing_shape_ = true;
         drawing_shape_changed_ = false;
         drag_mode_ = DragMode::None;
         selected_layer_ids_.clear();
         sel_layer_id_.clear();
+        drag_current_view_ = ev->pos();
         shape_draw_start_canvas_ = snap_canvas_point(view_to_canvas(ev->pos()), true, true,
                                                      !ev->modifiers().testFlag(Qt::ControlModifier));
         shape_draw_current_canvas_ = shape_draw_start_canvas_;
+        snap_cursor_visible_ = !snap_feedback_.empty();
+        snap_cursor_canvas_ = shape_draw_start_canvas_;
+        final_snap_cursor_visible_ = false;
         shape_draw_modifiers_ = ev->modifiers();
         shape_draw_current_rect_ = toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
         last_toolbar_preview_update_rect_ = toolbar_preview_update_rect();
@@ -3757,7 +4219,8 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
-    drag_mode_ = hit_test_selected(ev->pos());
+    if (!begin_draw_tool_layer_manipulation)
+        drag_mode_ = hit_test_selected(ev->pos());
     if (drag_mode_ == DragMode::None) {
         QPointF canvas = view_to_canvas(ev->pos());
         for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
@@ -3912,6 +4375,8 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 
 void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 {
+    update_hover_layer(ev->pos());
+
     if (panning_ && (ev->buttons() & Qt::MiddleButton)) {
         pan_offset_ = pan_start_offset_ + (QPointF(ev->pos()) - pan_start_view_);
         fit_zoom_active_ = false;
@@ -3948,20 +4413,34 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
-    if (active_tool_ == CanvasTool::Shape) {
-        setCursor(Qt::CrossCursor);
-        return;
-    }
-    if (active_tool_ == CanvasTool::Text) {
-        setCursor(Qt::IBeamCursor);
+    if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) {
+        if (active_draw_tool_can_manipulate_selected()) {
+            DragMode mode = hit_test_selected(ev->pos());
+
+            // Do not advertise body-move for existing shape layers while the Shape
+            // tool is active; only explicit handles should switch away from the
+            // draw cursor.
+            if (active_tool_ == CanvasTool::Shape && mode == DragMode::Move)
+                mode = DragMode::None;
+
+            if (mode != DragMode::None) {
+                clear_draw_tool_snap_cursor();
+                set_cursor_for_drag_mode(mode, false);
+                return;
+            }
+        }
+        update_draw_tool_snap_cursor(ev->pos(), ev->modifiers());
+        setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor : Qt::IBeamCursor);
         return;
     }
     if (active_tool_ == CanvasTool::ColorPicker) {
+        clear_draw_tool_snap_cursor();
         update_color_picker_tooltip(ev->pos());
         setCursor(Qt::CrossCursor);
         return;
     }
     if (active_tool_ == CanvasTool::Gradient || gradient_handles_visible()) {
+        clear_draw_tool_snap_cursor();
         if (auto layer = selected_layer()) {
             DragMode mode = hit_test_gradient_handles(*layer, ev->pos());
             if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
@@ -3973,6 +4452,8 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         }
         return;
     }
+
+    clear_draw_tool_snap_cursor();
 
     bool hover_x_axis = true;
     if (guide_hit_test(ev->pos(), hover_x_axis) >= 0) {
@@ -4108,10 +4589,23 @@ void CanvasPreview::dropEvent(QDropEvent *ev)
 
 void CanvasPreview::leaveEvent(QEvent *ev)
 {
+    bool needs_update = false;
     if (color_picker_tooltip_visible_) {
         color_picker_tooltip_visible_ = false;
-        update();
+        needs_update = true;
     }
+    if (mouse_inside_canvas_ || !hovered_layer_id_.empty()) {
+        mouse_inside_canvas_ = false;
+        hovered_layer_id_.clear();
+        needs_update = true;
+    }
+    if (snap_cursor_visible_ || final_snap_cursor_visible_) {
+        snap_cursor_visible_ = false;
+        final_snap_cursor_visible_ = false;
+        needs_update = true;
+    }
+    if (needs_update)
+        update();
     QWidget::leaveEvent(ev);
 }
 
@@ -4188,6 +4682,8 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         drawing_shape_ = false;
         drawing_shape_changed_ = false;
         shape_draw_current_rect_ = QRectF();
+        snap_cursor_visible_ = false;
+        final_snap_cursor_visible_ = false;
         last_toolbar_preview_update_rect_ = QRect();
         clear_snap_feedback();
         update(repaint_rect.isEmpty() ? rect() : repaint_rect);

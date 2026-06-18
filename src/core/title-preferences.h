@@ -18,6 +18,21 @@ enum class TimelineColorRole {
     Loop
 };
 
+enum class CanvasHelperColorRole {
+    Guides,
+    ActiveGuide,
+    RulerMouseIndicator,
+    HoverBoundingBox,
+    SelectionBoundingBox,
+    TextBoundingBox,
+    SnapLines,
+    CanvasSnapLines,
+    ObjectSnapLines,
+    CanvasBorder,
+    ActionSafe,
+    GraphicsSafe
+};
+
 bool use_gpu();
 void set_use_gpu(bool enabled);
 bool cache_enabled();
@@ -45,6 +60,9 @@ QColor default_timeline_color(TimelineColorRole role);
 QColor scene_mask_color();
 void set_scene_mask_color(const QColor &color);
 QColor default_scene_mask_color();
+QColor canvas_helper_color(CanvasHelperColorRole role);
+void set_canvas_helper_color(CanvasHelperColorRole role, const QColor &color);
+QColor default_canvas_helper_color(CanvasHelperColorRole role);
 void notify_changed(QObject *sender = nullptr);
 
 }

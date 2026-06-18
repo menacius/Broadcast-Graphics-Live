@@ -2348,6 +2348,36 @@ QString CacheManager::titleCacheabilityMessage(const std::shared_ptr<Title> &tit
     return QString();
 }
 
+FrameCacheState CacheManager::displayStateForFrame(const std::shared_ptr<Title> &title, int frame) const
+{
+    if (!title)
+        return FrameCacheState::NotCached;
+    const QString title_id = QString::fromStdString(title->id);
+    const int display_frame = titleHasTimelineChanges(*title)
+        ? std::clamp(frame, 0, cache_last_frame_for_title(*title, effectiveFrameRate()))
+        : 0;
+    return state_tracker_.stateForFrame(title_id, display_frame);
+}
+
+bool CacheManager::displayFrameIsStatic(const std::shared_ptr<Title> &title, int frame) const
+{
+    if (!title)
+        return false;
+    if (!titleHasTimelineChanges(*title))
+        return true;
+
+    const int last_frame = cache_last_frame_for_title(*title, effectiveFrameRate());
+    const int f = std::clamp(frame, 0, last_frame);
+    const QString content_hash = contentHash(*title);
+    const double fps = std::max(1.0, effectiveFrameRate());
+    const QString current = adaptiveVisualStateHash(*title, double(f) / fps, content_hash);
+    if (f > 0 && adaptiveVisualStateHash(*title, double(f - 1) / fps, content_hash) == current)
+        return true;
+    if (f < last_frame && adaptiveVisualStateHash(*title, double(f + 1) / fps, content_hash) == current)
+        return true;
+    return false;
+}
+
 QVector<CacheTileRegion> CacheManager::tilesForRect(const QRect &rect, const QSize &frame_size) const
 {
     QVector<CacheTileRegion> tiles;

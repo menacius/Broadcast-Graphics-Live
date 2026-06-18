@@ -96,7 +96,10 @@ public slots:
     /* Transport */
     void play_pause();
     void play_full_loop();
-    void rewind();
+    void reverse_play();
+    void go_to_start();
+    void go_to_end();
+    void step_backward();
     void step_forward();
     void previous_keyframe();
     void next_keyframe();
@@ -189,6 +192,7 @@ private:
     void set_panels_locked(bool locked);
     void update_panel_lock_state();
     void schedule_cache_invalidation();
+    void force_next_title_visual_update();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -198,8 +202,10 @@ private:
     double                 playhead_  = 0.0;
     bool                   playing_   = false;
     bool                   playback_reverse_ = false;
+    bool                   manual_reverse_playback_ = false;
     bool                   full_loop_playback_ = false;
     bool                   dirty_ = false;
+    bool                   force_next_visual_update_ = false;
     QTimer                *play_timer_ = nullptr;
     QTimer                *clock_timer_ = nullptr;
     QTimer                *cache_invalidation_timer_ = nullptr;
@@ -236,6 +242,9 @@ private:
     QAction         *act_play_  = nullptr;
     QAction         *act_full_loop_ = nullptr;
     QAction         *act_rew_   = nullptr;
+    QAction         *act_go_start_ = nullptr;
+    QAction         *act_go_end_ = nullptr;
+    QAction         *act_step_back_ = nullptr;
     QAction         *act_prev_kf_ = nullptr;
     QAction         *act_next_kf_ = nullptr;
     QAction         *act_safe_guides_ = nullptr;
@@ -244,6 +253,7 @@ private:
     QAction         *act_guides_locked_ = nullptr;
     QAction         *act_clear_guides_ = nullptr;
     QAction         *act_guide_coordinates_ = nullptr;
+    QAction         *act_canvas_border_visible_ = nullptr;
     QAction         *act_live_editing_ = nullptr;
     QAction         *act_undo_ = nullptr;
     QAction         *act_redo_ = nullptr;

@@ -455,7 +455,7 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
         if (timeline_dock_) timeline_dock_->setVisible(visible);
     });
 
-    act_prerender_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Prerender"));
+    act_prerender_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.PlaybackAndCache"));
     act_prerender_visible_->setCheckable(true);
     act_prerender_visible_->setChecked(true);
     connect(act_prerender_visible_, &QAction::triggered, this, [this](bool visible) {
@@ -932,6 +932,7 @@ void TitleEditor::create_image_layer_from_external_source(const QString &image_p
     title_->add_layer(layer);
     layers_->refresh();
     on_layer_selected(layer->id);
+    force_next_title_visual_update();
     on_title_modified();
 }
 
@@ -957,6 +958,7 @@ void TitleEditor::create_text_layer_from_external_source(const QString &text, co
     title_->add_layer(layer);
     layers_->refresh();
     on_layer_selected(layer->id);
+    force_next_title_visual_update();
     on_title_modified();
 }
 
@@ -1014,12 +1016,15 @@ void TitleEditor::finish_canvas_created_shape(bool keep_layer)
         sel_layer_id_.clear();
         if (canvas_) canvas_->set_selected_layers({});
         update_layer_panels(nullptr, playhead_);
+        force_next_title_visual_update();
+        on_title_modified();
         return;
     }
 
     layers_->refresh();
     timeline_->set_title(title_);
     on_layer_selected(layer_id);
+    force_next_title_visual_update();
     on_title_modified();
     if (is_text_layer && canvas_)
         canvas_->begin_text_edit_for_layer(layer_id);
@@ -1109,6 +1114,12 @@ void TitleEditor::build_ui()
         }
         delete_selected_layer();
     });
+    QAction *duplicate_action = edit_menu->addAction(obsgs_tr("OBSTitles.DuplicateLayer"));
+    duplicate_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    connect(duplicate_action, &QAction::triggered, this, [this]() {
+        if (editor_focus_accepts_text(focusWidget())) return;
+        duplicate_selected_layers();
+    });
     edit_menu->addSeparator();
     QAction *preferences_action = edit_menu->addAction(obsgs_tr("OBSTitles.Preferences"));
     connect(preferences_action, &QAction::triggered, this, &TitleEditor::show_preferences);
@@ -1143,6 +1154,14 @@ void TitleEditor::build_ui()
     act_guide_coordinates_->setChecked(true);
     connect(act_guide_coordinates_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_show_guide_coordinates(visible);
+    });
+
+    act_canvas_border_visible_ = view_menu->addAction(obsgs_tr("OBSTitles.CanvasBorder"));
+    act_canvas_border_visible_->setCheckable(true);
+    act_canvas_border_visible_->setChecked(true);
+    act_canvas_border_visible_->setToolTip(obsgs_tr("OBSTitles.CanvasBorderTooltip"));
+    connect(act_canvas_border_visible_, &QAction::toggled, this, [this](bool visible) {
+        if (canvas_) canvas_->set_canvas_border_visible(visible);
     });
 
     act_clear_guides_ = view_menu->addAction(obsgs_tr("OBSTitles.ClearGuides"));
@@ -1269,6 +1288,7 @@ void TitleEditor::build_ui()
     if (act_guides_visible_) act_guides_visible_->setChecked(canvas_->guides_visible());
     if (act_guides_locked_) act_guides_locked_->setChecked(canvas_->guides_locked());
     if (act_guide_coordinates_) act_guide_coordinates_->setChecked(canvas_->show_guide_coordinates());
+    if (act_canvas_border_visible_) act_canvas_border_visible_->setChecked(canvas_->canvas_border_visible());
     canvas_layout->addWidget(canvas_, 1);
 
     auto *canvas_zoom_bar = new QWidget(canvas_panel);
@@ -1428,7 +1448,7 @@ void TitleEditor::build_ui()
                                               obsgs_tr("OBSTitles.ColorSwatches"),
                                               create_color_swatches_panel());
     prerender_dock_ = create_editor_dock(QString::fromUtf8(kPrerenderDockObjectName),
-                                         obsgs_tr("OBSTitles.Prerender"),
+                                         obsgs_tr("OBSTitles.PlaybackAndCache"),
                                          create_prerender_panel());
     tools_sidebar_ = new ToolsSidebar(this);
     tools_dock_ = create_editor_dock(QStringLiteral("OBSGraphicsStudioProToolsDock"),
@@ -1501,14 +1521,16 @@ void TitleEditor::build_ui()
                                  .arg(timeline_highlight.name(QColor::HexRgb)));
     transport_layout->addWidget(time_lbl_, 0, Qt::AlignVCenter);
     transport_layout->addSpacing(8);
-    transport_layout->addWidget(make_transport_button(act_rew_));
+    transport_layout->addWidget(make_transport_button(act_go_start_));
     transport_layout->addWidget(make_transport_button(act_prev_kf_));
+    transport_layout->addWidget(make_transport_button(act_step_back_));
+    transport_layout->addWidget(make_transport_button(act_rew_));
     transport_layout->addWidget(make_transport_button(act_play_));
-    transport_layout->addWidget(make_transport_button(act_full_loop_));
     QAction *step_forward_action = new QAction(obs_icon("step-forward.svg"), obsgs_tr("OBSTitles.StepForward"), timeline_transport);
     connect(step_forward_action, &QAction::triggered, this, &TitleEditor::step_forward);
     transport_layout->addWidget(make_transport_button(step_forward_action));
     transport_layout->addWidget(make_transport_button(act_next_kf_));
+    transport_layout->addWidget(make_transport_button(act_go_end_));
     transport_layout->addStretch(1);
     timeline_editor_layout->addWidget(timeline_transport);
 
@@ -1664,6 +1686,7 @@ void TitleEditor::build_ui()
                     pending_text_layer_auto_names_.insert(l->id);
                 layers_->refresh();
                 on_layer_selected(l->id);
+                force_next_title_visual_update();
                 on_title_modified();
                 if (type == LayerType::Text && canvas_)
                     canvas_->begin_text_edit_for_layer(l->id);
@@ -2208,17 +2231,21 @@ void TitleEditor::build_toolbar()
              text.name(QColor::HexRgb),
              base.name(QColor::HexRgb)));
 
-    act_rew_ = new QAction(obs_icon("rewind.svg"), obsgs_tr("OBSTitles.Rewind"), this);
+    act_go_start_ = new QAction(obs_icon("go-to-start.svg"), obsgs_tr("OBSTitles.GoToStart"), this);
     act_prev_kf_ = new QAction(obs_icon("previous-keyframe.svg"), obsgs_tr("OBSTitles.PreviousKeyframe"), this);
+    act_step_back_ = new QAction(obs_icon("step-backward.svg"), obsgs_tr("OBSTitles.StepBackward"), this);
+    act_rew_ = new QAction(obs_icon("play-reverse.svg"), obsgs_tr("OBSTitles.PlayReverse"), this);
     act_play_ = new QAction(obs_icon("play.svg"), obsgs_tr("OBSTitles.Play"), this);
-    act_full_loop_ = new QAction(obs_icon("loop.svg"), obsgs_tr("OBSTitles.LoopPreview"), this);
-    act_full_loop_->setToolTip(obsgs_tr("OBSTitles.LoopPreviewTooltip"));
+    act_play_->setToolTip(obsgs_tr("OBSTitles.PlayTooltip"));
+    act_go_end_ = new QAction(obs_icon("go-to-end.svg"), obsgs_tr("OBSTitles.GoToEnd"), this);
     act_next_kf_ = new QAction(obs_icon("next-keyframe.svg"), obsgs_tr("OBSTitles.NextKeyframe"), this);
 
-    connect(act_rew_, &QAction::triggered, this, &TitleEditor::rewind);
+    connect(act_go_start_, &QAction::triggered, this, &TitleEditor::go_to_start);
     connect(act_prev_kf_, &QAction::triggered, this, &TitleEditor::previous_keyframe);
+    connect(act_step_back_, &QAction::triggered, this, &TitleEditor::step_backward);
+    connect(act_rew_, &QAction::triggered, this, &TitleEditor::reverse_play);
     connect(act_play_, &QAction::triggered, this, &TitleEditor::play_pause);
-    connect(act_full_loop_, &QAction::triggered, this, &TitleEditor::play_full_loop);
+    connect(act_go_end_, &QAction::triggered, this, &TitleEditor::go_to_end);
     connect(act_next_kf_, &QAction::triggered, this, &TitleEditor::next_keyframe);
 
     toolbar_->addSeparator();
@@ -2696,6 +2723,7 @@ void TitleEditor::open_title(const std::string &tid)
     act_play_->setIcon(obs_icon("play.svg"));
     playhead_ = 0.0;
     playback_reverse_ = false;
+    manual_reverse_playback_ = false;
     full_loop_playback_ = false;
 
     auto stored_title = TitleDataStore::instance().get_title(tid);
@@ -3134,6 +3162,7 @@ void TitleEditor::delete_selected_layer()
         CacheManager::instance().removeTitleCache(QString::fromStdString(title_->id), true);
     }
 
+    force_next_title_visual_update();
     on_title_modified();
 }
 
@@ -3302,8 +3331,11 @@ bool TitleEditor::confirm_save_before_close()
 void TitleEditor::play_pause()
 {
     if (!title_) return;
-    if (!playing_)
+    if (!playing_) {
         full_loop_playback_ = false;
+        manual_reverse_playback_ = false;
+        playback_reverse_ = false;
+    }
     playing_ = !playing_;
     if (playing_) {
         const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
@@ -3338,11 +3370,48 @@ void TitleEditor::play_full_loop()
     play_timer_->start();
 }
 
-void TitleEditor::rewind()
+void TitleEditor::reverse_play()
 {
+    if (!title_) return;
+    if (playing_ && manual_reverse_playback_) {
+        playing_ = false;
+        manual_reverse_playback_ = false;
+        play_timer_->stop();
+        act_play_->setText("▶");
+        act_play_->setIcon(obs_icon("play.svg"));
+        return;
+    }
     full_loop_playback_ = false;
+    manual_reverse_playback_ = true;
+    playback_reverse_ = true;
+    if (playhead_ <= 0.0)
+        on_playhead_changed(title_->duration);
+    playing_ = true;
+    act_play_->setText("⏸");
+    act_play_->setIcon(obs_icon("pause.svg"));
+    playback_clock_.restart();
+    play_timer_->start();
+}
+
+void TitleEditor::go_to_start()
+{
+    manual_reverse_playback_ = false;
     playback_reverse_ = false;
     on_playhead_changed(0.0);
+}
+
+void TitleEditor::go_to_end()
+{
+    if (!title_) return;
+    manual_reverse_playback_ = false;
+    playback_reverse_ = false;
+    on_playhead_changed(title_->duration);
+}
+
+void TitleEditor::step_backward()
+{
+    if (!title_) return;
+    on_playhead_changed(std::max(0.0, snap_to_obs_frame(playhead_ - obs_frame_duration())));
 }
 
 void TitleEditor::step_forward()
@@ -3398,6 +3467,22 @@ void TitleEditor::next_keyframe()
     if (target <= title_->duration) on_playhead_changed(target);
 }
 
+
+namespace {
+bool cached_preview_frame_available_for_playback(const std::shared_ptr<Title> &title, double time)
+{
+    if (!title)
+        return false;
+    /* This intentionally goes through the editor-facing cache API.  It can
+     * synchronously promote an already-rendered disk frame to RAM, queues the
+     * missing frame when needed, and returns a null image only when the user
+     * requested "Play after rendering" and that exact frame is not available
+     * yet.  Non-cacheable dynamic titles still return a live uncached frame, so
+     * clock/ticker previews are not blocked. */
+    return !CacheManager::instance().requestFrame(title, time, true).isNull();
+}
+}
+
 void TitleEditor::tick()
 {
     if (!title_ || !playing_) return;
@@ -3419,8 +3504,29 @@ void TitleEditor::tick()
     double loop_len = std::max(0.001, loop_end - loop_start);
     double t = playhead_;
 
-    const bool preview_loop = cache_settings.loop || full_loop_playback_;
-    const bool preview_ping_pong = cache_settings.ping_pong;
+    if (manual_reverse_playback_) {
+        t = playhead_ - dt;
+        if (t <= 0.0) {
+            t = 0.0;
+            playing_ = false;
+            manual_reverse_playback_ = false;
+            playback_reverse_ = false;
+            play_timer_->stop();
+            act_play_->setText("▶");
+            act_play_->setIcon(obs_icon("play.svg"));
+        }
+        const double next_playhead = snap_to_obs_frame(t);
+        if (cache_settings.cached_frames_only &&
+            !cached_preview_frame_available_for_playback(title_, next_playhead))
+            return;
+        on_playhead_changed(next_playhead);
+        return;
+    }
+
+    const bool follow_title_mode = cache_settings.follow_title_playback_mode;
+    const bool preview_loop = (!follow_title_mode && cache_settings.mode == CachePlaybackMode::Loop) || full_loop_playback_;
+    const bool preview_ping_pong = !follow_title_mode && cache_settings.mode == CachePlaybackMode::PingPong;
+    const bool preview_play_once = !follow_title_mode && cache_settings.mode == CachePlaybackMode::PlayOnce;
     if (preview_loop && !preview_ping_pong && full_loop_playback_) {
         t = std::fmod(playhead_ + dt, duration);
     } else if (preview_ping_pong) {
@@ -3432,8 +3538,17 @@ void TitleEditor::tick()
             t = std::fmod(-t, duration);
             playback_reverse_ = false;
         }
-    } else if (preview_loop && title_->playback_mode == 0) {
+    } else if (preview_loop) {
         t = std::fmod(playhead_ + dt, duration);
+    } else if (preview_play_once) {
+        t = playhead_ + dt;
+        if (t >= title_->duration) {
+            t = title_->duration;
+            playing_ = false;
+            play_timer_->stop();
+            act_play_->setText("▶");
+            act_play_->setIcon(obs_icon("play.svg"));
+        }
     } else {
         switch (title_->playback_mode) {
         case 1: /* Loop in/out between Loop Start and Loop End */
@@ -3478,7 +3593,16 @@ void TitleEditor::tick()
             break;
         }
     }
-    on_playhead_changed(snap_to_obs_frame(t));
+    const double next_playhead = snap_to_obs_frame(t);
+    if (cache_settings.cached_frames_only &&
+        !cached_preview_frame_available_for_playback(title_, next_playhead)) {
+        /* Play after rendering means the playhead must not outrun the cache.
+         * Keep the current visible frame and let the realtime queue prepare the
+         * exact next frame; the next timer tick will advance as soon as it is
+         * available. */
+        return;
+    }
+    on_playhead_changed(next_playhead);
 }
 
 static bool editor_focus_accepts_text(QWidget *widget)
@@ -3513,7 +3637,7 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle(obsgs_tr("OBSTitles.PreferencesWindowTitle"));
     dialog->setModal(false);
-    dialog->resize(620, 420);
+    dialog->resize(700, 540);
 
     const QPalette pal = dialog->palette();
     const QColor window = pal.color(QPalette::Window);
@@ -3566,18 +3690,51 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     colors_layout->setContentsMargins(0, 0, 0, 0);
     colors_layout->setSpacing(10);
 
-    auto *colors_title = new QLabel(obsgs_tr("OBSTitles.TimelineColors"), colors_page);
+    auto *colors_title = new QLabel(obsgs_tr("OBSTitles.Appearance"), colors_page);
     QFont title_font = colors_title->font();
     title_font.setPointSize(title_font.pointSize() + 2);
     title_font.setBold(true);
     colors_title->setFont(title_font);
     colors_layout->addWidget(colors_title);
 
-    auto *grid = new QGridLayout();
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(12);
-    grid->setVerticalSpacing(8);
-    colors_layout->addLayout(grid);
+    auto *appearance_scroll = new QScrollArea(colors_page);
+    appearance_scroll->setWidgetResizable(true);
+    appearance_scroll->setFrameShape(QFrame::NoFrame);
+    auto *appearance_body = new QWidget(appearance_scroll);
+    auto *appearance_body_layout = new QVBoxLayout(appearance_body);
+    appearance_body_layout->setContentsMargins(0, 0, 0, 0);
+    appearance_body_layout->setSpacing(12);
+
+    auto *timeline_group = new QGroupBox(obsgs_tr("OBSTitles.Timeline"), appearance_body);
+    auto *timeline_group_layout = new QVBoxLayout(timeline_group);
+    timeline_group_layout->setContentsMargins(10, 12, 10, 10);
+    auto *timeline_grid = new QGridLayout();
+    timeline_grid->setContentsMargins(0, 0, 0, 0);
+    timeline_grid->setHorizontalSpacing(12);
+    timeline_grid->setVerticalSpacing(8);
+    timeline_group_layout->addLayout(timeline_grid);
+
+    auto *canvas_group = new QGroupBox(obsgs_tr("OBSTitles.Canvas"), appearance_body);
+    auto *canvas_group_layout = new QVBoxLayout(canvas_group);
+    canvas_group_layout->setContentsMargins(10, 12, 10, 10);
+    auto *canvas_grid = new QGridLayout();
+    canvas_grid->setContentsMargins(0, 0, 0, 0);
+    canvas_grid->setHorizontalSpacing(12);
+    canvas_grid->setVerticalSpacing(8);
+    canvas_group_layout->addLayout(canvas_grid);
+
+    const QString group_style = QStringLiteral(
+        "QGroupBox{color:%1;border:1px solid %2;border-radius:5px;margin-top:8px;font-weight:bold;}"
+        "QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;background:%3;}")
+        .arg(text.name(QColor::HexRgb), border.name(QColor::HexRgb), window.name(QColor::HexRgb));
+    timeline_group->setStyleSheet(group_style);
+    canvas_group->setStyleSheet(group_style);
+
+    appearance_body_layout->addWidget(timeline_group);
+    appearance_body_layout->addWidget(canvas_group);
+    appearance_body_layout->addStretch(1);
+    appearance_scroll->setWidget(appearance_body);
+    colors_layout->addWidget(appearance_scroll, 1);
 
     auto update_appearance = [editor]() {
         if (!editor) {
@@ -3607,7 +3764,7 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
                  border.name(QColor::HexRgb),
                  highlight.name(QColor::HexRgb)));
     };
-    auto add_color_button_row = [&](int row, const QString &label, std::function<QColor()> current_color,
+    auto add_color_button_row = [&](QGridLayout *target_grid, int row, const QString &label, std::function<QColor()> current_color,
                                     std::function<void(const QColor &)> apply_color) {
         auto *name = new QLabel(label, colors_page);
         name->setStyleSheet(QStringLiteral("color:%1;").arg(text.name(QColor::HexRgb)));
@@ -3615,8 +3772,8 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         button->setMinimumWidth(116);
         button->setCursor(Qt::PointingHandCursor);
         apply_color_button(button, current_color());
-        grid->addWidget(name, row, 0);
-        grid->addWidget(button, row, 1);
+        target_grid->addWidget(name, row, 0);
+        target_grid->addWidget(button, row, 1);
         connect(button, &QPushButton::clicked, dialog, [dialog, button, label, apply_color_button, apply_color, current_color]() mutable {
             auto *picker = new QColorDialog(current_color(), dialog);
             picker->setAttribute(Qt::WA_DeleteOnClose);
@@ -3632,7 +3789,7 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         });
     };
     auto add_timeline_color_row = [&](int row, const QString &label, TitlePreferences::TimelineColorRole role) {
-        add_color_button_row(row, label, [role]() { return TitlePreferences::timeline_color(role); }, [role, update_appearance](const QColor &color) {
+        add_color_button_row(timeline_grid, row, label, [role]() { return TitlePreferences::timeline_color(role); }, [role, update_appearance](const QColor &color) {
             TitlePreferences::set_timeline_color(role, color);
             update_appearance();
         });
@@ -3647,12 +3804,31 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.CurrentTime"), TitlePreferences::TimelineColorRole::Current);
     add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.PauseMarker"), TitlePreferences::TimelineColorRole::Pause);
     add_timeline_color_row(color_row++, obsgs_tr("OBSTitles.LoopStartEnd"), TitlePreferences::TimelineColorRole::Loop);
-    add_color_button_row(color_row++, obsgs_tr("OBSTitles.SceneMaskObjects"), []() { return TitlePreferences::scene_mask_color(); }, [update_appearance](const QColor &color) {
+    timeline_grid->setColumnStretch(2, 1);
+
+    auto add_canvas_color_row = [&](int row, const QString &label, TitlePreferences::CanvasHelperColorRole role) {
+        add_color_button_row(canvas_grid, row, label, [role]() { return TitlePreferences::canvas_helper_color(role); }, [role, update_appearance](const QColor &color) {
+            TitlePreferences::set_canvas_helper_color(role, color);
+            update_appearance();
+        });
+    };
+    int canvas_row = 0;
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.CanvasGuidelines"), TitlePreferences::CanvasHelperColorRole::Guides);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.ActiveGuidelines"), TitlePreferences::CanvasHelperColorRole::ActiveGuide);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.RulerMouseIndicators"), TitlePreferences::CanvasHelperColorRole::RulerMouseIndicator);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.HoverBoundingBoxes"), TitlePreferences::CanvasHelperColorRole::HoverBoundingBox);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.SelectionBoundingBoxes"), TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.TextBoundingBoxes"), TitlePreferences::CanvasHelperColorRole::TextBoundingBox);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.CanvasSnapLines"), TitlePreferences::CanvasHelperColorRole::CanvasSnapLines);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.ObjectSnapLines"), TitlePreferences::CanvasHelperColorRole::ObjectSnapLines);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.CanvasBorderColor"), TitlePreferences::CanvasHelperColorRole::CanvasBorder);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.ActionSafeGuides"), TitlePreferences::CanvasHelperColorRole::ActionSafe);
+    add_canvas_color_row(canvas_row++, obsgs_tr("OBSTitles.GraphicsSafeGuides"), TitlePreferences::CanvasHelperColorRole::GraphicsSafe);
+    add_color_button_row(canvas_grid, canvas_row++, obsgs_tr("OBSTitles.SceneMaskObjects"), []() { return TitlePreferences::scene_mask_color(); }, [update_appearance](const QColor &color) {
         TitlePreferences::set_scene_mask_color(color);
         update_appearance();
     });
-    grid->setColumnStretch(2, 1);
-    colors_layout->addStretch(1);
+    canvas_grid->setColumnStretch(2, 1);
 
     auto *advanced_page = new QWidget(pages);
     auto *advanced_layout = new QVBoxLayout(advanced_page);
@@ -4520,13 +4696,15 @@ void TitleEditor::on_playhead_changed(double t)
 
 void TitleEditor::on_title_modified(bool push_undo)
 {
+    const bool force_visual_update = force_next_visual_update_;
+    force_next_visual_update_ = false;
     /* Several Qt controls emit value-changed signals while a newly selected
      * layer is being reflected into the properties/effects panels. Selection
      * itself is UI state and must never dirty, save, invalidate, or rerender
      * the title. Compare against the last rendered/restored visual identity
      * before entering the modification pipeline. Genuine edits have already
      * changed the model here and therefore continue normally. */
-    if (title_ && CacheManager::instance().visualStateCurrent(*title_)) {
+    if (!force_visual_update && title_ && CacheManager::instance().visualStateCurrent(*title_)) {
         OGS_LOG_TRACE("Editor", QStringLiteral("Ignored selection-only property notification title=%1")
                                    .arg(QString::fromStdString(title_->id)));
         return;
@@ -4547,6 +4725,11 @@ void TitleEditor::on_title_modified(bool push_undo)
     if (push_undo)
         push_undo_snapshot();
     save_live_edit();
+}
+
+void TitleEditor::force_next_title_visual_update()
+{
+    force_next_visual_update_ = true;
 }
 
 void TitleEditor::schedule_cache_invalidation()

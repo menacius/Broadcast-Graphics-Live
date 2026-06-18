@@ -666,12 +666,17 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         const int cache_y = rh - 14;
         const int cache_h = 5;
         const int frame_w = std::max(1, (int)std::ceil(pixels_per_sec_ * frame_step));
-        auto state_color = [](FrameCacheState state) {
+        auto state_color = [](FrameCacheState state, bool static_frame) {
             switch (state) {
             case FrameCacheState::Queued: return QColor(96, 96, 96);
             case FrameCacheState::Rendering: return QColor(255, 202, 74);
-            case FrameCacheState::CachedRam: return QColor(39, 186, 103);
-            case FrameCacheState::CachedDisk: return QColor(74, 144, 226);
+            case FrameCacheState::CachedRam:
+                /* Dynamic RAM frames stay bright green; visually static/reused
+                 * RAM frames are darker so the user can see cache reuse spans. */
+                return static_frame ? QColor(21, 112, 67) : QColor(39, 186, 103);
+            case FrameCacheState::CachedDisk:
+                /* Disk-resident static frames are blue, distinct from RAM. */
+                return static_frame ? QColor(45, 105, 190) : QColor(74, 144, 226);
             case FrameCacheState::Stale: return QColor(214, 90, 90);
             case FrameCacheState::Disabled: return QColor(95, 95, 95);
             case FrameCacheState::NotCached:
@@ -681,12 +686,14 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         const bool cache_disabled = !CacheManager::instance().cacheEnabled() ||
             CacheManager::instance().titleCacheability(title_) == TitleCacheability::NonCacheable;
         if (cache_disabled) {
-            p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled));
+            p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled, false));
         } else {
             for (int frame = first_frame; frame <= last_frame; ++frame) {
-                const FrameCacheState state = CacheManager::instance().stateTracker()->stateForFrame(title_id, frame);
+                const FrameCacheState state = CacheManager::instance().displayStateForFrame(title_, frame);
                 if (state == FrameCacheState::NotCached) continue;
-                const QColor color = state_color(state);
+                const bool static_frame = (state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk) &&
+                    CacheManager::instance().displayFrameIsStatic(title_, frame);
+                const QColor color = state_color(state, static_frame);
                 if (color.alpha() == 0) continue;
                 const int x = time_to_x(frame * frame_step);
                 p.fillRect(QRect(x, cache_y, frame_w, cache_h), color);
