@@ -17,6 +17,7 @@
 #include "title-localization.h"
 #include "title-gpu-filter-pipeline.h"
 #include "title-preferences.h"
+#include "title-logger.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -272,6 +273,7 @@ struct TitleSourceData {
     std::chrono::steady_clock::time_point last_clock_refresh;
     bool        first_tick   = true;
     bool        waiting_for_cue = true;
+    bool        force_cue_state_sync = false; /* title switch may race an already-issued cue */
 
     /* GPU texture */
     std::mutex    texture_mutex;
@@ -2614,7 +2616,10 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
     option.setAlignment(align);
     doc->setDefaultTextOption(option);
     doc->setTextWidth(layer.text_overflow_mode == 2 ? -1.0 : std::max(1.0, text_rect.width()));
-    if (layer.type == LayerType::Ticker) {
+    if (layer.type == LayerType::Clock || layer.type == LayerType::Ticker) {
+        // Dynamic text layers must use their evaluated display text. Clock layers do not
+        // store the current time in rich_text.plain_text, so canonicalizing them as a
+        // normal rich-text layer produces an empty document.
         doc->setPlainText(display_text_for_style(layer));
     } else {
         Layer canonical = layer;
@@ -4820,11 +4825,13 @@ static void source_update(void *priv, obs_data_t *settings)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data || !settings) return;
+    const std::string previous_title_id = data->title_id;
     const bool keep_scene_masks_foreground = data->scene_mask_foreground_active;
     if (keep_scene_masks_foreground)
         release_active_scene_mask_scenes(data);
 
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
+    const bool title_changed = data->title_id != previous_title_id;
     refresh_scene_mask_configs(data, settings);
     if (keep_scene_masks_foreground)
         activate_scene_mask_scenes(data);
@@ -4836,10 +4843,28 @@ static void source_update(void *priv, obs_data_t *settings)
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
     data->output_visible = true;
-    if (auto title = TitleDataStore::instance().get_title(data->title_id))
+    if (auto title = TitleDataStore::instance().get_title(data->title_id)) {
         data->seen_cue_revision = title->cue_revision;
-    else
+        /* The dock selection and OBS source-settings update are asynchronous.
+         * A cue can therefore be issued for the newly selected title before
+         * this callback runs. Merely adopting cue_revision here marks that cue
+         * as consumed, leaving the source stopped on cached frame zero. Force
+         * one state-machine pass whenever the newly bound title already has an
+         * active or pending cue. */
+        data->force_cue_state_sync = title_changed &&
+            (title->current_cue_row >= 0 || title->pending_cue_row >= 0);
+        if (data->force_cue_state_sync) {
+            OGS_LOG_INFO("LiveCue", QStringLiteral("Rebinding active cue after title switch old=%1 new=%2 current=%3 pending=%4 revision=%5")
+                         .arg(QString::fromStdString(previous_title_id))
+                         .arg(QString::fromStdString(data->title_id))
+                         .arg(title->current_cue_row)
+                         .arg(title->pending_cue_row)
+                         .arg(static_cast<qulonglong>(title->cue_revision)));
+        }
+    } else {
         data->seen_cue_revision = 0;
+        data->force_cue_state_sync = false;
+    }
     data->last_clock_refresh = std::chrono::steady_clock::now();
     data->seen_store_revision = TitleDataStore::instance().revision();
     data->effect_layer_cache.clear();
@@ -4891,7 +4916,8 @@ static void source_video_tick(void *priv, float seconds)
     auto title = TitleDataStore::instance().get_title(data->title_id);
     if (!title) return;
 
-    if (title->cue_revision != data->seen_cue_revision) {
+    if (data->force_cue_state_sync || title->cue_revision != data->seen_cue_revision) {
+        data->force_cue_state_sync = false;
         double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
         double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
         bool has_pending = title->pending_cue_row >= 0 &&

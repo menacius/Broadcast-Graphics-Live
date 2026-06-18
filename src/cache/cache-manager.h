@@ -175,6 +175,9 @@ public:
         int priority = 0;
         bool live_cue = false;
         bool realtime = false;
+        // Explicit on-air/playback urgency. Background live-cue prerender jobs
+        // must not outrank an open editor merely because they are live-cue variants.
+        bool urgent = false;
         bool force_render = false;
         int cue_row = -1;
         QString cue_state_key;
@@ -191,9 +194,11 @@ public:
     void reprioritizeAround(const QString &title_id, int current_frame);
     bool takeNext(Job &job);
     bool takeNextUrgent(Job &job);
+    bool takeNextForTitle(const QString &title_id, Job &job);
     bool contains(const CacheFrameKey &key) const;
     int queuedCount() const;
     bool hasAvailableJob(bool live_cue_only) const;
+    bool hasAvailableJobForTitle(const QString &title_id) const;
     void complete(const Job &job);
     void clear();
 
@@ -251,6 +256,7 @@ public:
     bool cacheEnabled() const { return cache_enabled_.load(); }
     void setCacheEnabled(bool enabled);
     void setInteractiveBypass(bool bypass);
+    void setEditorPrerenderFocus(const QString &title_id, bool active);
     void setRamCacheLimitMb(int megabytes);
     void setDiskCacheLocation(const QString &path);
     quint64 ramBytesUsed() const { return ram_cache_.bytesUsed(); }
@@ -370,6 +376,9 @@ private:
     std::atomic_bool paused_{false};
     std::atomic_bool cache_enabled_{true};
     std::atomic_bool interactive_bypass_{false};
+    mutable QMutex editor_focus_mutex_;
+    QString editor_focus_title_id_;
+    bool editor_focus_active_ = false;
     std::atomic_bool worker_stop_{false};
     std::atomic<quint64> cache_epoch_{1};
     std::thread worker_thread_;

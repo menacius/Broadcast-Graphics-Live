@@ -128,6 +128,7 @@ TitleEditor::TitleEditor(QWidget *parent)
 
 TitleEditor::~TitleEditor()
 {
+    CacheManager::instance().setEditorPrerenderFocus(QString(), false);
     save_sidebar_default_colors();
     save_new_layer_defaults();
     save_editor_layout();
@@ -2699,6 +2700,7 @@ void TitleEditor::open_title(const std::string &tid)
 
     auto stored_title = TitleDataStore::instance().get_title(tid);
     if (!stored_title) return;
+    CacheManager::instance().setEditorPrerenderFocus(QString::fromStdString(tid), true);
     editing_title_id_ = tid;
     title_ = clone_title(*stored_title);
     load_new_layer_defaults();
@@ -2713,6 +2715,10 @@ void TitleEditor::open_title(const std::string &tid)
     if (prerender_panel_) prerender_panel_->setTitle(title_);
     CacheManager::instance().restoreDiskStates(title_);
     CacheManager::instance().reprioritize(title_, playhead_);
+    // Opening the editor is an explicit request to make this title responsive.
+    // Queue the remaining timeline immediately; the cache scheduler will suspend
+    // non-urgent live-cue/background jobs while this editor focus is active.
+    CacheManager::instance().queueWholeTimeline(title_);
 
     if (!title_->layers.empty())
         on_layer_selected(title_->layers.back()->id);
@@ -3118,6 +3124,14 @@ void TitleEditor::delete_selected_layer()
         timeline_->set_title(title_);
         timeline_->set_selected_layers({});
         update_layer_panels(nullptr, playhead_);
+
+        /* Deleting the final layer is a special hard-empty transition.  Clear
+         * the editor artwork synchronously and discard every RAM/disk frame for
+         * this title before any delayed invalidation or repaint can reuse the
+         * last valid cached image.  The CanvasPreview itself stays alive and
+         * continues painting the checkerboard/editor chrome. */
+        canvas_->clear_rendered_frame();
+        CacheManager::instance().removeTitleCache(QString::fromStdString(title_->id), true);
     }
 
     on_title_modified();

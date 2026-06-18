@@ -86,6 +86,7 @@ public:
     void set_snap_to_canvas_bounds(bool enabled);
     void set_snap_to_spacing(bool enabled);
     void refresh_preview();
+    void clear_rendered_frame();
     void set_zoom_percent(int percent);
     int zoom_percent() const;
     void fit_canvas(bool up_to_100 = false);

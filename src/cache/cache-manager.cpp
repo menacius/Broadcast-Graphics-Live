@@ -904,6 +904,10 @@ bool RenderQueueManager::enqueue(const Job &job)
                 queued.title_generation = job.title_generation;
                 changed = true;
             }
+            if (job.urgent && !queued.urgent) {
+                queued.urgent = true;
+                changed = true;
+            }
             if (job.force_render && !queued.force_render) {
                 queued.force_render = true;
                 changed = true;
@@ -1043,7 +1047,34 @@ bool RenderQueueManager::takeNextUrgent(Job &job)
     {
         QMutexLocker lock(&mutex_);
         for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
-            if (!it->live_cue && !it->realtime)
+            if (!it->urgent && !it->realtime)
+                continue;
+            job = *it;
+            const QString key = it->key.toString();
+            queued_keys_.remove(key);
+            active_tokens_[key] = QStringLiteral("%1:%2")
+                .arg(job.cache_epoch)
+                .arg(job.title_generation);
+            jobs_.erase(it);
+            found = true;
+            break;
+        }
+    }
+    if (found)
+        emit queueChanged();
+    return found;
+}
+
+
+bool RenderQueueManager::takeNextForTitle(const QString &title_id, Job &job)
+{
+    if (title_id.isEmpty())
+        return false;
+    bool found = false;
+    {
+        QMutexLocker lock(&mutex_);
+        for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
+            if (it->key.title_id != title_id || it->live_cue)
                 continue;
             job = *it;
             const QString key = it->key.toString();
@@ -1080,6 +1111,17 @@ bool RenderQueueManager::hasAvailableJob(bool live_cue_only) const
         return !jobs_.isEmpty();
     return std::any_of(jobs_.cbegin(), jobs_.cend(), [](const Job &job) {
         return job.live_cue || job.realtime;
+    });
+}
+
+
+bool RenderQueueManager::hasAvailableJobForTitle(const QString &title_id) const
+{
+    if (title_id.isEmpty())
+        return false;
+    QMutexLocker lock(&mutex_);
+    return std::any_of(jobs_.cbegin(), jobs_.cend(), [&title_id](const Job &job) {
+        return job.key.title_id == title_id && !job.live_cue;
     });
 }
 
@@ -1867,10 +1909,15 @@ QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double ti
 {
     if (!title)
         return QImage();
-    if (interactive_bypass_.load() || !cache_enabled_.load() ||
-        titleCacheability(title) == TitleCacheability::NonCacheable) {
-        return cached_only ? QImage() : renderUncachedFrame(title, time);
-    }
+    if (titleCacheability(title) == TitleCacheability::NonCacheable)
+        return renderUncachedFrame(title, time);
+    /* requestFrame() is the editor-facing path. During an interactive edit the
+     * cached-frames-only playback preference must not blank or freeze the
+     * canvas: the live model is the source of truth until the edit commits.
+     * OBS playback uses requestFrameRealtime(), so this synchronous uncached
+     * fallback never runs on the OBS render thread. */
+    if (interactive_bypass_.load() || !cache_enabled_.load())
+        return renderUncachedFrame(title, time);
 
     const QString content_hash = contentHash(*title);
     const CacheFrameKey key = keyForTime(*title, time, content_hash);
@@ -1914,6 +1961,7 @@ void CacheManager::queueRealtimeJob(const std::shared_ptr<Title> &title, double 
                             : static_cast<int>(RenderQueueManager::PriorityBand::Visible) * 100000;
     job.live_cue = live_cue;
     job.realtime = true;
+    job.urgent = true;
     job.force_render = force_render;
     job.cue_row = cue_row;
     job.cue_state_key = cue_state_key;
@@ -1949,9 +1997,16 @@ QImage CacheManager::requestFrameRealtime(const std::shared_ptr<Title> &title, d
 
 void CacheManager::restoreDiskStates(const std::shared_ptr<Title> &title)
 {
-    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!title || !cache_enabled_.load())
         return;
+    if (titleCacheability(title) == TitleCacheability::NonCacheable) {
+        /* Clock/ticker titles are dynamic by definition.  Remove stale cache
+         * artifacts from older versions instead of publishing them as valid
+         * disk states during session restore. */
+        removeTitleCache(QString::fromStdString(title->id), true);
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     const QString title_id = QString::fromStdString(title->id);
     const QString current_hash = contentHash(*title);
     const auto keys = disk_cache_.keysForTitle(title_id);
@@ -2231,6 +2286,20 @@ void CacheManager::setInteractiveBypass(bool bypass)
     wakeWorker();
 }
 
+void CacheManager::setEditorPrerenderFocus(const QString &title_id, bool active)
+{
+    {
+        QMutexLocker lock(&editor_focus_mutex_);
+        editor_focus_active_ = active && !title_id.isEmpty();
+        editor_focus_title_id_ = editor_focus_active_ ? title_id : QString();
+    }
+    OGS_LOG_DEBUG("Cache", QStringLiteral("Editor prerender focus active=%1 title=%2")
+                               .arg(active && !title_id.isEmpty())
+                               .arg(title_id));
+    wakeWorker();
+}
+
+
 void CacheManager::setRamCacheLimitMb(int megabytes)
 {
     const int clamped = std::clamp(megabytes, 64, 32768);
@@ -2488,6 +2557,10 @@ void CacheManager::resumePrerender()
 void CacheManager::invalidateAll(const std::shared_ptr<Title> &title)
 {
     if (!title) return;
+    if (titleCacheability(title) == TitleCacheability::NonCacheable) {
+        removeTitleCache(QString::fromStdString(title->id), true);
+        return;
+    }
     if (visualHashUnchanged(*title)) {
         OGS_LOG_TRACE("Cache", QStringLiteral("Skipped frame-cache invalidation for unchanged rendered title=%1; refreshing live-cue structure selectively")
                                       .arg(QString::fromStdString(title->id)));
@@ -3163,6 +3236,7 @@ void CacheManager::queueLiveCueVariantSet(
         job.priority = priority;
         job.live_cue = true;
         job.realtime = hydrate_disk_to_ram;
+        job.urgent = urgent || hydrate_disk_to_ram;
         job.force_render = !hydrate_disk_to_ram &&
             (urgent || live_cue_states_.value(state_key, FrameCacheState::NotCached) == FrameCacheState::Stale);
         job.cue_row = row;
@@ -3202,8 +3276,9 @@ void CacheManager::queueLiveCue(const std::shared_ptr<Title> &title, int row, bo
 {
     apply_persisted_live_cue_persistence(title);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
-    if (!cache_enabled_.load()) {
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because cache is disabled").arg(row));
+    if (!cache_enabled_.load() || !title ||
+        titleCacheability(title) == TitleCacheability::NonCacheable) {
+        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because title caching is unavailable").arg(row));
         return;
     }
     const auto variants = liveCueVariants(title, row);
@@ -3229,6 +3304,9 @@ void CacheManager::queueLiveCueTransition(const std::shared_ptr<Title> &title,
 {
     apply_persisted_live_cue_persistence(title);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
+        return;
     const auto variants = liveCueTransitionVariants(title, from_row, to_row);
     if (variants.isEmpty())
         return;
@@ -3395,7 +3473,8 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
 void CacheManager::preloadLiveCues(const std::shared_ptr<Title> &title, int current_row, int nearby_count)
 {
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
-    if (!cache_enabled_.load() || !title || title->live_text_rows.empty())
+    if (!cache_enabled_.load() || !title || title->live_text_rows.empty() ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
         return;
     const int count = static_cast<int>(title->live_text_rows.size());
     const int current = std::clamp(current_row, 0, count - 1);
@@ -3410,6 +3489,8 @@ FrameCacheState CacheManager::liveCueState(const std::shared_ptr<Title> &title, 
 {
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load())
+        return FrameCacheState::Disabled;
+    if (title && titleCacheability(title) == TitleCacheability::NonCacheable)
         return FrameCacheState::Disabled;
     if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return FrameCacheState::NotCached;
@@ -3427,7 +3508,8 @@ FrameCacheState CacheManager::liveCueState(const std::shared_ptr<Title> &title, 
 int CacheManager::liveCueProgressPercent(const std::shared_ptr<Title> &title, int row) const
 {
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
-    if (!cache_enabled_.load())
+    if (!cache_enabled_.load() ||
+        (title && titleCacheability(title) == TitleCacheability::NonCacheable))
         return 100;
     if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return 0;
@@ -3469,7 +3551,8 @@ bool CacheManager::prepareLiveCueForPlayback(const std::shared_ptr<Title> &title
     apply_persisted_live_cue_persistence(title);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load() || !title || row < 0 ||
-        row >= static_cast<int>(title->live_text_rows.size()))
+        row >= static_cast<int>(title->live_text_rows.size()) ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
         return false;
 
     const QString steady_key = liveCueStateKey(title, row);
@@ -3647,6 +3730,13 @@ void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
 void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
 {
     apply_persisted_live_cue_persistence(title);
+    if (!title)
+        return;
+    if (titleCacheability(title) == TitleCacheability::NonCacheable) {
+        removeTitleCache(QString::fromStdString(title->id), true);
+        emit liveCueStateChanged(QString::fromStdString(title->id), -1);
+        return;
+    }
     std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load() || !title)
@@ -3915,7 +4005,19 @@ void CacheManager::workerLoop()
                 if (!cache_enabled_.load())
                     return false;
                 const bool live_only = paused_.load() || interactive_bypass_.load();
-                return queue_.hasAvailableJob(live_only);
+                if (live_only)
+                    return queue_.hasAvailableJob(true);
+                bool editor_focus_active = false;
+                QString editor_title_id;
+                {
+                    QMutexLocker focus_lock(&editor_focus_mutex_);
+                    editor_focus_active = editor_focus_active_;
+                    editor_title_id = editor_focus_title_id_;
+                }
+                if (editor_focus_active)
+                    return queue_.hasAvailableJob(true) ||
+                           queue_.hasAvailableJobForTitle(editor_title_id);
+                return queue_.hasAvailableJob(false);
             });
         }
         if (worker_stop_.load())
@@ -3925,7 +4027,27 @@ void CacheManager::workerLoop()
 
         RenderQueueManager::Job job;
         const bool urgent_only = paused_.load() || interactive_bypass_.load();
-        const bool have_job = urgent_only ? queue_.takeNextUrgent(job) : queue_.takeNext(job);
+        bool editor_focus_active = false;
+        QString editor_title_id;
+        {
+            QMutexLocker lock(&editor_focus_mutex_);
+            editor_focus_active = editor_focus_active_;
+            editor_title_id = editor_focus_title_id_;
+        }
+
+        bool have_job = false;
+        if (urgent_only) {
+            have_job = queue_.takeNextUrgent(job);
+        } else if (editor_focus_active) {
+            /* Only genuinely urgent/on-air work may preempt the editor. Ordinary
+             * live-cue cache population remains queued, including variants of the
+             * same title, until the editor has no prerender work left or closes. */
+            have_job = queue_.takeNextUrgent(job);
+            if (!have_job)
+                have_job = queue_.takeNextForTitle(editor_title_id, job);
+        } else {
+            have_job = queue_.takeNext(job);
+        }
         if (!have_job)
             continue;
 

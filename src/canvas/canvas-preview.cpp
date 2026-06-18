@@ -418,6 +418,15 @@ void CanvasPreview::refresh_preview()
     }
 }
 
+void CanvasPreview::clear_rendered_frame()
+{
+    frame_pixmap_ = QPixmap();
+    frame_pixmap_canvas_offset_ = QPoint();
+    frame_pixmap_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
+    dirty_ = false;
+    update();
+}
+
 
 void CanvasPreview::set_snap_enabled(bool enabled)
 {
@@ -2104,6 +2113,19 @@ void CanvasPreview::render_to_pixmap()
         return;
     }
 
+    /* An empty title must clear the previous cached pixmap immediately.  A
+     * cache miss intentionally keeps the last valid image for normal playback,
+     * but after deleting the final layer that behaviour leaves a stale picture
+     * on the editor canvas. */
+    if (title_->layers.empty()) {
+        frame_pixmap_ = QPixmap();
+        frame_pixmap_canvas_offset_ = QPoint();
+        frame_pixmap_canvas_size_ = QSize(title_->width, title_->height);
+        dirty_ = false;
+        update();
+        return;
+    }
+
     const CachePlaybackSettings settings = CacheManager::instance().playbackSettings();
     QImage image;
     /* While editing text, always render the preview from the live model. The
@@ -2114,7 +2136,19 @@ void CanvasPreview::render_to_pixmap()
         corner_radius_drag_.active &&
         (drag_mode_ == DragMode::CornerRadiusTL || drag_mode_ == DragMode::CornerRadiusTR ||
          drag_mode_ == DragMode::CornerRadiusBR || drag_mode_ == DragMode::CornerRadiusBL);
-    if (!inline_text_layer_id_.empty() || live_corner_radius_drag)
+    const bool live_geometry_drag =
+        drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
+        drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY;
+    /* Every model-changing canvas gesture must preview the current live title
+     * immediately.  Previously only corner-radius manipulation bypassed the
+     * cache, so move/scale/rotate/gradient/origin drags kept displaying the
+     * previous cached frame until the invalidation timer completed. */
+    const bool dynamic_text_title = title_has_dynamic_text_layer(title_);
+    /* Clock and ticker layers are intentionally excluded from prerender/cache,
+     * so their editor preview must always use the live uncached renderer.
+     * Sending them through requestFrame() returns no cached image and leaves
+     * the clock/ticker content invisible even though the canvas keeps ticking. */
+    if (dynamic_text_title || !inline_text_layer_id_.empty() || live_corner_radius_drag || live_geometry_drag)
         image = CacheManager::instance().renderUncachedFrame(title_, playhead_);
     else
         image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);
@@ -2363,8 +2397,10 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     if (!drawing_shape_ && title_has_dynamic_text_layer(title_)) dirty_ = true;
     if (dirty_) render_to_pixmap();
-    if (frame_pixmap_.isNull()) return;
 
+    /* A null frame means that the title is visually empty, not that the canvas
+     * itself should disappear. Draw the checkerboard, rulers, guides and other
+     * editor chrome regardless, and only skip the artwork pixmap below. */
     double scale = view_scale();
     QPointF origin = view_origin();
     int dw = (int)(title_->width * scale);
@@ -2397,11 +2433,13 @@ void CanvasPreview::paintEvent(QPaintEvent *)
                     p.drawRect(cx, cy, 12, 12);
     }
 
-    const int pix_x = ox + static_cast<int>(std::round(frame_pixmap_canvas_offset_.x() * scale));
-    const int pix_y = oy + static_cast<int>(std::round(frame_pixmap_canvas_offset_.y() * scale));
-    const int pix_w = static_cast<int>(std::round(frame_pixmap_.width() * scale));
-    const int pix_h = static_cast<int>(std::round(frame_pixmap_.height() * scale));
-    p.drawPixmap(pix_x, pix_y, pix_w, pix_h, frame_pixmap_);
+    if (!frame_pixmap_.isNull()) {
+        const int pix_x = ox + static_cast<int>(std::round(frame_pixmap_canvas_offset_.x() * scale));
+        const int pix_y = oy + static_cast<int>(std::round(frame_pixmap_canvas_offset_.y() * scale));
+        const int pix_w = static_cast<int>(std::round(frame_pixmap_.width() * scale));
+        const int pix_h = static_cast<int>(std::round(frame_pixmap_.height() * scale));
+        p.drawPixmap(pix_x, pix_y, pix_w, pix_h, frame_pixmap_);
+    }
 
     p.save();
     p.setClipRect(QRectF(ox, oy, dw, dh));
