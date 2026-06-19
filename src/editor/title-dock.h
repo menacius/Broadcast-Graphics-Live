@@ -28,6 +28,7 @@
 #include <QSpinBox>
 #include <QByteArray>
 #include <QDateTime>
+#include <QHash>
 #include <QSet>
 #include <QStringList>
 #include <map>
@@ -106,13 +107,15 @@ private:
     void load_dock_settings();
     void save_dock_settings() const;
     bool cue_live_text_row(int row, bool allow_uncue);
+    bool cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue);
     int live_text_playlist_row_count(const std::shared_ptr<Title> &title) const;
     void start_playlist_step();
-    int next_playlist_row(int current_row, int row_count) const;
+    void start_playlist_step_for_title(const std::shared_ptr<Title> &title);
+    int next_playlist_row(const std::shared_ptr<Title> &title, int current_row, int row_count) const;
     int playlist_step_delay_ms(const std::shared_ptr<Title> &title) const;
-    int playlist_hold_delay_ms() const;
-    bool playlist_row_is_terminal(int row, int row_count) const;
-    void play_playlist_outro();
+    int playlist_hold_delay_ms(const std::shared_ptr<Title> &title) const;
+    bool playlist_row_is_terminal(const std::shared_ptr<Title> &title, int row, int row_count) const;
+    void play_playlist_outro(const std::shared_ptr<Title> &title);
     void update_playlist_controls();
     void update_persistence_controls();
     void update_external_data_controls();
@@ -121,6 +124,7 @@ private:
     void apply_persistence_settings_to_title(const std::shared_ptr<Title> &title);
     void update_playlist_countdown_label();
     void stop_playlist();
+    void stop_playlist_for_title(const std::shared_ptr<Title> &title);
     bool has_checked_live_text_rows() const;
     void apply_live_text_row_selection(const std::vector<int> &rows, bool checked);
     std::string selected_id() const;
@@ -131,6 +135,7 @@ private:
     void import_title_paths(const QStringList &paths);
     std::vector<int> selected_live_text_rows() const;
     void commit_live_text_cell_edit(const std::shared_ptr<Title> &title, int row, int col, const QString &text);
+    void set_live_text_row_render_paused(const std::shared_ptr<Title> &title, int row, bool paused);
 
     int           cache_waiting_cue_row_ = -1;
     QString       cache_waiting_title_id_;
@@ -175,9 +180,6 @@ private:
     std::map<int, QByteArray> live_text_header_states_;
     QTimer       *live_refresh_timer_ = nullptr;
     QTimer       *playlist_timer_ = nullptr;
-    qint64        playlist_next_due_ms_ = 0;
-    bool          playlist_stop_after_due_ = false;
-    int           playlist_next_row_ = 0;
     double        playlist_hold_seconds_ = 5.0;
     bool          playlist_loop_ = false;
     bool          playlist_reverse_ = false;
@@ -185,6 +187,7 @@ private:
     bool          text_persistence_ = false;
     QString       last_selected_title_id_;
     QString       live_text_width_initialized_title_id_;
+    QHash<QString, int> focused_live_text_row_render_counts_;
     int           live_text_lines_per_row_ = 1;
     uint64_t      seen_store_revision_ = 0;
     uint64_t      change_callback_id_ = 0;

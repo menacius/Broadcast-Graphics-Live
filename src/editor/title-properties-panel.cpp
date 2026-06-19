@@ -37,6 +37,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     cmb_cue_end_behavior_ = new QComboBox(this);
     cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowLastFrame"), 0);
     cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowNothing"), 1);
+    cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowFirstFrame"), 2);
     cmb_cue_end_behavior_->setToolTip(obsgs_tr("OBSTitles.CueEndBehaviorTooltip"));
     cmb_cue_end_behavior_->setFixedHeight(22);
     add_form_row(fl, obsgs_tr("OBSTitles.CueEndBehaviorLabel"), cmb_cue_end_behavior_);
@@ -124,7 +125,7 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     connect(cmb_cue_end_behavior_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
                 if (!title_ || loading_values_ || !cmb_cue_end_behavior_) return;
-                title_->cue_end_behavior = std::clamp(cmb_cue_end_behavior_->currentData().toInt(), 0, 1);
+                title_->cue_end_behavior = std::clamp(cmb_cue_end_behavior_->currentData().toInt(), 0, 2);
                 emit title_changed(!numeric_label_dragging_);
             });
 
@@ -234,7 +235,7 @@ void TitlePropertiesPanel::load_values()
     double loop_end = title_ ? title_->loop_end : 4.0;
     int playback_mode = title_ ? std::clamp(title_->playback_mode, 0, 2) : 0;
     int loop_type = title_ ? std::clamp(title_->loop_type, 0, 1) : 0;
-    int cue_end_behavior = title_ ? std::clamp(title_->cue_end_behavior, 0, 1) : 0;
+    int cue_end_behavior = title_ ? std::clamp(title_->cue_end_behavior, 0, 2) : 0;
     int playback_selection = playback_mode == 1 ? (loop_type == 1 ? 2 : 1)
                                                 : (playback_mode == 2 ? 3 : 0);
     double pause_time = title_ ? std::clamp(title_->pause_time, 0.0, duration) : 0.0;

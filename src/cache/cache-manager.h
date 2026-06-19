@@ -165,7 +165,7 @@ public:
         BeforeCurrent = 2,
         WorkArea = 3,
         FullTimeline = 4,
-        LiveCue = -1
+        LiveCue = 5
     };
 
     struct Job {
@@ -293,6 +293,8 @@ public:
     void invalidateLiveCue(const std::shared_ptr<Title> &title, int row);
     void invalidateLiveCues(const std::shared_ptr<Title> &title);
     void refreshLiveCueStructure(const std::shared_ptr<Title> &title);
+    void refreshLiveCueStructureAsync(const std::shared_ptr<Title> &title);
+    void setLiveCueRowRenderPaused(const std::shared_ptr<Title> &title, int row, bool paused);
     LiveCueCacheStats liveCueStats() const;
 
     CacheStateTracker *stateTracker() { return &state_tracker_; }
@@ -347,6 +349,8 @@ private:
     int liveCueStoredProgress(const QString &state_key) const;
     FrameCacheState liveCueStoredState(const QString &state_key) const;
     bool shouldEmitLiveCueUpdate(const QString &state_key, FrameCacheState state, int progress) const;
+    bool liveCueRowRenderPausedLocked(const QString &title_id, const QString &row_id) const;
+    bool liveCueStateRenderPausedLocked(const QString &state_key) const;
     bool isLiveCueKeyReferenced(const CacheFrameKey &key) const;
     QString liveCueStateReferencingKey(const CacheFrameKey &key, const QString &preferred_state = QString()) const;
     void pruneUnreferencedLiveCueRam(const QString &title_id);
@@ -355,6 +359,7 @@ private:
     double timeForFrame(int frame) const;
     void wakeWorker();
     void workerLoop();
+    bool takePendingLiveCueStructureRefresh(std::shared_ptr<Title> &title);
     void renderJob(RenderQueueManager::Job job);
     void abandonJobState(const RenderQueueManager::Job &job, const QString &live_state_key);
     void resetCancelledWorkState(const QString &title_id = QString());
@@ -400,6 +405,8 @@ private:
     int last_reprioritize_frame_ = -1;
     mutable QMutex playback_settings_mutex_;
     CachePlaybackSettings playback_settings_;
+    mutable std::mutex live_cue_refresh_mutex_;
+    QHash<QString, std::shared_ptr<Title>> pending_live_cue_structure_refreshes_;
     mutable std::recursive_mutex live_cue_mutex_;
     QHash<QString, FrameCacheState> live_cue_states_;
     QHash<QString, int> live_cue_progress_percent_;
@@ -419,6 +426,7 @@ private:
     QHash<QString, QString> live_cue_transition_signatures_;
     QSet<QString> live_cue_structure_refresh_in_progress_;
     QSet<CacheFrameKey> live_cue_known_keys_;
+    QHash<QString, QSet<QString>> live_cue_paused_row_ids_;
     LiveCueCacheStats live_cue_stats_;
     mutable QMutex dirty_tiles_mutex_;
     mutable QHash<QString, QSet<QString>> dirty_tiles_by_frame_;

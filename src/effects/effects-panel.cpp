@@ -216,6 +216,8 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         add_action(obsgs_tr("OBSTitles.InnerShadow"), LayerEffectType::InnerShadow);
         add_action(obsgs_tr("OBSTitles.Blur"), LayerEffectType::Blur);
         add_action(obsgs_tr("OBSTitles.MotionBlur"), LayerEffectType::MotionBlur);
+        add_action(obsgs_tr("OBSTitles.Bloom"), LayerEffectType::Bloom);
+        add_action(obsgs_tr("OBSTitles.Emboss"), LayerEffectType::Emboss);
         QAction *chosen = menu.exec(btn_add->mapToGlobal(QPoint(0, btn_add->height())));
         if (!chosen) return;
         LayerEffect effect;
@@ -276,6 +278,33 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
             effect.effect_opacity = 1.0f;
             effect.effect_blur_type = (int)ShadowBlurType::Gaussian;
             break;
+        case LayerEffectType::Bloom:
+            effect.blend_mode = EffectBlendMode::Screen;
+            effect.effect_color = 0xFFFFFFFF;
+            effect.effect_opacity = 0.8f;
+            effect.effect_size = 24.0f;
+            effect.effect_spread = 0.65f; /* luminance threshold */
+            effect.effect_falloff = 1.0f; /* intensity */
+            effect.effect_blur_type = (int)ShadowBlurType::DualKawase;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            effect.size_prop.static_value = effect.effect_size;
+            effect.spread_prop.static_value = effect.effect_spread;
+            effect.falloff_prop.static_value = effect.effect_falloff;
+            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
+            break;
+        case LayerEffectType::Emboss:
+            effect.effect_size = 2.0f; /* depth */
+            effect.effect_distance = 2.0f; /* relief height */
+            effect.effect_angle = 135.0f;
+            effect.effect_opacity = 0.8f;
+            effect.effect_spread = 0.5f; /* softness */
+            effect.blend_mode = EffectBlendMode::Overlay;
+            effect.opacity_prop.static_value = effect.effect_opacity;
+            effect.size_prop.static_value = effect.effect_size;
+            effect.distance_prop.static_value = effect.effect_distance;
+            effect.angle_prop.static_value = effect.effect_angle;
+            effect.spread_prop.static_value = effect.effect_spread;
+            break;
         case LayerEffectType::MotionBlur:
             effect.effect_size = 180.0f;
             effect.effect_angle = 0.0f;
@@ -313,16 +342,18 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 
     connect(btn_move_up_, &QToolButton::clicked, this, [this]() {
         if (!layer_ || selected_index_ <= 0 || selected_index_ >= (int)layer_->effects.size()) return;
-        std::swap(layer_->effects[selected_index_], layer_->effects[selected_index_ - 1]);
-        --selected_index_;
+        const int target = selected_index_ - 1;
+        std::swap(layer_->effects[(size_t)selected_index_], layer_->effects[(size_t)target]);
+        selected_index_ = target;
         rebuild_stack();
         emit_effect_changed();
     });
 
     connect(btn_move_down_, &QToolButton::clicked, this, [this]() {
         if (!layer_ || selected_index_ < 0 || selected_index_ + 1 >= (int)layer_->effects.size()) return;
-        std::swap(layer_->effects[selected_index_], layer_->effects[selected_index_ + 1]);
-        ++selected_index_;
+        const int target = selected_index_ + 1;
+        std::swap(layer_->effects[(size_t)selected_index_], layer_->effects[(size_t)target]);
+        selected_index_ = target;
         rebuild_stack();
         emit_effect_changed();
     });
@@ -809,6 +840,48 @@ void EffectsPanel::load_settings()
         connect(shutter, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size = (float)v; emit_effect_changed(); }});
         connect(samples, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_samples = v; emit_effect_changed(); }});
         connect(centered, &QCheckBox::toggled, this, [this](bool v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_centered = v; emit_effect_changed(); }});
+    } else if (selected_effect()->type == LayerEffectType::Bloom) {
+        LayerEffect *effect = selected_effect();
+        auto *color = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb){ if (selected_effect()) { selected_effect()->effect_color = argb; set_effect_color_channels_at(*selected_effect(), lt, argb); emit_effect_changed(); } });
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(lt) : effect->effect_opacity);
+        auto *threshold = spin(0.0, 1.0, 0.01); threshold->setDecimals(2); threshold->setValue(effect->spread_prop.is_animated() ? effect->spread_prop.evaluate(lt) : effect->effect_spread);
+        auto *radius = spin(0.0, 512.0, 1.0); radius->setValue(effect->size_prop.is_animated() ? effect->size_prop.evaluate(lt) : effect->effect_size);
+        auto *intensity = spin(0.0, 8.0, 0.1); intensity->setDecimals(2); intensity->setValue(effect->falloff_prop.is_animated() ? effect->falloff_prop.evaluate(lt) : effect->effect_falloff);
+        auto *blur_type = combo(); add_shadow_blur_items(blur_type); blur_type->setCurrentIndex(blur_type->findData(effect->effect_blur_type));
+        auto *blend = combo(); add_blend_mode_items(blend); blend->setCurrentIndex(blend->findData((int)effect->blend_mode));
+        add_effect_row(obsgs_tr("OBSTitles.ColorLabel"), color);
+        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
+        add_effect_row(obsgs_tr("OBSTitles.ThresholdLabel"), threshold);
+        add_effect_row(obsgs_tr("OBSTitles.SizeRadiusLabel"), radius);
+        add_effect_row(obsgs_tr("OBSTitles.IntensityLabel"), intensity);
+        add_effect_row(obsgs_tr("OBSTitles.BlurTypeLabel"), blur_type);
+        add_effect_row(obsgs_tr("OBSTitles.BlendingModeLabel"), blend);
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity=(float)v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(threshold, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_spread=(float)v; set_animated_value(selected_effect()->spread_prop, lt, v); emit_effect_changed(); }});
+        connect(radius, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size=(float)v; set_animated_value(selected_effect()->size_prop, lt, v); emit_effect_changed(); }});
+        connect(intensity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_falloff=(float)v; set_animated_value(selected_effect()->falloff_prop, lt, v); emit_effect_changed(); }});
+        connect(blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, blur_type](int){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_blur_type=blur_type->currentData().toInt(); emit_effect_changed(); }});
+        connect(blend, QOverload<int>::of(&QComboBox::activated), this, [this, blend](int){ if (!loading_values_ && selected_effect()) { selected_effect()->blend_mode=(EffectBlendMode)blend->currentData().toInt(); emit_effect_changed(); }});
+    } else if (selected_effect()->type == LayerEffectType::Emboss) {
+        LayerEffect *effect = selected_effect();
+        auto *depth = spin(0.1, 32.0, 0.1); depth->setDecimals(2); depth->setValue(effect->size_prop.is_animated() ? effect->size_prop.evaluate(lt) : effect->effect_size);
+        auto *height = spin(0.1, 32.0, 0.1); height->setDecimals(2); height->setValue(effect->distance_prop.is_animated() ? effect->distance_prop.evaluate(lt) : effect->effect_distance);
+        auto *angle = spin(-360.0, 360.0, 5.0); angle->setValue(effect->angle_prop.is_animated() ? effect->angle_prop.evaluate(lt) : effect->effect_angle);
+        auto *softness = spin(0.0, 16.0, 0.1); softness->setDecimals(2); softness->setValue(effect->spread_prop.is_animated() ? effect->spread_prop.evaluate(lt) : effect->effect_spread);
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setDecimals(2); opacity->setValue(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(lt) : effect->effect_opacity);
+        auto *blend = combo(); add_blend_mode_items(blend); blend->setCurrentIndex(blend->findData((int)effect->blend_mode));
+        add_effect_row(obsgs_tr("OBSTitles.DepthLabel"), depth);
+        add_effect_row(obsgs_tr("OBSTitles.HeightLabel"), height);
+        add_effect_row(obsgs_tr("OBSTitles.AngleLabel"), angle);
+        add_effect_row(obsgs_tr("OBSTitles.SoftnessLabel"), softness);
+        add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
+        add_effect_row(obsgs_tr("OBSTitles.BlendingModeLabel"), blend);
+        connect(depth, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_size=(float)v; set_animated_value(selected_effect()->size_prop, lt, v); emit_effect_changed(); }});
+        connect(height, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_distance=(float)v; set_animated_value(selected_effect()->distance_prop, lt, v); emit_effect_changed(); }});
+        connect(angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_angle=(float)v; set_animated_value(selected_effect()->angle_prop, lt, v); emit_effect_changed(); }});
+        connect(softness, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_spread=(float)v; set_animated_value(selected_effect()->spread_prop, lt, v); emit_effect_changed(); }});
+        connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity=(float)v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
+        connect(blend, QOverload<int>::of(&QComboBox::activated), this, [this, blend](int){ if (!loading_values_ && selected_effect()) { selected_effect()->blend_mode=(EffectBlendMode)blend->currentData().toInt(); emit_effect_changed(); }});
     } else if (selected_effect()->type == LayerEffectType::InnerShadow) {
         LayerEffect *effect = selected_effect();
         auto *color = color_button(effect->effect_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_color = argb; });

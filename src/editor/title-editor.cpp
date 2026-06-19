@@ -12,10 +12,56 @@
 #include <QUrl>
 #include <QScreen>
 #include <QWindow>
+#include <QTimer>
 
 #include <cmath>
 
 namespace {
+
+class LongPressToolButton final : public QToolButton {
+public:
+    explicit LongPressToolButton(QWidget *parent = nullptr) : QToolButton(parent)
+    {
+        long_press_timer_.setSingleShot(true);
+        long_press_timer_.setInterval(250);
+        QObject::connect(&long_press_timer_, &QTimer::timeout, this, [this]() {
+            long_press_triggered_ = true;
+            if (menu())
+                menu()->popup(mapToGlobal(QPoint(0, height())));
+        });
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            long_press_triggered_ = false;
+            long_press_timer_.start();
+            setDown(true);
+            event->accept();
+            return;
+        }
+        QToolButton::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            const bool was_long_press = long_press_triggered_;
+            long_press_timer_.stop();
+            setDown(false);
+            event->accept();
+            if (!was_long_press && rect().contains(event->position().toPoint()))
+                click();
+            return;
+        }
+        QToolButton::mouseReleaseEvent(event);
+    }
+
+private:
+    QTimer long_press_timer_;
+    bool long_press_triggered_ = false;
+};
 
 const Layer *editor_layer_by_id_for_parenting(const std::shared_ptr<Title> &title, const std::string &id)
 {
@@ -185,6 +231,10 @@ QWidget *TitleEditor::create_effects_panel()
             this, [this](bool push_undo_snapshot) {
                 if (updating_layer_panels_)
                     return;
+                // Every EffectsPanel notification represents a real visual-model edit.
+                // Bypass the selection-only visual hash guard so enable/disable and
+                // stack changes always invalidate prerender/frame caches immediately.
+                force_next_title_visual_update();
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
@@ -1100,12 +1150,14 @@ void TitleEditor::build_ui()
 
     auto *edit_menu = menu_bar->addMenu(obsgs_tr("OBSTitles.EditMenu"));
     edit_menu->addAction(act_undo_ = new QAction(obs_icon("undo.svg"), obsgs_tr("OBSTitles.Undo"), this));
-    act_undo_->setShortcut(QKeySequence::Undo);
+    act_undo_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Z")));
+    act_undo_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     connect(act_undo_, &QAction::triggered, this, [this]() {
         if (undo_index_ > 0) restore_undo_snapshot(undo_index_ - 1);
     });
     edit_menu->addAction(act_redo_ = new QAction(obs_icon("redo.svg"), obsgs_tr("OBSTitles.Redo"), this));
-    act_redo_->setShortcut(QKeySequence::Redo);
+    act_redo_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Z")));
+    act_redo_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     connect(act_redo_, &QAction::triggered, this, [this]() {
         if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
     });
@@ -1372,9 +1424,16 @@ void TitleEditor::build_ui()
     canvas_zoom_percent->setButtonSymbols(QAbstractSpinBox::NoButtons);
     canvas_zoom_percent->setFixedWidth(72);
     canvas_zoom_percent->setValue(canvas_->zoom_percent());
-    auto *fit_canvas = new QToolButton(canvas_zoom_bar);
+    auto *fit_canvas = new LongPressToolButton(canvas_zoom_bar);
     fit_canvas->setText("Fit");
-    fit_canvas->setPopupMode(QToolButton::InstantPopup);
+    fit_canvas->setCheckable(true);
+    fit_canvas->setChecked(canvas_->fit_zoom_active());
+    fit_canvas->setPopupMode(QToolButton::DelayedPopup);
+    fit_canvas->setStyleSheet(QStringLiteral(
+        "QToolButton:checked {"
+        " background-color: palette(highlight); color: palette(highlighted-text);"
+        " border: 1px solid palette(highlight); border-radius: 3px; }"
+        "QToolButton::menu-indicator{image:none;width:0px;}"));
     auto *fit_canvas_menu = new QMenu(fit_canvas);
     auto add_canvas_zoom_action = [fit_canvas_menu](const QString &text, int percent) {
         QAction *action = fit_canvas_menu->addAction(text);
@@ -1437,16 +1496,72 @@ void TitleEditor::build_ui()
     auto *safe_guides = new QToolButton(canvas_zoom_bar);
     safe_guides->setDefaultAction(act_safe_guides_);
     safe_guides->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    safe_guides->setStyleSheet(QStringLiteral(
+        "QToolButton:checked {"
+        " background-color: palette(highlight); color: palette(highlighted-text);"
+        " border: 1px solid palette(highlight); border-radius: 3px; }"));
     canvas_zoom_layout->addWidget(safe_guides);
+
+    auto *adaptive_rendering = new LongPressToolButton(canvas_zoom_bar);
+    adaptive_rendering->setObjectName(QStringLiteral("editorAdaptiveRenderingButton"));
+    adaptive_rendering->setIcon(obs_icon("lightning.svg"));
+    adaptive_rendering->setIconSize(QSize(16, 16));
+    adaptive_rendering->setCheckable(true);
+    adaptive_rendering->setChecked(canvas_->adaptive_rendering_enabled());
+    adaptive_rendering->setToolTip(obsgs_tr("OBSTitles.AdaptiveRenderingTooltip"));
+    adaptive_rendering->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    adaptive_rendering->setPopupMode(QToolButton::DelayedPopup);
+    adaptive_rendering->setStyleSheet(QStringLiteral(
+        "QToolButton#editorAdaptiveRenderingButton:checked {"
+        " background-color: palette(highlight); color: palette(highlighted-text);"
+        " border: 1px solid palette(highlight); border-radius: 3px; }"));
+
+    auto *adaptive_menu = new QMenu(adaptive_rendering);
+    auto *adaptive_group = new QActionGroup(adaptive_menu);
+    adaptive_group->setExclusive(true);
+    const auto add_quality = [&](const QString &label, CanvasPreview::AdaptiveQualityMode mode) {
+        QAction *action = adaptive_menu->addAction(label);
+        action->setCheckable(true);
+        action->setData(static_cast<int>(mode));
+        adaptive_group->addAction(action);
+        if (canvas_->adaptive_quality_mode() == mode)
+            action->setChecked(true);
+        return action;
+    };
+    add_quality(QStringLiteral("Auto"), CanvasPreview::AdaptiveQualityMode::Auto);
+    add_quality(QStringLiteral("75%"), CanvasPreview::AdaptiveQualityMode::Percent75);
+    add_quality(QStringLiteral("50%"), CanvasPreview::AdaptiveQualityMode::Percent50);
+    add_quality(QStringLiteral("37,5%"), CanvasPreview::AdaptiveQualityMode::Percent37_5);
+    add_quality(QStringLiteral("25%"), CanvasPreview::AdaptiveQualityMode::Percent25);
+    adaptive_rendering->setMenu(adaptive_menu);
+    canvas_zoom_layout->addWidget(adaptive_rendering);
+
+    connect(adaptive_rendering, &QToolButton::toggled, canvas_,
+            &CanvasPreview::set_adaptive_rendering_enabled);
+    connect(adaptive_group, &QActionGroup::triggered, this, [this, adaptive_rendering](QAction *action) {
+        const auto mode = static_cast<CanvasPreview::AdaptiveQualityMode>(action->data().toInt());
+        canvas_->set_adaptive_quality_mode(mode);
+        adaptive_rendering->setToolTip(
+            obsgs_tr("OBSTitles.AdaptiveRenderingTooltip") +
+            QStringLiteral("\n") + obsgs_tr("OBSTitles.AdaptiveRenderingQuality") +
+            QStringLiteral(": ") + canvas_->adaptive_quality_label());
+    });
+    adaptive_rendering->setToolTip(
+        obsgs_tr("OBSTitles.AdaptiveRenderingTooltip") +
+        QStringLiteral("\n") + obsgs_tr("OBSTitles.AdaptiveRenderingQuality") +
+        QStringLiteral(": ") + canvas_->adaptive_quality_label());
+
     canvas_zoom_layout->addStretch(1);
     canvas_layout->addWidget(canvas_zoom_bar);
     connect(canvas_zoom_slider, &QSlider::valueChanged, canvas_, &CanvasPreview::set_zoom_percent);
     connect(canvas_zoom_percent, qOverload<int>(&QSpinBox::valueChanged), canvas_, &CanvasPreview::set_zoom_percent);
-    connect(canvas_, &CanvasPreview::zoom_percent_changed, this, [canvas_zoom_slider, canvas_zoom_percent](int percent) {
+    connect(canvas_, &CanvasPreview::zoom_percent_changed, this, [this, canvas_zoom_slider, canvas_zoom_percent, fit_canvas](int percent) {
         QSignalBlocker slider_blocker(canvas_zoom_slider);
         QSignalBlocker spin_blocker(canvas_zoom_percent);
         canvas_zoom_slider->setValue(percent);
         canvas_zoom_percent->setValue(percent);
+        QSignalBlocker fit_blocker(fit_canvas);
+        fit_canvas->setChecked(canvas_->fit_zoom_active());
     });
     connect(canvas_zoom_out, &QPushButton::clicked, this, [this]() {
         canvas_->set_zoom_percent((int)std::round(canvas_->zoom_percent() / 1.18));
@@ -1454,12 +1569,20 @@ void TitleEditor::build_ui()
     connect(canvas_zoom_in, &QPushButton::clicked, this, [this]() {
         canvas_->set_zoom_percent((int)std::round(canvas_->zoom_percent() * 1.18));
     });
+    connect(fit_canvas, &QToolButton::clicked, this, [this, fit_canvas]() {
+        canvas_->fit_canvas(false);
+        fit_canvas->setText(QStringLiteral("Fit"));
+        QSignalBlocker fit_blocker(fit_canvas);
+        fit_canvas->setChecked(canvas_->fit_zoom_active());
+    });
     connect(fit_canvas_menu, &QMenu::triggered, this, [this, fit_canvas](QAction *action) {
         int value = action->data().toInt();
         fit_canvas->setText(action->text());
         if (value == -1) canvas_->fit_canvas(false);
         else if (value == -2) canvas_->fit_canvas(true);
         else canvas_->set_zoom_percent(value);
+        QSignalBlocker fit_blocker(fit_canvas);
+        fit_canvas->setChecked(canvas_->fit_zoom_active());
     });
     connect(checkerboard_menu, &QMenu::triggered, this, [this, checkerboard](QAction *action) {
         checkerboard->setText(QString("Transparency: %1").arg(action->text()));
@@ -1922,6 +2045,10 @@ void TitleEditor::build_ui()
             this, [this](bool push_undo_snapshot) {
                 if (updating_layer_panels_)
                     return;
+                // Every EffectsPanel notification represents a real visual-model edit.
+                // Bypass the selection-only visual hash guard so enable/disable and
+                // stack changes always invalidate prerender/frame caches immediately.
+                force_next_title_visual_update();
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
@@ -2876,11 +3003,17 @@ bool TitleEditor::persist_title_changes(bool update_preview_screenshot, bool sho
     }
     copy_title_to_store(title_, stored);
     if (update_preview_screenshot) {
-        title_->preview_screenshot_png_base64 = title_manual_screenshot_png_base64(*title_);
+        // Reuse the already rendered editor frame instead of performing another
+        // full title render during Save. This removes the largest UI-thread spike
+        // for complex titles. Fall back only when no canvas frame exists yet.
+        const QImage current_preview = canvas_ ? canvas_->current_rendered_frame() : QImage();
+        title_->preview_screenshot_png_base64 = current_preview.isNull()
+            ? title_manual_screenshot_png_base64(*title_)
+            : title_screenshot_png_base64(current_preview);
         stored->preview_screenshot_png_base64 = title_->preview_screenshot_png_base64;
     }
     TitleDataStore::instance().notify_change();
-    TitleDataStore::instance().save();
+    TitleDataStore::instance().save_async();
     emit title_saved(stored->id);
     set_dirty(false);
     if (show_saved_status)
@@ -2949,7 +3082,7 @@ void TitleEditor::save_title_as_new()
     title_->id = created->id;
     update_title_bar();
     TitleDataStore::instance().notify_change();
-    TitleDataStore::instance().save();
+    TitleDataStore::instance().save_async();
     emit title_saved(created->id);
     set_dirty(false);
     setWindowTitle(obsgs_tr("OBSTitles.EditorSavedTitle"));
@@ -4481,8 +4614,29 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
         auto *widget = qobject_cast<QWidget *>(watched);
         const bool in_editor = widget && (widget == this || isAncestorOf(widget));
         const bool editing_value = editor_focus_accepts_text(focusWidget());
+        const Qt::KeyboardModifiers shortcut_modifiers =
+            key_event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier |
+                                      Qt::AltModifier | Qt::MetaModifier);
         const Qt::KeyboardModifiers tool_modifiers =
-            key_event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+            shortcut_modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+
+        // Route history shortcuts before the focused canvas/viewport can consume
+        // them. Text-entry widgets retain their own native document undo/redo.
+        if (in_editor && !editing_value && !key_event->isAutoRepeat() &&
+            key_event->key() == Qt::Key_Z) {
+            if (shortcut_modifiers == Qt::ControlModifier) {
+                if (undo_index_ > 0)
+                    restore_undo_snapshot(undo_index_ - 1);
+                key_event->accept();
+                return true;
+            }
+            if (shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {
+                if (undo_index_ + 1 < (int)undo_stack_.size())
+                    restore_undo_snapshot(undo_index_ + 1);
+                key_event->accept();
+                return true;
+            }
+        }
 
         if (in_editor && !editing_value && tool_modifiers == Qt::NoModifier &&
             !key_event->isAutoRepeat() && tools_sidebar_) {
@@ -4529,18 +4683,27 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
 
 void TitleEditor::keyPressEvent(QKeyEvent *ev)
 {
-    if (ev->matches(QKeySequence::Undo)) {
+    QWidget *fw = focusWidget();
+    bool editing_value = editor_focus_accepts_text(fw);
+
+    // QKeyEvent::matches() only accepts QKeySequence::StandardKey in Qt 6.
+    // Check the custom Undo/Redo bindings explicitly instead. Text-editing
+    // widgets keep their own local undo stack.
+    const Qt::KeyboardModifiers shortcut_modifiers =
+        ev->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier |
+                           Qt::AltModifier | Qt::MetaModifier);
+    if (!editing_value && ev->key() == Qt::Key_Z &&
+        shortcut_modifiers == Qt::ControlModifier) {
         if (undo_index_ > 0) restore_undo_snapshot(undo_index_ - 1);
         ev->accept();
         return;
     }
-    if (ev->matches(QKeySequence::Redo)) {
+    if (!editing_value && ev->key() == Qt::Key_Z &&
+        shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {
         if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
         ev->accept();
         return;
     }
-    QWidget *fw = focusWidget();
-    bool editing_value = editor_focus_accepts_text(fw);
 
     if (!editing_value && ev->key() == Qt::Key_Escape) {
         close();

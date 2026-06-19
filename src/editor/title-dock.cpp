@@ -71,6 +71,7 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QSpinBox>
 #include <QTextOption>
 #include <QTextDocument>
@@ -84,6 +85,7 @@
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -121,6 +123,52 @@ constexpr int kTitleIconViewThumbHeight = 82;
 constexpr int kTitleIconViewItemWidth = 172;
 constexpr int kTitleIconViewItemHeight = 126;
 constexpr int kTitleIconViewTextLines = 2;
+constexpr int kTitlePlaylistActiveRole = Qt::UserRole + 20;
+
+class LongPressToolButton final : public QToolButton {
+public:
+    explicit LongPressToolButton(QWidget *parent = nullptr) : QToolButton(parent)
+    {
+        long_press_timer_.setSingleShot(true);
+        long_press_timer_.setInterval(250);
+        QObject::connect(&long_press_timer_, &QTimer::timeout, this, [this]() {
+            long_press_triggered_ = true;
+            if (menu())
+                menu()->popup(mapToGlobal(QPoint(0, height())));
+        });
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            long_press_triggered_ = false;
+            long_press_timer_.start();
+            setDown(true);
+            event->accept();
+            return;
+        }
+        QToolButton::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            const bool was_long_press = long_press_triggered_;
+            long_press_timer_.stop();
+            setDown(false);
+            event->accept();
+            if (!was_long_press && rect().contains(event->position().toPoint()))
+                click();
+            return;
+        }
+        QToolButton::mouseReleaseEvent(event);
+    }
+
+private:
+    QTimer long_press_timer_;
+    bool long_press_triggered_ = false;
+};
 
 static std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
     const std::vector<std::shared_ptr<Layer>> &exposed,
@@ -423,8 +471,19 @@ static QToolButton *live_cue_cache_button(QTableWidget *table, int row)
 static QToolButton *live_cue_button(QTableWidget *table, int row, int col)
 {
     auto *button = centered_cell_tool_button(table, row, col, "liveCueButton");
-    if (button)
+    if (button) {
         button->setIconSize(QSize(20, 20));
+        /* The cue control owns the complete table cell, while the icon remains
+         * centered by QToolButton.  Clicking whitespace in the cue column now
+         * triggers the same action as clicking the icon itself. */
+        button->setMinimumSize(0, 0);
+        button->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        if (auto *layout = button->parentWidget() ? button->parentWidget()->layout() : nullptr) {
+            layout->setAlignment(Qt::Alignment{});
+            layout->setAlignment(button, Qt::Alignment{});
+        }
+    }
     return button;
 }
 
@@ -501,6 +560,45 @@ static QToolButton *make_obs_dock_tool_button(QWidget *parent, const QString &te
     button->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     return button;
 }
+
+static QString dock_highlight_button_style(bool hide_menu_indicator = false,
+                                           bool include_persistence_state = false)
+{
+    QString style;
+    if (include_persistence_state) {
+        style += QStringLiteral(
+            "QToolButton[persistenceState=\"background\"]{"
+            "background:palette(midlight);color:palette(text);"
+            "border:1px solid palette(highlight);border-radius:3px;}"
+            "QToolButton[persistenceState=\"background\"]:hover{background:palette(mid);}");
+    }
+    style += QStringLiteral(
+        "QToolButton:checked{"
+        "background:palette(highlight);color:palette(highlighted-text);"
+        "border:1px solid palette(highlight);border-radius:3px;}"
+        "QToolButton:checked:hover{background:palette(highlight);color:palette(highlighted-text);}");
+    if (hide_menu_indicator)
+        style += QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}");
+    return style;
+}
+
+static LongPressToolButton *make_obs_dock_long_press_tool_button(QWidget *parent, const QString &text,
+                                                                 const QIcon &icon, const QString &tooltip)
+{
+    auto *button = new LongPressToolButton(parent);
+    button->setText(text);
+    button->setAccessibleName(text);
+    button->setToolTip(tooltip);
+    button->setIcon(icon);
+    button->setIconSize(QSize(obs_toolbar_icon_extent(parent), obs_toolbar_icon_extent(parent)));
+    button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    button->setAutoRaise(true);
+    button->setFocusPolicy(Qt::StrongFocus);
+    button->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    button->setPopupMode(QToolButton::DelayedPopup);
+    return button;
+}
+
 
 static QWidget *toolbar_spacer(QWidget *parent)
 {
@@ -605,8 +703,16 @@ public:
     }
 
     std::function<void(const QString &)> editing_finished;
+    std::function<void(bool)> focus_changed;
 
 protected:
+    void focusInEvent(QFocusEvent *event) override
+    {
+        QPlainTextEdit::focusInEvent(event);
+        if (focus_changed)
+            focus_changed(true);
+    }
+
     void keyPressEvent(QKeyEvent *event) override
     {
         if (event && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
@@ -627,6 +733,10 @@ protected:
         QPlainTextEdit::focusOutEvent(event);
         if (editing_finished)
             editing_finished(toPlainText());
+        if (focus_changed) {
+            const auto callback = focus_changed;
+            QTimer::singleShot(0, qApp, [callback]() { callback(false); });
+        }
     }
 };
 
@@ -1260,6 +1370,23 @@ static QIcon title_list_status_icon(bool has_exposed_text, bool has_scene_mask)
     return QIcon(pixmap);
 }
 
+static void paint_playlist_badge(QPainter &painter, const QRect &rect,
+                                 bool draw_background = true,
+                                 const QColor &icon_color = QColor(255, 255, 255))
+{
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    if (draw_background) {
+        painter.setBrush(QColor(39, 186, 103));
+        painter.setPen(QPen(QColor(0, 0, 0, 120), 1));
+        painter.drawRoundedRect(rect, 4, 4);
+    }
+    const QPixmap play = obs_icon("play.svg", icon_color).pixmap(QSize(12, 12));
+    if (!play.isNull())
+        painter.drawPixmap(rect.center() - QPoint(play.width() / 2, play.height() / 2), play);
+    painter.restore();
+}
+
 static QPixmap title_preview_pixmap(const Title &title, const QSize &size)
 {
     QPixmap pixmap;
@@ -1336,7 +1463,8 @@ static QString elide_to_two_lines(const QString &text, const QFontMetrics &fm, i
 }
 
 static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, bool has_scene_mask,
-                                  const LiveCueAggregateCacheStatus &cache_status)
+                                  const LiveCueAggregateCacheStatus &cache_status,
+                                  bool playlist_active)
 {
     const QSize thumb_size(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight);
     QPixmap composed(thumb_size);
@@ -1368,6 +1496,8 @@ static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, boo
     QRect cache_badge_rect(thumb_size.width() - 29, 5, 24, 24);
     if (!cache_pixmap.isNull())
         painter.drawPixmap(cache_badge_rect.center() - QPoint(cache_pixmap.width() / 2, cache_pixmap.height() / 2), cache_pixmap);
+    if (playlist_active)
+        paint_playlist_badge(painter, QRect(thumb_size.width() - 29, thumb_size.height() - 29, 24, 24));
     painter.end();
 
     return QIcon(composed);
@@ -1382,8 +1512,9 @@ public:
 
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
-        (void)option;
-        (void)index;
+        const auto *list_view = qobject_cast<const QListView *>(option.widget);
+        if (list_view && list_view->viewMode() == QListView::ListMode)
+            return QStyledItemDelegate::sizeHint(option, index);
         return QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight);
     }
 
@@ -1391,6 +1522,22 @@ public:
     {
         if (!painter)
             return;
+
+        const auto *list_view = qobject_cast<const QListView *>(option.widget);
+        if (list_view && list_view->viewMode() == QListView::ListMode) {
+            QStyledItemDelegate::paint(painter, option, index);
+            if (index.data(kTitlePlaylistActiveRole).toBool()) {
+                const QRect badge_rect(option.rect.right() - 28,
+                                       option.rect.center().y() - 10,
+                                       20, 20);
+                const bool selected = option.state.testFlag(QStyle::State_Selected);
+                const QColor icon_color = selected
+                    ? option.palette.color(QPalette::HighlightedText)
+                    : QColor(39, 186, 103);
+                paint_playlist_badge(*painter, badge_rect, false, icon_color);
+            }
+            return;
+        }
 
         QStyleOptionViewItem opt(option);
         initStyleOption(&opt, index);
@@ -1896,7 +2043,7 @@ static QTreeWidgetItem *add_template_category_item(QTreeWidget *tree, QTreeWidge
     item->setFlags(item->flags() | Qt::ItemIsDropEnabled);
 
     QDir dir(dir_info.absoluteFilePath());
-    const auto children = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    const auto children = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name);
     for (const QFileInfo &child : children)
         add_template_category_item(tree, item, child);
     return item;
@@ -1918,7 +2065,7 @@ static void populate_template_categories(QTreeWidget *tree, const QString &root_
         known.push_back(name);
         add_template_category_item(tree, nullptr, QFileInfo(root.filePath(name)));
     }
-    for (const QFileInfo &dir : root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+    for (const QFileInfo &dir : root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
         if (std::find(known.begin(), known.end(), dir.fileName()) == known.end())
             add_template_category_item(tree, nullptr, dir);
     }
@@ -1932,7 +2079,7 @@ static void collect_template_category_paths(const QDir &root, const QString &rel
 {
     const QString scan_path = relative_dir.isEmpty() ? root.absolutePath() : root.filePath(relative_dir);
     QDir dir(scan_path);
-    const auto children = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    const auto children = dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name);
     for (const QFileInfo &child : children) {
         const QString relative_child = relative_dir.isEmpty()
             ? child.fileName()
@@ -2345,11 +2492,12 @@ void TitleDock::update_title_list_cache_icon(const QString &title_id)
         if (!item || item->data(Qt::UserRole).toString() != title_id)
             continue;
         if (template_icon_view_) {
-            item->setIcon(title_icon_view_icon(*title, has_exposed_text, has_scene_mask, cache_status));
+            item->setIcon(title_icon_view_icon(*title, has_exposed_text, has_scene_mask, cache_status, title->playlist_active));
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
         } else {
             item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status));
         }
+        item->setData(kTitlePlaylistActiveRole, title->playlist_active);
         item->setToolTip(QStringLiteral("%1\n%2")
                              .arg(obsgs_tr("OBSTitles.LayerCountTooltipFormat").arg(title->layers.size()).arg(title->duration),
                                   aggregate_live_cue_cache_tooltip(cache_status)));
@@ -2617,9 +2765,7 @@ void TitleDock::build_ui()
                                                        obs_icon("layer-visible.svg"),
                                                        obsgs_tr("OBSTitles.VisibleSourceFilterTooltip"));
     btn_visibility_filter_->setCheckable(true);
-    btn_visibility_filter_->setStyleSheet(QStringLiteral(
-        "QToolButton:checked{background:#1d8f3a;color:white;border-radius:3px;}"
-        "QToolButton:checked:hover{background:#28b84f;}"));
+    btn_visibility_filter_->setStyleSheet(dock_highlight_button_style());
 
     template_toolbar->addWidget(btn_add_);
     template_toolbar->addSeparator();
@@ -2653,6 +2799,7 @@ void TitleDock::build_ui()
     list_->setAlternatingRowColors(true);
     list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     list_->setMinimumHeight(120);
+    list_->setItemDelegate(new TitleIconViewDelegate(list_));
     template_layout->addWidget(list_, 1);
 
     auto *live_section = new QWidget(sections_);
@@ -2695,36 +2842,27 @@ void TitleDock::build_ui()
                                                          obsgs_tr("OBSTitles.LiveTextSettingsTooltip"));
     btn_live_text_settings_->setText(obsgs_tr("OBSTitles.Settings"));
     btn_live_text_settings_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    btn_external_refresh_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.RefreshExternalData"),
-                                                      globe_status_icon(false),
-                                                      obsgs_tr("OBSTitles.RefreshExternalDataTooltip"));
+    btn_external_refresh_ = make_obs_dock_long_press_tool_button(live_toolbar, obsgs_tr("OBSTitles.RefreshExternalData"),
+                                                                 globe_status_icon(false),
+                                                                 obsgs_tr("OBSTitles.RefreshExternalDataTooltip"));
     btn_external_refresh_->setCheckable(true);
     btn_external_refresh_->setMinimumWidth(obs_toolbar_icon_extent(live_toolbar) + 10);
-    btn_external_refresh_->setStyleSheet(QStringLiteral(
-        "QToolButton:checked{background:#1d8f3a;color:white;border-radius:3px;}"
-        "QToolButton:checked:hover{background:#28b84f;}"));
-    btn_playlist_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.Playlist"), obs_icon("play.svg"),
-                                              obsgs_tr("OBSTitles.PlaylistTooltip"));
+    btn_external_refresh_->setStyleSheet(dock_highlight_button_style(true));
+    btn_playlist_ = make_obs_dock_long_press_tool_button(live_toolbar, obsgs_tr("OBSTitles.Playlist"), obs_icon("play.svg"),
+                                                         obsgs_tr("OBSTitles.PlaylistTooltip"));
     btn_playlist_->setCheckable(true);
-    btn_playlist_->setStyleSheet(QStringLiteral(
-        "QToolButton:checked{background:#1d8f3a;color:white;border-radius:3px;}"
-        "QToolButton:checked:hover{background:#28b84f;}"));
+    btn_playlist_->setStyleSheet(dock_highlight_button_style(true));
     playlist_countdown_lbl_ = new QLabel(QStringLiteral("--"), live_toolbar);
     playlist_countdown_lbl_->setToolTip(obsgs_tr("OBSTitles.PlaylistNextCueTooltip"));
     playlist_countdown_lbl_->setMinimumWidth(44);
     playlist_countdown_lbl_->setAlignment(Qt::AlignCenter);
-    btn_persistence_settings_ = make_obs_dock_tool_button(live_toolbar, obsgs_tr("OBSTitles.Persistence"),
-                                                          obs_icon("persistence.svg"),
-                                                          obsgs_tr("OBSTitles.PersistenceTooltip"));
+    btn_persistence_settings_ = make_obs_dock_long_press_tool_button(live_toolbar, obsgs_tr("OBSTitles.Persistence"),
+                                                                     obs_icon("persistence.svg"),
+                                                                     obsgs_tr("OBSTitles.PersistenceTooltip"));
     btn_persistence_settings_->setToolButtonStyle(Qt::ToolButtonIconOnly);
     btn_persistence_settings_->setMinimumWidth(obs_toolbar_icon_extent(live_toolbar) + 10);
     btn_persistence_settings_->setCheckable(true);
-    btn_persistence_settings_->setStyleSheet(QStringLiteral(
-        "QToolButton[persistenceState=\"background\"]{background:#d6a21b;color:#111;border-radius:3px;}"
-        "QToolButton[persistenceState=\"background\"]:hover{background:#f0b429;}"
-        "QToolButton:checked{background:#1d8f3a;color:white;border-radius:3px;}"
-        "QToolButton:checked:hover{background:#28b84f;}"
-        "QToolButton::menu-indicator{image:none;width:0px;}"));
+    btn_persistence_settings_->setStyleSheet(dock_highlight_button_style(true, true));
     live_toolbar->addWidget(btn_add_text_row_);
     live_toolbar->addWidget(btn_delete_text_row_);
     live_toolbar->addWidget(btn_data_sources_);
@@ -2804,7 +2942,6 @@ void TitleDock::build_ui()
     act_text_persistence_ = persistence_menu->addAction(obsgs_tr("OBSTitles.TextPersistence"));
     act_text_persistence_->setCheckable(true);
     btn_persistence_settings_->setMenu(persistence_menu);
-    btn_persistence_settings_->setPopupMode(QToolButton::InstantPopup);
 
     auto *live_text_settings_menu = new QMenu(btn_live_text_settings_);
     auto *lines_widget = new QWidget(live_text_settings_menu);
@@ -2818,18 +2955,19 @@ void TitleDock::build_ui()
     auto *lines_action = new QWidgetAction(live_text_settings_menu);
     lines_action->setDefaultWidget(lines_widget);
     live_text_settings_menu->addAction(lines_action);
-    live_text_settings_menu->addSeparator();
-    act_external_data_source_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.EnableExternalDataSource"),
-                                                                   this, &TitleDock::on_toggle_external_data_source);
-    act_external_data_settings_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.ExternalDataSourceSettings"),
-                                                                     this, &TitleDock::on_show_external_data_settings);
-    live_text_settings_menu->addSeparator();
-    act_playlist_loop_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.PlaylistLoop"));
+    auto *external_data_menu = new QMenu(btn_external_refresh_);
+    act_external_data_source_ = external_data_menu->addAction(obsgs_tr("OBSTitles.EnableExternalDataSource"),
+                                                              this, &TitleDock::on_toggle_external_data_source);
+    act_external_data_settings_ = external_data_menu->addAction(obsgs_tr("OBSTitles.ExternalDataSourceSettings"),
+                                                                this, &TitleDock::on_show_external_data_settings);
+    btn_external_refresh_->setMenu(external_data_menu);
+    auto *playlist_menu = new QMenu(btn_playlist_);
+    act_playlist_loop_ = playlist_menu->addAction(obsgs_tr("OBSTitles.PlaylistLoop"));
     act_playlist_loop_->setCheckable(true);
-    act_playlist_reverse_ = live_text_settings_menu->addAction(obsgs_tr("OBSTitles.PlaylistReverseOrder"));
+    act_playlist_reverse_ = playlist_menu->addAction(obsgs_tr("OBSTitles.PlaylistReverseOrder"));
     act_playlist_reverse_->setCheckable(true);
-    live_text_settings_menu->addSeparator();
-    auto *hold_widget = new QWidget(live_text_settings_menu);
+    playlist_menu->addSeparator();
+    auto *hold_widget = new QWidget(playlist_menu);
     auto *hold_layout = new QHBoxLayout(hold_widget);
     hold_layout->setContentsMargins(8, 4, 8, 4);
     hold_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.PlaylistHoldSeconds"), hold_widget));
@@ -2837,10 +2975,11 @@ void TitleDock::build_ui()
     hold_spin->setRange(0.0, 3600.0);
     hold_spin->setValue(playlist_hold_seconds_);
     hold_layout->addWidget(hold_spin);
-    auto *hold_action = new QWidgetAction(live_text_settings_menu);
+    auto *hold_action = new QWidgetAction(playlist_menu);
     hold_action->setDefaultWidget(hold_widget);
     act_playlist_hold_ = hold_action;
-    live_text_settings_menu->addAction(hold_action);
+    playlist_menu->addAction(hold_action);
+    btn_playlist_->setMenu(playlist_menu);
     btn_live_text_settings_->setMenu(live_text_settings_menu);
     btn_live_text_settings_->setPopupMode(QToolButton::InstantPopup);
     btn_live_text_settings_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -2848,16 +2987,51 @@ void TitleDock::build_ui()
     connect(btn_row_down_, &QToolButton::clicked, this, &TitleDock::on_move_live_text_row_down);
     connect(btn_external_refresh_, &QToolButton::clicked, this, &TitleDock::on_refresh_external_data);
     connect(btn_playlist_, &QToolButton::toggled, this, &TitleDock::on_toggle_playlist);
+    connect(btn_persistence_settings_, &QToolButton::clicked, this, [this]() {
+        const auto title = TitleDataStore::instance().get_title(selected_id());
+        if (!title || exposed_text_layers(title).empty()) {
+            update_persistence_controls();
+            return;
+        }
+        const bool enable_full_persistence = !(background_persistence_ || text_persistence_);
+        background_persistence_ = enable_full_persistence;
+        text_persistence_ = enable_full_persistence;
+        if (act_background_persistence_) {
+            QSignalBlocker block(act_background_persistence_);
+            act_background_persistence_->setChecked(enable_full_persistence);
+        }
+        if (act_text_persistence_) {
+            QSignalBlocker block(act_text_persistence_);
+            act_text_persistence_->setChecked(enable_full_persistence);
+        }
+        save_dock_settings();
+        apply_persistence_settings_to_title(title);
+        CacheManager::instance().refreshLiveCueStructure(title);
+        update_persistence_controls();
+        populate_exposed_text();
+    });
     connect(act_playlist_loop_, &QAction::toggled, this, [this](bool checked) {
         playlist_loop_ = checked;
+        if (auto title = TitleDataStore::instance().get_title(selected_id())) {
+            title->playlist_loop = checked;
+            TitleDataStore::instance().save_async();
+        }
         save_dock_settings();
     });
     connect(act_playlist_reverse_, &QAction::toggled, this, [this](bool checked) {
         playlist_reverse_ = checked;
+        if (auto title = TitleDataStore::instance().get_title(selected_id())) {
+            title->playlist_reverse = checked;
+            TitleDataStore::instance().save_async();
+        }
         save_dock_settings();
     });
     connect(hold_spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
         playlist_hold_seconds_ = value;
+        if (auto title = TitleDataStore::instance().get_title(selected_id())) {
+            title->playlist_hold_seconds = value;
+            TitleDataStore::instance().save_async();
+        }
         save_dock_settings();
     });
     connect(spin_live_text_lines_per_row_, QOverload<int>::of(&QSpinBox::valueChanged),
@@ -3040,7 +3214,7 @@ void TitleDock::populate_list()
         const bool has_scene_mask = title_has_scene_mask(t);
         const LiveCueAggregateCacheStatus cache_status = aggregate_live_cue_cache_status(t);
         if (template_icon_view_) {
-            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask, cache_status));
+            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask, cache_status, t->playlist_active));
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
             item->setTextAlignment(Qt::AlignHCenter);
         } else {
@@ -3049,6 +3223,7 @@ void TitleDock::populate_list()
             item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         }
         item->setData(Qt::UserRole, QString::fromStdString(t->id));
+        item->setData(kTitlePlaylistActiveRole, t->playlist_active);
         // Layer count hint as tooltip
         item->setToolTip(QStringLiteral("%1\n%2")
             .arg(obsgs_tr("OBSTitles.LayerCountTooltipFormat").arg(t->layers.size()).arg(t->duration),
@@ -3326,9 +3501,38 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     /* A row can also be the previous/outgoing side of another row's persistence
      * transition, so refresh the pairwise requirement sets once. Stable keys
      * ensure that only variants affected by the edited text are regenerated. */
-    CacheManager::instance().refreshLiveCueStructure(title);
+    CacheManager::instance().refreshLiveCueStructureAsync(title);
     seen_store_revision_ = TitleDataStore::instance().revision();
     updating_exposed_text_ = false;
+}
+
+void TitleDock::set_live_text_row_render_paused(const std::shared_ptr<Title> &title, int row, bool paused)
+{
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
+        return;
+    ensure_live_text_row_ids(*title);
+    const QString row_key = QStringLiteral("%1:%2")
+        .arg(QString::fromStdString(title->id),
+             QString::fromStdString(live_text_row_id(*title, row)));
+    if (row_key.endsWith(QStringLiteral(":")))
+        return;
+
+    if (paused) {
+        int &count = focused_live_text_row_render_counts_[row_key];
+        ++count;
+        if (count == 1)
+            CacheManager::instance().setLiveCueRowRenderPaused(title, row, true);
+        return;
+    }
+
+    auto it = focused_live_text_row_render_counts_.find(row_key);
+    if (it == focused_live_text_row_render_counts_.end())
+        return;
+    it.value() = std::max(0, it.value() - 1);
+    if (it.value() > 0)
+        return;
+    focused_live_text_row_render_counts_.erase(it);
+    CacheManager::instance().setLiveCueRowRenderPaused(title, row, false);
 }
 
 void TitleDock::apply_persistence_settings_to_title(const std::shared_ptr<Title> &title)
@@ -3450,7 +3654,14 @@ void TitleDock::update_external_data_controls()
 bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
 {
     auto title = TitleDataStore::instance().get_title(selected_id());
+    return cue_live_text_row_for_title(title, row, allow_uncue);
+}
+
+bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue)
+{
     if (!title) return false;
+    const QString title_id = QString::fromStdString(title->id);
+    const bool selected_title = title_id == QString::fromStdString(selected_id());
 
     auto exposed_now = exposed_text_layers(title);
     normalize_live_text_rows(title, exposed_now);
@@ -3464,7 +3675,9 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
         ++title->cue_revision;
         TitleDataStore::instance().touch_runtime_change();
         updating_exposed_text_ = false;
-        populate_exposed_text();
+        if (selected_title)
+            populate_exposed_text();
+        update_title_list_cache_icon(title_id);
         return true;
     }
 
@@ -3482,15 +3695,22 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
          * hydration (or missing renders) for the exact steady/transition state.
          * Nearby rows remain ordinary background work. */
         CacheManager::instance().preloadLiveCues(title, row, 2);
-        update_live_text_runtime_status_fast(title, row);
-        QTimer::singleShot(0, this, [this, title, row]() {
+        if (selected_title)
             update_live_text_runtime_status_fast(title, row);
+        else
+            update_title_list_cache_icon(title_id);
+        QTimer::singleShot(0, this, [this, title, row]() {
             const QString title_id = QString::fromStdString(title->id);
+            const bool selected_title = title_id == QString::fromStdString(selected_id());
+            if (selected_title)
+                update_live_text_runtime_status_fast(title, row);
+            else
+                update_title_list_cache_icon(title_id);
             if (cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row &&
                 CacheManager::instance().prepareLiveCueForPlayback(title, row)) {
                 cache_waiting_cue_row_ = -1;
                 cache_waiting_title_id_.clear();
-                cue_live_text_row(row, false);
+                cue_live_text_row_for_title(title, row, false);
             }
         });
         return false;
@@ -3510,12 +3730,17 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
 
     title->cue_persistence_transition = false;
     title->cue_persistent_text_columns.assign(exposed_now.size(), false);
+    if (!(allow_uncue && (is_active_cue || is_pending_cue)))
+        title->cue_uncue_requested = false;
 
     if (allow_uncue && (is_active_cue || is_pending_cue)) {
         cache_waiting_cue_row_ = -1;
         cache_waiting_title_id_.clear();
-        title->current_cue_row = -1;
+        /* Keep current_cue_row active while the source plays the outro.  This
+         * preserves the cued status in the dock and gives cached playback the
+         * exact outgoing row until the last frame. */
         title->pending_cue_row = -1;
+        title->cue_uncue_requested = true;
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.clear();
     } else if (can_persist_transition) {
@@ -3554,8 +3779,12 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     TitleDataStore::instance().touch_runtime_change();
     CacheManager::instance().preloadLiveCues(title, row, 2);
     updating_exposed_text_ = false;
-    update_live_text_runtime_status_fast(title, row, previous_row);
-    QTimer::singleShot(0, this, [this, title, row, previous_row]() { update_live_text_runtime_status_fast(title, row, previous_row); });
+    if (selected_title) {
+        update_live_text_runtime_status_fast(title, row, previous_row);
+        QTimer::singleShot(0, this, [this, title, row, previous_row]() { update_live_text_runtime_status_fast(title, row, previous_row); });
+    } else {
+        update_title_list_cache_icon(title_id);
+    }
     return true;
 }
 
@@ -3568,17 +3797,18 @@ int TitleDock::live_text_playlist_row_count(const std::shared_ptr<Title> &title)
     return (int)title->live_text_rows.size();
 }
 
-int TitleDock::next_playlist_row(int current_row, int row_count) const
+int TitleDock::next_playlist_row(const std::shared_ptr<Title> &title, int current_row, int row_count) const
 {
     if (row_count <= 0) return 0;
-    return (current_row + (playlist_reverse_ ? -1 : 1) + row_count) % row_count;
+    const bool reverse = title ? title->playlist_reverse : playlist_reverse_;
+    return (current_row + (reverse ? -1 : 1) + row_count) % row_count;
 }
 
 int TitleDock::playlist_step_delay_ms(const std::shared_ptr<Title> &title) const
 {
     if (!title) return 1000;
 
-    double seconds = playlist_hold_seconds_;
+    double seconds = title->playlist_hold_seconds;
     if (title->playback_mode == 1)
         seconds += std::clamp(title->loop_end, title->loop_start, title->duration);
     else if (title->playback_mode == 2)
@@ -3589,54 +3819,77 @@ int TitleDock::playlist_step_delay_ms(const std::shared_ptr<Title> &title) const
     return std::max(1, (int)std::round(seconds * 1000.0));
 }
 
-int TitleDock::playlist_hold_delay_ms() const
+int TitleDock::playlist_hold_delay_ms(const std::shared_ptr<Title> &title) const
 {
-    return std::max(1, (int)std::round(playlist_hold_seconds_ * 1000.0));
+    const double seconds = title ? title->playlist_hold_seconds : playlist_hold_seconds_;
+    return std::max(1, (int)std::round(seconds * 1000.0));
 }
 
-bool TitleDock::playlist_row_is_terminal(int row, int row_count) const
+bool TitleDock::playlist_row_is_terminal(const std::shared_ptr<Title> &title, int row, int row_count) const
 {
     if (row < 0 || row_count <= 0) return false;
-    return playlist_reverse_ ? row == 0 : row == row_count - 1;
+    const bool reverse = title ? title->playlist_reverse : playlist_reverse_;
+    return reverse ? row == 0 : row == row_count - 1;
 }
 
-void TitleDock::play_playlist_outro()
+void TitleDock::play_playlist_outro(const std::shared_ptr<Title> &title)
 {
-    auto title = TitleDataStore::instance().get_title(selected_id());
     if (!title) return;
 
     const int row = title->pending_cue_row >= 0 ? title->pending_cue_row : title->current_cue_row;
     if (row >= 0)
-        cue_live_text_row(row, true);
+        cue_live_text_row_for_title(title, row, true);
     else if (live_text_playlist_row_count(title) == 1)
-        cue_live_text_row(0, true);
+        cue_live_text_row_for_title(title, 0, true);
 }
 
 void TitleDock::stop_playlist()
 {
-    if (playlist_timer_)
-        playlist_timer_->stop();
-    playlist_next_due_ms_ = 0;
-    playlist_stop_after_due_ = false;
-    if (btn_playlist_ && btn_playlist_->isChecked()) {
-        QSignalBlocker block(btn_playlist_);
-        btn_playlist_->setChecked(false);
+    stop_playlist_for_title(TitleDataStore::instance().get_title(selected_id()));
+}
+
+void TitleDock::stop_playlist_for_title(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return;
+    title->playlist_active = false;
+    title->playlist_next_due_ms = 0;
+    title->playlist_stop_after_due = false;
+    TitleDataStore::instance().touch_runtime_change();
+
+    bool any_active = false;
+    for (const auto &candidate : TitleDataStore::instance().titles()) {
+        if (candidate && candidate->playlist_active) {
+            any_active = true;
+            break;
+        }
     }
-    update_playlist_countdown_label();
+    if (!any_active && playlist_timer_)
+        playlist_timer_->stop();
+
+    if (QString::fromStdString(title->id) == QString::fromStdString(selected_id())) {
+        if (btn_playlist_ && btn_playlist_->isChecked()) {
+            QSignalBlocker block(btn_playlist_);
+            btn_playlist_->setChecked(false);
+        }
+        update_playlist_countdown_label();
+    }
+    update_title_list_cache_icon(QString::fromStdString(title->id));
 }
 
 void TitleDock::update_playlist_countdown_label()
 {
     if (!playlist_countdown_lbl_) return;
 
-    const bool active = btn_playlist_ && btn_playlist_->isChecked() && playlist_next_due_ms_ > 0;
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    const bool active = title && title->playlist_active && title->playlist_next_due_ms > 0;
     if (!active) {
         playlist_countdown_lbl_->setText(QStringLiteral("--"));
         playlist_countdown_lbl_->setVisible(false);
         return;
     }
 
-    const qint64 remaining_ms = std::max<qint64>(0, playlist_next_due_ms_ - QDateTime::currentMSecsSinceEpoch());
+    const qint64 remaining_ms = std::max<qint64>(0, title->playlist_next_due_ms - QDateTime::currentMSecsSinceEpoch());
     const double remaining_seconds = remaining_ms / 1000.0;
     playlist_countdown_lbl_->setText(QStringLiteral("%1s").arg(remaining_seconds, 0, 'f', remaining_seconds < 10.0 ? 1 : 0));
     playlist_countdown_lbl_->setVisible(true);
@@ -3644,93 +3897,137 @@ void TitleDock::update_playlist_countdown_label()
 
 void TitleDock::start_playlist_step()
 {
-    auto title = TitleDataStore::instance().get_title(selected_id());
+    start_playlist_step_for_title(TitleDataStore::instance().get_title(selected_id()));
+}
+
+void TitleDock::start_playlist_step_for_title(const std::shared_ptr<Title> &title)
+{
     const int row_count = live_text_playlist_row_count(title);
     if (!title || row_count <= 0) {
-        stop_playlist();
+        stop_playlist_for_title(title);
         return;
     }
 
-    if (playlist_next_row_ < 0 || playlist_next_row_ >= row_count)
-        playlist_next_row_ = playlist_reverse_ ? row_count - 1 : 0;
+    if (title->playlist_next_row < 0 || title->playlist_next_row >= row_count)
+        title->playlist_next_row = title->playlist_reverse ? row_count - 1 : 0;
 
-    const int row = playlist_next_row_;
+    const int row = title->playlist_next_row;
     const bool already_active = title->pending_cue_row < 0 && title->current_cue_row == row;
     if (!already_active)
-        cue_live_text_row(row, false);
-    playlist_next_row_ = next_playlist_row(row, row_count);
-    playlist_stop_after_due_ = !playlist_loop_ && playlist_row_is_terminal(row, row_count);
+        cue_live_text_row_for_title(title, row, false);
+    title->playlist_next_row = next_playlist_row(title, row, row_count);
+    title->playlist_stop_after_due = !title->playlist_loop && playlist_row_is_terminal(title, row, row_count);
 
-    playlist_next_due_ms_ = QDateTime::currentMSecsSinceEpoch() +
-        (already_active ? playlist_hold_delay_ms() : playlist_step_delay_ms(title));
+    title->playlist_next_due_ms = QDateTime::currentMSecsSinceEpoch() +
+        (already_active ? playlist_hold_delay_ms(title) : playlist_step_delay_ms(title));
     if (playlist_timer_ && !playlist_timer_->isActive())
         playlist_timer_->start();
-    update_playlist_countdown_label();
+    if (QString::fromStdString(title->id) == QString::fromStdString(selected_id()))
+        update_playlist_countdown_label();
+    update_title_list_cache_icon(QString::fromStdString(title->id));
 }
 
 void TitleDock::on_playlist_tick()
 {
-    if (!btn_playlist_ || !btn_playlist_->isChecked()) return;
-    if (QDateTime::currentMSecsSinceEpoch() >= playlist_next_due_ms_) {
-        if (playlist_stop_after_due_) {
-            play_playlist_outro();
-            stop_playlist();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool any_active = false;
+    for (const auto &title : TitleDataStore::instance().titles()) {
+        if (!title || !title->playlist_active)
+            continue;
+        any_active = true;
+        if (title->playlist_next_due_ms <= 0 || now < title->playlist_next_due_ms)
+            continue;
+
+        if (title->playlist_stop_after_due) {
+            play_playlist_outro(title);
+            stop_playlist_for_title(title);
         } else {
-            start_playlist_step();
+            start_playlist_step_for_title(title);
         }
-    } else {
-        update_playlist_countdown_label();
     }
+
+    if (!any_active && playlist_timer_)
+        playlist_timer_->stop();
+    update_playlist_countdown_label();
 }
 
 void TitleDock::on_toggle_playlist(bool enabled)
 {
+    auto title = TitleDataStore::instance().get_title(selected_id());
     if (!enabled) {
-        stop_playlist();
+        stop_playlist_for_title(title);
         return;
     }
 
-    auto title = TitleDataStore::instance().get_title(selected_id());
     const int row_count = live_text_playlist_row_count(title);
     if (!title || row_count <= 0) {
-        stop_playlist();
-        return;
-    }
-
-    int base = title->pending_cue_row >= 0 ? title->pending_cue_row : title->current_cue_row;
-    if (title->pending_cue_row < 0 && base >= 0 && base < row_count) {
-        playlist_next_row_ = next_playlist_row(base, row_count);
-        playlist_stop_after_due_ = !playlist_loop_ && playlist_row_is_terminal(base, row_count);
-        playlist_next_due_ms_ = QDateTime::currentMSecsSinceEpoch() + playlist_hold_delay_ms();
-        if (playlist_timer_ && !playlist_timer_->isActive())
-            playlist_timer_->start();
+        if (btn_playlist_ && btn_playlist_->isChecked()) {
+            QSignalBlocker block(btn_playlist_);
+            btn_playlist_->setChecked(false);
+        }
         update_playlist_countdown_label();
         return;
     }
 
-    if (base >= 0 && base < row_count)
-        playlist_next_row_ = base;
-    else
-        playlist_next_row_ = playlist_reverse_ ? row_count - 1 : 0;
+    title->playlist_active = true;
+    title->playlist_loop = playlist_loop_;
+    title->playlist_reverse = playlist_reverse_;
+    title->playlist_hold_seconds = playlist_hold_seconds_;
+    TitleDataStore::instance().touch_runtime_change();
+    int base = title->pending_cue_row >= 0 ? title->pending_cue_row : title->current_cue_row;
+    if (title->pending_cue_row < 0 && base >= 0 && base < row_count) {
+        title->playlist_next_row = next_playlist_row(title, base, row_count);
+        title->playlist_stop_after_due = !title->playlist_loop && playlist_row_is_terminal(title, base, row_count);
+        title->playlist_next_due_ms = QDateTime::currentMSecsSinceEpoch() + playlist_hold_delay_ms(title);
+        if (playlist_timer_ && !playlist_timer_->isActive())
+            playlist_timer_->start();
+        update_playlist_countdown_label();
+        update_title_list_cache_icon(QString::fromStdString(title->id));
+        return;
+    }
 
-    start_playlist_step();
+    if (base >= 0 && base < row_count)
+        title->playlist_next_row = base;
+    else
+        title->playlist_next_row = title->playlist_reverse ? row_count - 1 : 0;
+
+    start_playlist_step_for_title(title);
 }
 
 void TitleDock::update_playlist_controls()
 {
     auto title = TitleDataStore::instance().get_title(selected_id());
     const bool enabled = title && live_text_playlist_row_count(title) > 0;
-    if (btn_playlist_) {
-        btn_playlist_->setEnabled(enabled);
-        if (!enabled && btn_playlist_->isChecked())
-            stop_playlist();
+    if (title) {
+        playlist_loop_ = title->playlist_loop;
+        playlist_reverse_ = title->playlist_reverse;
+        playlist_hold_seconds_ = title->playlist_hold_seconds;
     }
-    if (act_playlist_loop_)
+    if (btn_playlist_) {
+        QSignalBlocker block(btn_playlist_);
+        btn_playlist_->setEnabled(enabled);
+        btn_playlist_->setChecked(enabled && title->playlist_active);
+    }
+    if (act_playlist_loop_) {
         act_playlist_loop_->setEnabled(enabled);
-    if (act_playlist_reverse_)
+        QSignalBlocker block(act_playlist_loop_);
+        act_playlist_loop_->setChecked(title ? title->playlist_loop : playlist_loop_);
+    }
+    if (act_playlist_reverse_) {
         act_playlist_reverse_->setEnabled(enabled);
+        QSignalBlocker block(act_playlist_reverse_);
+        act_playlist_reverse_->setChecked(title ? title->playlist_reverse : playlist_reverse_);
+    }
     if (act_playlist_hold_)
         act_playlist_hold_->setEnabled(enabled);
+    if (auto *hold_action = qobject_cast<QWidgetAction *>(act_playlist_hold_)) {
+        if (auto *widget = hold_action->defaultWidget()) {
+            if (auto *spin = widget->findChild<QDoubleSpinBox *>()) {
+                QSignalBlocker block(spin);
+                spin->setValue(title ? title->playlist_hold_seconds : playlist_hold_seconds_);
+            }
+        }
+    }
     update_playlist_countdown_label();
 }
 
@@ -3833,7 +4130,7 @@ void TitleDock::populate_exposed_text()
     /* Reconcile stable row IDs/cache states before creating row widgets. This
      * prevents a freshly rebuilt table from briefly binding old numeric-row
      * states to the new row order after delete/re-add/reorder operations. */
-    CacheManager::instance().refreshLiveCueStructure(title);
+    CacheManager::instance().refreshLiveCueStructureAsync(title);
 
     text_table_->setRowCount((int)title->live_text_rows.size());
     text_table_->setColumnCount((int)exposed.size() + 3);
@@ -3867,6 +4164,11 @@ void TitleDock::populate_exposed_text()
             edit->setStyleSheet("QPlainTextEdit{padding:3px;}");
             edit->editing_finished = [this, title, row, col](const QString &text) {
                 commit_live_text_cell_edit(title, row, col, text);
+            };
+            QPointer<TitleDock> dock_guard(this);
+            edit->focus_changed = [dock_guard, title, row](bool focused) {
+                if (dock_guard)
+                    dock_guard->set_live_text_row_render_paused(title, row, focused);
             };
             text_table_->setCellWidget(row, col + 2, edit);
         }

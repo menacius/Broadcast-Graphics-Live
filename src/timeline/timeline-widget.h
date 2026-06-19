@@ -148,6 +148,7 @@ private:
     bool   is_layer_selected(const std::string &layer_id) const;
     void   select_layer_from_mouse(const std::string &layer_id, Qt::KeyboardModifiers modifiers);
     void   begin_layer_strip_drag(const std::string &layer_id, DragMode mode, double start_time);
+    QRect  playhead_dirty_rect(int playhead_x) const;
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;

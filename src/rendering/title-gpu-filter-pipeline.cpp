@@ -241,6 +241,9 @@ TitleGpuEffectUsage title_gpu_effect_usage(const Title &title)
             case LayerEffectType::MotionBlur:
                 usage.motion_blur = true;
                 break;
+            case LayerEffectType::Bloom:
+            case LayerEffectType::Emboss:
+                break;
             }
         };
 

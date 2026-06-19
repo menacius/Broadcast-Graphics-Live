@@ -317,6 +317,7 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
     if (exposed.empty()) {
         title->current_cue_row = -1;
         title->pending_cue_row = -1;
+        title->cue_uncue_requested = false;
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.clear();
     } else {
@@ -353,11 +354,12 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
         title->cue_persistent_text_columns.assign(exposed.size(), false);
 
         if (is_active_cue || is_pending_cue) {
-            title->current_cue_row = -1;
             title->pending_cue_row = -1;
+            title->cue_uncue_requested = true;
             title->cue_persistence_transition = false;
             title->cue_persistent_text_columns.clear();
         } else if (can_persist_transition) {
+            title->cue_uncue_requested = false;
             for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
                 if (title->cue_text_persistence &&
                     previous_row >= 0 && previous_row < (int)title->live_text_rows.size() &&
@@ -368,8 +370,10 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
             title->pending_cue_row = row;
             title->cue_persistence_transition = true;
         } else if (needs_outro_before_cue) {
+            title->cue_uncue_requested = false;
             title->pending_cue_row = row;
         } else {
+            title->cue_uncue_requested = false;
             apply_live_text_row(title, row, exposed);
             title->current_cue_row = row;
             title->pending_cue_row = -1;

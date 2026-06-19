@@ -37,6 +37,8 @@ enum class LayerEffectType {
     InnerShadow = 9,
     Blur = 10,
     MotionBlur = 11,
+    Bloom = 12,
+    Emboss = 13,
 };
 
 enum class EffectBlendMode {

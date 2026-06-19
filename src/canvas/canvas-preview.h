@@ -27,6 +27,8 @@
 #include <QRectF>
 #include <QColor>
 #include <QPixmap>
+#include <QImage>
+#include <QHash>
 #include <QElapsedTimer>
 #include <memory>
 #include <string>
@@ -38,6 +40,7 @@ class QMouseEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QContextMenuEvent;
+class QTimer;
 class QResizeEvent;
 class QPaintEvent;
 class QDragEnterEvent;
@@ -89,10 +92,18 @@ public:
     void set_snap_to_spacing(bool enabled);
     void refresh_preview();
     void clear_rendered_frame();
+    QImage current_rendered_frame() const;
     void set_zoom_percent(int percent);
     int zoom_percent() const;
     void fit_canvas(bool up_to_100 = false);
+    bool fit_zoom_active() const { return fit_zoom_active_; }
     void set_checkerboard_pattern(int pattern);
+    enum class AdaptiveQualityMode { Auto = 0, Full, Percent75, Percent50, Percent37_5, Percent25 };
+    void set_adaptive_rendering_enabled(bool enabled);
+    bool adaptive_rendering_enabled() const { return adaptive_rendering_enabled_; }
+    void set_adaptive_quality_mode(AdaptiveQualityMode mode);
+    AdaptiveQualityMode adaptive_quality_mode() const { return adaptive_quality_mode_; }
+    QString adaptive_quality_label() const;
     void set_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
     void set_text_tool_active(LayerType type);
@@ -177,6 +188,8 @@ private:
     };
 
     void render_to_pixmap();
+    void begin_adaptive_interaction();
+    double adaptive_preview_scale() const;
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     std::shared_ptr<Layer> selected_layer() const;
     std::vector<std::shared_ptr<Layer>> selected_layers() const;
@@ -285,6 +298,18 @@ private:
     QPoint frame_pixmap_canvas_offset_;
     QSize frame_pixmap_canvas_size_;
     bool dirty_ = true;
+    QTimer *render_coalesce_timer_ = nullptr;
+    QTimer *adaptive_full_quality_timer_ = nullptr;
+    QElapsedTimer last_render_clock_;
+    int render_interval_ms_ = 16;
+    bool render_in_progress_ = false;
+    bool adaptive_rendering_enabled_ = true;
+    AdaptiveQualityMode adaptive_quality_mode_ = AdaptiveQualityMode::Auto;
+    bool adaptive_interaction_active_ = false;
+    bool force_live_full_quality_render_ = false;
+    double frame_pixmap_preview_scale_ = 1.0;
+    int last_full_quality_render_cost_ms_ = 0;
+    QHash<QString, QImage> editor_quality_cache_;
     bool safe_guides_visible_ = false;
     bool rulers_visible_ = false;
     bool guides_visible_ = true;

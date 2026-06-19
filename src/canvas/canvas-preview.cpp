@@ -1,6 +1,7 @@
 #include "title-editor-internal.h"
 #include "title-localization.h"
 #include "cache-manager.h"
+#include "title-source.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -24,6 +25,8 @@ constexpr const char *kEditorGuideCoordinatesVisibleKey = "guideCoordinatesVisib
 constexpr const char *kEditorCanvasBorderVisibleKey = "canvasBorderVisible";
 constexpr const char *kEditorVerticalGuidesKey = "verticalGuides";
 constexpr const char *kEditorHorizontalGuidesKey = "horizontalGuides";
+constexpr const char *kEditorAdaptiveRenderingKey = "adaptiveRendering";
+constexpr const char *kEditorAdaptiveQualityKey = "adaptiveRenderingQuality";
 
 QStringList guide_values_to_strings(const std::vector<double> &values)
 {
@@ -158,6 +161,46 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     setAcceptDrops(true);
     load_ruler_guide_settings();
 
+    // Coalesce expensive full-title renders. Mouse/tablet events may arrive far
+    // faster than the renderer can finish when a title contains many layers.
+    // Keeping at most one scheduled render prevents an ever-growing GUI event
+    // backlog and lets OBS keep servicing its own video thread.
+    render_coalesce_timer_ = new QTimer(this);
+    render_coalesce_timer_->setSingleShot(true);
+    render_coalesce_timer_->setTimerType(Qt::PreciseTimer);
+    connect(render_coalesce_timer_, &QTimer::timeout, this, [this]() {
+        if (dirty_ && isVisible())
+            update();
+    });
+    last_render_clock_.start();
+
+    QSettings adaptive_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    adaptive_settings.beginGroup(QStringLiteral("titleEditor"));
+    adaptive_rendering_enabled_ = adaptive_settings.value(
+        QString::fromUtf8(kEditorAdaptiveRenderingKey), true).toBool();
+    const int saved_quality = adaptive_settings.value(
+        QString::fromUtf8(kEditorAdaptiveQualityKey), 0).toInt();
+    adaptive_quality_mode_ = static_cast<AdaptiveQualityMode>(std::clamp(saved_quality, 0, 5));
+    adaptive_settings.endGroup();
+
+    adaptive_full_quality_timer_ = new QTimer(this);
+    adaptive_full_quality_timer_->setSingleShot(true);
+    adaptive_full_quality_timer_->setInterval(140);
+    connect(adaptive_full_quality_timer_, &QTimer::timeout, this, [this]() {
+        if (!adaptive_interaction_active_)
+            return;
+        adaptive_interaction_active_ = false;
+        // Auto refines to full quality after interaction. Fixed modes keep their
+        // selected raster scale, but still perform one clean post-interaction
+        // render so the editor-local cache is populated from the settled model.
+        if (frame_pixmap_preview_scale_ < 0.999) {
+            force_live_full_quality_render_ =
+                adaptive_quality_mode_ == AdaptiveQualityMode::Auto;
+            dirty_ = true;
+            update();
+        }
+    });
+
     inline_text_editor_ = new QTextEdit(this);
     inline_text_editor_->hide();
     inline_text_editor_->setAcceptRichText(true);
@@ -291,7 +334,12 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
 {
     commit_text_edit(true);
     title_ = t;
+    editor_quality_cache_.clear();
     dirty_ = true;
+    adaptive_interaction_active_ = false;
+    force_live_full_quality_render_ = false;
+    frame_pixmap_preview_scale_ = 1.0;
+    last_full_quality_render_cost_ms_ = 0;
     if (!preserve_view) {
         pan_offset_ = QPointF(0, 0);
         if (title_) fit_canvas(fit_zoom_up_to_100_);
@@ -440,6 +488,9 @@ void CanvasPreview::clear_user_guides()
 
 void CanvasPreview::refresh_preview()
 {
+    // Model edits invalidate only the editor-local reduced-quality cache. The
+    // full-quality OBS/prerender cache retains its own independent lifecycle.
+    editor_quality_cache_.clear();
     dirty_ = true;
     position_text_editor();
     if (!inline_text_layer_id_.empty())
@@ -458,10 +509,112 @@ void CanvasPreview::clear_rendered_frame()
     frame_pixmap_ = QPixmap();
     frame_pixmap_canvas_offset_ = QPoint();
     frame_pixmap_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
+    frame_pixmap_preview_scale_ = 1.0;
     dirty_ = false;
     update();
 }
 
+QImage CanvasPreview::current_rendered_frame() const
+{
+    if (frame_pixmap_.isNull())
+        return QImage();
+
+    const QSize canvas_size = frame_pixmap_canvas_size_.isValid()
+        ? frame_pixmap_canvas_size_
+        : frame_pixmap_.size();
+    QImage image(canvas_size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    const QSize logical_payload_size(
+        std::max(1, (int)std::round(frame_pixmap_.width() / std::max(0.125, frame_pixmap_preview_scale_))),
+        std::max(1, (int)std::round(frame_pixmap_.height() / std::max(0.125, frame_pixmap_preview_scale_))));
+    painter.drawPixmap(QRect(frame_pixmap_canvas_offset_, logical_payload_size), frame_pixmap_);
+    return image;
+}
+
+
+void CanvasPreview::set_adaptive_rendering_enabled(bool enabled)
+{
+    if (adaptive_rendering_enabled_ == enabled)
+        return;
+    adaptive_rendering_enabled_ = enabled;
+    adaptive_interaction_active_ = false;
+    editor_quality_cache_.clear();
+    if (adaptive_full_quality_timer_)
+        adaptive_full_quality_timer_->stop();
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QStringLiteral("titleEditor"));
+    settings.setValue(QString::fromUtf8(kEditorAdaptiveRenderingKey), enabled);
+    settings.endGroup();
+    dirty_ = true;
+    update();
+}
+
+void CanvasPreview::set_adaptive_quality_mode(AdaptiveQualityMode mode)
+{
+    if (adaptive_quality_mode_ == mode)
+        return;
+    adaptive_quality_mode_ = mode;
+    adaptive_interaction_active_ = false;
+    force_live_full_quality_render_ = false;
+    if (adaptive_full_quality_timer_)
+        adaptive_full_quality_timer_->stop();
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QStringLiteral("titleEditor"));
+    settings.setValue(QString::fromUtf8(kEditorAdaptiveQualityKey), static_cast<int>(mode));
+    settings.endGroup();
+    // Changing quality invalidates the editor-local reduced-quality frames. It
+    // does not invalidate or overwrite the full-quality OBS/prerender cache.
+    editor_quality_cache_.clear();
+    clear_rendered_frame();
+    dirty_ = true;
+    update();
+}
+
+QString CanvasPreview::adaptive_quality_label() const
+{
+    switch (adaptive_quality_mode_) {
+    case AdaptiveQualityMode::Full: return QStringLiteral("Full");
+    case AdaptiveQualityMode::Percent75: return QStringLiteral("75%");
+    case AdaptiveQualityMode::Percent50: return QStringLiteral("50%");
+    case AdaptiveQualityMode::Percent37_5: return QStringLiteral("37,5%");
+    case AdaptiveQualityMode::Percent25: return QStringLiteral("25%");
+    case AdaptiveQualityMode::Auto:
+    default: return QStringLiteral("Auto");
+    }
+}
+
+void CanvasPreview::begin_adaptive_interaction()
+{
+    if (!adaptive_rendering_enabled_)
+        return;
+    adaptive_interaction_active_ = true;
+    if (adaptive_full_quality_timer_)
+        adaptive_full_quality_timer_->start();
+}
+
+double CanvasPreview::adaptive_preview_scale() const
+{
+    if (!adaptive_rendering_enabled_)
+        return 1.0;
+    switch (adaptive_quality_mode_) {
+    case AdaptiveQualityMode::Full: return 1.0;
+    case AdaptiveQualityMode::Percent75: return 0.75;
+    case AdaptiveQualityMode::Percent50: return 0.5;
+    case AdaptiveQualityMode::Percent37_5: return 0.375;
+    case AdaptiveQualityMode::Percent25: return 0.25;
+    case AdaptiveQualityMode::Auto:
+    default: break;
+    }
+    if (!adaptive_interaction_active_)
+        return 1.0;
+    // Stay at full quality for titles already capable of interactive rendering.
+    if (last_full_quality_render_cost_ms_ <= 18) return 1.0;
+    if (last_full_quality_render_cost_ms_ <= 28) return 0.75;
+    if (last_full_quality_render_cost_ms_ <= 45) return 0.5;
+    if (last_full_quality_render_cost_ms_ <= 75) return 0.375;
+    return 0.25;
+}
 
 void CanvasPreview::set_snap_enabled(bool enabled)
 {
@@ -1607,6 +1760,7 @@ bool CanvasPreview::nudge_selected_layers(double dx, double dy)
 
     if (!changed) return false;
 
+    begin_adaptive_interaction();
     dirty_ = true;
     update();
     emit layer_geometry_changed();
@@ -2223,16 +2377,25 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
     }
 
+    begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
     update();
 }
 void CanvasPreview::render_to_pixmap()
 {
+    if (render_in_progress_)
+        return;
+    render_in_progress_ = true;
+    QElapsedTimer render_cost;
+    render_cost.start();
+
     if (!title_) {
         frame_pixmap_ = QPixmap();
         frame_pixmap_canvas_offset_ = QPoint();
         frame_pixmap_canvas_size_ = QSize();
+        frame_pixmap_preview_scale_ = 1.0;
+        render_in_progress_ = false;
         return;
     }
 
@@ -2244,7 +2407,9 @@ void CanvasPreview::render_to_pixmap()
         frame_pixmap_ = QPixmap();
         frame_pixmap_canvas_offset_ = QPoint();
         frame_pixmap_canvas_size_ = QSize(title_->width, title_->height);
+        frame_pixmap_preview_scale_ = 1.0;
         dirty_ = false;
+        render_in_progress_ = false;
         update();
         return;
     }
@@ -2271,10 +2436,42 @@ void CanvasPreview::render_to_pixmap()
      * so their editor preview must always use the live uncached renderer.
      * Sending them through requestFrame() returns no cached image and leaves
      * the clock/ticker content invisible even though the canvas keeps ticking. */
-    if (dynamic_text_title || !inline_text_layer_id_.empty() || live_corner_radius_drag || live_geometry_drag)
+    const bool model_is_interactive = !inline_text_layer_id_.empty() || live_corner_radius_drag ||
+        live_geometry_drag || adaptive_interaction_active_ || force_live_full_quality_render_;
+    const double preview_scale = adaptive_preview_scale();
+    if (adaptive_rendering_enabled_ && preview_scale < 0.999) {
+        // Editor-only reduced-resolution rasterization. Fixed quality modes also
+        // use a private editor cache, deliberately separate from CacheManager,
+        // so reduced frames can never leak into OBS output or global prerender.
+        const bool fixed_quality = adaptive_quality_mode_ != AdaptiveQualityMode::Auto;
+        // Never read or populate the settled-frame cache while the model is
+        // changing. A fixed-quality mode must use the same live interactive path
+        // as Auto; otherwise repeated nudges can display a stale frame and pay
+        // cache/hash overhead on every key event.
+        const bool allow_editor_cache = fixed_quality && !adaptive_interaction_active_;
+        const QString editor_cache_key = QStringLiteral("%1:%2:%3")
+            .arg(QString::fromStdString(title_->id))
+            .arg(qRound64(playhead_ * 1000.0))
+            .arg(qRound(preview_scale * 1000.0));
+        if (allow_editor_cache)
+            image = editor_quality_cache_.value(editor_cache_key);
+        if (image.isNull()) {
+            // Reduced editor previews use a draft render while interacting.
+            // Expensive temporal/blur effects are temporarily bypassed because
+            // they dominate render time but do not improve transform feedback.
+            image = render_title_to_image_scaled(*title_, playhead_, preview_scale,
+                                                 adaptive_interaction_active_);
+            if (allow_editor_cache && !image.isNull()) {
+                if (editor_quality_cache_.size() >= 240)
+                    editor_quality_cache_.clear();
+                editor_quality_cache_.insert(editor_cache_key, image);
+            }
+        }
+    } else if (dynamic_text_title || model_is_interactive) {
         image = CacheManager::instance().renderUncachedFrame(title_, playhead_);
-    else
+    } else {
         image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);
+    }
     if (!image.isNull()) {
         bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
         const int crop_x = image.text(QStringLiteral("obs_gsp_canvas_x")).toInt(&ok_x);
@@ -2284,11 +2481,28 @@ void CanvasPreview::render_to_pixmap()
         const bool sparse = ok_x && ok_y && ok_w && ok_h && crop_x >= 0 && crop_y >= 0 &&
             canvas_w > 0 && canvas_h > 0 &&
             crop_x + image.width() <= canvas_w && crop_y + image.height() <= canvas_h;
+        bool ok_preview_scale = false;
+        const double preview_scale = image.text(QStringLiteral("obs_gsp_preview_scale")).toDouble(&ok_preview_scale);
+        frame_pixmap_preview_scale_ = ok_preview_scale ? std::clamp(preview_scale, 0.125, 1.0) : 1.0;
         frame_pixmap_ = QPixmap::fromImage(image);
         frame_pixmap_canvas_offset_ = sparse ? QPoint(crop_x, crop_y) : QPoint();
-        frame_pixmap_canvas_size_ = sparse ? QSize(canvas_w, canvas_h) : image.size();
+        frame_pixmap_canvas_size_ = sparse ? QSize(canvas_w, canvas_h) :
+            (frame_pixmap_preview_scale_ < 0.999 && title_ ? QSize(title_->width, title_->height) : image.size());
     }
     dirty_ = false;
+    force_live_full_quality_render_ = false;
+    const int cost_ms = std::max(1, (int)render_cost.elapsed());
+    if (frame_pixmap_preview_scale_ >= 0.999)
+        last_full_quality_render_cost_ms_ = cost_ms;
+    // Adapt the presentation cadence to actual render cost. Fast titles remain
+    // 60 fps; complex titles are capped so input and OBS never starve.
+    // During direct manipulation prioritize input latency over reproducing each
+    // intermediate frame. Coalescing keeps at most one pending render, while a
+    // fixed 60 Hz presentation target avoids the sluggish cost-derived cadence.
+    render_interval_ms_ = adaptive_interaction_active_ ? 16
+                                                       : std::clamp(cost_ms + 2, 16, 50);
+    last_render_clock_.restart();
+    render_in_progress_ = false;
 }
 
 
@@ -2568,7 +2782,14 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     if (!title_) return;
 
     if (!drawing_shape_ && title_has_dynamic_text_layer(title_)) dirty_ = true;
-    if (dirty_) render_to_pixmap();
+    if (dirty_) {
+        const qint64 elapsed = last_render_clock_.isValid() ? last_render_clock_.elapsed() : render_interval_ms_;
+        if (!render_in_progress_ && (frame_pixmap_.isNull() || elapsed >= render_interval_ms_)) {
+            render_to_pixmap();
+        } else if (render_coalesce_timer_ && !render_coalesce_timer_->isActive()) {
+            render_coalesce_timer_->start(std::max(1, render_interval_ms_ - (int)elapsed));
+        }
+    }
 
     /* A null frame means that the title is visually empty, not that the canvas
      * itself should disappear. Draw the checkerboard, rulers, guides and other
@@ -2587,8 +2808,12 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     if (!frame_pixmap_.isNull()) {
         const int pix_x = ox + static_cast<int>(std::round(frame_pixmap_canvas_offset_.x() * scale));
         const int pix_y = oy + static_cast<int>(std::round(frame_pixmap_canvas_offset_.y() * scale));
-        const int pix_w = static_cast<int>(std::round(frame_pixmap_.width() * scale));
-        const int pix_h = static_cast<int>(std::round(frame_pixmap_.height() * scale));
+        const double logical_pix_w = frame_pixmap_preview_scale_ > 0.0
+            ? frame_pixmap_.width() / frame_pixmap_preview_scale_ : frame_pixmap_.width();
+        const double logical_pix_h = frame_pixmap_preview_scale_ > 0.0
+            ? frame_pixmap_.height() / frame_pixmap_preview_scale_ : frame_pixmap_.height();
+        const int pix_w = static_cast<int>(std::round(logical_pix_w * scale));
+        const int pix_h = static_cast<int>(std::round(logical_pix_h * scale));
         p.drawPixmap(pix_x, pix_y, pix_w, pix_h, frame_pixmap_);
     }
 

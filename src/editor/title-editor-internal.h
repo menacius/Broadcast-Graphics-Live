@@ -1931,21 +1931,24 @@ static double title_manual_screenshot_time(const Title &title)
     return std::clamp(title.duration * 0.5, 0.0, title.duration);
 }
 
-static std::string title_manual_screenshot_png_base64(const Title &title)
+static std::string title_screenshot_png_base64(const QImage &screenshot)
 {
-    const QImage screenshot = CacheManager::instance().requestFrame(std::make_shared<Title>(title),
-                                                                    title_manual_screenshot_time(title));
     if (screenshot.isNull())
         return {};
-
     QByteArray png;
     QBuffer buffer(&png);
     buffer.open(QIODevice::WriteOnly);
     if (!screenshot.save(&buffer, "PNG"))
         return {};
-
     const QByteArray encoded = png.toBase64();
     return std::string(encoded.constData(), (size_t)encoded.size());
+}
+
+static std::string title_manual_screenshot_png_base64(const Title &title)
+{
+    const QImage screenshot = CacheManager::instance().requestFrame(std::make_shared<Title>(title),
+                                                                    title_manual_screenshot_time(title));
+    return title_screenshot_png_base64(screenshot);
 }
 
 
@@ -3405,6 +3408,8 @@ static QString effect_type_name(LayerEffectType type)
     case LayerEffectType::InnerShadow: return obsgs_tr("OBSTitles.InnerShadow");
     case LayerEffectType::Blur: return obsgs_tr("OBSTitles.Blur");
     case LayerEffectType::MotionBlur: return obsgs_tr("OBSTitles.MotionBlur");
+    case LayerEffectType::Bloom: return obsgs_tr("OBSTitles.Bloom");
+    case LayerEffectType::Emboss: return obsgs_tr("OBSTitles.Emboss");
     }
     return obsgs_tr("OBSTitles.Effect");
 }

@@ -3155,6 +3155,38 @@ FrameCacheState CacheManager::liveCueRangeState(const std::shared_ptr<Title> &cu
     return FrameCacheState::NotCached;
 }
 
+bool CacheManager::liveCueRowRenderPausedLocked(const QString &title_id, const QString &row_id) const
+{
+    if (title_id.isEmpty() || row_id.isEmpty())
+        return false;
+    return live_cue_paused_row_ids_.value(title_id).contains(row_id);
+}
+
+bool CacheManager::liveCueStateRenderPausedLocked(const QString &state_key) const
+{
+    if (state_key.isEmpty())
+        return false;
+
+    QString title_id = live_cue_title_ids_.value(state_key);
+    if (title_id.isEmpty()) {
+        const int marker = state_key.indexOf(QStringLiteral(":live-"));
+        if (marker > 0)
+            title_id = state_key.left(marker);
+    }
+    const QSet<QString> paused_rows = live_cue_paused_row_ids_.value(title_id);
+    if (paused_rows.isEmpty())
+        return false;
+
+    const QString destination_id = live_cue_row_ids_.value(state_key);
+    for (const QString &row_id : paused_rows) {
+        if (destination_id == row_id ||
+            state_key.contains(QStringLiteral(":%1:").arg(row_id)) ||
+            state_key.endsWith(QStringLiteral(":%1").arg(row_id)))
+            return true;
+    }
+    return false;
+}
+
 void CacheManager::queueLiveCueVariantSet(
     const std::shared_ptr<Title> &title, int row, const QString &state_key,
     const QVector<std::shared_ptr<Title>> &variants, bool urgent,
@@ -3165,8 +3197,14 @@ void CacheManager::queueLiveCueVariantSet(
         return;
 
     const QString title_id = QString::fromStdString(title->id);
+    const QString row_id = liveCueRowIdentity(title, row);
+    if (liveCueRowRenderPausedLocked(title_id, row_id) || liveCueStateRenderPausedLocked(state_key)) {
+        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped paused live cue state title=%1 row=%2 stateKey=%3")
+                                    .arg(title_id).arg(row).arg(state_key));
+        return;
+    }
     live_cue_rows_[state_key] = row;
-    live_cue_row_ids_[state_key] = liveCueRowIdentity(title, row);
+    live_cue_row_ids_[state_key] = row_id;
     live_cue_title_ids_[state_key] = title_id;
     if (state_key.contains(QStringLiteral(":live-transition:")))
         live_cue_transition_state_keys_.insert(state_key);
@@ -3354,6 +3392,11 @@ void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
 
     const QString title_id = QString::fromStdString(title->id);
     const QString row_id = liveCueRowIdentity(title, row);
+    if (liveCueRowRenderPausedLocked(title_id, row_id)) {
+        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped manual live cue rebuild for paused row title=%1 row=%2")
+                                    .arg(title_id).arg(row));
+        return;
+    }
     QVector<QString> rebuild_states;
     /* A row's manual refresh must rebuild only its steady state. Transition
      * pairs belong to title-level prerendering and must not drive the status
@@ -3752,6 +3795,7 @@ void CacheManager::invalidateLiveCues(const std::shared_ptr<Title> &title)
     live_cue_structure_row_ids_.remove(title_id);
     live_cue_row_fingerprints_.remove(title_id);
     live_cue_transition_signatures_.remove(title_id);
+    live_cue_paused_row_ids_.remove(title_id);
     ++live_cue_stats_.invalidations;
     pruneUnreferencedLiveCueRam(title_id);
     emit diagnosticsChanged();
@@ -3912,10 +3956,101 @@ void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
     emit diagnosticsChanged();
 }
 
+void CacheManager::refreshLiveCueStructureAsync(const std::shared_ptr<Title> &title)
+{
+    if (!title)
+        return;
+    auto snapshot = immutable_title_snapshot(title);
+    if (!snapshot)
+        return;
+    const QString title_id = QString::fromStdString(snapshot->id);
+    {
+        std::lock_guard<std::mutex> lock(live_cue_refresh_mutex_);
+        pending_live_cue_structure_refreshes_[title_id] = std::move(snapshot);
+    }
+    wakeWorker();
+}
+
+bool CacheManager::takePendingLiveCueStructureRefresh(std::shared_ptr<Title> &title)
+{
+    std::lock_guard<std::mutex> lock(live_cue_refresh_mutex_);
+    if (pending_live_cue_structure_refreshes_.isEmpty())
+        return false;
+    auto it = pending_live_cue_structure_refreshes_.begin();
+    title = it.value();
+    pending_live_cue_structure_refreshes_.erase(it);
+    return title != nullptr;
+}
+
+void CacheManager::setLiveCueRowRenderPaused(const std::shared_ptr<Title> &title, int row, bool paused)
+{
+    if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
+        return;
+
+    const QString title_id = QString::fromStdString(title->id);
+    const QString row_id = liveCueRowIdentity(title, row);
+    if (row_id.isEmpty())
+        return;
+
+    QVector<QString> affected_states;
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+        QSet<QString> &paused_rows = live_cue_paused_row_ids_[title_id];
+        const bool changed = paused ? !paused_rows.contains(row_id)
+                                    : paused_rows.contains(row_id);
+        if (!changed)
+            return;
+
+        if (paused)
+            paused_rows.insert(row_id);
+        else {
+            paused_rows.remove(row_id);
+            if (paused_rows.isEmpty())
+                live_cue_paused_row_ids_.remove(title_id);
+        }
+
+        for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
+            if (it.value() != title_id)
+                continue;
+            if (liveCueStateRenderPausedLocked(it.key()))
+                affected_states.push_back(it.key());
+        }
+
+        if (paused) {
+            for (const QString &state_key : affected_states) {
+                for (const CacheFrameKey &key : live_cue_required_keys_.value(state_key))
+                    queue_.cancelKey(key);
+                const FrameCacheState state = liveCueStoredState(state_key);
+                live_cue_states_[state_key] = state;
+                live_cue_progress_percent_[state_key] = liveCueStoredProgress(state_key);
+                live_cue_last_emit_states_.remove(state_key);
+                live_cue_last_emit_buckets_.remove(state_key);
+            }
+        }
+    }
+
+    OGS_LOG_DEBUG("LiveCue", QStringLiteral("%1 live cue row render title=%2 row=%3 rowId=%4 states=%5")
+                                .arg(paused ? QStringLiteral("Paused") : QStringLiteral("Resumed"))
+                                .arg(title_id).arg(row).arg(row_id)
+                                .arg(static_cast<int>(affected_states.size())));
+    emit liveCueStateChanged(title_id, row);
+    emit diagnosticsChanged();
+
+    if (!paused) {
+        refreshLiveCueStructure(title);
+        wakeWorker();
+    }
+}
+
 void CacheManager::cancelTitleWork(const QString &title_id)
 {
     if (title_id.isEmpty())
         return;
+    {
+        std::lock_guard<std::mutex> refresh_lock(live_cue_refresh_mutex_);
+        pending_live_cue_structure_refreshes_.remove(title_id);
+    }
     {
         std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
         bumpTitleGeneration(title_id);
@@ -3932,6 +4067,10 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (title_id.isEmpty())
         return;
+    {
+        std::lock_guard<std::mutex> refresh_lock(live_cue_refresh_mutex_);
+        pending_live_cue_structure_refreshes_.remove(title_id);
+    }
     bumpTitleGeneration(title_id);
     queue_.cancelTitle(title_id);
 
@@ -3961,6 +4100,7 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
     live_cue_structure_row_ids_.remove(title_id);
     live_cue_row_fingerprints_.remove(title_id);
     live_cue_transition_signatures_.remove(title_id);
+    live_cue_paused_row_ids_.remove(title_id);
     OGS_LOG_INFO("Cache", QStringLiteral("Removed title cache title=%1 ramFrames=%2 states=%3 disk=%4")
                             .arg(title_id).arg(static_cast<int>(ram_keys.size()))
                             .arg(static_cast<int>(state_keys.size())).arg(remove_disk));
@@ -4034,6 +4174,11 @@ void CacheManager::workerLoop()
                     return true;
                 if (!cache_enabled_.load())
                     return false;
+                {
+                    std::lock_guard<std::mutex> refresh_lock(live_cue_refresh_mutex_);
+                    if (!pending_live_cue_structure_refreshes_.isEmpty())
+                        return true;
+                }
                 const bool live_only = paused_.load() || interactive_bypass_.load();
                 if (live_only)
                     return queue_.hasAvailableJob(true);
@@ -4054,6 +4199,12 @@ void CacheManager::workerLoop()
             break;
         if (!cache_enabled_.load())
             continue;
+
+        std::shared_ptr<Title> refresh_title;
+        if (takePendingLiveCueStructureRefresh(refresh_title)) {
+            refreshLiveCueStructure(refresh_title);
+            continue;
+        }
 
         RenderQueueManager::Job job;
         const bool urgent_only = paused_.load() || interactive_bypass_.load();
@@ -4081,11 +4232,21 @@ void CacheManager::workerLoop()
         if (!have_job)
             continue;
 
+        // Background Live Text Cue population is deliberately paced below all
+        // editor/timeline work. Urgent realtime hydration still bypasses this
+        // delay through the job flags, but speculative prerender must never
+        // burst continuously enough to steal scheduling time from OBS.
+        if (job.live_cue && !job.urgent && !job.realtime)
+            std::this_thread::sleep_for(std::chrono::milliseconds(6));
+
         renderJob(job);
         queue_.complete(job);
-        /* A tiny cooperative gap keeps long full-timeline prerenders from
-         * monopolising a CPU core while OBS is composing realtime frames. */
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        // Cooperative duty-cycle limiting. Live-cue frames include rendering,
+        // alpha conversion, compression and disk I/O, so leave a larger gap
+        // between speculative jobs. Normal cache work keeps a small yield.
+        const int cooldown_ms = (job.live_cue && !job.urgent && !job.realtime) ? 12 : 2;
+        std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_ms));
     }
 }
 
@@ -4103,6 +4264,12 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
             OGS_LOG_DEBUG("LiveCue", QStringLiteral("Discarded obsolete background job title=%1 row=%2 stateKey=%3 frameKey=%4")
                                         .arg(job.key.title_id).arg(job.cue_row)
                                         .arg(live_state_key, job.key.toString()));
+            return;
+        }
+        if (liveCueStateRenderPausedLocked(rebound_state)) {
+            OGS_LOG_DEBUG("LiveCue", QStringLiteral("Paused background job title=%1 row=%2 stateKey=%3 frameKey=%4")
+                                        .arg(job.key.title_id).arg(job.cue_row)
+                                        .arg(rebound_state, job.key.toString()));
             return;
         }
         live_state_key = rebound_state;

@@ -62,10 +62,26 @@ void TimelineWidget::set_selected_layers(const std::vector<std::string> &layer_i
 
 void TimelineWidget::set_playhead(double t)
 {
+    const int old_x = time_to_x(playhead_);
     playhead_ = snap_time(t);
+    bool scrolled = false;
     if (title_)
-        keep_playhead_visible();
-    update();
+        scrolled = keep_playhead_visible();
+
+    if (scrolled) {
+        update();
+        return;
+    }
+
+    const int new_x = time_to_x(playhead_);
+    const QRect old_rect = playhead_dirty_rect(old_x);
+    const QRect new_rect = playhead_dirty_rect(new_x);
+    if (old_rect.intersects(new_rect) || old_rect.adjusted(-4, 0, 4, 0).intersects(new_rect))
+        update(old_rect.united(new_rect));
+    else {
+        update(old_rect);
+        update(new_rect);
+    }
 }
 
 void TimelineWidget::set_vertical_scroll(int scroll_y)
@@ -162,6 +178,16 @@ double TimelineWidget::x_to_time(int x) const
 int TimelineWidget::time_to_x(double t) const
 {
     return (int)std::round(t * pixels_per_sec_) - scroll_x_;
+}
+
+QRect TimelineWidget::playhead_dirty_rect(int playhead_x) const
+{
+    QRect line_rect(playhead_x - 10, 0, 20, height());
+    QRect timecode_rect(playhead_x + 8, 2, 96, 18);
+    if (timecode_rect.right() > width())
+        timecode_rect.moveRight(playhead_x - 8);
+    return line_rect.united(timecode_rect).adjusted(-2, 0, 2, 0)
+        .intersected(rect());
 }
 
 double TimelineWidget::snap_time(double t) const
@@ -557,6 +583,41 @@ void TimelineWidget::begin_layer_strip_drag(const std::string &layer_id, DragMod
     }
 }
 
+struct VisibleTimelineRow {
+    int row = 0;
+    TimelineRow entry;
+};
+
+static std::vector<VisibleTimelineRow> visible_timeline_rows(const std::shared_ptr<Title> &title,
+                                                             int first_row, int last_row)
+{
+    std::vector<VisibleTimelineRow> rows;
+    if (!title || last_row < first_row) return rows;
+
+    int row = 0;
+    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
+        auto layer = *it;
+        if (row >= first_row && row <= last_row)
+            rows.push_back({row, {layer, TimelinePropertyRef{}, false}});
+        ++row;
+        if (row > last_row) break;
+
+        if (!layer || !layer->properties_expanded) continue;
+        std::set<std::string> seen;
+        for (auto prop : timeline_properties(*layer)) {
+            if (!prop.is_animated()) continue;
+            QString label = property_label(prop.name());
+            std::string key = label.toStdString();
+            if (!seen.insert(key).second) continue;
+            if (row >= first_row && row <= last_row)
+                rows.push_back({row, {layer, prop, true}});
+            ++row;
+            if (row > last_row) break;
+        }
+        if (row > last_row) break;
+    }
+    return rows;
+}
 
 static QString timeline_blend_mode_short(EffectBlendMode mode)
 {
@@ -590,12 +651,16 @@ static QString timeline_layer_switches_text(const Title &title, const Layer &lay
     return tags.join(QStringLiteral("  ·  "));
 }
 
-void TimelineWidget::paintEvent(QPaintEvent *)
+void TimelineWidget::paintEvent(QPaintEvent *ev)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
 
     int W = width(), H = height();
+    const QRect dirty = ev ? ev->rect().intersected(rect()) : rect();
+    if (dirty.isEmpty()) return;
+    p.setClipRect(dirty);
+
     int rh = ruler_height(), rowh = row_height();
     const QPalette pal = palette();
     auto with_alpha = [](QColor color, int alpha) {
@@ -625,43 +690,47 @@ void TimelineWidget::paintEvent(QPaintEvent *)
     const QColor handle_color = with_alpha(text, 150);
 
     /* Background */
-    p.fillRect(0, 0, W, H, window);
+    p.fillRect(dirty, window);
 
     /* Compact ruler/header.  Keep this height matched with LayerStack's
      * column header so the first layer row starts at the same Y position
      * in both panes. */
-    p.fillRect(0, 0, W, rh, ruler_bg);
-    p.setPen(border);
-    p.drawLine(0, rh - 1, W, rh - 1);
+    if (dirty.top() < rh) {
+        p.fillRect(QRect(0, 0, W, rh).intersected(dirty), ruler_bg);
+        p.setPen(border);
+        p.drawLine(0, rh - 1, W, rh - 1);
+    }
 
     double dur = title_ ? title_->duration : 10.0;
     double fps = obs_frame_rate();
     double frame_step = obs_frame_duration();
-    int first_frame = std::max(0, (int)std::floor(scroll_x_ / pixels_per_sec_ / frame_step) - 1);
-    int last_frame = (int)std::ceil((scroll_x_ + W) / pixels_per_sec_ / frame_step) + 1;
+    int first_frame = std::max(0, (int)std::floor((scroll_x_ + dirty.left()) / pixels_per_sec_ / frame_step) - 1);
+    int last_frame = (int)std::ceil((scroll_x_ + dirty.right()) / pixels_per_sec_ / frame_step) + 1;
     int label_every = std::max(1, (int)std::ceil(55.0 / (pixels_per_sec_ * frame_step)));
 
-    for (int frame = first_frame; frame <= last_frame; ++frame) {
-        double t = frame * frame_step;
-        if (t > dur + frame_step) break;
-        int x = time_to_x(t);
-        if (x < 0 || x > W) continue;
-        bool is_second = (frame % std::max(1, (int)std::round(fps)) == 0);
-        bool label = (frame % label_every == 0) || is_second;
-        p.setPen(is_second ? tick_major : tick_minor);
-        p.drawLine(x, rh - (is_second ? 9 : label ? 6 : 3), x, rh);
-        if (label) {
-            p.setPen(label_text);
-            int seconds = frame / std::max(1, (int)std::round(fps));
-            int frame_in_second = frame % std::max(1, (int)std::round(fps));
-            QString text = is_second
-                ? QString("%1s").arg(seconds)
-                : QString("+%1f").arg(frame_in_second, 2, 10, QChar('0'));
-            p.drawText(x + 2, rh - 2, text);
+    if (dirty.top() < rh) {
+        for (int frame = first_frame; frame <= last_frame; ++frame) {
+            double t = frame * frame_step;
+            if (t > dur + frame_step) break;
+            int x = time_to_x(t);
+            if (x < dirty.left() - 64 || x > dirty.right() + 64) continue;
+            bool is_second = (frame % std::max(1, (int)std::round(fps)) == 0);
+            bool label = (frame % label_every == 0) || is_second;
+            p.setPen(is_second ? tick_major : tick_minor);
+            p.drawLine(x, rh - (is_second ? 9 : label ? 6 : 3), x, rh);
+            if (label) {
+                p.setPen(label_text);
+                int seconds = frame / std::max(1, (int)std::round(fps));
+                int frame_in_second = frame % std::max(1, (int)std::round(fps));
+                QString text = is_second
+                    ? QString("%1s").arg(seconds)
+                    : QString("+%1f").arg(frame_in_second, 2, 10, QChar('0'));
+                p.drawText(x + 2, rh - 2, text);
+            }
         }
     }
 
-    if (title_) {
+    if (title_ && dirty.top() < rh) {
         const QString title_id = QString::fromStdString(title_->id);
         const int cache_y = rh - 14;
         const int cache_h = 5;
@@ -703,7 +772,7 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         p.drawLine(0, cache_y + cache_h, W, cache_y + cache_h);
     }
 
-    if (title_) {
+    if (title_ && dirty.intersects(QRect(0, 0, W, H))) {
         if (title_->playback_mode == 1) {
             int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, dur));
             int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, dur));
@@ -735,13 +804,15 @@ void TimelineWidget::paintEvent(QPaintEvent *)
     /* Layer/property rows.  This uses the same row model as LayerStack so
      * keyframed property rows stay vertically aligned with the layer list.
      */
-    auto rows = timeline_rows(title_);
-    for (int row = 0; row < (int)rows.size(); ++row) {
-        auto &entry = rows[row];
+    const int first_dirty_row = std::max(0, (dirty.top() - rh + scroll_y_) / rowh);
+    const int last_dirty_row = (dirty.bottom() - rh + scroll_y_) / rowh;
+    const auto rows = visible_timeline_rows(title_, first_dirty_row, last_dirty_row);
+    for (const auto &visible_row : rows) {
+        const int row = visible_row.row;
+        const auto &entry = visible_row.entry;
         auto &layer = entry.layer;
         int y = rh + row * rowh - scroll_y_;
-        if (y > H) break;
-        if (y + rowh < rh) continue;
+        if (!dirty.intersects(QRect(0, y, W, rowh))) continue;
         bool sel = is_layer_selected(layer->id);
 
         p.fillRect(0, y, W, rowh,
@@ -795,7 +866,7 @@ void TimelineWidget::paintEvent(QPaintEvent *)
         auto draw_kf = [&](const TimelinePropertyRef &prop) {
             for (int i = 0; i < (int)prop.keyframe_count(); ++i) {
                 int kx = time_to_x(layer->in_time + prop.keyframe_time((size_t)i));
-                if (kx < 0 || kx > W) continue;
+                if (kx < dirty.left() - 10 || kx > dirty.right() + 10) continue;
                 int ky = y + rowh / 2;
                 const EasingType easing = prop.keyframe_easing((size_t)i);
                 QColor kf_fill = keyframe_color(easing);

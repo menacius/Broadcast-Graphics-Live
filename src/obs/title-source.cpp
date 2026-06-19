@@ -1423,83 +1423,49 @@ static uint32_t eval_effect_stroke_color(const LayerEffect &effect, double t)
            (uint32_t)eval_channel(effect.stroke_color_b, effect.effect_stroke_color & 0xFF, t);
 }
 
-static bool eval_outline_enabled(const Layer &layer, double t)
+static bool eval_outline_enabled(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return true;
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return effect && effect->effect_fill_type != 0 && eval_effect_enabled(*effect, t);
+    return layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f;
 }
 
-static uint32_t eval_outline_color(const Layer &layer, double t)
+static uint32_t eval_outline_color(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return layer.stroke_color;
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return effect ? eval_effect_color(*effect, t) : 0x00000000;
+    return eval_outline_enabled(layer, 0.0) ? layer.stroke_color : 0x00000000;
 }
 
-static double eval_outline_width(const Layer &layer, double t)
+static double eval_outline_width(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return std::max(0.0f, layer.stroke_width);
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return effect && eval_outline_enabled(layer, t)
-               ? std::max(0.0, effect->size_prop.is_animated() ? effect->size_prop.evaluate(t) : (double)effect->effect_size)
-               : 0.0;
+    return eval_outline_enabled(layer, 0.0) ? std::max(0.0f, layer.stroke_width) : 0.0;
 }
 
-static double eval_outline_opacity(const Layer &layer, double t)
+static double eval_outline_opacity(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return std::clamp((double)layer.outline_opacity, 0.0, 1.0);
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return effect ? std::clamp(effect->opacity_prop.is_animated() ? effect->opacity_prop.evaluate(t) : (double)effect->effect_opacity, 0.0, 1.0) : 1.0;
+    return eval_outline_enabled(layer, 0.0) ? std::clamp((double)layer.outline_opacity, 0.0, 1.0) : 1.0;
 }
 
 static bool eval_outline_on_front(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return layer.outline_on_front;
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return effect ? effect->effect_on_front : true;
+    return layer.outline_on_front;
 }
 
 static int eval_outline_alignment(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return std::clamp(layer.outline_alignment, 0, 2);
-    return 0;
+    return std::clamp(layer.outline_alignment, 0, 2);
 }
 
 static bool eval_outline_antialias(const Layer &layer, double)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return layer.outline_antialias;
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return effect ? effect->effect_antialias : true;
+    return layer.outline_antialias;
 }
 
 static cairo_antialias_t outline_cairo_antialias(const Layer &layer)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
-        return layer.outline_antialias ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE;
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    return (!effect || effect->effect_antialias) ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE;
+    return layer.outline_antialias ? CAIRO_ANTIALIAS_DEFAULT : CAIRO_ANTIALIAS_NONE;
 }
 
 static cairo_line_join_t outline_cairo_join_style(const Layer &layer)
 {
-    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f) {
-        switch (layer.outline_join_style) {
-        case 0: return CAIRO_LINE_JOIN_MITER;
-        case 2: return CAIRO_LINE_JOIN_BEVEL;
-        case 1:
-        default: return CAIRO_LINE_JOIN_ROUND;
-        }
-    }
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    switch (effect ? effect->effect_join_style : 1) {
+    switch (layer.outline_join_style) {
     case 0: return CAIRO_LINE_JOIN_MITER;
     case 2: return CAIRO_LINE_JOIN_BEVEL;
     case 1:
@@ -1509,8 +1475,7 @@ static cairo_line_join_t outline_cairo_join_style(const Layer &layer)
 
 static Qt::PenJoinStyle outline_pen_join_style(const Layer &layer)
 {
-    const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
-    switch (effect ? effect->effect_join_style : 1) {
+    switch (layer.outline_join_style) {
     case 0: return Qt::MiterJoin;
     case 2: return Qt::BevelJoin;
     case 1:
@@ -3158,6 +3123,9 @@ static bool layer_effect_requires_stack_surface(const LayerEffect &effect)
     if (!effect.enabled) return false;
     switch (effect.type) {
     case LayerEffectType::BackgroundColor:
+    case LayerEffectType::Outline:
+    case LayerEffectType::Bloom:
+    case LayerEffectType::Emboss:
     case LayerEffectType::DropShadow:
     case LayerEffectType::LongShadow:
     case LayerEffectType::ColorOverlay:
@@ -3703,6 +3671,68 @@ static std::vector<uint8_t> render_background_effect_behind_surface(
     return background_alpha;
 }
 
+
+static std::vector<uint8_t> bloom_mask_from_surface(cairo_surface_t *surface, double threshold, double intensity)
+{
+    const int w = cairo_image_surface_get_width(surface);
+    const int h = cairo_image_surface_get_height(surface);
+    const auto px = surface_pixels(surface);
+    std::vector<uint8_t> mask((size_t)std::max(0, w) * (size_t)std::max(0, h), 0);
+    const double th = std::clamp(threshold, 0.0, 1.0);
+    const double gain = std::max(0.0, intensity);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const uint8_t *p = &px[((size_t)y * w + x) * 4];
+            const double a = p[3] / 255.0;
+            if (a <= 0.0) continue;
+            const double r = (p[2] / 255.0) / a;
+            const double g = (p[1] / 255.0) / a;
+            const double b = (p[0] / 255.0) / a;
+            const double luma = std::clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0.0, 1.0);
+            const double v = th >= 1.0 ? 0.0 : std::clamp((luma - th) / std::max(1e-6, 1.0 - th), 0.0, 1.0);
+            mask[(size_t)y * w + x] = (uint8_t)std::lround(std::clamp(v * a * gain, 0.0, 1.0) * 255.0);
+        }
+    }
+    return mask;
+}
+
+static void apply_emboss_to_surface(cairo_surface_t *surface, const LayerEffect &effect)
+{
+    const int w = cairo_image_surface_get_width(surface);
+    const int h = cairo_image_surface_get_height(surface);
+    if (w <= 0 || h <= 0) return;
+    std::vector<uint8_t> px = surface_pixels(surface);
+    std::vector<uint8_t> height((size_t)w * h, 0);
+    for (size_t i = 0; i < height.size(); ++i) height[i] = px[i * 4 + 3];
+    if (effect.effect_spread > 0.0f)
+        blur_alpha_for_type(height, w, h, effect.effect_spread, (int)ShadowBlurType::StackFast);
+    const double rad = effect.effect_angle * kPi / 180.0;
+    const double lx = std::cos(rad), ly = std::sin(rad);
+    const double depth = std::max(0.1f, effect.effect_size);
+    const double relief = std::max(0.1f, effect.effect_distance);
+    const double opacity = std::clamp((double)effect.effect_opacity, 0.0, 1.0);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int xm = std::max(0, x - 1), xp = std::min(w - 1, x + 1);
+            const int ym = std::max(0, y - 1), yp = std::min(h - 1, y + 1);
+            const double gx = (height[(size_t)y * w + xp] - height[(size_t)y * w + xm]) / 255.0;
+            const double gy = (height[(size_t)yp * w + x] - height[(size_t)ym * w + x]) / 255.0;
+            const double shade = std::clamp((gx * lx + gy * ly) * depth * relief, -1.0, 1.0) * opacity;
+            uint8_t *p = &px[((size_t)y * w + x) * 4];
+            const double a = p[3] / 255.0;
+            if (a <= 0.0) continue;
+            for (int c = 0; c < 3; ++c) {
+                double v = (p[c] / 255.0) / a;
+                const double light = shade >= 0.0 ? 1.0 : 0.0;
+                const double amount = std::abs(shade);
+                v = blend_channel(v, light, effect.blend_mode) * amount + v * (1.0 - amount);
+                p[c] = (uint8_t)std::lround(std::clamp(v, 0.0, 1.0) * a * 255.0);
+            }
+        }
+    }
+    write_surface_pixels(surface, px);
+}
+
 static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, const Layer &layer, double t,
                                                      double local_x_offset = 0.0,
                                                      double local_y_offset = 0.0)
@@ -3755,6 +3785,39 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
         const int height = cairo_image_surface_get_height(surface);
         if (width <= 0 || height <= 0) return;
         switch (resolved.type) {
+        case LayerEffectType::Outline: {
+            if (resolved.effect_size <= 0.0f || resolved.effect_opacity <= 0.0f) break;
+            const std::vector<uint8_t> base_alpha = alpha_for_surface();
+            std::vector<uint8_t> expanded = base_alpha;
+            blur_alpha_for_type(expanded, width, height, resolved.effect_size, (int)ShadowBlurType::AlphaMask);
+            for (size_t i = 0; i < expanded.size(); ++i) {
+                if (resolved.effect_on_front)
+                    expanded[i] = std::max(expanded[i], base_alpha[i]);
+                else
+                    expanded[i] = (uint8_t)std::max(0, (int)expanded[i] - (int)base_alpha[i]);
+            }
+            if (resolved.effect_on_front)
+                composite_solid_alpha(surface, expanded, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, false);
+            else
+                composite_solid_alpha_behind(surface, expanded, resolved.effect_color, resolved.effect_opacity);
+            invalidate_alpha_cache();
+            invalidate_subject_alpha();
+            break;
+        }
+        case LayerEffectType::Bloom: {
+            if (resolved.effect_opacity <= 0.0f || resolved.effect_size <= 0.0f) break;
+            std::vector<uint8_t> bloom = bloom_mask_from_surface(surface, resolved.effect_spread, resolved.effect_falloff);
+            blur_alpha_for_type(bloom, width, height, resolved.effect_size, resolved.effect_blur_type);
+            composite_solid_alpha(surface, bloom, resolved.effect_color, resolved.effect_opacity, resolved.blend_mode, false);
+            invalidate_alpha_cache();
+            invalidate_subject_alpha();
+            break;
+        }
+        case LayerEffectType::Emboss:
+            apply_emboss_to_surface(surface, resolved);
+            invalidate_alpha_cache();
+            invalidate_subject_alpha();
+            break;
         case LayerEffectType::BackgroundColor: {
             std::vector<uint8_t> background_alpha = render_background_effect_behind_surface(
                 surface, layer, effect, t, local_x_offset, local_y_offset);
@@ -3934,6 +3997,8 @@ static double stackable_effect_padding(const Layer &layer, double t)
         case LayerEffectType::LongShadow:
             padding = std::max(padding, distance + size * 3.0 + 4.0);
             break;
+        case LayerEffectType::Outline:
+        case LayerEffectType::Bloom:
         case LayerEffectType::Glow:
         case LayerEffectType::InnerGlow:
         case LayerEffectType::Blur:
@@ -4764,8 +4829,9 @@ static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image
     return true;
 }
 
-static QImage render_title_region_impl(const Title &title, double t, const QRect &requested_region)
+static QImage render_title_region_impl(const Title &title, double t, const QRect &requested_region, double output_scale = 1.0)
 {
+    output_scale = std::clamp(output_scale, 0.125, 1.0);
     const int canvas_w = std::max(1, title.width);
     const int canvas_h = std::max(1, title.height);
     const QRect canvas_rect(0, 0, canvas_w, canvas_h);
@@ -4773,7 +4839,9 @@ static QImage render_title_region_impl(const Title &title, double t, const QRect
     if (region.isEmpty())
         return QImage();
 
-    QImage image(region.width(), region.height(), QImage::Format_ARGB32_Premultiplied);
+    const int output_w = std::max(1, (int)std::ceil(region.width() * output_scale));
+    const int output_h = std::max(1, (int)std::ceil(region.height() * output_scale));
+    QImage image(output_w, output_h, QImage::Format_ARGB32_Premultiplied);
     auto surface = make_image_surface_for_qimage(image);
     auto cr = make_cairo_context(surface.get());
     if (!surface || !cr) {
@@ -4783,6 +4851,7 @@ static QImage render_title_region_impl(const Title &title, double t, const QRect
 
     /* The renderer continues to use absolute canvas coordinates. Translate the
      * destination context so only the requested tile/region is rasterized. */
+    cairo_scale(cr.get(), output_scale, output_scale);
     cairo_translate(cr.get(), -region.x(), -region.y());
     cairo_rectangle(cr.get(), region.x(), region.y(), region.width(), region.height());
     cairo_clip(cr.get());
@@ -4876,6 +4945,61 @@ QImage render_title_to_image(const Title &title, double t)
     return render_title_region_impl(title, t,
                                     QRect(0, 0, std::max(1, title.width),
                                           std::max(1, title.height)));
+}
+
+QImage render_title_to_image_scaled(const Title &title, double t, double scale,
+                                    bool editor_draft)
+{
+    const double clamped_scale = std::clamp(scale, 0.125, 1.0);
+    const Title *render_title = &title;
+    Title draft;
+    if (editor_draft) {
+        // Deep-copy only for the editor's transient draft pass. The OBS source
+        // and all cache/prerender paths continue to render the untouched title.
+        draft = title;
+        draft.layers.clear();
+        draft.layers.reserve(title.layers.size());
+        for (const auto &source_layer : title.layers) {
+            if (!source_layer) {
+                draft.layers.push_back(nullptr);
+                continue;
+            }
+            auto layer = std::make_shared<Layer>(*source_layer);
+            for (auto &effect : layer->effects) {
+                if (!effect.enabled)
+                    continue;
+                switch (effect.type) {
+                case LayerEffectType::MotionBlur:
+                case LayerEffectType::Blur:
+                case LayerEffectType::Glow:
+                case LayerEffectType::InnerGlow:
+                case LayerEffectType::DropShadow:
+                case LayerEffectType::LongShadow:
+                case LayerEffectType::InnerShadow:
+                case LayerEffectType::Bloom:
+                case LayerEffectType::Emboss:
+                    effect.enabled = false;
+                    break;
+                default:
+                    break;
+                }
+            }
+            draft.layers.push_back(std::move(layer));
+        }
+        render_title = &draft;
+    }
+    QImage image = render_title_region_impl(*render_title, t,
+                                            QRect(0, 0, std::max(1, render_title->width),
+                                                  std::max(1, render_title->height)),
+                                            clamped_scale);
+    if (!image.isNull()) {
+        image.setText(QStringLiteral("obs_gsp_preview_scale"), QString::number(clamped_scale, 'f', 6));
+        image.setText(QStringLiteral("obs_gsp_canvas_width"), QString::number(std::max(1, title.width)));
+        image.setText(QStringLiteral("obs_gsp_canvas_height"), QString::number(std::max(1, title.height)));
+        image.setText(QStringLiteral("obs_gsp_canvas_x"), QStringLiteral("0"));
+        image.setText(QStringLiteral("obs_gsp_canvas_y"), QStringLiteral("0"));
+    }
+    return image;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -5036,7 +5160,7 @@ static void source_video_tick(void *priv, float seconds)
                            title->pending_cue_row < (int)title->live_text_rows.size();
         bool has_current = title->current_cue_row >= 0 &&
                            title->current_cue_row < (int)title->live_text_rows.size();
-        bool is_uncue = !has_pending && !has_current && data->active_cue_row >= 0;
+        bool is_uncue = title->cue_uncue_requested && !has_pending && has_current;
         data->manual_uncue = is_uncue;
         if (title->playback_mode == 1) {
             if (has_pending) {
@@ -5120,24 +5244,25 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = title->duration;
                 data->playing = false;
                 data->cue_phase = TitleSourceData::CuePhase::FreeRun;
-                if (data->manual_uncue || title->cue_end_behavior == 1) {
-                    data->active_cue_row = -1;
+                /* The row remains cued until this exact point.  Once the
+                 * outro has completed, clear the runtime cue status and apply
+                 * the title's configured end behavior instead of forcing every
+                 * manual uncue to hide the source. */
+                title->current_cue_row = -1;
+                title->pending_cue_row = -1;
+                title->cue_uncue_requested = false;
+                title->cue_persistence_transition = false;
+                title->cue_persistent_text_columns.clear();
+                data->active_cue_row = -1;
+                if (title->cue_end_behavior == 1) {
                     data->output_visible = false;
-                    title->current_cue_row = -1;
-                    title->pending_cue_row = -1;
-                    title->cue_persistence_transition = false;
-                    title->cue_persistent_text_columns.clear();
-                    data->manual_uncue = false;
-                    TitleDataStore::instance().touch_runtime_change();
                 } else {
                     data->output_visible = true;
-                    data->active_cue_row = title->current_cue_row;
-                    title->pending_cue_row = -1;
-                    title->cue_persistence_transition = false;
-                    title->cue_persistent_text_columns.clear();
-                    data->manual_uncue = false;
-                    TitleDataStore::instance().touch_runtime_change();
+                    if (title->cue_end_behavior == 2)
+                        data->playhead = 0.0;
                 }
+                data->manual_uncue = false;
+                TitleDataStore::instance().touch_runtime_change();
             } else {
                 if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
                     apply_live_text_row(title, title->pending_cue_row);
@@ -5187,13 +5312,21 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = title->duration;
                 data->playing  = false;
                 if (title->current_cue_row >= 0 || title->pending_cue_row >= 0 || data->active_cue_row >= 0) {
-                    if (data->manual_uncue || title->cue_end_behavior == 1) {
+                    if (title->cue_end_behavior == 1) {
                         title->current_cue_row = -1;
                         title->pending_cue_row = -1;
                         title->cue_persistence_transition = false;
                         title->cue_persistent_text_columns.clear();
                         data->active_cue_row = -1;
                         data->output_visible = false;
+                    } else if (title->cue_end_behavior == 2) {
+                        title->current_cue_row = -1;
+                        title->pending_cue_row = -1;
+                        title->cue_persistence_transition = false;
+                        title->cue_persistent_text_columns.clear();
+                        data->active_cue_row = -1;
+                        data->playhead = 0.0;
+                        data->output_visible = true;
                     } else {
                         title->pending_cue_row = -1;
                         title->cue_persistence_transition = false;
@@ -5201,6 +5334,7 @@ static void source_video_tick(void *priv, float seconds)
                         data->active_cue_row = title->current_cue_row;
                         data->output_visible = true;
                     }
+                    title->cue_uncue_requested = false;
                     data->manual_uncue = false;
                     TitleDataStore::instance().touch_runtime_change();
                 }
@@ -5293,10 +5427,32 @@ static void source_video_tick(void *priv, float seconds)
              * transition and starts rendering missing persistence frames only
              * after the cue is clicked.
              */
-            const bool requested_live_cue_frame = title->current_cue_row >= 0;
-            if (requested_live_cue_frame)
-                cached = cache.requestLiveCueFrameRealtime(title, title->current_cue_row,
-                                                            data->playhead, frame_content_hash);
+            /* During a manual uncue the dock clears current_cue_row as the
+             * control-state signal, but the source deliberately keeps
+             * active_cue_row until the OutroOnly phase reaches the end of the
+             * title.  The uncached renderer therefore continues rendering the
+             * outgoing row from the pause/loop point through the complete
+             * ending animation.  Cached playback must use that same outgoing
+             * row instead of dropping to the generic title cache as soon as
+             * current_cue_row becomes -1. */
+            int cached_cue_row = title->current_cue_row;
+            if (cached_cue_row < 0 && data->manual_uncue &&
+                data->cue_phase == TitleSourceData::CuePhase::OutroOnly)
+                cached_cue_row = data->active_cue_row;
+
+            const bool requested_live_cue_frame = cached_cue_row >= 0 &&
+                cached_cue_row < static_cast<int>(title->live_text_rows.size());
+            if (requested_live_cue_frame) {
+                /* Match the uncached renderer's exact runtime cue state.  In
+                 * particular, persistence transitions have two distinct
+                 * rendered identities (outgoing and incoming) even though they
+                 * belong to the same cue row.  The generic realtime lookup used
+                 * the source-level cached content hash and could therefore miss
+                 * the pre-rendered transition state, leaving the previous frame
+                 * visible until the pause/loop frame was reached. */
+                cached = cache.requestLiveCueFrame(title, cached_cue_row,
+                                                    data->playhead, true);
+            }
             if (cached.isNull() && !requested_live_cue_frame)
                 cached = cache.requestFrameRealtime(title, data->playhead, frame_content_hash);
             if (!cached.isNull()) {

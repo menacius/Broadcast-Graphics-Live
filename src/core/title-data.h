@@ -20,6 +20,8 @@
 #include <functional>
 #include <cstdint>
 #include <atomic>
+#include <condition_variable>
+#include <thread>
 #include <mutex>
 #include "layer-model.h"
 
@@ -37,7 +39,7 @@ struct Title {
     double      loop_end    = 4.0;   /* live-cue loop end (seconds) */
     int         playback_mode = 0;   /* 0=play once, 1=loop in/out, 2=pause at position */
     int         loop_type     = 0;   /* 0=restart, 1=ping-pong */
-    int         cue_end_behavior = 0; /* 0=show last frame, 1=show nothing after cue finishes */
+    int         cue_end_behavior = 0; /* 0=show last frame, 1=show nothing, 2=show first frame */
     double      pause_time    = 0.0; /* seconds from timeline start */
     uint32_t    bg_color    = 0x00000000;  /* transparent by default */
     int         width       = 1920;
@@ -61,9 +63,17 @@ struct Title {
     std::string live_text_header_state; /* base64-encoded dock header layout */
     std::string preview_screenshot_png_base64; /* manually captured title-list thumbnail */
     bool external_data_enabled = false; /* live text cue external data source toggle */
+    bool playlist_loop = false; /* per-title live text playlist behavior */
+    bool playlist_reverse = false;
+    double playlist_hold_seconds = 5.0;
     int current_cue_row = -1; /* runtime-only active live text row */
     int pending_cue_row = -1; /* runtime-only next row waiting for outro */
+    bool cue_uncue_requested = false; /* runtime-only: keep active status until the outro completes */
     uint64_t cue_revision = 0; /* runtime-only live text cue counter */
+    bool playlist_active = false; /* runtime-only playlist state */
+    int playlist_next_row = 0;
+    int64_t playlist_next_due_ms = 0;
+    bool playlist_stop_after_due = false;
     bool cue_background_persistence = false; /* runtime-only setting: enable background persistence for cue transitions */
     bool cue_text_persistence = false; /* runtime-only setting: freeze unchanged exposed text columns while cueing */
     bool cue_persistence_transition = false; /* runtime-only active persistent transition between cue rows */
@@ -116,6 +126,7 @@ public:
     /* Persistence */
     void load();
     void save() const;
+    void save_async() const;
 
     /* Change notifications */
     using ChangeCallback = std::function<void()>;
@@ -126,7 +137,19 @@ public:
     uint64_t revision() const { return revision_.load(); }
 
 private:
-    TitleDataStore() = default;
+    TitleDataStore();
+    ~TitleDataStore();
+    TitleDataStore(const TitleDataStore &) = delete;
+    TitleDataStore &operator=(const TitleDataStore &) = delete;
+
+    struct PendingSave {
+        std::vector<std::shared_ptr<Title>> snapshot;
+        std::string path;
+        uint64_t generation = 0;
+    };
+    void save_worker_loop() const;
+    static bool write_snapshot_atomic(const std::vector<std::shared_ptr<Title>> &snapshot,
+                                      const std::string &path);
     mutable std::recursive_mutex         mutex_;
     std::vector<std::shared_ptr<Title>>  titles_;
     std::string                          loaded_path_;
@@ -138,6 +161,15 @@ private:
     std::vector<ChangeObserver>          change_cbs_;
     uint64_t                             next_change_cb_id_ = 1;
     std::atomic<uint64_t>                revision_ { 0 };
+
+    mutable std::mutex                   save_mutex_;
+    mutable std::mutex                   save_io_mutex_;
+    mutable std::condition_variable      save_cv_;
+    mutable std::thread                  save_thread_;
+    mutable bool                         save_stop_ = false;
+    mutable bool                         save_worker_started_ = false;
+    mutable uint64_t                     save_generation_ = 0;
+    mutable std::unique_ptr<PendingSave> pending_save_;
 
     static std::string data_path();
 };

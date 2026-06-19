@@ -18,6 +18,8 @@ struct Title;
 /* Registers the source type with OBS. Call once from obs_module_load(). */
 void title_source_register();
 QImage render_title_to_image(const Title &title, double t);
+QImage render_title_to_image_scaled(const Title &title, double t, double scale,
+                                    bool editor_draft = false);
 QImage render_title_region_to_image(const Title &title, double t, const QRect &region);
 
 /* Source settings keys */

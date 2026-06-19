@@ -24,6 +24,7 @@
 #include <utility>
 #include <cctype>
 #include <ctime>
+#include <thread>
 
 using json = nlohmann::json;
 
@@ -1454,7 +1455,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             LayerEffect effect;
-            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 11);
+            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 13);
             effect.enabled = json_bool(effect_json, "enabled", true);
             switch (effect.type) {
             case LayerEffectType::DropShadow:
@@ -2116,6 +2117,9 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["live_text_column_order"] = t.live_text_column_order;
     jt["live_text_header_state"] = t.live_text_header_state;
     jt["external_data_enabled"] = t.external_data_enabled;
+    jt["playlist_loop"] = t.playlist_loop;
+    jt["playlist_reverse"] = t.playlist_reverse;
+    jt["playlist_hold_seconds"] = t.playlist_hold_seconds;
     if (!t.preview_screenshot_png_base64.empty())
         jt["preview_screenshot_png_base64"] = t.preview_screenshot_png_base64;
     return jt;
@@ -2138,7 +2142,7 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->loop_end = std::clamp(finite_or(json_double(jt, "loop_end", std::max(t->loop_start, t->duration - 1.0)), t->duration), t->loop_start, t->duration);
     t->playback_mode = std::clamp(json_int(jt, "playback_mode", 0), 0, 2);
     t->loop_type = std::clamp(json_int(jt, "loop_type", 0), 0, 1);
-    t->cue_end_behavior = std::clamp(json_int(jt, "cue_end_behavior", 0), 0, 1);
+    t->cue_end_behavior = std::clamp(json_int(jt, "cue_end_behavior", 0), 0, 2);
     t->pause_time = std::clamp(finite_or(json_double(jt, "pause_time", 0.0), 0.0), 0.0, t->duration);
     t->bg_color = json_color(jt, "bg_color", (uint32_t)0x00000000);
     t->width    = std::clamp(json_int(jt, "width", 1920), 1, kMaxCanvasDimension);
@@ -2223,6 +2227,9 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     }
     t->live_text_header_state = bounded_string(jt, "live_text_header_state", "", kMaxTextLength);
     t->external_data_enabled = json_bool(jt, "external_data_enabled", false);
+    t->playlist_loop = json_bool(jt, "playlist_loop", false);
+    t->playlist_reverse = json_bool(jt, "playlist_reverse", false);
+    t->playlist_hold_seconds = std::clamp(finite_or(json_double(jt, "playlist_hold_seconds", 5.0), 5.0), 0.0, 3600.0);
     t->preview_screenshot_png_base64 = bounded_string(jt, "preview_screenshot_png_base64", "",
                                                        kMaxScreenshotBase64Length);
 
@@ -2259,6 +2266,75 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     return t;
 }
 
+TitleDataStore::TitleDataStore() = default;
+
+TitleDataStore::~TitleDataStore()
+{
+    {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        save_stop_ = true;
+    }
+    save_cv_.notify_all();
+    if (save_thread_.joinable())
+        save_thread_.join();
+}
+
+bool TitleDataStore::write_snapshot_atomic(
+    const std::vector<std::shared_ptr<Title>> &snapshot,
+    const std::string &path)
+{
+    json root = json::array();
+    try {
+        for (const auto &title : snapshot) {
+            if (title)
+                root.push_back(title_to_json(*title));
+        }
+    } catch (const std::exception &e) {
+        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to serialize titles.json: %s", e.what());
+        return false;
+    }
+
+    const std::string tmp_path = path + ".tmp";
+    {
+        std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!file.is_open()) {
+            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to open titles.json for saving");
+            return false;
+        }
+        try {
+            const std::string payload = root.dump(2, ' ', false, json::error_handler_t::replace);
+            file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+        } catch (const std::exception &e) {
+            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to encode titles.json: %s", e.what());
+            file.close();
+            std::remove(tmp_path.c_str());
+            return false;
+        }
+        file.flush();
+        if (!file.good()) {
+            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed while writing titles.json");
+            file.close();
+            std::remove(tmp_path.c_str());
+            return false;
+        }
+    }
+
+    if (std::rename(tmp_path.c_str(), path.c_str()) == 0)
+        return true;
+
+#if defined(_WIN32)
+    /* Windows does not replace an existing destination with std::rename. Keep
+     * the old file until the complete temporary file has been written. */
+    std::remove(path.c_str());
+    if (std::rename(tmp_path.c_str(), path.c_str()) == 0)
+        return true;
+#endif
+
+    blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to replace titles.json");
+    std::remove(tmp_path.c_str());
+    return false;
+}
+
 void TitleDataStore::save() const
 {
     std::vector<std::shared_ptr<Title>> snapshot;
@@ -2269,41 +2345,71 @@ void TitleDataStore::save() const
         path = loaded_path_.empty() ? data_path() : loaded_path_;
     }
 
-    json root = json::array();
-    for (auto &t : snapshot) {
-        if (t)
-            root.push_back(title_to_json(*t));
-    }
+    /* Serialize synchronous and asynchronous writes. Otherwise a manual save
+     * can race an outstanding background save through the same .tmp path. */
+    std::lock_guard<std::mutex> write_lock(save_io_mutex_);
+    write_snapshot_atomic(snapshot, path);
+}
 
-    const std::string tmp_path = path + ".tmp";
-    {
-        std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
-        if (!f.is_open()) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to open titles.json for saving");
-            return;
+void TitleDataStore::save_worker_loop() const
+{
+    for (;;) {
+        std::unique_ptr<PendingSave> request;
+        {
+            std::unique_lock<std::mutex> lock(save_mutex_);
+            save_cv_.wait(lock, [this] { return save_stop_ || pending_save_; });
+            if (save_stop_ && !pending_save_)
+                return;
+            request = std::move(pending_save_);
         }
-        try {
-            f << root.dump(2, ' ', false, json::error_handler_t::replace);
-        } catch (const std::exception &e) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to serialize titles.json: %s", e.what());
-            std::remove(tmp_path.c_str());
-            return;
-        }
-        if (!f.good()) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed while writing titles.json");
-            std::remove(tmp_path.c_str());
-            return;
-        }
-    }
 
-    if (std::rename(tmp_path.c_str(), path.c_str()) != 0) {
-        std::remove(path.c_str());
-        if (std::rename(tmp_path.c_str(), path.c_str()) != 0) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to replace titles.json");
-            std::remove(tmp_path.c_str());
+        if (!request)
+            continue;
+
+        /* Serialization and I/O are done by one long-lived worker. A newer
+         * request replaces the pending one instead of spawning another thread. */
+        {
+            std::lock_guard<std::mutex> write_lock(save_io_mutex_);
+            write_snapshot_atomic(request->snapshot, request->path);
         }
     }
 }
+
+void TitleDataStore::save_async() const
+{
+    auto request = std::make_unique<PendingSave>();
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        request->snapshot.reserve(titles_.size());
+        for (const auto &source : titles_) {
+            if (!source) {
+                request->snapshot.push_back(nullptr);
+                continue;
+            }
+            auto copy = std::make_shared<Title>(*source);
+            copy->layers.clear();
+            copy->layers.reserve(source->layers.size());
+            for (const auto &layer : source->layers)
+                copy->layers.push_back(layer ? std::make_shared<Layer>(*layer) : nullptr);
+            request->snapshot.push_back(std::move(copy));
+        }
+        request->path = loaded_path_.empty() ? data_path() : loaded_path_;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        if (save_stop_)
+            return;
+        request->generation = ++save_generation_;
+        pending_save_ = std::move(request);
+        if (!save_worker_started_) {
+            save_worker_started_ = true;
+            save_thread_ = std::thread(&TitleDataStore::save_worker_loop, this);
+        }
+    }
+    save_cv_.notify_one();
+}
+
 
 bool TitleDataStore::export_title(const std::string &id, const std::string &path, std::string *error) const
 {
