@@ -334,8 +334,12 @@ set(OBS_GSP_RENDERING_HEADERS
 )
 
 set(OBS_GSP_CACHE_SOURCES
+    src/cache/cache-frame-key.cpp
+    src/cache/cache-state-tracker.cpp
     src/cache/cache-manager.cpp
     src/cache/prerender-dock.cpp
+    src/cache/ram-frame-cache.cpp
+    src/cache/render-queue-manager.cpp
 )
 set(OBS_GSP_CACHE_HEADERS
     src/cache/cache-manager.h
@@ -343,6 +347,7 @@ set(OBS_GSP_CACHE_HEADERS
 )
 
 set(OBS_GSP_CANVAS_SOURCES
+    src/canvas/canvas-preview-inline-text.cpp
     src/canvas/canvas-preview.cpp
 )
 set(OBS_GSP_CANVAS_HEADERS

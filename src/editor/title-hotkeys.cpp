@@ -148,10 +148,18 @@ static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared
     if (!title) return exposed;
     for (const auto &layer : title->layers) {
         if (!layer) continue;
-        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker) && layer->expose_text)
+        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
+            layer->expose_text)
             exposed.push_back(layer);
     }
     return order_exposed_text_layers(exposed, title->live_text_column_order);
+}
+
+static std::string live_cue_layer_value(const std::shared_ptr<Layer> &layer)
+{
+    if (!layer)
+        return {};
+    return layer->type == LayerType::Image ? layer->image_path : layer->text_content;
 }
 
 static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
@@ -173,9 +181,9 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
                 auto it = std::find(old_order.begin(), old_order.end(), new_order[new_col]);
                 if (it != old_order.end()) {
                     const size_t old_col = (size_t)std::distance(old_order.begin(), it);
-                    remapped.push_back(old_col < row.size() ? row[old_col] : exposed[new_col]->text_content);
+                    remapped.push_back(old_col < row.size() ? row[old_col] : live_cue_layer_value(exposed[new_col]));
                 } else {
-                    remapped.push_back(exposed[new_col]->text_content);
+                    remapped.push_back(live_cue_layer_value(exposed[new_col]));
                 }
             }
             row = std::move(remapped);
@@ -186,14 +194,14 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
     if (title->live_text_rows.empty()) {
         std::vector<std::string> row;
         for (const auto &layer : exposed)
-            row.push_back(layer->text_content);
+            row.push_back(live_cue_layer_value(layer));
         title->live_text_rows.push_back(std::move(row));
     }
     for (auto &row : title->live_text_rows) {
         size_t old_size = row.size();
         row.resize(exposed.size());
         for (size_t i = old_size; i < exposed.size(); ++i)
-            row[i] = exposed[i]->text_content;
+            row[i] = live_cue_layer_value(exposed[i]);
     }
     ensure_live_text_row_ids(*title);
 }
@@ -207,6 +215,10 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
         auto &target = exposed[col];
         if (!target)
             continue;
+        if (target->type == LayerType::Image) {
+            target->image_path = title->live_text_rows[row][col];
+            continue;
+        }
         target->text_content = title->live_text_rows[row][col];
         if (target->rich_text.empty())
             target->rich_text = rich_text_document_from_layer_defaults(*target);

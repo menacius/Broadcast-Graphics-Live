@@ -10,7 +10,6 @@
 #include "effects-panel.h"
 #include "properties-panel.h"
 
-#include "title-editor.h"
 #include "title-data.h"
 #include "title-source.h"
 #include "title-assets.h"

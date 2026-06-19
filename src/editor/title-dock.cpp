@@ -68,6 +68,7 @@
 #include <QString>
 #include <QStringList>
 #include <QHeaderView>
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -86,6 +87,7 @@
 #include <QTabWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
+#include <QToolTip>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -205,10 +207,52 @@ static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared
     if (!title) return exposed;
     for (const auto &layer : title->layers) {
         if (!layer) continue;
-        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker) && layer->expose_text)
+        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
+            layer->expose_text)
             exposed.push_back(layer);
     }
     return order_exposed_text_layers(exposed, title->live_text_column_order);
+}
+
+static bool layer_uses_image_cue_value(const std::shared_ptr<Layer> &layer)
+{
+    return layer && layer->type == LayerType::Image;
+}
+
+static std::string live_cue_layer_value(const std::shared_ptr<Layer> &layer)
+{
+    if (!layer)
+        return {};
+    return layer_uses_image_cue_value(layer) ? layer->image_path : layer->text_content;
+}
+
+static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &target, const std::string &value)
+{
+    if (!target)
+        return;
+    if (target->type == LayerType::Image) {
+        target->image_path = value;
+        return;
+    }
+
+    target->text_content = value;
+    if (target->rich_text.empty())
+        target->rich_text = rich_text_document_from_layer_defaults(*target);
+    RichTextCharFormat insertion_format = target->rich_text.has_typing_format
+        ? target->rich_text.typing_format
+        : target->rich_text.default_format;
+    rich_text_document_replace_text(target->rich_text, target->text_content, &insertion_format);
+    target->rich_text_html.clear();
+}
+
+static QString live_cue_image_file_name(const QString &path)
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty())
+        return QString();
+    const QFileInfo info(trimmed);
+    const QString file_name = info.fileName();
+    return file_name.isEmpty() ? trimmed : file_name;
 }
 
 static QString current_scene_collection_titles_label()
@@ -228,6 +272,10 @@ static QString live_text_layer_header(const std::shared_ptr<Layer> &layer)
     if (!layer) return obsgs_tr("OBSTitles.Text");
     QString name = QString::fromStdString(layer->name).trimmed();
     if (!name.isEmpty()) return name;
+    if (layer_uses_image_cue_value(layer)) {
+        name = live_cue_image_file_name(QString::fromStdString(layer->image_path)).trimmed();
+        return name.isEmpty() ? obsgs_tr("OBSTitles.Image") : name;
+    }
     name = QString::fromStdString(layer->text_content).trimmed();
     return name.isEmpty() ? obsgs_tr("OBSTitles.Text") : name;
 }
@@ -251,9 +299,9 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
                 auto it = std::find(old_order.begin(), old_order.end(), new_order[new_col]);
                 if (it != old_order.end()) {
                     const size_t old_col = (size_t)std::distance(old_order.begin(), it);
-                    remapped.push_back(old_col < row.size() ? row[old_col] : exposed[new_col]->text_content);
+                    remapped.push_back(old_col < row.size() ? row[old_col] : live_cue_layer_value(exposed[new_col]));
                 } else {
-                    remapped.push_back(exposed[new_col]->text_content);
+                    remapped.push_back(live_cue_layer_value(exposed[new_col]));
                 }
             }
             row = std::move(remapped);
@@ -264,14 +312,14 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
     if (title->live_text_rows.empty()) {
         std::vector<std::string> row;
         for (const auto &layer : exposed)
-            row.push_back(layer->text_content);
+            row.push_back(live_cue_layer_value(layer));
         title->live_text_rows.push_back(std::move(row));
     }
     for (auto &row : title->live_text_rows) {
         size_t old_size = row.size();
         row.resize(exposed.size());
         for (size_t i = old_size; i < exposed.size(); ++i)
-            row[i] = exposed[i]->text_content;
+            row[i] = live_cue_layer_value(exposed[i]);
     }
     ensure_live_text_row_ids(*title);
 }
@@ -738,6 +786,107 @@ protected:
             QTimer::singleShot(0, qApp, [callback]() { callback(false); });
         }
     }
+};
+
+class LiveImageCueField : public QWidget {
+public:
+    explicit LiveImageCueField(const QString &path, QWidget *parent = nullptr)
+        : QWidget(parent)
+    {
+        auto *layout = new QHBoxLayout(this);
+        layout->setContentsMargins(6, 2, 3, 2);
+        layout->setSpacing(4);
+
+        label_ = new QLabel(this);
+        label_->setTextInteractionFlags(Qt::NoTextInteraction);
+        label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        label_->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+
+        button_ = new QToolButton(this);
+        button_->setAutoRaise(true);
+        button_->setCursor(Qt::ArrowCursor);
+        button_->setIcon(obs_icon("import.svg", palette().color(QPalette::ButtonText)));
+        button_->setToolTip(obsgs_tr("OBSTitles.Browse"));
+        button_->setFixedSize(22, 22);
+
+        layout->addWidget(label_, 1);
+        layout->addWidget(button_, 0);
+
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        set_path(path);
+        connect(button_, &QToolButton::clicked, this, [this]() {
+            const QString initial_dir = path_.isEmpty()
+                ? QString()
+                : QFileInfo(path_).absolutePath();
+            const QString selected = QFileDialog::getOpenFileName(
+                this, obsgs_tr("OBSTitles.ChooseImage"), initial_dir,
+                obsgs_tr("OBSTitles.ImageFileFilter"));
+            if (selected.isEmpty())
+                return;
+            set_path(selected);
+            if (path_changed)
+                path_changed(selected);
+        });
+    }
+
+    QString path() const { return path_; }
+
+    void set_path(const QString &path)
+    {
+        path_ = path;
+        const QString file_name = live_cue_image_file_name(path_);
+        label_->setText(file_name.isEmpty() ? QStringLiteral("-") : file_name);
+        label_->setToolTip(path_);
+        update_preview_tooltip();
+    }
+
+    std::function<void(const QString &)> path_changed;
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event && event->type() == QEvent::ToolTip && !preview_tooltip_.isEmpty()) {
+            auto *help = static_cast<QHelpEvent *>(event);
+            QToolTip::showText(help->globalPos(), preview_tooltip_, this);
+            return true;
+        }
+        return QWidget::event(event);
+    }
+
+private:
+    void update_preview_tooltip()
+    {
+        const QFileInfo info(path_);
+        if (!info.exists() || !info.isFile()) {
+            preview_tooltip_ = path_.isEmpty() ? QString() : path_.toHtmlEscaped();
+            setToolTip(preview_tooltip_);
+            return;
+        }
+
+        QImage image(path_);
+        if (image.isNull()) {
+            preview_tooltip_ = path_.toHtmlEscaped();
+            setToolTip(preview_tooltip_);
+            return;
+        }
+
+        const QSize preview_size = image.size().scaled(QSize(240, 180), Qt::KeepAspectRatio);
+        preview_tooltip_ = QStringLiteral(
+            "<div style=\"white-space:nowrap;\"><b>%1</b><br/>%2 x %3<br/>"
+            "<img src=\"%4\" width=\"%5\" height=\"%6\"/></div>")
+            .arg(info.fileName().toHtmlEscaped())
+            .arg(image.width())
+            .arg(image.height())
+            .arg(QUrl::fromLocalFile(info.absoluteFilePath()).toString().toHtmlEscaped())
+            .arg(preview_size.width())
+            .arg(preview_size.height());
+        setToolTip(preview_tooltip_);
+    }
+
+    QLabel *label_ = nullptr;
+    QToolButton *button_ = nullptr;
+    QString path_;
+    QString preview_tooltip_;
 };
 
 class LiveTextCueTable : public QTableWidget {
@@ -3488,12 +3637,18 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     for (int target_row : target_rows) {
         if (target_row < 0 || target_row >= text_table_->rowCount())
             continue;
-        auto *edit = dynamic_cast<LiveTextCueField *>(text_table_->cellWidget(target_row, col + 2));
-        if (!edit || edit->toPlainText() == text)
-            continue;
-        QSignalBlocker block(edit);
-        edit->setPlainText(text);
-        edit->update_tooltip(text);
+        QWidget *widget = text_table_->cellWidget(target_row, col + 2);
+        if (auto *edit = dynamic_cast<LiveTextCueField *>(widget)) {
+            if (edit->toPlainText() == text)
+                continue;
+            QSignalBlocker block(edit);
+            edit->setPlainText(text);
+            edit->update_tooltip(text);
+        } else if (auto *image = dynamic_cast<LiveImageCueField *>(widget)) {
+            if (image->path() == text)
+                continue;
+            image->set_path(text);
+        }
     }
 
     TitleDataStore::instance().save();
@@ -3758,16 +3913,7 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     } else if (!is_active_cue || title->pending_cue_row >= 0) {
         for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col) {
             auto &target = exposed_now[col];
-            if (!target)
-                continue;
-            target->text_content = title->live_text_rows[row][col];
-            if (target->rich_text.empty())
-                target->rich_text = rich_text_document_from_layer_defaults(*target);
-            RichTextCharFormat insertion_format = target->rich_text.has_typing_format
-                ? target->rich_text.typing_format
-                : target->rich_text.default_format;
-            rich_text_document_replace_text(target->rich_text, target->text_content, &insertion_format);
-            target->rich_text_html.clear();
+            apply_live_cue_layer_value(target, title->live_text_rows[row][col]);
         }
         title->current_cue_row = row;
         title->pending_cue_row = -1;
@@ -4159,18 +4305,26 @@ void TitleDock::populate_exposed_text()
         text_table_->setItem(row, 0, select_item);
         update_live_text_cache_cell(title, row);
         for (int col = 0; col < (int)exposed.size(); ++col) {
-            auto *edit = new LiveTextCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
-            edit->setPlaceholderText(live_text_layer_header(exposed[col]));
-            edit->setStyleSheet("QPlainTextEdit{padding:3px;}");
-            edit->editing_finished = [this, title, row, col](const QString &text) {
-                commit_live_text_cell_edit(title, row, col, text);
-            };
-            QPointer<TitleDock> dock_guard(this);
-            edit->focus_changed = [dock_guard, title, row](bool focused) {
-                if (dock_guard)
-                    dock_guard->set_live_text_row_render_paused(title, row, focused);
-            };
-            text_table_->setCellWidget(row, col + 2, edit);
+            if (layer_uses_image_cue_value(exposed[col])) {
+                auto *image = new LiveImageCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+                image->path_changed = [this, title, row, col](const QString &path) {
+                    commit_live_text_cell_edit(title, row, col, path);
+                };
+                text_table_->setCellWidget(row, col + 2, image);
+            } else {
+                auto *edit = new LiveTextCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+                edit->setPlaceholderText(live_text_layer_header(exposed[col]));
+                edit->setStyleSheet("QPlainTextEdit{padding:3px;}");
+                edit->editing_finished = [this, title, row, col](const QString &text) {
+                    commit_live_text_cell_edit(title, row, col, text);
+                };
+                QPointer<TitleDock> dock_guard(this);
+                edit->focus_changed = [dock_guard, title, row](bool focused) {
+                    if (dock_guard)
+                        dock_guard->set_live_text_row_render_paused(title, row, focused);
+                };
+                text_table_->setCellWidget(row, col + 2, edit);
+            }
         }
 
         const bool waiting_for_prerender = cache_waiting_title_id_ == QString::fromStdString(title->id) &&

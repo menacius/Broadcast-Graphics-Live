@@ -42,7 +42,6 @@
 #include <QPushButton>
 #include <QLineEdit>
 #include <QTextEdit>
-#include <QSpinBox>
 #include <QPointF>
 #include <QPoint>
 #include <QRectF>

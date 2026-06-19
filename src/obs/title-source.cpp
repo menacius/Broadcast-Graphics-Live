@@ -647,7 +647,8 @@ static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const std::shared
     if (!title) return exposed;
     for (const auto &layer : title->layers) {
         if (!layer) continue;
-        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker) && layer->expose_text)
+        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
+            layer->expose_text)
             exposed.push_back(layer);
     }
     return order_exposed_text_layers(exposed, title->live_text_column_order);
@@ -659,7 +660,8 @@ static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const Title &titl
     std::vector<std::shared_ptr<Layer>> exposed;
     for (const auto &layer : title.layers) {
         if (!layer) continue;
-        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker) && layer->expose_text)
+        if ((layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
+            layer->expose_text)
             exposed.push_back(layer);
     }
     return order_exposed_text_layers(exposed, title.live_text_column_order);
@@ -708,12 +710,23 @@ static void replace_layer_text_preserving_rich_rules(const std::shared_ptr<Layer
     layer->rich_text_html.clear();
 }
 
+static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &layer, const std::string &value)
+{
+    if (!layer)
+        return;
+    if (layer->type == LayerType::Image) {
+        layer->image_path = value;
+        return;
+    }
+    replace_layer_text_preserving_rich_rules(layer, value);
+}
+
 static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
     auto exposed = exposed_text_layers(title);
     for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col)
-        replace_layer_text_preserving_rich_rules(exposed[col], title->live_text_rows[row][col]);
+        apply_live_cue_layer_value(exposed[col], title->live_text_rows[row][col]);
 }
 
 /* ══════════════════════════════════════════════════════════════════

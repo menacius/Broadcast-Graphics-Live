@@ -4211,7 +4211,7 @@ void PropertiesPanel::load_values()
     if (paragraph_box_) paragraph_box_->setVisible(is_text_like);
     if (dynamic_text_box_) dynamic_text_box_->setVisible(is_text_like);
     if (auto_style_box_) auto_style_box_->setVisible(is_text_like);
-    if (live_edit_box_) live_edit_box_->setVisible(is_rect || is_text_like);
+    if (live_edit_box_) live_edit_box_->setVisible(is_rect || is_text_like || is_image);
     if (bullets_box_) bullets_box_->setVisible(false);
     text_box_->setTitle("Character");
     if (row_text_color_) row_text_color_->setVisible(false);
@@ -4339,7 +4339,7 @@ void PropertiesPanel::load_values()
     }
     if (auto *live_form = qobject_cast<QFormLayout *>(live_edit_box_ ? live_edit_box_->layout() : nullptr)) {
         const bool show_scene_mask = is_rect || is_text_like;
-        const bool show_expose_to_dock = is_text || is_ticker;
+        const bool show_expose_to_dock = is_text || is_ticker || is_image;
         if (chk_scene_mask_) {
             chk_scene_mask_->setVisible(show_scene_mask);
             if (auto *label = live_form->labelForField(chk_scene_mask_))
