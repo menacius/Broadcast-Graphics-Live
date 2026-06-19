@@ -124,8 +124,14 @@ void ForegroundBackgroundSwatch::paintEvent(QPaintEvent *)
         } else {
             p.fillRect(inner, fill.color);
         }
-        p.setPen(QPen(border, 1));
+        // Two-tone outline keeps white, black and transparent swatches legible
+        // on both light and dark OBS themes.
+        const QColor outer_border(24, 24, 24, 230);
+        const QColor inner_border(245, 245, 245, 230);
+        p.setPen(QPen(outer_border, 1));
         p.drawRect(r.adjusted(0, 0, -1, -1));
+        p.setPen(QPen(inner_border, 1));
+        p.drawRect(r.adjusted(1, 1, -2, -2));
         const QColor marker = (fill.type == 1) ? fill.end : fill.color;
         if (marker.alpha() < 255) {
             p.setPen(QPen(text, 1));
@@ -232,15 +238,15 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     };
 
     selection_button_ = make_tool_button(obsgs_tr("OBSTitles.SelectionTool"), cursor_tool_icon(),
-                                         obsgs_tr("OBSTitles.SelectionToolTooltip"));
+                                         obsgs_tr("OBSTitles.SelectionToolTooltip") + QStringLiteral(" (V)"));
     shape_button_ = make_tool_button(obsgs_tr("OBSTitles.ShapeTool"), shape_tool_icon(selected_shape_),
-                                     obsgs_tr("OBSTitles.ShapeToolTooltip"));
+                                     obsgs_tr("OBSTitles.ShapeToolTooltip") + QStringLiteral(" (M)"));
     text_button_ = make_tool_button(obsgs_tr("OBSTitles.TextTool"), text_tool_icon(selected_text_layer_type_),
-                                    obsgs_tr("OBSTitles.TextToolTooltip"));
+                                    obsgs_tr("OBSTitles.TextToolTooltip") + QStringLiteral(" (T)"));
     color_picker_button_ = make_tool_button(obsgs_tr("OBSTitles.ColorPickerTool"), obs_icon("eyedropper.svg"),
-                                            obsgs_tr("OBSTitles.ColorPickerToolTooltip"));
+                                            obsgs_tr("OBSTitles.ColorPickerToolTooltip") + QStringLiteral(" (I)"));
     gradient_button_ = make_tool_button(obsgs_tr("OBSTitles.GradientTool"), gradient_tool_icon(),
-                                        obsgs_tr("OBSTitles.GradientToolTooltip"));
+                                        obsgs_tr("OBSTitles.GradientToolTooltip") + QStringLiteral(" (G)"));
 
     auto *selection_action = new QAction(cursor_tool_icon(), obsgs_tr("OBSTitles.SelectionTool"), this);
     selection_action->setCheckable(true);
@@ -308,7 +314,8 @@ void ToolsSidebar::set_selected_shape(ShapeType shape_type)
             action->setText(shape_display_name(shape_type));
             action->setChecked(true);
         }
-        shape_button_->setToolTip(obsgs_tr("OBSTitles.ShapeToolSelectedTooltip").arg(shape_display_name(shape_type)));
+        shape_button_->setToolTip(obsgs_tr("OBSTitles.ShapeToolSelectedTooltip").arg(shape_display_name(shape_type)) +
+                                  (shape_type == ShapeType::Ellipse ? QStringLiteral(" (L)") : QStringLiteral(" (M)")));
         shape_button_->setChecked(true);
     }
 }
@@ -351,7 +358,7 @@ void ToolsSidebar::set_selected_text_layer_type(LayerType type)
             action->setText(name);
             action->setChecked(true);
         }
-        text_button_->setToolTip(obsgs_tr("OBSTitles.TextToolSelectedTooltip").arg(name));
+        text_button_->setToolTip(obsgs_tr("OBSTitles.TextToolSelectedTooltip").arg(name) + QStringLiteral(" (T)"));
         text_button_->setChecked(true);
     }
 }
@@ -370,6 +377,39 @@ void ToolsSidebar::rebuild_text_menu()
     }
 }
 
+
+
+void ToolsSidebar::activate_selection_tool()
+{
+    if (selection_button_ && selection_button_->defaultAction())
+        selection_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_shape_tool(ShapeType shape_type)
+{
+    set_selected_shape(shape_type);
+    if (shape_button_ && shape_button_->defaultAction())
+        shape_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_text_tool(LayerType type)
+{
+    set_selected_text_layer_type(type);
+    if (text_button_ && text_button_->defaultAction())
+        text_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_color_picker_tool()
+{
+    if (color_picker_button_ && color_picker_button_->defaultAction())
+        color_picker_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_gradient_tool()
+{
+    if (gradient_button_ && gradient_button_->defaultAction())
+        gradient_button_->defaultAction()->trigger();
+}
 
 
 void ToolsSidebar::set_foreground_color(const QColor &color)

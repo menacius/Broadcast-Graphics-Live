@@ -142,6 +142,7 @@ private:
     void align_selected_layers_horizontal();
     void align_selected_layers_vertical();
     void align_selected_layers(int x_mode, int y_mode);
+    void distribute_selected_layers(bool horizontal);
     void flip_selected_layers(bool horizontal);
     void rotate_selected_layers(double degrees);
     std::shared_ptr<Title> clone_title(const Title &title) const;
@@ -193,6 +194,7 @@ private:
     void update_panel_lock_state();
     void schedule_cache_invalidation();
     void force_next_title_visual_update();
+    void update_display_refresh_pacing();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -207,9 +209,15 @@ private:
     bool                   dirty_ = false;
     bool                   force_next_visual_update_ = false;
     QTimer                *play_timer_ = nullptr;
+    QTimer                *gui_refresh_timer_ = nullptr;
+    QTimer                *layout_settle_timer_ = nullptr;
     QTimer                *clock_timer_ = nullptr;
     QTimer                *cache_invalidation_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
+    QElapsedTimer          cache_reprioritize_clock_;
+    QElapsedTimer          panel_refresh_clock_;
+    double                 display_refresh_hz_ = 60.0;
+    bool                   dock_layout_transition_ = false;
 
     /* Sub-widgets */
     CanvasPreview   *canvas_    = nullptr;
@@ -267,7 +275,8 @@ private:
     QAction         *act_prerender_visible_ = nullptr;
     QAction         *act_tools_visible_ = nullptr;
     std::string      canvas_created_shape_layer_id_;
-    int              alignment_target_ = 3; /* 0=selection, 1=title safe guides, 2=action safe guides, 3=artboard/canvas */
+    int              alignment_target_ = 3; /* 0=selection bounds, 1=title safe, 2=action safe, 3=artboard, 4=selection anchors */
+    bool             distribute_to_anchors_ = false; /* false=bounds (default), true=layer anchors */
     std::vector<std::shared_ptr<Title>> undo_stack_;
     int              undo_index_ = -1;
     bool             restoring_undo_ = false;

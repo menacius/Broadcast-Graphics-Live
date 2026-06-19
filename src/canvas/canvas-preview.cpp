@@ -321,7 +321,12 @@ void CanvasPreview::restore_view_state(const ViewState &state)
 
 void CanvasPreview::set_playhead(double t)
 {
-    playhead_ = t; dirty_ = true; position_text_editor(); update();
+    if (std::abs(playhead_ - t) < 1e-9)
+        return;
+    playhead_ = t;
+    dirty_ = true;
+    position_text_editor();
+    update();
 }
 
 void CanvasPreview::set_selected_layer(const std::string &lid)
@@ -442,7 +447,9 @@ void CanvasPreview::refresh_preview()
     update();
     if (inline_text_editor_ && inline_text_editor_->isVisible()) {
         inline_text_editor_->viewport()->update();
-        repaint(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
+        // Queue the affected region instead of forcing an immediate synchronous
+        // paint, which can recursively stall mouse interaction and the OBS UI.
+        update(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
     }
 }
 

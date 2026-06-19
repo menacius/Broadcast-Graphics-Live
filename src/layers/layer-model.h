@@ -152,7 +152,8 @@ struct Layer {
     float       stroke_width  = 0.0f;
     float       outline_opacity = 1.0f;
     int         outline_join_style = 1;  /* 0=miter, 1=round, 2=bevel */
-    bool        outline_on_front = true;
+    bool        outline_on_front = false;
+    int         outline_alignment = 0;  /* 0=outer, 1=mid/centered, 2=inner */
     bool        outline_antialias = true;
     int         stroke_gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
     uint32_t    stroke_gradient_start_color = 0xFFFFFFFF;

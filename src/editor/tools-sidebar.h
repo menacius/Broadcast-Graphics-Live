@@ -97,6 +97,12 @@ public:
     void set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
     void set_background_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
 
+    void activate_selection_tool();
+    void activate_shape_tool(ShapeType shape_type);
+    void activate_text_tool(LayerType type = LayerType::Text);
+    void activate_color_picker_tool();
+    void activate_gradient_tool();
+
 signals:
     void selection_tool_requested();
     void shape_tool_requested(ShapeType shape_type);

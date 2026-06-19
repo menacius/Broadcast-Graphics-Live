@@ -1465,6 +1465,13 @@ static bool eval_outline_on_front(const Layer &layer, double)
     return effect ? effect->effect_on_front : true;
 }
 
+static int eval_outline_alignment(const Layer &layer, double)
+{
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return std::clamp(layer.outline_alignment, 0, 2);
+    return 0;
+}
+
 static bool eval_outline_antialias(const Layer &layer, double)
 {
     if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
@@ -2632,9 +2639,29 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
 }
 
 static void draw_rich_text_document(QPainter &painter, const Layer &layer, const QFont &font,
-                                    const QRectF &text_rect, double t)
+                                    const QRectF &text_rect, double t,
+                                    const QPen *text_outline = nullptr,
+                                    bool outline_only = false,
+                                    bool alpha_mask_only = false)
 {
     auto doc = rich_text_document_for_layer(layer, font, text_rect, t);
+    if (text_outline || alpha_mask_only) {
+        QTextCursor cursor(doc.get());
+        cursor.select(QTextCursor::Document);
+        QTextCharFormat format;
+        if (text_outline)
+            format.setTextOutline(*text_outline);
+        if (outline_only)
+            format.setForeground(QBrush(Qt::transparent));
+        else if (alpha_mask_only) {
+            // A stroke-alignment mask must not inherit inline fill colours,
+            // gradients or opacity.  Use one opaque white glyph silhouette so
+            // DestinationIn/DestinationOut isolate the exact inner/outer half.
+            format.setForeground(QBrush(Qt::white));
+            format.setTextOutline(QPen(Qt::NoPen));
+        }
+        cursor.mergeCharFormat(format);
+    }
     QSizeF doc_size = doc->size();
     QPointF origin = text_rect.topLeft();
     if (layer.align_v == 1)
@@ -2676,6 +2703,9 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     int pad = render_shadow
         ? (int)std::ceil(std::max({std::abs(shadow_params.dx), std::abs(shadow_params.dy), shadow_params.long_length}) + shadow_params.blur * 3.0 + shadow_params.spread + 4.0)
         : 0;
+    // Text outlines extend beyond the glyph and text box. Keep enough offscreen
+    // padding so rich-text and plain-text strokes are not cropped at the layer edges.
+    pad = std::max(pad, (int)std::ceil(std::max(0.0, eval_outline_width(layer, t)) + 2.0));
     if (eval_background_enabled(layer, t))
         pad += (int)std::ceil(std::max({std::abs(eval_background_padding_left(layer, t)),
                                         std::abs(eval_background_padding_right(layer, t)),
@@ -2734,7 +2764,9 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     QRectF text_rect = text_rect_for_style(base_rect, layer);
     QString text = display_text_for_style(layer);
     painter.save();
-    painter.setClipRect(text_rect);
+    const double text_outline_clip_pad = std::max(0.0, eval_outline_width(layer, t)) + 2.0;
+    painter.setClipRect(text_rect.adjusted(-text_outline_clip_pad, -text_outline_clip_pad,
+                                           text_outline_clip_pad, text_outline_clip_pad));
     Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
     if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
@@ -2807,22 +2839,66 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
         painter.drawPath(text_path);
     };
     auto draw_text_outline = [&]() {
-        if (has_rich_text) return;
         if (outline_width <= 0.0) return;
         if (layer.stroke_fill_type == 1 && outline.alpha() <= 0) return;
-        bool previous_aa = painter.testRenderHint(QPainter::Antialiasing);
-        painter.setRenderHint(QPainter::Antialiasing, eval_outline_antialias(layer, t));
+
+        const int alignment = eval_outline_alignment(layer, t);
+        const qreal painted_width = alignment == 1 ? outline_width : outline_width * 2.0;
         const QBrush stroke_brush = layer.stroke_fill_type == 2
             ? stroke_gradient_fill_brush(layer, text_rect, eval_outline_opacity(layer, t))
             : QBrush(outline);
-        painter.setPen(QPen(stroke_brush, outline_width, Qt::SolidLine, Qt::RoundCap, outline_pen_join_style(layer)));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawPath(text_path);
-        painter.setRenderHint(QPainter::Antialiasing, previous_aa);
+        QPen outline_pen(stroke_brush, painted_width, Qt::SolidLine, Qt::RoundCap,
+                         outline_pen_join_style(layer));
+
+        QImage stroke_layer(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
+        stroke_layer.fill(Qt::transparent);
+        QPainter stroke_painter(&stroke_layer);
+        stroke_painter.setRenderHint(QPainter::Antialiasing, eval_outline_antialias(layer, t));
+        stroke_painter.setRenderHint(QPainter::TextAntialiasing, true);
+        stroke_painter.setClipRect(text_rect.adjusted(-text_outline_clip_pad, -text_outline_clip_pad,
+                                                       text_outline_clip_pad, text_outline_clip_pad));
+        if (has_rich_text) {
+            draw_rich_text_document(stroke_painter, layer, font, text_rect, t, &outline_pen, true);
+        } else {
+            stroke_painter.setPen(outline_pen);
+            stroke_painter.setBrush(Qt::NoBrush);
+            stroke_painter.drawPath(text_path);
+        }
+        stroke_painter.end();
+
+        if (alignment != 1) {
+            QImage glyph_mask(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
+            glyph_mask.fill(Qt::transparent);
+            QPainter mask_painter(&glyph_mask);
+            mask_painter.setRenderHint(QPainter::Antialiasing, true);
+            mask_painter.setRenderHint(QPainter::TextAntialiasing, true);
+            mask_painter.setPen(Qt::NoPen);
+            mask_painter.setBrush(Qt::white);
+            if (has_rich_text)
+                draw_rich_text_document(mask_painter, layer, font, text_rect, t, nullptr, false, true);
+            else
+                mask_painter.drawPath(text_path);
+            mask_painter.end();
+
+            QPainter isolate(&stroke_layer);
+            isolate.setCompositionMode(alignment == 0
+                ? QPainter::CompositionMode_DestinationOut
+                : QPainter::CompositionMode_DestinationIn);
+            isolate.drawImage(QPointF(0.0, 0.0), glyph_mask);
+            isolate.end();
+        }
+
+        painter.drawImage(QPointF(0.0, 0.0), stroke_layer);
     };
-    if (!eval_outline_on_front(layer, t)) draw_text_outline();
+    const int text_stroke_alignment = eval_outline_alignment(layer, t);
+    // An inner stroke occupies only the glyph interior. Drawing it behind an
+    // opaque fill would hide it completely, so composite it after the fill.
+    // Outer and mid strokes continue to respect the requested fill order.
+    if (!eval_outline_on_front(layer, t) && text_stroke_alignment != 2)
+        draw_text_outline();
     draw_text_fill();
-    if (eval_outline_on_front(layer, t)) draw_text_outline();
+    if (eval_outline_on_front(layer, t) || text_stroke_alignment == 2)
+        draw_text_outline();
     painter.setRenderHint(QPainter::TextAntialiasing, previous_text_aa);
     painter.setRenderHint(QPainter::Antialiasing, previous_shape_aa);
     painter.restore();
@@ -2886,31 +2962,71 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
         paint_qimage(cr, shadow.image, shadow.origin.x(), shadow.origin.y(), alpha);
     }
 
-    cairo_add_layer_shape(cr, layer, w, h);
     double outline_width = eval_outline_width(layer, t);
     uint32_t outline_color = eval_outline_color(layer, t);
     bool has_outline = outline_width > 0.0 &&
                        (layer.stroke_fill_type == 2 || ((outline_color >> 24) & 0xFF) > 0);
-    auto stroke_outline = [&]() {
-        cairo_set_antialias(cr, outline_cairo_antialias(layer));
-        cairo_set_line_width(cr, outline_width);
-        cairo_set_line_join(cr, outline_cairo_join_style(layer));
-        cairo_pattern_t *stroke_gradient = nullptr;
+
+    auto set_stroke_source = [&]() -> cairo_pattern_t * {
         if (layer.stroke_fill_type == 2) {
-            stroke_gradient = create_stroke_gradient_pattern(layer, 0.0, 0.0, w, h,
-                                                             alpha * eval_outline_opacity(layer, t));
-            cairo_set_source(cr, stroke_gradient);
-        } else {
-            double sr, sg, sb, sa;
-            unpack_color(outline_color, sr, sg, sb, sa);
-            cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_outline_opacity(layer, t));
+            cairo_pattern_t *pattern = create_stroke_gradient_pattern(
+                layer, 0.0, 0.0, w, h, alpha * eval_outline_opacity(layer, t));
+            cairo_set_source(cr, pattern);
+            return pattern;
         }
-        cairo_stroke_preserve(cr);
-        if (stroke_gradient) cairo_pattern_destroy(stroke_gradient);
-        cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
+        double sr, sg, sb, sa;
+        unpack_color(outline_color, sr, sg, sb, sa);
+        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_outline_opacity(layer, t));
+        return nullptr;
     };
+
+    auto stroke_outline = [&]() {
+        const int alignment = eval_outline_alignment(layer, t);
+        cairo_save(cr);
+        cairo_set_antialias(cr, outline_cairo_antialias(layer));
+        cairo_set_line_join(cr, outline_cairo_join_style(layer));
+
+        if (alignment == 0) {
+            // Outer stroke: render a double-width centered stroke into a group,
+            // then remove the object's interior from the group.
+            cairo_push_group(cr);
+            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_set_line_width(cr, outline_width * 2.0);
+            cairo_pattern_t *pattern = set_stroke_source();
+            cairo_stroke(cr);
+            if (pattern) cairo_pattern_destroy(pattern);
+            cairo_set_operator(cr, CAIRO_OPERATOR_DEST_OUT);
+            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+            cairo_fill(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+            cairo_pop_group_to_source(cr);
+            cairo_paint(cr);
+        } else if (alignment == 2) {
+            // Inner stroke: clip to the object's interior and use a double-width
+            // centered stroke so the visible half has the requested width.
+            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_clip(cr);
+            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_set_line_width(cr, outline_width * 2.0);
+            cairo_pattern_t *pattern = set_stroke_source();
+            cairo_stroke(cr);
+            if (pattern) cairo_pattern_destroy(pattern);
+        } else {
+            // Mid stroke: Cairo's native centered stroke.
+            cairo_add_layer_shape(cr, layer, w, h);
+            cairo_set_line_width(cr, outline_width);
+            cairo_pattern_t *pattern = set_stroke_source();
+            cairo_stroke(cr);
+            if (pattern) cairo_pattern_destroy(pattern);
+        }
+        cairo_restore(cr);
+    };
+
     if (has_outline && !eval_outline_on_front(layer, t))
         stroke_outline();
+
+    cairo_add_layer_shape(cr, layer, w, h);
     cairo_pattern_t *gradient_pattern = nullptr;
     if (layer.fill_type == 1) {
         gradient_pattern = create_fill_gradient_pattern(layer, 0.0, 0.0, w, h, alpha);
@@ -2918,15 +3034,11 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     } else {
         cairo_set_source_rgba(cr, fr, fg, fb, fa * alpha);
     }
-    if (has_outline && eval_outline_on_front(layer, t)) {
-        cairo_fill_preserve(cr);
-        if (gradient_pattern) cairo_pattern_destroy(gradient_pattern);
+    cairo_fill(cr);
+    if (gradient_pattern) cairo_pattern_destroy(gradient_pattern);
+
+    if (has_outline && eval_outline_on_front(layer, t))
         stroke_outline();
-        cairo_new_path(cr);
-    } else {
-        cairo_fill(cr);
-        if (gradient_pattern) cairo_pattern_destroy(gradient_pattern);
-    }
     cairo_restore(cr);
 }
 

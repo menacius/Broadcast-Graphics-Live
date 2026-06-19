@@ -3117,15 +3117,30 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 limit_layout->addWidget(limit);
                 add_button_group_row(obsgs_tr("OBSTitles.CornerColon"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
 
-                auto *align_group = new QButtonGroup(&popup);
-                align_group->setExclusive(true);
-                auto *align_back = make_button(obsgs_tr("OBSTitles.Back"), obsgs_tr("OBSTitles.Back"), &popup);
-                auto *align_front = make_button(obsgs_tr("OBSTitles.Front"), obsgs_tr("OBSTitles.Front"), &popup);
-                align_group->addButton(align_back, 0);
-                align_group->addButton(align_front, 1);
-                if (auto *button = align_group->button(layer_->outline_on_front ? 1 : 0))
+                auto *order_group = new QButtonGroup(&popup);
+                order_group->setExclusive(true);
+                auto *order_back = make_button(obsgs_tr("OBSTitles.Back"), obsgs_tr("OBSTitles.StrokeBehindFillTooltip"), &popup);
+                auto *order_front = make_button(obsgs_tr("OBSTitles.Front"), obsgs_tr("OBSTitles.StrokeInFrontFillTooltip"), &popup);
+                order_group->addButton(order_back, 0);
+                order_group->addButton(order_front, 1);
+                if (auto *button = order_group->button(layer_->outline_on_front ? 1 : 0))
                     button->setChecked(true);
-                add_button_group_row(obsgs_tr("OBSTitles.AlignStrokeColon"), {align_back, align_front});
+                add_button_group_row(obsgs_tr("OBSTitles.StrokeOrderColon"), {order_back, order_front});
+
+                auto *alignment_group = new QButtonGroup(&popup);
+                alignment_group->setExclusive(true);
+                auto *alignment_outer = make_button(obsgs_tr("OBSTitles.Outer"), obsgs_tr("OBSTitles.OuterStrokeTooltip"), &popup);
+                auto *alignment_mid = make_button(obsgs_tr("OBSTitles.Mid"), obsgs_tr("OBSTitles.MidStrokeTooltip"), &popup);
+                auto *alignment_inner = make_button(obsgs_tr("OBSTitles.Inner"), obsgs_tr("OBSTitles.InnerStrokeTooltip"), &popup);
+                for (auto *button : {alignment_outer, alignment_mid, alignment_inner})
+                    button->setFixedWidth(42);
+                alignment_group->addButton(alignment_outer, 0);
+                alignment_group->addButton(alignment_mid, 1);
+                alignment_group->addButton(alignment_inner, 2);
+                if (auto *button = alignment_group->button(std::clamp(layer_->outline_alignment, 0, 2)))
+                    button->setChecked(true);
+                add_button_group_row(obsgs_tr("OBSTitles.StrokeAlignmentColon"),
+                                     {alignment_outer, alignment_mid, alignment_inner});
 
                 auto *dash_row = new QWidget(&popup);
                 auto *dash_layout = new QHBoxLayout(dash_row);
@@ -3186,15 +3201,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                             }
                             emit_change();
                         });
-                connect(align_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
-                        &popup, [this, align_group, emit_change](QAbstractButton *button) {
+                connect(order_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
+                        &popup, [this, order_group, emit_change](QAbstractButton *button) {
                             if (!layer_ || loading_values_) return;
-                            layer_->outline_on_front = align_group->id(button) == 1;
+                            layer_->outline_on_front = order_group->id(button) == 1;
                             if (cmb_outline_position_) {
                                 QSignalBlocker block(cmb_outline_position_);
                                 int idx = cmb_outline_position_->findData(layer_->outline_on_front ? 1 : 0);
                                 cmb_outline_position_->setCurrentIndex(idx >= 0 ? idx : (layer_->outline_on_front ? 1 : 0));
                             }
+                            emit_change();
+                        });
+                connect(alignment_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
+                        &popup, [this, alignment_group, emit_change](QAbstractButton *button) {
+                            if (!layer_ || loading_values_) return;
+                            layer_->outline_alignment = std::clamp(alignment_group->id(button), 0, 2);
                             emit_change();
                         });
 

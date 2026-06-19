@@ -1255,6 +1255,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["outline_opacity"] = l.outline_opacity;
     j["outline_join_style"] = l.outline_join_style;
     j["outline_on_front"] = l.outline_on_front;
+    j["outline_alignment"] = l.outline_alignment;
     j["outline_antialias"] = l.outline_antialias;
     j["stroke_gradient_type"] = l.stroke_gradient_type;
     j["stroke_gradient_start_color"] = l.stroke_gradient_start_color;
@@ -1652,7 +1653,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->outline_enabled = json_bool(j, "outline_enabled", l->stroke_width > 0.0f);
     l->outline_opacity = std::clamp(finite_or(json_double(j, "outline_opacity", 1.0), 1.0), 0.0, 1.0);
     l->outline_join_style = std::clamp(json_int(j, "outline_join_style", 1), 0, 2);
-    l->outline_on_front = json_bool(j, "outline_on_front", true);
+    l->outline_on_front = json_bool(j, "outline_on_front", false);
+    l->outline_alignment = std::clamp(json_int(j, "outline_alignment", 0), 0, 2);
     l->outline_antialias = json_bool(j, "outline_antialias", true);
     l->stroke_gradient_type = std::clamp(json_int(j, "stroke_gradient_type", 0), 0, 4);
     l->stroke_gradient_start_color = json_color(j, "stroke_gradient_start_color", (uint32_t)0xFFFFFFFF);

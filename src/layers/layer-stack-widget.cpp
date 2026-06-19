@@ -506,19 +506,59 @@ void LayerStack::populate()
             auto *ph = new QHBoxLayout(prop_widget);
             ph->setContentsMargins(64, 0, 4, 0);
             ph->setSpacing(4);
-            QLabel *diamond_indicator = new QLabel("◇", prop_widget);
-            diamond_indicator->setFixedWidth(18);
-            diamond_indicator->setAlignment(Qt::AlignCenter);
-            diamond_indicator->setStyleSheet(QString("color:%1;").arg(layer_color(*l, row).name()));
+            QToolButton *diamond_indicator = new QToolButton(prop_widget);
+            diamond_indicator->setText(prop.keyframe_count() ? QStringLiteral("◆") : QStringLiteral("◇"));
+            diamond_indicator->setFixedSize(18, 20);
+            diamond_indicator->setAutoRaise(true);
+            diamond_indicator->setCursor(Qt::PointingHandCursor);
+            diamond_indicator->setToolTip(obsgs_tr("OBSTitles.ToggleKeyframe"));
+            diamond_indicator->setStyleSheet(QString("QToolButton{border:none;background:transparent;color:%1;}")
+                                                  .arg(layer_color(*l, row).name()));
+            connect(diamond_indicator, &QToolButton::clicked, this,
+                    [this, id = l->id, name = prop.name()]() { emit property_keyframe_toggled(id, name); });
             ph->addWidget(diamond_indicator);
             QLabel *prop_name = new QLabel(label, prop_widget);
             prop_name->setStyleSheet(QStringLiteral("color:%1;").arg(text.name(QColor::HexRgb)));
             ph->addWidget(prop_name, 1);
-            QLabel *value = new QLabel(property_value_text(prop, *l), prop_widget);
-            value->setFixedWidth(95);
-            value->setStyleSheet(QStringLiteral("color:%1;font-family:monospace;")
-                                     .arg(highlight.name(QColor::HexRgb)));
-            ph->addWidget(value);
+
+            auto configure_spin = [&](QDoubleSpinBox *spin) {
+                spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+                spin->setKeyboardTracking(false);
+                spin->setDecimals(2);
+                spin->setRange(-100000.0, 100000.0);
+                spin->setFixedWidth(72);
+                spin->setStyleSheet(QStringLiteral("QDoubleSpinBox{color:%1;background:%2;border:none;font-family:monospace;padding:1px 3px;}")
+                                        .arg(highlight.name(QColor::HexRgb), base.name(QColor::HexRgb)));
+            };
+            const bool vector_prop = prop.vector != nullptr;
+            QDoubleSpinBox *value_x = new QDoubleSpinBox(prop_widget);
+            configure_spin(value_x);
+            QDoubleSpinBox *value_y = nullptr;
+            double x = 0.0, y = 0.0;
+            if (vector_prop) {
+                x = prop.vector->static_value.x;
+                y = prop.vector->static_value.y;
+                if (prop.name() == "scale") { x *= 100.0; y *= 100.0; }
+                value_y = new QDoubleSpinBox(prop_widget);
+                configure_spin(value_y);
+                value_x->setFixedWidth(58);
+                value_y->setFixedWidth(58);
+                value_x->setValue(x);
+                value_y->setValue(y);
+                ph->addWidget(value_x);
+                ph->addWidget(value_y);
+            } else {
+                x = prop.scalar ? prop.scalar->static_value : 0.0;
+                if (prop.name() == "opacity" || prop.name() == "char_scale_x" || prop.name() == "char_scale_y") x *= 100.0;
+                value_x->setValue(x);
+                ph->addWidget(value_x);
+            }
+            auto emit_value = [this, id = l->id, name = prop.name(), value_x, value_y]() {
+                emit property_value_changed(id, name, value_x->value(), value_y ? value_y->value() : 0.0);
+            };
+            connect(value_x, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [emit_value](double) { emit_value(); });
+            if (value_y)
+                connect(value_y, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [emit_value](double) { emit_value(); });
             list_->setItemWidget(prop_item, prop_widget);
         }
     }

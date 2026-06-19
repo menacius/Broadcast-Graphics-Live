@@ -10,6 +10,8 @@
 #include <QMimeData>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QScreen>
+#include <QWindow>
 
 #include <cmath>
 
@@ -91,7 +93,6 @@ TitleEditor::TitleEditor(QWidget *parent)
     setDockNestingEnabled(true);
     setDockOptions(QMainWindow::AllowNestedDocks |
                    QMainWindow::AllowTabbedDocks |
-                   QMainWindow::AnimatedDocks |
                    QMainWindow::GroupedDragging);
 
     build_ui();
@@ -100,8 +101,42 @@ TitleEditor::TitleEditor(QWidget *parent)
     update_sidebar_color_swatches(nullptr);
 
     play_timer_ = new QTimer(this);
+    play_timer_->setTimerType(Qt::PreciseTimer);
+    // Transport is always driven by the project/OBS frame rate. It must not
+    // change when the editor is moved between monitors with different refresh rates.
     play_timer_->setInterval(std::max(1, (int)std::round(obs_frame_duration() * 1000.0)));
     connect(play_timer_, &QTimer::timeout, this, &TitleEditor::tick);
+
+    gui_refresh_timer_ = new QTimer(this);
+    gui_refresh_timer_->setTimerType(Qt::PreciseTimer);
+    connect(gui_refresh_timer_, &QTimer::timeout, this, [this]() {
+        // Never enqueue paints while Qt is reparenting/rebuilding the dock tree.
+        // Updating child widgets during QMainWindow layout transitions can race
+        // with Qt's internal dock layout items and lead to access violations.
+        if (dock_layout_transition_ || !isVisible() || isMinimized() || !isActiveWindow())
+            return;
+
+        // High-refresh presentation is reserved for interactive UI/canvas work.
+        // Playback frames continue to advance only from play_timer_ at project FPS.
+        const bool pointer_drag = QApplication::mouseButtons() != Qt::NoButton;
+        if (!pointer_drag && active_text_edit_layer_id_.empty())
+            return;
+
+        if (canvas_)
+            canvas_->update();
+        if (timeline_ && pointer_drag && timeline_->underMouse())
+            timeline_->update();
+    });
+
+    layout_settle_timer_ = new QTimer(this);
+    layout_settle_timer_->setSingleShot(true);
+    layout_settle_timer_->setInterval(90);
+    connect(layout_settle_timer_, &QTimer::timeout, this, [this]() {
+        dock_layout_transition_ = false;
+        update_display_refresh_pacing();
+        if (canvas_ && isVisible() && !isMinimized())
+            canvas_->update();
+    });
 
     cache_invalidation_timer_ = new QTimer(this);
     cache_invalidation_timer_->setSingleShot(true);
@@ -116,14 +151,18 @@ TitleEditor::TitleEditor(QWidget *parent)
     });
 
     clock_timer_ = new QTimer(this);
-    clock_timer_->setInterval(33);
+    // Dynamic text does not need to wake the editor/OBS render path at 30 Hz.
+    // A 10 Hz UI refresh is smooth for clocks while avoiding constant canvas invalidation.
+    clock_timer_->setInterval(100);
     connect(clock_timer_, &QTimer::timeout, this, [this]() {
         update_title_bar();
-        if (canvas_) canvas_->update();
+        if (canvas_ && title_has_dynamic_text_layer(title_) && isVisible() && !isMinimized())
+            canvas_->update();
     });
     clock_timer_->start();
 
     qApp->installEventFilter(this);
+    QTimer::singleShot(0, this, &TitleEditor::update_display_refresh_pacing);
 }
 
 TitleEditor::~TitleEditor()
@@ -1741,6 +1780,47 @@ void TitleEditor::build_ui()
                 }
             });
 
+    connect(layers_, &LayerStack::property_keyframe_toggled,
+            this, [this](const std::string &lid, const std::string &property_name) {
+                if (!title_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer || layer->locked) return;
+                const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                             std::max(0.0, layer->out_time - layer->in_time));
+                for (auto prop : timeline_properties(*layer)) {
+                    if (prop.name() != property_name) continue;
+                    if (prop.vector)
+                        toggle_keyframe(*prop.vector, lt, prop.vector->evaluate(lt));
+                    else if (prop.scalar)
+                        toggle_keyframe(*prop.scalar, lt, prop.scalar->evaluate(lt));
+                    layers_->refresh();
+                    timeline_->set_title(title_);
+                    on_title_modified();
+                    break;
+                }
+            });
+
+    connect(layers_, &LayerStack::property_value_changed,
+            this, [this](const std::string &lid, const std::string &property_name, double x, double y) {
+                if (!title_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer || layer->locked) return;
+                const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                             std::max(0.0, layer->out_time - layer->in_time));
+                for (auto prop : timeline_properties(*layer)) {
+                    if (prop.name() != property_name) continue;
+                    if (property_name == "scale") { x /= 100.0; y /= 100.0; }
+                    if (property_name == "opacity" || property_name == "char_scale_x" || property_name == "char_scale_y")
+                        x /= 100.0;
+                    if (prop.vector) set_animated_value(*prop.vector, lt, {x, y});
+                    else if (prop.scalar) set_animated_value(*prop.scalar, lt, x);
+                    timeline_->update();
+                    if (canvas_) canvas_->update();
+                    on_title_modified(false);
+                    break;
+                }
+            });
+
     connect(layers_, &LayerStack::layer_expand_changed,
             this, [this](const std::string &lid, bool expanded) {
                 if (!title_) return;
@@ -2006,6 +2086,7 @@ void TitleEditor::build_ui()
                 update_sidebar_color_swatches(nullptr);
             }
         });
+
     }
 }
 
@@ -2094,57 +2175,100 @@ void TitleEditor::align_selected_layers_vertical()
 
 void TitleEditor::align_selected_layers(int x_mode, int y_mode)
 {
-    if (!title_ || sel_layer_id_.empty()) return;
-    auto ids = layers_ ? layers_->selected_ids() : std::vector<std::string>{sel_layer_id_};
+    if (!title_) return;
+
+    // Multi-selection clears sel_layer_id_. Use the common operation selection
+    // path so alignment works consistently from both the canvas and layer list.
+    const auto ids = selected_layer_ids_for_operation();
     if (ids.empty()) return;
 
     struct Entry {
         std::shared_ptr<Layer> layer;
-        double lt;
-        double width;
-        double height;
-        double scale_x;
-        double scale_y;
+        double lt = 0.0;
+        double anchor_x = 0.0;
+        double anchor_y = 0.0;
+        double left_offset = 0.0;
+        double right_offset = 0.0;
+        double top_offset = 0.0;
+        double bottom_offset = 0.0;
     };
 
     std::vector<Entry> entries;
+    entries.reserve(ids.size());
+
     double min_left = std::numeric_limits<double>::infinity();
     double max_right = -std::numeric_limits<double>::infinity();
     double min_top = std::numeric_limits<double>::infinity();
     double max_bottom = -std::numeric_limits<double>::infinity();
+    double min_anchor_x = std::numeric_limits<double>::infinity();
+    double max_anchor_x = -std::numeric_limits<double>::infinity();
+    double min_anchor_y = std::numeric_limits<double>::infinity();
+    double max_anchor_y = -std::numeric_limits<double>::infinity();
 
     for (const auto &id : ids) {
         auto layer = title_->find_layer(id);
         if (!layer || layer->locked) continue;
-        double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
-        double width = eval_box_width(*layer, lt);
-        double height = eval_box_height(*layer, lt);
-        double sx = layer->scale.evaluate(lt).x;
-        double sy = layer->scale.evaluate(lt).y;
-        double x0 = layer->position.evaluate(lt).x - layer->origin_x * width * sx;
-        double x1 = layer->position.evaluate(lt).x + (1.0 - layer->origin_x) * width * sx;
-        double y0 = layer->position.evaluate(lt).y - layer->origin_y * height * sy;
-        double y1 = layer->position.evaluate(lt).y + (1.0 - layer->origin_y) * height * sy;
-        double left = std::min(x0, x1);
-        double right = std::max(x0, x1);
-        double top = std::min(y0, y1);
-        double bottom = std::max(y0, y1);
-        min_left = std::min(min_left, left);
-        max_right = std::max(max_right, right);
-        min_top = std::min(min_top, top);
-        max_bottom = std::max(max_bottom, bottom);
-        entries.push_back({layer, lt, width, height, sx, sy});
+
+        const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                     std::max(0.0, layer->out_time - layer->in_time));
+        const double width = eval_box_width(*layer, lt);
+        const double height = eval_box_height(*layer, lt);
+        const Vec2Value scale = layer->scale.evaluate(lt);
+        const Vec2Value position = layer->position.evaluate(lt);
+        const double origin_x = eval_origin_x(*layer, lt);
+        const double origin_y = eval_origin_y(*layer, lt);
+        const double rotation = layer->rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+        const double cos_r = std::cos(rotation);
+        const double sin_r = std::sin(rotation);
+
+        const double local_left = -origin_x * width;
+        const double local_right = (1.0 - origin_x) * width;
+        const double local_top = -origin_y * height;
+        const double local_bottom = (1.0 - origin_y) * height;
+        const double xs[4] = {local_left, local_right, local_right, local_left};
+        const double ys[4] = {local_top, local_top, local_bottom, local_bottom};
+
+        double left_offset = std::numeric_limits<double>::infinity();
+        double right_offset = -std::numeric_limits<double>::infinity();
+        double top_offset = std::numeric_limits<double>::infinity();
+        double bottom_offset = -std::numeric_limits<double>::infinity();
+        for (int i = 0; i < 4; ++i) {
+            const double sx = xs[i] * scale.x;
+            const double sy = ys[i] * scale.y;
+            const double tx = sx * cos_r - sy * sin_r;
+            const double ty = sx * sin_r + sy * cos_r;
+            left_offset = std::min(left_offset, tx);
+            right_offset = std::max(right_offset, tx);
+            top_offset = std::min(top_offset, ty);
+            bottom_offset = std::max(bottom_offset, ty);
+        }
+
+        min_left = std::min(min_left, position.x + left_offset);
+        max_right = std::max(max_right, position.x + right_offset);
+        min_top = std::min(min_top, position.y + top_offset);
+        max_bottom = std::max(max_bottom, position.y + bottom_offset);
+        min_anchor_x = std::min(min_anchor_x, position.x);
+        max_anchor_x = std::max(max_anchor_x, position.x);
+        min_anchor_y = std::min(min_anchor_y, position.y);
+        max_anchor_y = std::max(max_anchor_y, position.y);
+
+        entries.push_back({layer, lt, position.x, position.y,
+                           left_offset, right_offset, top_offset, bottom_offset});
     }
 
     if (entries.empty()) return;
-    if (alignment_target_ == 0 && entries.size() < 2) return;
+    const bool align_to_selection = alignment_target_ == 0 || alignment_target_ == 4;
+    const bool selection_anchors = alignment_target_ == 4;
+    if (align_to_selection && entries.size() < 2) return;
 
-    double target_left = min_left;
-    double target_hcenter = (min_left + max_right) / 2.0;
-    double target_right = max_right;
-    double target_top = min_top;
-    double target_vcenter = (min_top + max_bottom) / 2.0;
-    double target_bottom = max_bottom;
+    double target_left = selection_anchors ? min_anchor_x : min_left;
+    double target_hcenter = selection_anchors ? (min_anchor_x + max_anchor_x) / 2.0
+                                              : (min_left + max_right) / 2.0;
+    double target_right = selection_anchors ? max_anchor_x : max_right;
+    double target_top = selection_anchors ? min_anchor_y : min_top;
+    double target_vcenter = selection_anchors ? (min_anchor_y + max_anchor_y) / 2.0
+                                              : (min_top + max_bottom) / 2.0;
+    double target_bottom = selection_anchors ? max_anchor_y : max_bottom;
 
     if (alignment_target_ == 1 || alignment_target_ == 2) {
         const double safe_inset = alignment_target_ == 1 ? OBS_GRAPHICS_SAFE_PERCENT : OBS_ACTION_SAFE_PERCENT;
@@ -2166,31 +2290,152 @@ void TitleEditor::align_selected_layers(int x_mode, int y_mode)
     std::shared_ptr<Layer> last_layer;
     for (const auto &entry : entries) {
         if (x_mode >= 0) {
-            const double x0 = -entry.layer->origin_x * entry.width * entry.scale_x;
-            const double x1 = (1.0 - entry.layer->origin_x) * entry.width * entry.scale_x;
-            const double left_offset = std::min(x0, x1);
-            const double right_offset = std::max(x0, x1);
-            double next_x = entry.layer->position.evaluate(entry.lt).x;
-            if (x_mode == 0) next_x = target_left - left_offset;
-            if (x_mode == 1) next_x = target_hcenter - (left_offset + right_offset) / 2.0;
-            if (x_mode == 2) next_x = target_right - right_offset;
+            double next_x = entry.anchor_x;
+            if (selection_anchors) {
+                if (x_mode == 0) next_x = target_left;
+                if (x_mode == 1) next_x = target_hcenter;
+                if (x_mode == 2) next_x = target_right;
+            } else {
+                if (x_mode == 0) next_x = target_left - entry.left_offset;
+                if (x_mode == 1) next_x = target_hcenter - (entry.left_offset + entry.right_offset) / 2.0;
+                if (x_mode == 2) next_x = target_right - entry.right_offset;
+            }
             set_animated_x(entry.layer->position, entry.lt, next_x);
         }
         if (y_mode >= 0) {
-            const double y0 = -entry.layer->origin_y * entry.height * entry.scale_y;
-            const double y1 = (1.0 - entry.layer->origin_y) * entry.height * entry.scale_y;
-            const double top_offset = std::min(y0, y1);
-            const double bottom_offset = std::max(y0, y1);
-            double next_y = entry.layer->position.evaluate(entry.lt).y;
-            if (y_mode == 0) next_y = target_top - top_offset;
-            if (y_mode == 1) next_y = target_vcenter - (top_offset + bottom_offset) / 2.0;
-            if (y_mode == 2) next_y = target_bottom - bottom_offset;
+            double next_y = entry.anchor_y;
+            if (selection_anchors) {
+                if (y_mode == 0) next_y = target_top;
+                if (y_mode == 1) next_y = target_vcenter;
+                if (y_mode == 2) next_y = target_bottom;
+            } else {
+                if (y_mode == 0) next_y = target_top - entry.top_offset;
+                if (y_mode == 1) next_y = target_vcenter - (entry.top_offset + entry.bottom_offset) / 2.0;
+                if (y_mode == 2) next_y = target_bottom - entry.bottom_offset;
+            }
             set_animated_y(entry.layer->position, entry.lt, next_y);
         }
         last_layer = entry.layer;
     }
+
+    if (!last_layer) return;
     on_title_modified();
-    if (last_layer) update_layer_panels(last_layer, playhead_);
+    update_layer_panels(last_layer, playhead_);
+    if (canvas_) canvas_->update();
+    if (timeline_) timeline_->update();
+}
+
+void TitleEditor::distribute_selected_layers(bool horizontal)
+{
+    if (!title_) return;
+
+    // Multi-selection intentionally clears sel_layer_id_. Always use the shared
+    // operation-selection helper so canvas/layer-list multi-selection works.
+    const auto ids = selected_layer_ids_for_operation();
+    if (ids.size() < 3) return;
+
+    struct Entry {
+        std::shared_ptr<Layer> layer;
+        double lt = 0.0;
+        double anchor = 0.0;
+        double start = 0.0;
+        double end = 0.0;
+        double start_offset = 0.0;
+    };
+
+    std::vector<Entry> entries;
+    entries.reserve(ids.size());
+    for (const auto &id : ids) {
+        auto layer = title_->find_layer(id);
+        if (!layer || layer->locked) continue;
+
+        const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                                     std::max(0.0, layer->out_time - layer->in_time));
+        const double width = eval_box_width(*layer, lt);
+        const double height = eval_box_height(*layer, lt);
+        const Vec2Value scale = layer->scale.evaluate(lt);
+        const Vec2Value position = layer->position.evaluate(lt);
+        const double origin_x = eval_origin_x(*layer, lt);
+        const double origin_y = eval_origin_y(*layer, lt);
+        const double rotation_radians = layer->rotation.evaluate(lt) * 3.14159265358979323846 / 180.0;
+        const double cos_r = std::cos(rotation_radians);
+        const double sin_r = std::sin(rotation_radians);
+
+        // Build the axis-aligned bounds from this layer's own transformed
+        // corners. Do not use the aggregate selection bounds as an item in
+        // the distribution calculation.
+        const double local_left = -origin_x * width;
+        const double local_right = (1.0 - origin_x) * width;
+        const double local_top = -origin_y * height;
+        const double local_bottom = (1.0 - origin_y) * height;
+        const double xs[4] = {local_left, local_right, local_right, local_left};
+        const double ys[4] = {local_top, local_top, local_bottom, local_bottom};
+        double start_offset = std::numeric_limits<double>::max();
+        double end_offset = std::numeric_limits<double>::lowest();
+        for (int corner = 0; corner < 4; ++corner) {
+            const double sx = xs[corner] * scale.x;
+            const double sy = ys[corner] * scale.y;
+            const double axis_offset = horizontal
+                ? (sx * cos_r - sy * sin_r)
+                : (sx * sin_r + sy * cos_r);
+            start_offset = std::min(start_offset, axis_offset);
+            end_offset = std::max(end_offset, axis_offset);
+        }
+        const double axis_position = horizontal ? position.x : position.y;
+
+        entries.push_back({layer, lt, axis_position, axis_position + start_offset,
+                           axis_position + end_offset, start_offset});
+    }
+
+    if (entries.size() < 3) return;
+
+    if (distribute_to_anchors_) {
+        std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+            return a.anchor < b.anchor;
+        });
+
+        const double step = (entries.back().anchor - entries.front().anchor) /
+                            static_cast<double>(entries.size() - 1);
+        for (size_t i = 1; i + 1 < entries.size(); ++i) {
+            const double next_position = entries.front().anchor + step * static_cast<double>(i);
+            if (horizontal)
+                set_animated_x(entries[i].layer->position, entries[i].lt, next_position);
+            else
+                set_animated_y(entries[i].layer->position, entries[i].lt, next_position);
+        }
+    } else {
+        std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+            if (a.start != b.start) return a.start < b.start;
+            return a.end < b.end;
+        });
+
+        // Use only each object's individual bounds. The usable interval is
+        // the space between the trailing bound of the first object and the
+        // leading bound of the last object; the aggregate selection bound is
+        // never treated as an additional bound.
+        double intermediate_extent = 0.0;
+        for (size_t i = 1; i + 1 < entries.size(); ++i)
+            intermediate_extent += entries[i].end - entries[i].start;
+        const double available_between_outer_objects =
+            entries.back().start - entries.front().end;
+        const double gap = (available_between_outer_objects - intermediate_extent) /
+                           static_cast<double>(entries.size() - 1);
+
+        double next_start = entries.front().end + gap;
+        for (size_t i = 1; i + 1 < entries.size(); ++i) {
+            const double next_position = next_start - entries[i].start_offset;
+            if (horizontal)
+                set_animated_x(entries[i].layer->position, entries[i].lt, next_position);
+            else
+                set_animated_y(entries[i].layer->position, entries[i].lt, next_position);
+            next_start += (entries[i].end - entries[i].start) + gap;
+        }
+    }
+
+    on_title_modified();
+    update_layer_panels(entries.back().layer, playhead_);
+    if (canvas_) canvas_->update();
+    if (timeline_) timeline_->update();
 }
 
 void TitleEditor::build_toolbar()
@@ -2259,31 +2504,37 @@ void TitleEditor::build_toolbar()
     align_target->setFixedSize(kEditorToolbarButtonExtent, kEditorToolbarButtonExtent);
     align_target->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;}"));
     auto *align_menu = new QMenu(align_target);
-    QAction *target_selection = align_menu->addAction(obsgs_tr("OBSTitles.AlignToSelection"));
+    QAction *target_selection_bounds = align_menu->addAction(obsgs_tr("OBSTitles.AlignToSelectionBounds"));
+    QAction *target_selection_anchors = align_menu->addAction(obsgs_tr("OBSTitles.AlignToSelectionAnchors"));
     QAction *target_title_safe = align_menu->addAction(obsgs_tr("OBSTitles.AlignToTitleSafeGuides"));
     QAction *target_action_safe = align_menu->addAction(obsgs_tr("OBSTitles.AlignToActionSafeGuides"));
     QAction *target_artboard = align_menu->addAction(obsgs_tr("OBSTitles.AlignToArtboard"));
-    target_selection->setCheckable(true);
+    target_selection_bounds->setCheckable(true);
+    target_selection_anchors->setCheckable(true);
     target_title_safe->setCheckable(true);
     target_action_safe->setCheckable(true);
     target_artboard->setCheckable(true);
     target_artboard->setChecked(true);
-    auto update_alignment_target = [this, align_target, target_selection, target_title_safe, target_action_safe, target_artboard](int target) {
+    auto update_alignment_target = [this, align_target, target_selection_bounds, target_selection_anchors, target_title_safe, target_action_safe, target_artboard](int target) {
         alignment_target_ = target;
-        target_selection->setChecked(target == 0);
+        target_selection_bounds->setChecked(target == 0);
+        target_selection_anchors->setChecked(target == 4);
         target_title_safe->setChecked(target == 1);
         target_action_safe->setChecked(target == 2);
         target_artboard->setChecked(target == 3);
         QString tooltip = obsgs_tr("OBSTitles.AlignToArtboard");
         if (target == 0)
-            tooltip = obsgs_tr("OBSTitles.AlignToSelection");
+            tooltip = obsgs_tr("OBSTitles.AlignToSelectionBounds");
+        else if (target == 4)
+            tooltip = obsgs_tr("OBSTitles.AlignToSelectionAnchors");
         else if (target == 1)
             tooltip = obsgs_tr("OBSTitles.AlignToTitleSafeGuides");
         else if (target == 2)
             tooltip = obsgs_tr("OBSTitles.AlignToActionSafeGuides");
         align_target->setToolTip(tooltip);
     };
-    connect(target_selection, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(0); });
+    connect(target_selection_bounds, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(0); });
+    connect(target_selection_anchors, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(4); });
     connect(target_title_safe, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(1); });
     connect(target_action_safe, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(2); });
     connect(target_artboard, &QAction::triggered, this, [update_alignment_target]() { update_alignment_target(3); });
@@ -2305,6 +2556,48 @@ void TitleEditor::build_toolbar()
     add_align_action("align-vertical-center.svg", obsgs_tr("OBSTitles.AlignVerticalCenter"), -1, 1);
     add_align_action("align-bottom.svg", obsgs_tr("OBSTitles.AlignBottom"), -1, 2);
     add_align_action("align-center-artboard.svg", obsgs_tr("OBSTitles.AlignCenterToArtboard"), 1, 1);
+
+    auto *distribute_mode = new QToolButton(toolbar_);
+    distribute_mode->setIcon(obs_icon("distribute-mode.svg"));
+    distribute_mode->setIconSize(toolbar_->iconSize());
+    distribute_mode->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    distribute_mode->setPopupMode(QToolButton::InstantPopup);
+    distribute_mode->setFixedSize(kEditorToolbarButtonExtent, kEditorToolbarButtonExtent);
+    distribute_mode->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;}"));
+
+    auto *distribute_menu = new QMenu(distribute_mode);
+    auto *distribute_group = new QActionGroup(distribute_menu);
+    distribute_group->setExclusive(true);
+    QAction *distribute_bounds = distribute_menu->addAction(obsgs_tr("OBSTitles.DistributeToBounds"));
+    QAction *distribute_anchors = distribute_menu->addAction(obsgs_tr("OBSTitles.DistributeToAnchors"));
+    distribute_bounds->setCheckable(true);
+    distribute_anchors->setCheckable(true);
+    distribute_group->addAction(distribute_bounds);
+    distribute_group->addAction(distribute_anchors);
+    distribute_bounds->setChecked(true);
+    distribute_mode->setToolTip(obsgs_tr("OBSTitles.DistributeToBounds"));
+    distribute_mode->setAccessibleName(obsgs_tr("OBSTitles.DistributeMode"));
+    connect(distribute_bounds, &QAction::triggered, this, [this, distribute_mode]() {
+        distribute_to_anchors_ = false;
+        distribute_mode->setToolTip(obsgs_tr("OBSTitles.DistributeToBounds"));
+    });
+    connect(distribute_anchors, &QAction::triggered, this, [this, distribute_mode]() {
+        distribute_to_anchors_ = true;
+        distribute_mode->setToolTip(obsgs_tr("OBSTitles.DistributeToAnchors"));
+    });
+    distribute_mode->setMenu(distribute_menu);
+    toolbar_->addWidget(distribute_mode);
+
+    auto add_distribute_action = [this](const char *icon_name, const QString &tip, bool horizontal) {
+        QAction *action = toolbar_->addAction(obs_icon(icon_name), tip);
+        action->setToolTip(tip);
+        connect(action, &QAction::triggered, this, [this, horizontal]() {
+            distribute_selected_layers(horizontal);
+        });
+        return action;
+    };
+    add_distribute_action("distribute-horizontal.svg", obsgs_tr("OBSTitles.DistributeHorizontally"), true);
+    add_distribute_action("distribute-vertical.svg", obsgs_tr("OBSTitles.DistributeVertically"), false);
 
     toolbar_->addSeparator();
     auto add_flip_action = [this](const char *icon_name, const QString &text, bool horizontal) {
@@ -4081,8 +4374,85 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
 }
 
 
+
+void TitleEditor::update_display_refresh_pacing()
+{
+    QScreen *screen = nullptr;
+    if (windowHandle())
+        screen = windowHandle()->screen();
+    if (!screen)
+        screen = QGuiApplication::screenAt(frameGeometry().center());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+
+    double hz = screen ? screen->refreshRate() : 60.0;
+    if (!std::isfinite(hz) || hz < 24.0)
+        hz = 60.0;
+    hz = std::clamp(hz, 24.0, 240.0);
+    display_refresh_hz_ = hz;
+
+    // Only GUI/canvas editing follows the monitor cadence. Playback remains
+    // locked to the project/OBS frame rate through play_timer_.
+    if (gui_refresh_timer_) {
+        gui_refresh_timer_->setInterval(
+            std::max(1, static_cast<int>(std::lround(1000.0 / hz))));
+        if (!gui_refresh_timer_->isActive())
+            gui_refresh_timer_->start();
+    }
+
+    if (play_timer_)
+        play_timer_->setInterval(
+            std::max(1, static_cast<int>(std::lround(obs_frame_duration() * 1000.0))));
+}
+
 bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
 {
+    QWidget *watched_widget = qobject_cast<QWidget *>(watched);
+    const bool editor_widget = watched_widget &&
+        (watched_widget == this || isAncestorOf(watched_widget));
+    if (editor_widget &&
+        (event->type() == QEvent::LayoutRequest ||
+         event->type() == QEvent::ParentAboutToChange ||
+         event->type() == QEvent::ParentChange ||
+         event->type() == QEvent::Move ||
+         event->type() == QEvent::Resize)) {
+        dock_layout_transition_ = true;
+        if (layout_settle_timer_)
+            layout_settle_timer_->start();
+    }
+
+    if (watched == this && (event->type() == QEvent::Show || event->type() == QEvent::Move ||
+                            event->type() == QEvent::ScreenChangeInternal)) {
+        // Defer monitor refresh recalculation until the dock/layout operation has
+        // completed; querying/painting through a half-rebuilt widget hierarchy is unsafe.
+        if (layout_settle_timer_)
+            layout_settle_timer_->start();
+        else
+            QTimer::singleShot(0, this, &TitleEditor::update_display_refresh_pacing);
+    }
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(watched)) {
+        if (event->type() == QEvent::Polish || event->type() == QEvent::Show) {
+            spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            if (!spin->property("gspDefaultValue").isValid()) {
+                if (auto *double_spin = qobject_cast<QDoubleSpinBox *>(spin))
+                    spin->setProperty("gspDefaultValue", double_spin->value());
+                else if (auto *int_spin = qobject_cast<QSpinBox *>(spin))
+                    spin->setProperty("gspDefaultValue", int_spin->value());
+            }
+        }
+        if (event->type() == QEvent::Wheel && spin->isEnabled()) {
+            // Spin boxes intentionally accept wheel changes while hovered, without
+            // stealing keyboard focus from the canvas/timeline.
+            auto *wheel = static_cast<QWheelEvent *>(event);
+            const int steps = wheel->angleDelta().y() / 120;
+            if (steps != 0) {
+                for (int i = 0; i < std::abs(steps); ++i)
+                    steps > 0 ? spin->stepUp() : spin->stepDown();
+                wheel->accept();
+                return true;
+            }
+        }
+    }
     if (watched == title_lbl_ && event->type() == QEvent::MouseButtonDblClick) {
         auto *mouse_event = static_cast<QMouseEvent *>(event);
         if (mouse_event->button() == Qt::LeftButton) {
@@ -4110,8 +4480,44 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
         auto *key_event = static_cast<QKeyEvent *>(event);
         auto *widget = qobject_cast<QWidget *>(watched);
         const bool in_editor = widget && (widget == this || isAncestorOf(widget));
+        const bool editing_value = editor_focus_accepts_text(focusWidget());
+        const Qt::KeyboardModifiers tool_modifiers =
+            key_event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+
+        if (in_editor && !editing_value && tool_modifiers == Qt::NoModifier &&
+            !key_event->isAutoRepeat() && tools_sidebar_) {
+            switch (key_event->key()) {
+            case Qt::Key_V:
+                tools_sidebar_->activate_selection_tool();
+                key_event->accept();
+                return true;
+            case Qt::Key_M:
+                tools_sidebar_->activate_shape_tool(ShapeType::Rectangle);
+                key_event->accept();
+                return true;
+            case Qt::Key_L:
+                tools_sidebar_->activate_shape_tool(ShapeType::Ellipse);
+                key_event->accept();
+                return true;
+            case Qt::Key_T:
+                tools_sidebar_->activate_text_tool(LayerType::Text);
+                key_event->accept();
+                return true;
+            case Qt::Key_I:
+                tools_sidebar_->activate_color_picker_tool();
+                key_event->accept();
+                return true;
+            case Qt::Key_G:
+                tools_sidebar_->activate_gradient_tool();
+                key_event->accept();
+                return true;
+            default:
+                break;
+            }
+        }
+
         if (in_editor && key_event->key() == Qt::Key_Space && !key_event->isAutoRepeat()) {
-            if (!editor_focus_accepts_text(focusWidget())) {
+            if (!editing_value) {
                 play_pause();
                 key_event->accept();
                 return true;
@@ -4135,6 +4541,7 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
     }
     QWidget *fw = focusWidget();
     bool editing_value = editor_focus_accepts_text(fw);
+
     if (!editing_value && ev->key() == Qt::Key_Escape) {
         close();
         ev->accept();
@@ -4282,6 +4689,7 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.outline_opacity = src.outline_opacity;
     dst.outline_join_style = src.outline_join_style;
     dst.outline_on_front = src.outline_on_front;
+    dst.outline_alignment = src.outline_alignment;
     dst.outline_antialias = src.outline_antialias;
     dst.scale_stroke_with_shape = src.scale_stroke_with_shape;
     dst.scale_corners_with_shape = src.scale_corners_with_shape;
@@ -4679,15 +5087,24 @@ void TitleEditor::on_layer_selected(const std::string &lid)
 void TitleEditor::on_playhead_changed(double t)
 {
     t = title_ ? std::clamp(snap_to_obs_frame(t), 0.0, title_->duration) : snap_to_obs_frame(t);
+    if (std::abs(t - playhead_) < 1e-9)
+        return;
     playhead_ = t;
     canvas_->set_playhead(t);
     timeline_->set_playhead(t);
     if (prerender_panel_) prerender_panel_->setPlayhead(t);
-    CacheManager::instance().reprioritize(title_, t);
+    if (!cache_reprioritize_clock_.isValid() || cache_reprioritize_clock_.elapsed() >= 80) {
+        CacheManager::instance().reprioritize(title_, t);
+        cache_reprioritize_clock_.restart();
+    }
 
-    if (!sel_layer_id_.empty() && title_) {
+    // Property/effect widgets are substantially heavier than canvas presentation.
+    // Keep them responsive, but do not rebuild their controls at 120/144/240 Hz.
+    if ((!playing_ || !panel_refresh_clock_.isValid() || panel_refresh_clock_.elapsed() >= 33) &&
+        !sel_layer_id_.empty() && title_) {
         auto l = title_->find_layer(sel_layer_id_);
         if (l) update_layer_panels(l, t);
+        panel_refresh_clock_.restart();
     }
 
     if (time_lbl_)

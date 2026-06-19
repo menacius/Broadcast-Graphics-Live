@@ -168,6 +168,8 @@ public:
           drag_started_(std::move(drag_started)), drag_finished_(std::move(drag_finished))
     {
         if (!spin_box_) return;
+        if (!spin_box_->property("gspDefaultValue").isValid())
+            spin_box_->setProperty("gspDefaultValue", spin_value());
         setToolTip(obsgs_tr("OBSTitles.DragNumericLabelTooltip"));
         setCursor(Qt::SizeHorCursor);
     }
@@ -209,7 +211,15 @@ protected:
         }
 
         const double delta = event->globalPosition().x() - drag_start_x_;
-        set_spin_value(drag_start_value_ + delta * spin_step());
+        double next = drag_start_value_ + delta * spin_step();
+        const QVariant default_value = spin_box_->property("gspDefaultValue");
+        if (default_value.isValid()) {
+            const double target = default_value.toDouble();
+            const double threshold = std::max(spin_step() * 3.0, 0.0001);
+            if (std::abs(next - target) <= threshold)
+                next = target;
+        }
+        set_spin_value(next);
         event->accept();
     }
 
@@ -293,6 +303,8 @@ public:
           drag_started_(std::move(drag_started)), drag_finished_(std::move(drag_finished))
     {
         setCursor(Qt::PointingHandCursor);
+        if (spin_ && !spin_->property("gspDefaultValue").isValid())
+            spin_->setProperty("gspDefaultValue", spin_->value());
         setToolTip(obsgs_tr("OBSTitles.DragNumericLabelTooltip"));
     }
 
@@ -329,8 +341,15 @@ protected:
         const double delta = event->globalPosition().x() - drag_start_x_;
         if (std::abs(delta) >= 2.0)
             moved_ = true;
-        spin_->setValue(std::clamp(drag_start_value_ + delta * spin_->singleStep(),
-                                   spin_->minimum(), spin_->maximum()));
+        double next = drag_start_value_ + delta * spin_->singleStep();
+        const QVariant default_value = spin_->property("gspDefaultValue");
+        if (default_value.isValid()) {
+            const double target = default_value.toDouble();
+            const double threshold = std::max(spin_->singleStep() * 3.0, 0.0001);
+            if (std::abs(next - target) <= threshold)
+                next = target;
+        }
+        spin_->setValue(std::clamp(next, spin_->minimum(), spin_->maximum()));
         event->accept();
     }
 
@@ -2551,6 +2570,28 @@ protected:
         QToolButton::leaveEvent(event);
     }
 
+    void paintEvent(QPaintEvent *event) override
+    {
+        QToolButton::paintEvent(event);
+        if (!menu()) return;
+
+        // Illustrator-style flyout marker: a tiny filled corner triangle.
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        QColor marker = palette().color(QPalette::ButtonText);
+        marker.setAlpha(190);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(marker);
+        const int inset = 3;
+        const int size = 4;
+        const QPoint corner(width() - inset, height() - inset);
+        QPolygon triangle;
+        triangle << QPoint(corner.x() - size, corner.y())
+                 << QPoint(corner.x(), corner.y())
+                 << QPoint(corner.x(), corner.y() - size);
+        painter.drawPolygon(triangle);
+    }
+
 private:
     QTimer hold_timer_;
     bool menu_opened_by_hold_ = false;
@@ -3460,6 +3501,13 @@ static bool eval_outline_on_front(const Layer &layer, double)
         return layer.outline_on_front;
     const auto *effect = find_layer_effect(layer, LayerEffectType::Outline);
     return effect ? effect->effect_on_front : true;
+}
+
+static int eval_outline_alignment(const Layer &layer, double)
+{
+    if (layer.outline_enabled && layer.stroke_fill_type != 0 && layer.stroke_width > 0.0f)
+        return std::clamp(layer.outline_alignment, 0, 2);
+    return 0;
 }
 
 static bool eval_outline_antialias(const Layer &layer, double)

@@ -1533,7 +1533,7 @@ QString CacheManager::contentHash(const Title &title) const
 
         add(layer->outline_enabled); add(layer->stroke_fill_type); add((quint32)layer->stroke_color);
         add(layer->stroke_width); add(layer->outline_opacity); add(layer->outline_join_style);
-        add(layer->outline_on_front); add(layer->outline_antialias);
+        add(layer->outline_on_front); add(layer->outline_alignment); add(layer->outline_antialias);
         add(layer->stroke_gradient_type);
         add((quint32)layer->stroke_gradient_start_color); add((quint32)layer->stroke_gradient_end_color);
         add(layer->stroke_gradient_start_pos); add(layer->stroke_gradient_end_pos);

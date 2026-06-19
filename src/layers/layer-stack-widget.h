@@ -75,6 +75,8 @@ signals:
     void copy_layer_requested(const std::string &layer_id);
     void paste_layer_requested(const std::string &layer_id);
     void delete_layer_requested(const std::string &layer_id);
+    void property_keyframe_toggled(const std::string &layer_id, const std::string &property_name);
+    void property_value_changed(const std::string &layer_id, const std::string &property_name, double x, double y);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
