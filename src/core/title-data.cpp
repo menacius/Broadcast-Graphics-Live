@@ -1211,6 +1211,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["rich_text"] = rich_doc_to_json(l.rich_text);
     j["clock_format"]  = l.clock_format;
     j["expose_text"]   = l.expose_text;
+    j["exposed_hide_if_empty"] = l.exposed_hide_if_empty;
+    j["exposed_single_value"] = l.exposed_single_value;
     j["ignore_persistence"] = l.ignore_persistence;
     j["font_family"]   = l.font_family;
     j["font_style"]    = l.font_style;
@@ -1607,6 +1609,9 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->rich_text_html.clear();
     l->clock_format  = bounded_string(j, "clock_format", "H:i:s", kMaxNameLength);
     l->expose_text   = json_bool(j, "expose_text", false);
+    l->exposed_hide_if_empty = json_bool(j, "exposed_hide_if_empty", false);
+    l->exposed_single_value = json_bool(j, "exposed_single_value", false);
+    l->live_cue_hidden_if_empty = false;
     l->ignore_persistence = !l->expose_text && json_bool(j, "ignore_persistence", false);
     l->font_family   = bounded_string(j, "font_family", "Helvetica Neue", kMaxNameLength);
     l->font_style    = bounded_string(j, "font_style", "Regular", kMaxNameLength);

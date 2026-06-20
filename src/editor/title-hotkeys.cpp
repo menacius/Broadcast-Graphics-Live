@@ -203,6 +203,17 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
         for (size_t i = old_size; i < exposed.size(); ++i)
             row[i] = live_cue_layer_value(exposed[i]);
     }
+    for (size_t col = 0; col < exposed.size(); ++col) {
+        if (!exposed[col] || !exposed[col]->exposed_single_value || title->live_text_rows.empty())
+            continue;
+        const std::string shared_value = col < title->live_text_rows.front().size()
+            ? title->live_text_rows.front()[col]
+            : live_cue_layer_value(exposed[col]);
+        for (auto &row : title->live_text_rows) {
+            if (col < row.size())
+                row[col] = shared_value;
+        }
+    }
     ensure_live_text_row_ids(*title);
 }
 
@@ -211,15 +222,21 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
                                 const std::vector<std::shared_ptr<Layer>> &exposed)
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
-    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
+    for (int col = 0; col < (int)exposed.size(); ++col) {
         auto &target = exposed[col];
         if (!target)
             continue;
+        const int value_row = target->exposed_single_value ? 0 : row;
+        if (value_row < 0 || value_row >= (int)title->live_text_rows.size() ||
+            col >= (int)title->live_text_rows[value_row].size())
+            continue;
+        const std::string &cue_value = title->live_text_rows[value_row][col];
+        target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
-            target->image_path = title->live_text_rows[row][col];
+            target->image_path = cue_value;
             continue;
         }
-        target->text_content = title->live_text_rows[row][col];
+        target->text_content = cue_value;
         if (target->rich_text.empty())
             target->rich_text = rich_text_document_from_layer_defaults(*target);
         RichTextCharFormat insertion_format = target->rich_text.has_typing_format
@@ -372,11 +389,16 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
             title->cue_persistent_text_columns.clear();
         } else if (can_persist_transition) {
             title->cue_uncue_requested = false;
-            for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col) {
+            for (int col = 0; col < (int)exposed.size(); ++col) {
+                auto &target = exposed[col];
+                const int previous_value_row = target && target->exposed_single_value ? 0 : previous_row;
+                const int next_value_row = target && target->exposed_single_value ? 0 : row;
                 if (title->cue_text_persistence &&
-                    previous_row >= 0 && previous_row < (int)title->live_text_rows.size() &&
-                    col < (int)title->live_text_rows[previous_row].size() &&
-                    title->live_text_rows[previous_row][col] == title->live_text_rows[row][col])
+                    previous_value_row >= 0 && previous_value_row < (int)title->live_text_rows.size() &&
+                    next_value_row >= 0 && next_value_row < (int)title->live_text_rows.size() &&
+                    col < (int)title->live_text_rows[previous_value_row].size() &&
+                    col < (int)title->live_text_rows[next_value_row].size() &&
+                    title->live_text_rows[previous_value_row][col] == title->live_text_rows[next_value_row][col])
                     title->cue_persistent_text_columns[col] = true;
             }
             title->pending_cue_row = row;

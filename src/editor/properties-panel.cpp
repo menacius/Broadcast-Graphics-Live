@@ -896,6 +896,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_expose_text_ = new QCheckBox(obsgs_tr("OBSTitles.ExposeInDock"), inner);
     chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
     style_checkbox(chk_expose_text_);
+    chk_exposed_hide_if_empty_ = new QCheckBox(obsgs_tr("OBSTitles.ExposedHideIfEmpty"), inner);
+    chk_exposed_hide_if_empty_->setToolTip(obsgs_tr("OBSTitles.ExposedHideIfEmptyTooltip"));
+    style_checkbox(chk_exposed_hide_if_empty_);
+    chk_exposed_single_value_ = new QCheckBox(obsgs_tr("OBSTitles.ExposedSingleValue"), inner);
+    chk_exposed_single_value_->setToolTip(obsgs_tr("OBSTitles.ExposedSingleValueTooltip"));
+    style_checkbox(chk_exposed_single_value_);
     chk_ignore_persistence_ = new QCheckBox(obsgs_tr("OBSTitles.IgnorePersistence"), inner);
     chk_ignore_persistence_->setToolTip(obsgs_tr("OBSTitles.IgnorePersistenceTooltip"));
     style_checkbox(chk_ignore_persistence_);
@@ -1124,6 +1130,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
     add_form_row(live_edit_form, obsgs_tr("OBSTitles.SceneMask"), chk_scene_mask_);
     add_form_row(live_edit_form, obsgs_tr("OBSTitles.DockEditing"), chk_expose_text_);
+    add_form_row(live_edit_form, QString(), chk_exposed_hide_if_empty_);
+    add_form_row(live_edit_form, QString(), chk_exposed_single_value_);
     add_form_row(live_edit_form, obsgs_tr("OBSTitles.Persistence"), chk_ignore_persistence_);
     vl->addWidget(live_edit_box_);
 
@@ -2057,6 +2065,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (can_edit()) {
                     layer_->expose_text = v;
                     if (v) layer_->ignore_persistence = false;
+                    load_values();
+                    emit_change();
+                }
+            });
+    connect(chk_exposed_hide_if_empty_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->exposed_hide_if_empty = v;
+                    if (!v) layer_->live_cue_hidden_if_empty = false;
+                    load_values();
+                    emit_change();
+                }
+            });
+    connect(chk_exposed_single_value_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool v){
+                if (can_edit()) {
+                    layer_->exposed_single_value = v;
                     load_values();
                     emit_change();
                 }
@@ -4574,6 +4599,18 @@ void PropertiesPanel::load_values()
             if (auto *label = live_form->labelForField(chk_expose_text_))
                 label->setVisible(show_expose_to_dock);
         }
+        if (chk_exposed_hide_if_empty_) {
+            chk_exposed_hide_if_empty_->setVisible(show_expose_to_dock);
+            chk_exposed_hide_if_empty_->setEnabled(show_expose_to_dock && layer_->expose_text);
+            if (auto *label = live_form->labelForField(chk_exposed_hide_if_empty_))
+                label->setVisible(show_expose_to_dock);
+        }
+        if (chk_exposed_single_value_) {
+            chk_exposed_single_value_->setVisible(show_expose_to_dock);
+            chk_exposed_single_value_->setEnabled(show_expose_to_dock && layer_->expose_text);
+            if (auto *label = live_form->labelForField(chk_exposed_single_value_))
+                label->setVisible(show_expose_to_dock);
+        }
         if (chk_ignore_persistence_) {
             chk_ignore_persistence_->setVisible(true);
             if (auto *label = live_form->labelForField(chk_ignore_persistence_))
@@ -5060,6 +5097,16 @@ void PropertiesPanel::load_values()
     {
         QSignalBlocker block(chk_expose_text_);
         chk_expose_text_->setChecked(layer_->expose_text);
+    }
+    if (chk_exposed_hide_if_empty_) {
+        QSignalBlocker block(chk_exposed_hide_if_empty_);
+        chk_exposed_hide_if_empty_->setEnabled(layer_->expose_text);
+        chk_exposed_hide_if_empty_->setChecked(layer_->exposed_hide_if_empty);
+    }
+    if (chk_exposed_single_value_) {
+        QSignalBlocker block(chk_exposed_single_value_);
+        chk_exposed_single_value_->setEnabled(layer_->expose_text);
+        chk_exposed_single_value_->setChecked(layer_->exposed_single_value);
     }
     if (chk_ignore_persistence_) {
         const bool can_ignore_persistence = !layer_->expose_text;

@@ -1827,7 +1827,7 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
 {
     const QSize frame_size(std::max(1, title.width), std::max(1, title.height));
     const QRect frame_rect(QPoint(0, 0), frame_size);
-    if (!layer.visible)
+    if (!layer.visible || layer.live_cue_hidden_if_empty)
         return QRect();
 
     const double x = layer.position.static_value.x;
@@ -2120,7 +2120,12 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
         auto &target = exposed[col];
         if (!target)
             continue;
-        const std::string cue_value = cue_title->live_text_rows[row][col];
+        const int value_row = target->exposed_single_value ? 0 : row;
+        if (value_row < 0 || value_row >= static_cast<int>(cue_title->live_text_rows.size()) ||
+            col >= static_cast<int>(cue_title->live_text_rows[value_row].size()))
+            continue;
+        const std::string cue_value = cue_title->live_text_rows[value_row][col];
+        target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
             target->image_path = cue_value;
             continue;
@@ -2173,18 +2178,46 @@ QVector<std::shared_ptr<Title>> CacheManager::liveCueTransitionVariants(
         std::vector<bool> result;
         if (!candidate || !candidate->cue_text_persistence)
             return result;
-        size_t exposed_count = 0;
+        std::vector<std::shared_ptr<Layer>> exposed;
         for (const auto &layer : candidate->layers) {
             if (layer && (layer->type == LayerType::Text || layer->type == LayerType::Ticker || layer->type == LayerType::Image) &&
                 layer->expose_text)
-                ++exposed_count;
+                exposed.push_back(layer);
         }
-        result.assign(exposed_count, false);
-        for (size_t col = 0; col < result.size() &&
-             col < title->live_text_rows[static_cast<size_t>(from_row)].size() &&
-             col < title->live_text_rows[static_cast<size_t>(to_row)].size(); ++col) {
-            result[col] = title->live_text_rows[static_cast<size_t>(from_row)][col] ==
-                          title->live_text_rows[static_cast<size_t>(to_row)][col];
+        if (!candidate->live_text_column_order.empty()) {
+            std::vector<std::shared_ptr<Layer>> ordered;
+            ordered.reserve(exposed.size());
+            for (const auto &layer_id : candidate->live_text_column_order) {
+                auto it = std::find_if(exposed.begin(), exposed.end(),
+                                       [&](const std::shared_ptr<Layer> &layer) {
+                                           return layer && layer->id == layer_id;
+                                       });
+                if (it != exposed.end())
+                    ordered.push_back(*it);
+            }
+            for (const auto &layer : exposed) {
+                auto it = std::find_if(ordered.begin(), ordered.end(),
+                                       [&](const std::shared_ptr<Layer> &candidate_layer) {
+                                           return candidate_layer && layer && candidate_layer->id == layer->id;
+                                       });
+                if (it == ordered.end())
+                    ordered.push_back(layer);
+            }
+            exposed = std::move(ordered);
+        }
+        result.assign(exposed.size(), false);
+        for (size_t col = 0; col < result.size(); ++col) {
+            const auto &layer = exposed[col];
+            const int from_value_row = layer && layer->exposed_single_value ? 0 : from_row;
+            const int to_value_row = layer && layer->exposed_single_value ? 0 : to_row;
+            if (from_value_row < 0 || to_value_row < 0 ||
+                from_value_row >= static_cast<int>(title->live_text_rows.size()) ||
+                to_value_row >= static_cast<int>(title->live_text_rows.size()) ||
+                col >= title->live_text_rows[static_cast<size_t>(from_value_row)].size() ||
+                col >= title->live_text_rows[static_cast<size_t>(to_value_row)].size())
+                continue;
+            result[col] = title->live_text_rows[static_cast<size_t>(from_value_row)][col] ==
+                          title->live_text_rows[static_cast<size_t>(to_value_row)][col];
         }
         return result;
     };

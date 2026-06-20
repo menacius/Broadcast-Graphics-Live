@@ -735,6 +735,7 @@ static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &layer, cons
 {
     if (!layer)
         return;
+    layer->live_cue_hidden_if_empty = layer->exposed_hide_if_empty && value.empty();
     if (layer->type == LayerType::Image) {
         layer->image_path = value;
         return;
@@ -746,8 +747,14 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
     auto exposed = exposed_text_layers(title);
-    for (int col = 0; col < (int)exposed.size() && col < (int)title->live_text_rows[row].size(); ++col)
-        apply_live_cue_layer_value(exposed[col], title->live_text_rows[row][col]);
+    for (int col = 0; col < (int)exposed.size(); ++col) {
+        const auto &target = exposed[col];
+        const int value_row = target && target->exposed_single_value ? 0 : row;
+        if (value_row < 0 || value_row >= (int)title->live_text_rows.size() ||
+            col >= (int)title->live_text_rows[value_row].size())
+            continue;
+        apply_live_cue_layer_value(target, title->live_text_rows[value_row][col]);
+    }
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -886,7 +893,8 @@ static const Layer *find_layer_by_id(const Title &title, const std::string &id)
 
 static bool layer_chain_visible(const Title &title, const Layer &layer, double title_time, int depth = 0)
 {
-    if (depth > 64 || !layer.visible || title_time < layer.in_time || title_time > layer.out_time)
+    if (depth > 64 || !layer.visible || layer.live_cue_hidden_if_empty ||
+        title_time < layer.in_time || title_time > layer.out_time)
         return false;
     if (layer.parent_id.empty())
         return true;

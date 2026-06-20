@@ -230,6 +230,7 @@ static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &target, con
 {
     if (!target)
         return;
+    target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && value.empty();
     if (target->type == LayerType::Image) {
         target->image_path = value;
         return;
@@ -320,6 +321,17 @@ static void normalize_live_text_rows(const std::shared_ptr<Title> &title,
         row.resize(exposed.size());
         for (size_t i = old_size; i < exposed.size(); ++i)
             row[i] = live_cue_layer_value(exposed[i]);
+    }
+    for (size_t col = 0; col < exposed.size(); ++col) {
+        if (!exposed[col] || !exposed[col]->exposed_single_value || title->live_text_rows.empty())
+            continue;
+        const std::string shared_value = col < title->live_text_rows.front().size()
+            ? title->live_text_rows.front()[col]
+            : live_cue_layer_value(exposed[col]);
+        for (auto &row : title->live_text_rows) {
+            if (col < row.size())
+                row[col] = shared_value;
+        }
     }
     ensure_live_text_row_ids(*title);
 }
@@ -3611,8 +3623,16 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     if (row < 0 || row >= (int)title->live_text_rows.size()) return;
     if (col < 0 || col >= (int)title->live_text_rows[row].size()) return;
 
+    auto exposed = exposed_text_layers(title);
+    const bool single_value_column = col >= 0 && col < (int)exposed.size() &&
+        exposed[col] && exposed[col]->exposed_single_value;
     std::vector<int> target_rows = selected_live_text_rows();
-    if (target_rows.size() <= 1 ||
+    if (single_value_column) {
+        target_rows.clear();
+        target_rows.reserve(title->live_text_rows.size());
+        for (int i = 0; i < (int)title->live_text_rows.size(); ++i)
+            target_rows.push_back(i);
+    } else if (target_rows.size() <= 1 ||
         std::find(target_rows.begin(), target_rows.end(), row) == target_rows.end()) {
         target_rows = {row};
     }
@@ -3899,11 +3919,16 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.clear();
     } else if (can_persist_transition) {
-        for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col) {
+        for (int col = 0; col < (int)exposed_now.size(); ++col) {
+            auto &target = exposed_now[col];
+            const int previous_value_row = target && target->exposed_single_value ? 0 : previous_row;
+            const int next_value_row = target && target->exposed_single_value ? 0 : row;
             if (title->cue_text_persistence &&
-                previous_row >= 0 && previous_row < (int)title->live_text_rows.size() &&
-                col < (int)title->live_text_rows[previous_row].size() &&
-                title->live_text_rows[previous_row][col] == title->live_text_rows[row][col])
+                previous_value_row >= 0 && previous_value_row < (int)title->live_text_rows.size() &&
+                next_value_row >= 0 && next_value_row < (int)title->live_text_rows.size() &&
+                col < (int)title->live_text_rows[previous_value_row].size() &&
+                col < (int)title->live_text_rows[next_value_row].size() &&
+                title->live_text_rows[previous_value_row][col] == title->live_text_rows[next_value_row][col])
                 title->cue_persistent_text_columns[col] = true;
         }
         title->pending_cue_row = row;
@@ -3911,9 +3936,13 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     } else if (needs_outro_before_cue) {
         title->pending_cue_row = row;
     } else if (!is_active_cue || title->pending_cue_row >= 0) {
-        for (int col = 0; col < (int)exposed_now.size() && col < (int)title->live_text_rows[row].size(); ++col) {
+        for (int col = 0; col < (int)exposed_now.size(); ++col) {
             auto &target = exposed_now[col];
-            apply_live_cue_layer_value(target, title->live_text_rows[row][col]);
+            const int value_row = target && target->exposed_single_value ? 0 : row;
+            if (value_row < 0 || value_row >= (int)title->live_text_rows.size() ||
+                col >= (int)title->live_text_rows[value_row].size())
+                continue;
+            apply_live_cue_layer_value(target, title->live_text_rows[value_row][col]);
         }
         title->current_cue_row = row;
         title->pending_cue_row = -1;
@@ -4305,6 +4334,13 @@ void TitleDock::populate_exposed_text()
         text_table_->setItem(row, 0, select_item);
         update_live_text_cache_cell(title, row);
         for (int col = 0; col < (int)exposed.size(); ++col) {
+            if (exposed[col] && exposed[col]->exposed_single_value && row > 0) {
+                auto *single_item = new QTableWidgetItem(QString());
+                single_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                single_item->setToolTip(obsgs_tr("OBSTitles.ExposedSingleValue"));
+                text_table_->setItem(row, col + 2, single_item);
+                continue;
+            }
             if (layer_uses_image_cue_value(exposed[col])) {
                 auto *image = new LiveImageCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
                 image->path_changed = [this, title, row, col](const QString &path) {

@@ -130,6 +130,8 @@ private:
     QDoubleSpinBox  *spn_max_text_box_width_ = nullptr;
     QDoubleSpinBox  *spn_max_text_box_height_ = nullptr;
     QCheckBox       *chk_expose_text_ = nullptr;
+    QCheckBox       *chk_exposed_hide_if_empty_ = nullptr;
+    QCheckBox       *chk_exposed_single_value_ = nullptr;
     QCheckBox       *chk_ignore_persistence_ = nullptr;
     QButtonGroup    *grp_text_align_ = nullptr;
     QButtonGroup    *grp_text_valign_ = nullptr;
