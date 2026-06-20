@@ -740,6 +740,17 @@ void CanvasPreview::set_text_tool_active(LayerType type)
     update();
 }
 
+void CanvasPreview::set_image_tool_active()
+{
+    commit_text_edit(true);
+    active_tool_ = CanvasTool::Image;
+    drawing_shape_ = false;
+    color_picker_tooltip_visible_ = false;
+    invalidate_canvas_overlay_caches();
+    setCursor(Qt::CrossCursor);
+    update();
+}
+
 void CanvasPreview::set_color_picker_tool_active()
 {
     commit_text_edit(true);
@@ -1739,7 +1750,8 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
 
 bool CanvasPreview::active_draw_tool_can_manipulate_selected() const
 {
-    if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text)
+    if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text &&
+        active_tool_ != CanvasTool::Image)
         return false;
     const auto layers = selected_layers();
     if (layers.empty())
@@ -1754,6 +1766,9 @@ bool CanvasPreview::active_draw_tool_can_manipulate_selected() const
                 return false;
         } else if (active_tool_ == CanvasTool::Text) {
             if (!is_canvas_text_layer(*layer))
+                return false;
+        } else if (active_tool_ == CanvasTool::Image) {
+            if (layer->type != LayerType::Image)
                 return false;
         }
     }
@@ -3054,6 +3069,8 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     }
     p.restore();
 
+    draw_empty_image_placeholders(p);
+
     if (inline_text_editor_ && inline_text_editor_->isVisible()) {
         const QPoint viewport_origin = inline_text_editor_->viewport()->mapTo(this, QPoint(0, 0));
         const std::vector<QRectF> selection_rects = text_edit_selection_viewport_rects(inline_text_editor_);
@@ -3307,9 +3324,11 @@ void CanvasPreview::draw_toolbar_preview(QPainter &p)
     p.setRenderHint(QPainter::Antialiasing, true);
 
     const bool text_preview = active_tool_ == CanvasTool::Text;
-    const QColor accent = text_preview ? layer_type_color(active_text_layer_type_) : layer_type_color(LayerType::Shape);
+    const bool image_preview = active_tool_ == CanvasTool::Image;
+    const QColor accent = text_preview ? layer_type_color(active_text_layer_type_)
+                                       : layer_type_color(image_preview ? LayerType::Image : LayerType::Shape);
     QColor fill = accent;
-    fill.setAlpha(text_preview ? 38 : (active_shape_type_ == ShapeType::Line ? 0 : 42));
+    fill.setAlpha(text_preview ? 38 : (image_preview ? 20 : (active_shape_type_ == ShapeType::Line ? 0 : 42)));
     QColor stroke = accent.lighter(135);
     stroke.setAlpha(235);
 
@@ -3326,10 +3345,85 @@ void CanvasPreview::draw_toolbar_preview(QPainter &p)
         label_font.setBold(true);
         p.setFont(label_font);
         p.drawText(view_rect.adjusted(8.0, 6.0, -8.0, -6.0), Qt::AlignLeft | Qt::AlignTop, label);
+    } else if (image_preview) {
+        p.drawRect(view_rect);
+        p.save();
+        QPainterPath clip_path;
+        clip_path.addRect(view_rect);
+        p.setClipPath(clip_path);
+        QPen hatch_pen(stroke, 1.2, Qt::SolidLine);
+        hatch_pen.setCosmetic(true);
+        p.setPen(hatch_pen);
+        const double spacing = 12.0;
+        for (double offset = -view_rect.height(); offset <= view_rect.width(); offset += spacing) {
+            p.drawLine(QPointF(view_rect.left() + offset, view_rect.bottom()),
+                       QPointF(view_rect.left() + offset + view_rect.height(), view_rect.top()));
+        }
+        p.restore();
     } else {
         p.drawPath(tool_shape_path(active_shape_type_, view_rect));
     }
 
+    p.restore();
+}
+
+void CanvasPreview::draw_empty_image_placeholders(QPainter &p)
+{
+    if (!title_)
+        return;
+
+    QColor color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+    if (!color.isValid())
+        color = QColor(0, 170, 255, 220);
+    QColor fill = color;
+    fill.setAlpha(std::clamp(color.alpha() / 8, 12, 34));
+    QColor hatch = color;
+    hatch.setAlpha(std::clamp(color.alpha(), 110, 210));
+
+    p.save();
+    p.setClipRect(canvas_view_rect());
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (const auto &layer : title_->layers) {
+        if (!layer || layer->type != LayerType::Image || !layer->visible ||
+            !layer->image_path.empty() || playhead_ < layer->in_time || playhead_ > layer->out_time)
+            continue;
+
+        const QRectF local_rect = layer_local_rect(*layer);
+        if (!local_rect.isValid() || local_rect.isEmpty())
+            continue;
+
+        QPolygonF polygon;
+        polygon << canvas_to_view(layer_to_canvas(*layer, local_rect.topLeft()))
+                << canvas_to_view(layer_to_canvas(*layer, local_rect.topRight()))
+                << canvas_to_view(layer_to_canvas(*layer, local_rect.bottomRight()))
+                << canvas_to_view(layer_to_canvas(*layer, local_rect.bottomLeft()));
+        QPainterPath clip_path;
+        clip_path.addPolygon(polygon);
+        clip_path.closeSubpath();
+        p.save();
+        p.setClipPath(clip_path);
+        p.fillPath(clip_path, fill);
+        QPen hatch_pen(hatch, 1.25, Qt::SolidLine);
+        hatch_pen.setCosmetic(true);
+        p.setPen(hatch_pen);
+
+        // Draw the hatch in layer-local coordinates so it follows rotation and
+        // scale, while keeping roughly constant screen-space line spacing.
+        const QPointF local_zero_view = canvas_to_view(layer_to_canvas(*layer, QPointF(0.0, 0.0)));
+        const QPointF local_x_view = canvas_to_view(layer_to_canvas(*layer, QPointF(1.0, 0.0)));
+        const QPointF local_y_view = canvas_to_view(layer_to_canvas(*layer, QPointF(0.0, 1.0)));
+        const double pixels_per_local_unit = std::max(
+            0.01, (QLineF(local_zero_view, local_x_view).length() +
+                   QLineF(local_zero_view, local_y_view).length()) * 0.5);
+        const double spacing = 12.0 / pixels_per_local_unit;
+        for (double offset = -local_rect.height(); offset <= local_rect.width(); offset += spacing) {
+            const QPointF start_local(local_rect.left() + offset, local_rect.bottom());
+            const QPointF end_local(local_rect.left() + offset + local_rect.height(), local_rect.top());
+            p.drawLine(canvas_to_view(layer_to_canvas(*layer, start_local)),
+                       canvas_to_view(layer_to_canvas(*layer, end_local)));
+        }
+        p.restore();
+    }
     p.restore();
 }
 
@@ -3588,7 +3682,8 @@ void CanvasPreview::clear_draw_tool_snap_cursor()
 void CanvasPreview::update_draw_tool_snap_cursor(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
     if (!title_ || drawing_shape_ ||
-        (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text)) {
+        (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text &&
+         active_tool_ != CanvasTool::Image)) {
         clear_draw_tool_snap_cursor();
         return;
     }
@@ -3614,7 +3709,8 @@ void CanvasPreview::update_draw_tool_snap_cursor(const QPointF &view_pt, Qt::Key
 
 void CanvasPreview::draw_snap_cursor_indicator(QPainter &p)
 {
-    if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text && !drawing_shape_)
+    if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text &&
+        active_tool_ != CanvasTool::Image && !drawing_shape_)
         return;
     if (!snap_cursor_visible_ && !final_snap_cursor_visible_)
         return;
@@ -3756,13 +3852,15 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
     if (mouse_inside_canvas_ && drag_mode_ == DragMode::None && !drawing_shape_ &&
         inline_text_layer_id_.empty()) {
         const bool selection_hover = active_tool_ == CanvasTool::Selection;
-        const bool draw_tool_hover = active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text;
+        const bool draw_tool_hover = active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text ||
+                                     active_tool_ == CanvasTool::Image;
         if (selection_hover || draw_tool_hover) {
             if (auto layer = layer_at_view_pos(view_pt)) {
                 if (selection_hover ||
                     (active_tool_ == CanvasTool::Shape &&
                      (layer->type == LayerType::Shape || layer->type == LayerType::SolidRect)) ||
-                    (active_tool_ == CanvasTool::Text && is_canvas_text_layer(*layer))) {
+                    (active_tool_ == CanvasTool::Text && is_canvas_text_layer(*layer)) ||
+                    (active_tool_ == CanvasTool::Image && layer->type == LayerType::Image)) {
                     next_hover = layer->id;
                 }
             }
@@ -3974,15 +4072,15 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     }
 
     bool begin_draw_tool_layer_manipulation = false;
-    if ((active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) &&
-        active_draw_tool_can_manipulate_selected()) {
+    if ((active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text ||
+         active_tool_ == CanvasTool::Image) && active_draw_tool_can_manipulate_selected()) {
         drag_mode_ = hit_test_selected(ev->pos());
 
-        // With the Shape tool active, dragging the body of an existing shape should
-        // not move it.  Body drag remains reserved for drawing a new shape, while
-        // explicit handles (resize/rotate/origin/corner radius) still manipulate
-        // the selected shape.  Text keeps its existing body-move behavior.
-        if (active_tool_ == CanvasTool::Shape && drag_mode_ == DragMode::Move)
+        // With the Shape or Image tool active, dragging the body of a matching
+        // existing layer remains reserved for drawing a new box. Explicit handles
+        // still manipulate the selected layer; Text keeps body-move behavior.
+        if ((active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Image) &&
+            drag_mode_ == DragMode::Move)
             drag_mode_ = DragMode::None;
 
         if (drag_mode_ != DragMode::None) {
@@ -4001,7 +4099,8 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     }
 
     if (!begin_draw_tool_layer_manipulation &&
-        (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text)) {
+        (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text ||
+         active_tool_ == CanvasTool::Image)) {
         drawing_shape_ = true;
         drawing_shape_changed_ = false;
         drag_mode_ = DragMode::None;
@@ -4219,14 +4318,15 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
-    if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text) {
+    if (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Text ||
+        active_tool_ == CanvasTool::Image) {
         if (active_draw_tool_can_manipulate_selected()) {
             DragMode mode = hit_test_selected(ev->pos());
 
-            // Do not advertise body-move for existing shape layers while the Shape
-            // tool is active; only explicit handles should switch away from the
-            // draw cursor.
-            if (active_tool_ == CanvasTool::Shape && mode == DragMode::Move)
+            // Shape/Image tools reserve body drags for drawing a new box; only
+            // explicit transform handles switch away from the draw cursor.
+            if ((active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Image) &&
+                mode == DragMode::Move)
                 mode = DragMode::None;
 
             if (mode != DragMode::None) {
@@ -4236,7 +4336,7 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
             }
         }
         update_draw_tool_snap_cursor(ev->pos(), ev->modifiers());
-        setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor : Qt::IBeamCursor);
+        setCursor(active_tool_ == CanvasTool::Text ? Qt::IBeamCursor : Qt::CrossCursor);
         return;
     }
     if (active_tool_ == CanvasTool::ColorPicker) {
@@ -4482,6 +4582,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
                                     : toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_);
         const bool has_drawn_size = drawing_shape_changed_ || dragged_far_enough;
         const bool was_text_tool = active_tool_ == CanvasTool::Text;
+        const bool was_image_tool = active_tool_ == CanvasTool::Image;
         const ShapeType final_shape_type = active_shape_type_;
         const LayerType final_text_type = active_text_layer_type_;
         const QPointF start_canvas = shape_draw_start_canvas_;
@@ -4497,15 +4598,18 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 
         if (was_text_tool)
             emit text_drawing_started(final_text_type, start_canvas);
+        else if (was_image_tool)
+            emit image_drawing_started(start_canvas);
         else
             emit shape_drawing_started(final_shape_type, start_canvas);
         if (has_drawn_size)
             emit shape_drawing_changed(final_rect);
         emit shape_drawing_finished(true);
 
-        setCursor(active_tool_ == CanvasTool::Shape ? Qt::CrossCursor :
-                  (active_tool_ == CanvasTool::Text ? Qt::IBeamCursor :
-                   (active_tool_ == CanvasTool::ColorPicker || active_tool_ == CanvasTool::Gradient ? Qt::CrossCursor : Qt::ArrowCursor)));
+        setCursor(active_tool_ == CanvasTool::Text ? Qt::IBeamCursor :
+                  (active_tool_ == CanvasTool::Shape || active_tool_ == CanvasTool::Image ||
+                   active_tool_ == CanvasTool::ColorPicker || active_tool_ == CanvasTool::Gradient
+                       ? Qt::CrossCursor : Qt::ArrowCursor));
         ev->accept();
         return;
     }

@@ -163,6 +163,8 @@ private:
     std::shared_ptr<Layer> create_basic_layer(LayerType type, const QString &name_override = QString());
     void create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt);
     void create_text_layer_from_canvas(LayerType type, const QPointF &canvas_pt);
+    void create_image_layer_from_canvas(const QPointF &canvas_pt);
+    void choose_image_file_for_layer(const std::string &layer_id);
     void create_image_layer_from_external_source(const QString &image_path, const QPointF &canvas_pt);
     void create_text_layer_from_external_source(const QString &text, const QPointF &canvas_pt);
     void update_canvas_created_shape(const QRectF &canvas_rect);

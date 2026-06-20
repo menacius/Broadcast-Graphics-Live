@@ -108,6 +108,7 @@ public:
     void set_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
     void set_text_tool_active(LayerType type);
+    void set_image_tool_active();
     void set_color_picker_tool_active();
     void set_gradient_tool_active();
     void set_gradient_editor_active(bool active);
@@ -123,6 +124,7 @@ signals:
     void zoom_percent_changed(int percent);
     void shape_drawing_started(ShapeType shape_type, const QPointF &canvas_pt);
     void text_drawing_started(LayerType type, const QPointF &canvas_pt);
+    void image_drawing_started(const QPointF &canvas_pt);
     void shape_drawing_changed(const QRectF &canvas_rect);
     void shape_drawing_finished(bool keep_layer);
     void text_edit_changed(const std::string &layer_id);
@@ -175,7 +177,7 @@ private:
         GuideX,
         GuideY
     };
-    enum class CanvasTool { Selection, Shape, Text, ColorPicker, Gradient };
+    enum class CanvasTool { Selection, Shape, Text, Image, ColorPicker, Gradient };
 
     struct GradientHandleGeometry {
         bool valid = false;
@@ -271,6 +273,7 @@ private:
     double toolbar_draw_aspect_ratio() const;
     QRect toolbar_preview_update_rect() const;
     void draw_toolbar_preview(QPainter &p);
+    void draw_empty_image_placeholders(QPainter &p);
     bool sample_color_at_view(const QPointF &view_pt, QColor &color);
     void update_color_picker_tooltip(const QPointF &view_pt);
     void draw_color_picker_tooltip(QPainter &p);

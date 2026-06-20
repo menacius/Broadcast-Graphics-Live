@@ -100,6 +100,7 @@ public:
     void activate_selection_tool();
     void activate_shape_tool(ShapeType shape_type);
     void activate_text_tool(LayerType type = LayerType::Text);
+    void activate_image_tool();
     void activate_color_picker_tool();
     void activate_gradient_tool();
 
@@ -107,6 +108,7 @@ signals:
     void selection_tool_requested();
     void shape_tool_requested(ShapeType shape_type);
     void text_tool_requested(LayerType type);
+    void image_tool_requested();
     void color_picker_tool_requested();
     void gradient_tool_requested();
     void foreground_color_requested();
@@ -119,6 +121,7 @@ private:
     QToolButton *selection_button_ = nullptr;
     QToolButton *shape_button_ = nullptr;
     QToolButton *text_button_ = nullptr;
+    QToolButton *image_button_ = nullptr;
     QToolButton *color_picker_button_ = nullptr;
     QToolButton *gradient_button_ = nullptr;
     QActionGroup *tool_group_ = nullptr;

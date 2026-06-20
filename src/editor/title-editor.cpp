@@ -1008,6 +1008,49 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
 
 
 
+void TitleEditor::create_image_layer_from_canvas(const QPointF &canvas_pt)
+{
+    if (!title_) return;
+
+    auto layer = create_basic_layer(LayerType::Image, obsgs_tr("OBSTitles.Image"));
+    if (!layer) return;
+    layer->position.static_value.x = canvas_pt.x();
+    layer->position.static_value.y = canvas_pt.y();
+    layer->image_path.clear();
+    layer->image_size_auto_fit = true;
+    layer->lock_aspect_ratio = true;
+
+    canvas_created_shape_layer_id_ = layer->id;
+    title_->add_layer(layer);
+    layers_->refresh();
+    on_layer_selected(layer->id);
+}
+
+void TitleEditor::choose_image_file_for_layer(const std::string &layer_id)
+{
+    if (!title_ || layer_id.empty()) return;
+    auto layer = title_->find_layer(layer_id);
+    if (!layer || layer->type != LayerType::Image) return;
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, obsgs_tr("OBSTitles.ChooseImage"), QString(),
+        obsgs_tr("OBSTitles.ImageFileFilter"));
+    if (path.isEmpty()) {
+        // Keep the empty image layer as a usable canvas placeholder.
+        force_next_title_visual_update();
+        if (canvas_) canvas_->refresh_preview();
+        return;
+    }
+
+    gsp::apply_exposed_image_cue_value(*layer, path.toStdString());
+    layer->image_path = path.toStdString();
+    layer->name = unique_layer_name(QFileInfo(path).completeBaseName().toStdString(), {layer_id});
+    layers_->refresh();
+    on_layer_selected(layer_id);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
 void TitleEditor::create_image_layer_from_external_source(const QString &image_path, const QPointF &canvas_pt)
 {
     if (!title_ || image_path.trimmed().isEmpty())
@@ -1112,6 +1155,7 @@ void TitleEditor::finish_canvas_created_shape(bool keep_layer)
     auto layer = title_->find_layer(layer_id);
     if (!layer) return;
     const bool is_text_layer = is_canvas_text_layer(*layer);
+    const bool is_image_layer = layer->type == LayerType::Image;
     const bool too_small = is_text_layer
         ? false
         : (layer->shape_type == ShapeType::Line
@@ -1134,8 +1178,15 @@ void TitleEditor::finish_canvas_created_shape(bool keep_layer)
     on_layer_selected(layer_id);
     force_next_title_visual_update();
     on_title_modified();
-    if (is_text_layer && canvas_)
+    if (is_text_layer && canvas_) {
         canvas_->begin_text_edit_for_layer(layer_id);
+    } else if (is_image_layer) {
+        // Let the canvas/layer list paint the new image box before opening the picker.
+        // Cancelling intentionally keeps the layer as an empty image placeholder.
+        QTimer::singleShot(0, this, [this, layer_id]() {
+            choose_image_file_for_layer(layer_id);
+        });
+    }
 }
 
 void TitleEditor::build_ui()
@@ -1845,23 +1896,17 @@ void TitleEditor::build_ui()
     connect(layers_, &LayerStack::add_layer_requested,
             this, [this](LayerType type) {
                 if (!title_) return;
+                if (type == LayerType::Image) {
+                    // Image layers use the same draw-first workflow as toolbar objects:
+                    // activate the image tool, then draw the image box on the canvas.
+                    if (tools_sidebar_)
+                        tools_sidebar_->activate_image_tool();
+                    else if (canvas_)
+                        canvas_->set_image_tool_active();
+                    return;
+                }
                 auto l = create_basic_layer(type);
                 if (!l) return;
-                if (type == LayerType::Image) {
-                    l->lock_aspect_ratio = true;
-                    QString path = QFileDialog::getOpenFileName(
-                        this, obsgs_tr("OBSTitles.ChooseImage"), QString(),
-                        obsgs_tr("OBSTitles.ImageFileFilter"));
-                    if (path.isEmpty()) return;
-                    l->image_path = path.toStdString();
-                    QSize image_size = editor_image_intrinsic_size(path);
-                    if (image_size.isValid() && !image_size.isEmpty()) {
-                        l->image_width = (float)image_size.width();
-                        l->image_height = (float)image_size.height();
-                        l->image_size.static_value.x = l->image_width;
-                        l->image_size.static_value.y = l->image_height;
-                    }
-                }
                 title_->add_layer(l);
                 if (type == LayerType::Text)
                     pending_text_layer_auto_names_.insert(l->id);
@@ -2179,6 +2224,8 @@ void TitleEditor::build_ui()
             this, &TitleEditor::create_shape_layer_from_canvas);
     connect(canvas_, &CanvasPreview::text_drawing_started,
             this, &TitleEditor::create_text_layer_from_canvas);
+    connect(canvas_, &CanvasPreview::image_drawing_started,
+            this, &TitleEditor::create_image_layer_from_canvas);
     connect(canvas_, &CanvasPreview::external_image_layer_requested,
             this, &TitleEditor::create_image_layer_from_external_source);
     connect(canvas_, &CanvasPreview::external_text_layer_requested,
@@ -2198,6 +2245,9 @@ void TitleEditor::build_ui()
         connect(tools_sidebar_, &ToolsSidebar::text_tool_requested, this, [this](LayerType type) {
             if (tools_sidebar_) tools_sidebar_->set_selected_text_layer_type(type);
             if (canvas_) canvas_->set_text_tool_active(type);
+        });
+        connect(tools_sidebar_, &ToolsSidebar::image_tool_requested, this, [this]() {
+            if (canvas_) canvas_->set_image_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::color_picker_tool_requested, this, [this]() {
             reopen_color_tab_after_canvas_pick_ = false;

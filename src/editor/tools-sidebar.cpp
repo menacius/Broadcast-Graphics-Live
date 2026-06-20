@@ -243,6 +243,8 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
                                      obsgs_tr("OBSTitles.ShapeToolTooltip") + QStringLiteral(" (M)"));
     text_button_ = make_tool_button(obsgs_tr("OBSTitles.TextTool"), text_tool_icon(selected_text_layer_type_),
                                     obsgs_tr("OBSTitles.TextToolTooltip") + QStringLiteral(" (T)"));
+    image_button_ = make_tool_button(obsgs_tr("OBSTitles.ImageTool"), obs_icon("image.svg"),
+                                     obsgs_tr("OBSTitles.ImageToolTooltip"));
     color_picker_button_ = make_tool_button(obsgs_tr("OBSTitles.ColorPickerTool"), obs_icon("eyedropper.svg"),
                                             obsgs_tr("OBSTitles.ColorPickerToolTooltip") + QStringLiteral(" (I)"));
     gradient_button_ = make_tool_button(obsgs_tr("OBSTitles.GradientTool"), gradient_tool_icon(),
@@ -255,6 +257,8 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     shape_action->setCheckable(true);
     auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), obsgs_tr("OBSTitles.TextTool"), this);
     text_action->setCheckable(true);
+    auto *image_action = new QAction(obs_icon("image.svg"), obsgs_tr("OBSTitles.ImageTool"), this);
+    image_action->setCheckable(true);
     auto *color_picker_action = new QAction(obs_icon("eyedropper.svg"), obsgs_tr("OBSTitles.ColorPickerTool"), this);
     color_picker_action->setCheckable(true);
     auto *gradient_action = new QAction(gradient_tool_icon(), obsgs_tr("OBSTitles.GradientTool"), this);
@@ -262,11 +266,13 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     tool_group_->addAction(selection_action);
     tool_group_->addAction(shape_action);
     tool_group_->addAction(text_action);
+    tool_group_->addAction(image_action);
     tool_group_->addAction(color_picker_action);
     tool_group_->addAction(gradient_action);
     selection_button_->setDefaultAction(selection_action);
     shape_button_->setDefaultAction(shape_action);
     text_button_->setDefaultAction(text_action);
+    image_button_->setDefaultAction(image_action);
     color_picker_button_->setDefaultAction(color_picker_action);
     gradient_button_->setDefaultAction(gradient_action);
 
@@ -285,6 +291,9 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     });
     connect(text_action, &QAction::triggered, this, [this]() {
         emit text_tool_requested(selected_text_layer_type_);
+    });
+    connect(image_action, &QAction::triggered, this, [this]() {
+        emit image_tool_requested();
     });
     connect(color_picker_action, &QAction::triggered, this, [this]() {
         emit color_picker_tool_requested();
@@ -397,6 +406,12 @@ void ToolsSidebar::activate_text_tool(LayerType type)
     set_selected_text_layer_type(type);
     if (text_button_ && text_button_->defaultAction())
         text_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_image_tool()
+{
+    if (image_button_ && image_button_->defaultAction())
+        image_button_->defaultAction()->trigger();
 }
 
 void ToolsSidebar::activate_color_picker_tool()
