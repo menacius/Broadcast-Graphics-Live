@@ -31,6 +31,13 @@
 #include <chrono>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 double cache_obs_frame_rate()
 {
@@ -199,6 +206,21 @@ static std::shared_ptr<Title> immutable_title_snapshot(const std::shared_ptr<Tit
             snapshot->layers.push_back(std::make_shared<Layer>(*layer));
     }
     return snapshot;
+}
+
+static void enter_cache_worker_background_mode()
+{
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+#endif
+}
+
+static int clamp_cache_priority(qint64 priority)
+{
+    return static_cast<int>(std::clamp<qint64>(
+        priority,
+        std::numeric_limits<int>::min() + 1,
+        std::numeric_limits<int>::max()));
 }
 }
 
@@ -1386,7 +1408,7 @@ void CacheManager::queueRealtimeJob(const std::shared_ptr<Title> &title, double 
                             : static_cast<int>(RenderQueueManager::PriorityBand::Visible) * 100000;
     job.live_cue = live_cue;
     job.realtime = true;
-    job.urgent = true;
+    job.urgent = live_cue;
     job.force_render = force_render;
     job.cue_row = cue_row;
     job.cue_state_key = cue_state_key;
@@ -1439,11 +1461,48 @@ void CacheManager::restoreDiskStates(const std::shared_ptr<Title> &title)
         if (key.content_hash == current_hash && key.width == title->width && key.height == title->height)
             state_tracker_.setState(key, FrameCacheState::CachedDisk);
     }
+
+    ensure_live_text_row_ids(*title);
     for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
-        const CacheFrameKey key = liveCueKey(title, row);
         const QString state_key = liveCueStateKey(title, row);
-        if (disk_cache_.contains(key))
-            live_cue_states_[state_key] = FrameCacheState::CachedDisk;
+        const QString row_id = liveCueRowIdentity(title, row);
+        QVector<CacheFrameKey> required_keys;
+        QSet<CacheFrameKey> seen;
+        for (const auto &variant : liveCueVariants(title, row)) {
+            if (!variant)
+                continue;
+            for (const CacheFrameKey &frame_key : frameKeysForTitle(*variant)) {
+                if (seen.contains(frame_key))
+                    continue;
+                seen.insert(frame_key);
+                required_keys.push_back(frame_key);
+                if (disk_cache_.contains(frame_key))
+                    state_tracker_.setState(frame_key, FrameCacheState::CachedDisk);
+            }
+        }
+
+        if (required_keys.isEmpty())
+            continue;
+
+        live_cue_required_keys_[state_key] = required_keys;
+        live_cue_required_total_[state_key] = static_cast<int>(required_keys.size());
+        live_cue_rows_[state_key] = row;
+        live_cue_row_ids_[state_key] = row_id;
+        live_cue_title_ids_[state_key] = title_id;
+        live_cue_transition_state_keys_.remove(state_key);
+
+        const FrameCacheState restored_state = liveCueStoredState(state_key);
+        if (restored_state == FrameCacheState::CachedRam ||
+            restored_state == FrameCacheState::CachedDisk) {
+            live_cue_states_[state_key] = restored_state;
+            live_cue_progress_percent_[state_key] = 100;
+        } else {
+            live_cue_required_keys_.remove(state_key);
+            live_cue_required_total_.remove(state_key);
+            live_cue_rows_.remove(state_key);
+            live_cue_row_ids_.remove(state_key);
+            live_cue_title_ids_.remove(state_key);
+        }
     }
     /* Establish the editor's visual baseline even when every frame came from
      * disk. Without this, the first cue-list-only edit looked like an unknown
@@ -2654,7 +2713,7 @@ bool CacheManager::liveCueStateRenderPausedLocked(const QString &state_key) cons
 void CacheManager::queueLiveCueVariantSet(
     const std::shared_ptr<Title> &title, int row, const QString &state_key,
     const QVector<std::shared_ptr<Title>> &variants, bool urgent,
-    bool hydrate_disk_to_ram)
+    bool hydrate_disk_to_ram, int manual_priority_group)
 {
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load() || !title || state_key.isEmpty() || variants.isEmpty())
@@ -2740,6 +2799,7 @@ void CacheManager::queueLiveCueVariantSet(
         return;
 
     int queued = 0;
+    bool active_or_queued = false;
     for (const RequiredFrame &required : required_frames) {
         QImage ignored;
         const bool in_ram = ram_cache_.get(required.key, ignored);
@@ -2748,19 +2808,32 @@ void CacheManager::queueLiveCueVariantSet(
             continue;
         if (!urgent && !hydrate_disk_to_ram && on_disk)
             continue;
+        if (state_tracker_.state(required.key) == FrameCacheState::Rendering ||
+            queue_.contains(required.key)) {
+            active_or_queued = true;
+            if (!urgent)
+                continue;
+        }
         if (urgent)
             queue_.cancelKey(required.key);
-        else if (queue_.contains(required.key))
-            continue;
 
         /* Playback hydration outranks all background prerender work, but it is
          * not a forced rebuild: renderJob() will load the existing sparse/LZ4
          * payload from disk and publish it into the shared RAM cache. */
+        constexpr qint64 kPlaybackPriorityBase = -2000000000LL;
+        constexpr qint64 kManualPriorityBase = -1500000000LL;
+        constexpr qint64 kManualRowStride = 1000000LL;
+        constexpr qint64 kVariantStride = 100000LL;
+        const qint64 variant_priority = static_cast<qint64>(required.variant_index) * kVariantStride +
+            std::max(0, required.key.frame);
         const int priority = hydrate_disk_to_ram
-            ? (std::numeric_limits<int>::min() / 3) + required.variant_index * 100000 + required.key.frame
+            ? clamp_cache_priority(kPlaybackPriorityBase + variant_priority)
             : urgent
-                ? (std::numeric_limits<int>::min() / 2) + required.variant_index * 100000 + required.key.frame
-                : -1000000 + std::max(0, row) * 100000 + required.variant_index * 1000 + required.key.frame;
+                ? clamp_cache_priority(kManualPriorityBase +
+                    static_cast<qint64>(std::max(0, manual_priority_group)) * kManualRowStride +
+                    variant_priority)
+                : clamp_cache_priority(-1000000LL + static_cast<qint64>(std::max(0, row)) * kVariantStride +
+                    static_cast<qint64>(required.variant_index) * 1000LL + std::max(0, required.key.frame));
         RenderQueueManager::Job job;
         job.key = required.key;
         job.title = required.title;
@@ -2777,6 +2850,14 @@ void CacheManager::queueLiveCueVariantSet(
         job.title_generation = titleGeneration(required.key.title_id);
         if (queue_.enqueue(job))
             ++queued;
+    }
+
+    if (urgent && queued == 0 && !active_or_queued) {
+        /* A manual rebuild can be satisfied entirely by resident/shared frames.
+         * Close that progress generation so the row resolves from real cache
+         * state instead of staying Queued with no worker job to complete it. */
+        live_cue_total_by_key_.remove(state_key);
+        live_cue_done_by_key_.remove(state_key);
     }
 
     const int progress = liveCueStoredProgress(state_key);
@@ -2901,7 +2982,11 @@ void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
                               .arg(static_cast<int>(rebuild_keys.size()))
                               .arg(static_cast<int>(rebuild_states.size())));
 
-    queueLiveCueVariantSet(title, row, steady_state_key, liveCueVariants(title, row), true);
+    const int manual_priority_group = next_manual_live_cue_priority_group_++;
+    if (next_manual_live_cue_priority_group_ > 1000)
+        next_manual_live_cue_priority_group_ = 0;
+    queueLiveCueVariantSet(title, row, steady_state_key, liveCueVariants(title, row), true, false,
+                           manual_priority_group);
     pruneUnreferencedLiveCueRam(title_id);
 }
 
@@ -3059,7 +3144,7 @@ int CacheManager::liveCueProgressPercent(const std::shared_ptr<Title> &title, in
 
     const auto keys = live_cue_required_keys_.value(steady_key);
     if (keys.isEmpty())
-        return 0;
+        return liveCueVariantsProgress(liveCueVariants(title, row));
 
     int cached = 0;
     for (const CacheFrameKey &key : keys) {
@@ -3155,6 +3240,7 @@ FrameCacheState CacheManager::liveCueAggregateState(const std::shared_ptr<Title>
         return FrameCacheState::NotCached;
     const QString title_id = QString::fromStdString(title->id);
     bool any = false, queued = false, rendering = false, stale = false, disk = false;
+    bool missing_rows = false;
     for (auto it = live_cue_title_ids_.constBegin(); it != live_cue_title_ids_.constEnd(); ++it) {
         if (it.value() != title_id)
             continue;
@@ -3165,7 +3251,23 @@ FrameCacheState CacheManager::liveCueAggregateState(const std::shared_ptr<Title>
         queued |= state == FrameCacheState::Queued || state == FrameCacheState::NotCached;
         disk |= state == FrameCacheState::CachedDisk;
     }
+    for (int row = 0; row < static_cast<int>(title->live_text_rows.size()); ++row) {
+        const QString state_key = liveCueStateKey(title, row);
+        if (live_cue_required_keys_.contains(state_key))
+            continue;
+        const FrameCacheState state = liveCueVariantsState(liveCueVariants(title, row), state_key);
+        if (state == FrameCacheState::NotCached) {
+            missing_rows = true;
+            continue;
+        }
+        any = true;
+        stale |= state == FrameCacheState::Stale;
+        rendering |= state == FrameCacheState::Rendering;
+        queued |= state == FrameCacheState::Queued;
+        disk |= state == FrameCacheState::CachedDisk;
+    }
     if (!any) return FrameCacheState::NotCached;
+    queued |= missing_rows;
     if (stale) return FrameCacheState::Stale;
     if (rendering) return FrameCacheState::Rendering;
     if (queued) return FrameCacheState::Queued;
@@ -3186,6 +3288,17 @@ int CacheManager::liveCueAggregateProgressPercent(const std::shared_ptr<Title> &
             continue;
         for (const CacheFrameKey &key : it.value())
             keys.insert(key);
+    }
+    for (int row = 0; row < static_cast<int>(title->live_text_rows.size()); ++row) {
+        const QString state_key = liveCueStateKey(title, row);
+        if (live_cue_required_keys_.contains(state_key))
+            continue;
+        for (const auto &variant : liveCueVariants(title, row)) {
+            if (!variant)
+                continue;
+            for (const CacheFrameKey &key : frameKeysForTitle(*variant))
+                keys.insert(key);
+        }
     }
     if (keys.isEmpty())
         return 0;
@@ -3332,6 +3445,7 @@ void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
     const QSet<QString> previous_ids = live_cue_structure_row_ids_.value(title_id);
     const QHash<QString, QString> previous_fingerprints = live_cue_row_fingerprints_.value(title_id);
     const bool settings_changed = live_cue_transition_signatures_.value(title_id) != transition_signature;
+    const bool first_structure_refresh = previous_ids.isEmpty();
 
     QSet<QString> added_ids = current_ids;
     for (const QString &id : previous_ids)
@@ -3382,28 +3496,30 @@ void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
 
     QSet<QString> affected_ids = added_ids;
     affected_ids.unite(changed_ids);
-    if (previous_ids.isEmpty())
+    if (first_structure_refresh)
         affected_ids = current_ids;
 
-    for (const QString &row_id : affected_ids) {
-        if (!index_by_id.contains(row_id))
-            continue;
-        queueLiveCue(title, index_by_id.value(row_id));
-    }
-
-    /* Transition states are independent from row-ready states. Adding a row
-     * creates only the new from/to pairs involving that row; existing rows stay
-     * ready and keep their cache icons. Editing a row rebuilds only pairs that
-     * actually include that stable row identity. */
-    for (const QString &affected_id : affected_ids) {
-        if (!index_by_id.contains(affected_id))
-            continue;
-        const int affected_row = index_by_id.value(affected_id);
-        for (int other = 0; other < row_count; ++other) {
-            if (other == affected_row)
+    if (!first_structure_refresh) {
+        for (const QString &row_id : affected_ids) {
+            if (!index_by_id.contains(row_id))
                 continue;
-            queueLiveCueTransition(title, affected_row, other);
-            queueLiveCueTransition(title, other, affected_row);
+            queueLiveCue(title, index_by_id.value(row_id));
+        }
+
+        /* Transition states are independent from row-ready states. Adding a row
+         * creates only the new from/to pairs involving that row; existing rows stay
+         * ready and keep their cache icons. Editing a row rebuilds only pairs that
+         * actually include that stable row identity. */
+        for (const QString &affected_id : affected_ids) {
+            if (!index_by_id.contains(affected_id))
+                continue;
+            const int affected_row = index_by_id.value(affected_id);
+            for (int other = 0; other < row_count; ++other) {
+                if (other == affected_row)
+                    continue;
+                queueLiveCueTransition(title, affected_row, other);
+                queueLiveCueTransition(title, other, affected_row);
+            }
         }
     }
 
@@ -3630,6 +3746,8 @@ void CacheManager::abandonJobState(const RenderQueueManager::Job &job,
 
 void CacheManager::workerLoop()
 {
+    enter_cache_worker_background_mode();
+
     while (!worker_stop_.load()) {
         {
             std::unique_lock<std::mutex> lock(worker_wait_mutex_);
@@ -3701,7 +3819,7 @@ void CacheManager::workerLoop()
         // delay through the job flags, but speculative prerender must never
         // burst continuously enough to steal scheduling time from OBS.
         if (job.live_cue && !job.urgent && !job.realtime)
-            std::this_thread::sleep_for(std::chrono::milliseconds(6));
+            std::this_thread::sleep_for(std::chrono::milliseconds(12));
 
         renderJob(job);
         queue_.complete(job);
@@ -3709,7 +3827,9 @@ void CacheManager::workerLoop()
         // Cooperative duty-cycle limiting. Live-cue frames include rendering,
         // alpha conversion, compression and disk I/O, so leave a larger gap
         // between speculative jobs. Normal cache work keeps a small yield.
-        const int cooldown_ms = (job.live_cue && !job.urgent && !job.realtime) ? 12 : 2;
+        const int cooldown_ms = (job.live_cue && !job.urgent && !job.realtime)
+            ? 28
+            : (job.urgent || (job.live_cue && job.realtime)) ? 1 : 5;
         std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_ms));
     }
 }

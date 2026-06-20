@@ -89,6 +89,8 @@ private:
     void update_live_text_cache_cells();
     void update_live_text_runtime_status(const std::shared_ptr<Title> &title);
     void update_live_text_runtime_status_fast(const std::shared_ptr<Title> &title, int primary_row, int previous_row = -1);
+    void schedule_title_list_cache_icon_update(const QString &title_id);
+    void flush_title_list_cache_icon_updates();
     void update_title_list_cache_icon(const QString &title_id);
     void update_live_text_select_cell_status(int row);
     void adjust_live_text_table_columns(bool fill_to_viewport = false);
@@ -125,6 +127,7 @@ private:
     void update_playlist_countdown_label();
     void stop_playlist();
     void stop_playlist_for_title(const std::shared_ptr<Title> &title);
+    void sync_playlist_runtime_state();
     bool has_checked_live_text_rows() const;
     void apply_live_text_row_selection(const std::vector<int> &rows, bool checked);
     std::string selected_id() const;
@@ -169,6 +172,8 @@ private:
     QAction     *act_external_data_settings_ = nullptr;
     QAction     *act_playlist_loop_ = nullptr;
     QAction     *act_playlist_reverse_ = nullptr;
+    QAction     *act_playlist_restart_on_active_ = nullptr;
+    QAction     *act_playlist_stop_on_inactive_ = nullptr;
     QAction     *act_playlist_hold_ = nullptr;
     QAction     *act_background_persistence_ = nullptr;
     QAction     *act_text_persistence_ = nullptr;
@@ -187,6 +192,8 @@ private:
     bool          text_persistence_ = false;
     QString       last_selected_title_id_;
     QString       live_text_width_initialized_title_id_;
+    QSet<QString> pending_title_cache_icon_updates_;
+    bool          title_cache_icon_update_scheduled_ = false;
     QHash<QString, int> focused_live_text_row_render_counts_;
     int           live_text_lines_per_row_ = 1;
     uint64_t      seen_store_revision_ = 0;

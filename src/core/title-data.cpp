@@ -2161,6 +2161,8 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["external_data_enabled"] = t.external_data_enabled;
     jt["playlist_loop"] = t.playlist_loop;
     jt["playlist_reverse"] = t.playlist_reverse;
+    jt["playlist_restart_on_source_active"] = t.playlist_restart_on_source_active;
+    jt["playlist_stop_on_source_inactive"] = t.playlist_stop_on_source_inactive;
     jt["playlist_hold_seconds"] = t.playlist_hold_seconds;
     if (!t.preview_screenshot_png_base64.empty())
         jt["preview_screenshot_png_base64"] = t.preview_screenshot_png_base64;
@@ -2271,6 +2273,8 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->external_data_enabled = json_bool(jt, "external_data_enabled", false);
     t->playlist_loop = json_bool(jt, "playlist_loop", false);
     t->playlist_reverse = json_bool(jt, "playlist_reverse", false);
+    t->playlist_restart_on_source_active = json_bool(jt, "playlist_restart_on_source_active", false);
+    t->playlist_stop_on_source_inactive = json_bool(jt, "playlist_stop_on_source_inactive", false);
     t->playlist_hold_seconds = std::clamp(finite_or(json_double(jt, "playlist_hold_seconds", 5.0), 5.0), 0.0, 3600.0);
     t->preview_screenshot_png_base64 = bounded_string(jt, "preview_screenshot_png_base64", "",
                                                        kMaxScreenshotBase64Length);

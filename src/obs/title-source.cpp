@@ -689,6 +689,13 @@ static std::vector<std::shared_ptr<Layer>> exposed_text_layers(const Title &titl
     return order_exposed_text_layers(exposed, title.live_text_column_order);
 }
 
+static int live_text_playlist_row_count(const Title &title)
+{
+    return exposed_text_layers(title).empty()
+        ? 1
+        : static_cast<int>(title.live_text_rows.size());
+}
+
 static double cue_persistence_hold_time(const Title &title)
 {
     if (title.playback_mode == 1)
@@ -5417,6 +5424,26 @@ static void source_activate(void *priv)
         return;
     data->scene_mask_foreground_active = true;
     activate_scene_mask_scenes(data);
+
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    if (!title || !title->playlist_restart_on_source_active)
+        return;
+
+    const int row_count = live_text_playlist_row_count(*title);
+    if (row_count <= 0)
+        return;
+
+    title->playlist_active = true;
+    title->playlist_next_row = title->playlist_reverse ? row_count - 1 : 0;
+    title->playlist_next_due_ms = 1;
+    title->playlist_stop_after_due = false;
+    title->current_cue_row = -1;
+    title->pending_cue_row = -1;
+    title->cue_uncue_requested = false;
+    title->cue_persistence_transition = false;
+    title->cue_persistent_text_columns.clear();
+    ++title->cue_revision;
+    TitleDataStore::instance().touch_runtime_change();
 }
 
 static void source_deactivate(void *priv)
@@ -5426,6 +5453,15 @@ static void source_deactivate(void *priv)
         return;
     data->scene_mask_foreground_active = false;
     release_active_scene_mask_scenes(data);
+
+    auto title = TitleDataStore::instance().get_title(data->title_id);
+    if (!title || !title->playlist_stop_on_source_inactive || !title->playlist_active)
+        return;
+
+    title->playlist_active = false;
+    title->playlist_next_due_ms = 0;
+    title->playlist_stop_after_due = false;
+    TitleDataStore::instance().touch_runtime_change();
 }
 
 static uint32_t source_get_width(void *priv)

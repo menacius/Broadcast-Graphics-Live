@@ -65,6 +65,8 @@ struct Title {
     bool external_data_enabled = false; /* live text cue external data source toggle */
     bool playlist_loop = false; /* per-title live text playlist behavior */
     bool playlist_reverse = false;
+    bool playlist_restart_on_source_active = false;
+    bool playlist_stop_on_source_inactive = false;
     double playlist_hold_seconds = 5.0;
     int current_cue_row = -1; /* runtime-only active live text row */
     int pending_cue_row = -1; /* runtime-only next row waiting for outro */

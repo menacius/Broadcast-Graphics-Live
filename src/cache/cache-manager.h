@@ -336,7 +336,7 @@ private:
     void queueLiveCueTransition(const std::shared_ptr<Title> &title, int from_row, int to_row, bool urgent = false);
     void queueLiveCueVariantSet(const std::shared_ptr<Title> &title, int row, const QString &state_key,
                                 const QVector<std::shared_ptr<Title>> &variants, bool urgent,
-                                bool hydrate_disk_to_ram = false);
+                                bool hydrate_disk_to_ram = false, int manual_priority_group = 0);
     bool liveCueStateFullyResidentInRam(const QString &state_key) const;
     QString liveCueRowIdentity(const std::shared_ptr<Title> &title, int row) const;
     QString liveCueStateKey(const std::shared_ptr<Title> &title, int row) const;
@@ -378,6 +378,7 @@ private:
     RamFrameCache ram_cache_;
     DiskFrameCache disk_cache_;
     CacheStateTracker state_tracker_;
+    int next_manual_live_cue_priority_group_ = 0;
     RenderQueueManager queue_;
     CacheInvalidationManager invalidation_;
     std::atomic_bool paused_{false};

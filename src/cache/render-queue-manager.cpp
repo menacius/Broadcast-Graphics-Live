@@ -188,7 +188,7 @@ bool RenderQueueManager::takeNextUrgent(Job &job)
     {
         QMutexLocker lock(&mutex_);
         for (auto it = jobs_.begin(); it != jobs_.end(); ++it) {
-            if (!it->urgent && !it->realtime)
+            if (!it->urgent)
                 continue;
             job = *it;
             const QString key = it->key.toString();
