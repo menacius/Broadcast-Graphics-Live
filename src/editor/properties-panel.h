@@ -89,6 +89,7 @@ private:
     QGroupBox       *bullets_box_ = nullptr;
     QGroupBox       *rect_box_     = nullptr;
     QWidget         *image_box_    = nullptr;
+    QWidget         *image_box_size_box_ = nullptr;
 
     /* Text controls */
     QTextEdit       *txt_content_  = nullptr;
@@ -254,6 +255,12 @@ private:
     QLineEdit       *edit_image_path_ = nullptr;
     QPushButton     *btn_pick_image_ = nullptr;
     QComboBox       *cmb_image_scale_filter_ = nullptr;
+    QComboBox       *cmb_image_box_mode_ = nullptr;
+    QPushButton     *btn_image_anchor_grid_ = nullptr;
+    QDoubleSpinBox  *spn_image_box_w_ = nullptr;
+    QDoubleSpinBox  *spn_image_box_h_ = nullptr;
+    QCheckBox       *chk_image_box_size_lock_ = nullptr;
+    QPushButton     *btn_kf_image_box_size_ = nullptr;
 
     /* Transform controls (static) */
     QDoubleSpinBox  *spn_px_       = nullptr;

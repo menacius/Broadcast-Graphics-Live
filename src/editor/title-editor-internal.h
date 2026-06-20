@@ -3240,6 +3240,22 @@ static double eval_box_height(const Layer &layer, double t)
     return std::max(0.0, height);
 }
 
+static double eval_image_width(const Layer &layer, double t)
+{
+    const double width = layer.image_size.is_animated()
+        ? layer.image_size.evaluate(t).x
+        : static_cast<double>(layer.image_width);
+    return std::max(0.0, width);
+}
+
+static double eval_image_height(const Layer &layer, double t)
+{
+    const double height = layer.image_size.is_animated()
+        ? layer.image_size.evaluate(t).y
+        : static_cast<double>(layer.image_height);
+    return std::max(0.0, height);
+}
+
 static int shadow_pass_count(double blur)
 {
     const int passes = static_cast<int>(std::ceil(blur / 3.0));

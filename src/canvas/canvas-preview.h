@@ -25,6 +25,7 @@
 #include <QPointF>
 #include <QPoint>
 #include <QRectF>
+#include <QPolygonF>
 #include <QColor>
 #include <QPixmap>
 #include <QImage>
@@ -186,6 +187,24 @@ private:
         QPointF radius;
         QPointF focal;
     };
+    struct SelectionOverlayLayerGeometry {
+        const Layer *layer = nullptr;
+        bool editing_text_layer = false;
+        QPolygonF outline;
+        QPointF handles[8];
+        QPointF origin;
+    };
+    struct SelectionOverlayGeometry {
+        bool valid = false;
+        std::vector<SelectionOverlayLayerGeometry> layers;
+        QRectF multi_bounds_view;
+        QPointF multi_handles[8];
+    };
+    struct HoverOverlayGeometry {
+        const Layer *layer = nullptr;
+        bool hovered_is_selected = false;
+        QPolygonF outline;
+    };
 
     void render_to_pixmap();
     void begin_adaptive_interaction();
@@ -282,6 +301,14 @@ private:
     void draw_ruler_mouse_indicators(QPainter &p, const QRectF &canvas_rect);
     void invalidate_checkerboard_cache();
     void draw_static_checkerboard(QPainter &p, const QRect &canvas_rect_px);
+    void invalidate_selection_overlay_cache() const;
+    void invalidate_hover_overlay_cache() const;
+    void invalidate_canvas_overlay_caches() const;
+    bool layer_overlay_changes_with_playhead(const Layer &layer) const;
+    bool overlay_visibility_crosses_playhead_boundary(const Layer &layer, double old_playhead, double new_playhead) const;
+    bool canvas_overlay_changes_with_playhead(double old_playhead, double new_playhead) const;
+    const SelectionOverlayGeometry &selection_overlay_geometry() const;
+    const HoverOverlayGeometry &hover_overlay_geometry() const;
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -437,4 +464,8 @@ private:
     };
     std::vector<LayerDragState> drag_layer_states_;
     std::vector<LayerDragState> drag_child_layer_states_;
+    mutable bool selection_overlay_cache_valid_ = false;
+    mutable SelectionOverlayGeometry selection_overlay_cache_;
+    mutable bool hover_overlay_cache_valid_ = false;
+    mutable HoverOverlayGeometry hover_overlay_cache_;
 };

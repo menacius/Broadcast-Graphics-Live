@@ -54,6 +54,15 @@ enum class ImageScaleFilter {
     Area,
 };
 
+enum class ImageBoxMode {
+    FitImageToBox,
+    FillHorizontal,
+    FillVertical,
+    FitHorizontalCrop,
+    FitVerticalCrop,
+    StretchToFill,
+};
+
 struct GradientStop {
     uint32_t color = 0xFFFFFFFF;
     float position = 0.5f;
@@ -336,5 +345,12 @@ struct Layer {
     /* ----- Image ----- */
     std::string image_path;
     bool        lock_aspect_ratio = true;
+    bool        image_box_lock_aspect_ratio = false;
     ImageScaleFilter scale_filter = ImageScaleFilter::Bilinear;
+    ImageBoxMode image_box_mode = ImageBoxMode::FitImageToBox;
+    float       image_anchor_x = 0.5f;
+    float       image_anchor_y = 0.5f;
+    float       image_width = 1920.0f;
+    float       image_height = 1080.0f;
+    AnimatedVec2Property image_size { "image_size", {1920.0, 1080.0} };
 };

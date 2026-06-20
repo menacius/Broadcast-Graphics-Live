@@ -17,6 +17,17 @@
 #include <cmath>
 
 namespace {
+constexpr double kMaxPlaybackUiHz = 60.0;
+
+double editor_playback_ui_frame_duration()
+{
+    return std::max(obs_frame_duration(), 1.0 / kMaxPlaybackUiHz);
+}
+
+int editor_playback_ui_timer_interval_ms()
+{
+    return std::max(1, static_cast<int>(std::lround(editor_playback_ui_frame_duration() * 1000.0)));
+}
 
 class LongPressToolButton final : public QToolButton {
 public:
@@ -150,7 +161,7 @@ TitleEditor::TitleEditor(QWidget *parent)
     play_timer_->setTimerType(Qt::PreciseTimer);
     // Transport is always driven by the project/OBS frame rate. It must not
     // change when the editor is moved between monitors with different refresh rates.
-    play_timer_->setInterval(std::max(1, (int)std::round(obs_frame_duration() * 1000.0)));
+    play_timer_->setInterval(editor_playback_ui_timer_interval_ms());
     connect(play_timer_, &QTimer::timeout, this, &TitleEditor::tick);
 
     gui_refresh_timer_ = new QTimer(this);
@@ -923,6 +934,12 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
     l->size.static_value.x = l->rect_width;
     l->size.static_value.y = l->rect_height;
+    if (type == LayerType::Image) {
+        l->image_width = l->rect_width;
+        l->image_height = l->rect_height;
+        l->image_size.static_value.x = l->image_width;
+        l->image_size.static_value.y = l->image_height;
+    }
     if (type == LayerType::Shape || type == LayerType::SolidRect)
         l->lock_aspect_ratio = false;
     l->origin_prop.static_value.x = l->origin_x;
@@ -1007,8 +1024,10 @@ void TitleEditor::create_image_layer_from_external_source(const QString &image_p
 
     QSize image_size = editor_image_intrinsic_size(image_path);
     if (image_size.isValid() && !image_size.isEmpty()) {
-        layer->rect_width = (float)image_size.width();
-        layer->rect_height = (float)image_size.height();
+        layer->image_width = (float)image_size.width();
+        layer->image_height = (float)image_size.height();
+        layer->image_size.static_value.x = layer->image_width;
+        layer->image_size.static_value.y = layer->image_height;
         const double max_w = title_->width * 0.65;
         const double max_h = title_->height * 0.65;
         const double scale = std::min({1.0, max_w / std::max(1, image_size.width()), max_h / std::max(1, image_size.height())});
@@ -1837,10 +1856,10 @@ void TitleEditor::build_ui()
                     l->image_path = path.toStdString();
                     QSize image_size = editor_image_intrinsic_size(path);
                     if (image_size.isValid() && !image_size.isEmpty()) {
-                        l->rect_width = (float)image_size.width();
-                        l->rect_height = (float)image_size.height();
-                        l->size.static_value.x = l->rect_width;
-                        l->size.static_value.y = l->rect_height;
+                        l->image_width = (float)image_size.width();
+                        l->image_height = (float)image_size.height();
+                        l->image_size.static_value.x = l->image_width;
+                        l->image_size.static_value.y = l->image_height;
                     }
                 }
                 title_->add_layer(l);
@@ -3914,7 +3933,7 @@ void TitleEditor::tick()
     if (!title_ || !playing_) return;
     const CachePlaybackSettings cache_settings = CacheManager::instance().playbackSettings();
     double dt = obs_frame_duration();
-    if (!cache_settings.play_every_frame) {
+    if (!cache_settings.play_every_frame || obs_frame_duration() < editor_playback_ui_frame_duration()) {
         dt = playback_clock_.isValid() ? playback_clock_.restart() / 1000.0 : 0.0;
         if (dt <= 0.0 || dt > 0.25) dt = play_timer_->interval() / 1000.0;
         dt *= std::max(0.01, cache_settings.speed_percent / 100.0);
@@ -4534,8 +4553,7 @@ void TitleEditor::update_display_refresh_pacing()
     }
 
     if (play_timer_)
-        play_timer_->setInterval(
-            std::max(1, static_cast<int>(std::lround(obs_frame_duration() * 1000.0))));
+        play_timer_->setInterval(editor_playback_ui_timer_interval_ms());
 }
 
 bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
@@ -5263,7 +5281,8 @@ void TitleEditor::on_playhead_changed(double t)
 
     // Property/effect widgets are substantially heavier than canvas presentation.
     // Keep them responsive, but do not rebuild their controls at 120/144/240 Hz.
-    if ((!playing_ || !panel_refresh_clock_.isValid() || panel_refresh_clock_.elapsed() >= 33) &&
+    const int panel_refresh_interval_ms = playing_ ? editor_playback_ui_timer_interval_ms() : 33;
+    if ((!playing_ || !panel_refresh_clock_.isValid() || panel_refresh_clock_.elapsed() >= panel_refresh_interval_ms) &&
         !sel_layer_id_.empty() && title_) {
         auto l = title_->find_layer(sel_layer_id_);
         if (l) update_layer_panels(l, t);

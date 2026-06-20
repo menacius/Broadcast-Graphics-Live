@@ -904,6 +904,7 @@ QString CacheManager::contentHash(const Title &title) const
         add_anim(layer->rotation);
         add_anim(layer->opacity);
         add_anim_vec2(layer->size);
+        add_anim_vec2(layer->image_size);
         add(layer->origin_x); add(layer->origin_y); add_anim_vec2(layer->origin_prop);
 
         add(QString::fromStdString(layer->text_content));
@@ -993,6 +994,7 @@ QString CacheManager::contentHash(const Title &title) const
         add_gradient_stops(layer->background_gradient_stops);
 
         add((int)layer->shape_type); add(layer->rect_width); add(layer->rect_height);
+        add(layer->image_width); add(layer->image_height);
         add(layer->shape_points); add(layer->shape_sides);
         add(layer->shape_inner_radius); add(layer->shape_outer_radius); add(layer->shape_roundness);
         add(layer->corner_radius); add(layer->corner_radius_tl); add(layer->corner_radius_tr);
@@ -1015,6 +1017,8 @@ QString CacheManager::contentHash(const Title &title) const
 
         const QString image_path = QString::fromStdString(layer->image_path);
         add(image_path); add((int)layer->scale_filter);
+        add(layer->image_box_lock_aspect_ratio);
+        add((int)layer->image_box_mode); add(layer->image_anchor_x); add(layer->image_anchor_y);
         if (!image_path.isEmpty()) {
             const QFileInfo image_info(image_path);
             add(image_info.exists());
@@ -1072,7 +1076,7 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
          * property is animated. Hash the resolved active flag, not raw time. */
         add(layer->visible && time >= layer->in_time && time <= layer->out_time);
         add_vec(layer->position); add_vec(layer->scale); add_anim(layer->rotation);
-        add_anim(layer->opacity); add_vec(layer->size); add_vec(layer->origin_prop);
+        add_anim(layer->opacity); add_vec(layer->size); add_vec(layer->image_size); add_vec(layer->origin_prop);
         add_anim(layer->font_size_prop); add_anim(layer->char_tracking_prop);
         add_anim(layer->char_scale_x_prop); add_anim(layer->char_scale_y_prop);
         add_anim(layer->baseline_shift_prop); add_anim(layer->text_color_a);
@@ -1160,6 +1164,7 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(layer->rotation, 0.05);
         add_anim(layer->opacity, 0.002);
         add_vec(layer->size, 0.25);
+        add_vec(layer->image_size, 0.25);
         add_vec(layer->origin_prop, 0.25);
         add_anim(layer->font_size_prop, 0.10);
         add_anim(layer->char_tracking_prop, 0.10);
@@ -1268,7 +1273,7 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
             return true;
         auto animated = [](const auto &prop) { return !prop.keyframes.empty(); };
         if (animated(layer->position) || animated(layer->scale) || animated(layer->rotation) ||
-            animated(layer->opacity) || animated(layer->size) || animated(layer->origin_prop) ||
+            animated(layer->opacity) || animated(layer->size) || animated(layer->image_size) || animated(layer->origin_prop) ||
             animated(layer->font_size_prop) || animated(layer->char_tracking_prop) ||
             animated(layer->char_scale_x_prop) || animated(layer->char_scale_y_prop) ||
             animated(layer->baseline_shift_prop) || animated(layer->paragraph_indent_left_prop) ||

@@ -84,6 +84,27 @@ static bool image_path_is_svg(const QString &path)
            path.endsWith(QStringLiteral(".svgz"), Qt::CaseInsensitive);
 }
 
+static QSize image_intrinsic_size(const QString &path)
+{
+    if (image_path_is_svg(path)) {
+        QSvgRenderer renderer(path);
+        if (!renderer.isValid()) return QSize();
+        QSize size = renderer.defaultSize();
+        if (!size.isValid() || size.isEmpty())
+            size = renderer.viewBox().size();
+        return size;
+    }
+
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    QSize size = reader.size();
+    if (size.isValid() && !size.isEmpty())
+        return size;
+
+    const QImage image = reader.read();
+    return image.isNull() ? QSize() : image.size();
+}
+
 static void unpremultiply_bgra_for_obs(uint8_t *pixels, size_t pixel_count)
 {
     if (!pixels) return;
@@ -833,6 +854,22 @@ static double eval_box_height(const Layer &layer, double t)
         const double width = eval_box_width(layer, t);
         height = std::min(natural_text_height(layer, width), std::max(1.0, (double)layer.max_text_box_height));
     }
+    return std::max(0.0, height);
+}
+
+static double eval_image_width(const Layer &layer, double t)
+{
+    const double width = layer.image_size.is_animated()
+        ? layer.image_size.evaluate(t).x
+        : static_cast<double>(layer.image_width);
+    return std::max(0.0, width);
+}
+
+static double eval_image_height(const Layer &layer, double t)
+{
+    const double height = layer.image_size.is_animated()
+        ? layer.image_size.evaluate(t).y
+        : static_cast<double>(layer.image_height);
     return std::max(0.0, height);
 }
 
@@ -2892,6 +2929,10 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     cairo_restore(cr);
 }
 
+static cairo_pattern_t *set_layer_outline_source(cairo_t *cr, const Layer &layer,
+                                                 double x, double y, double w, double h,
+                                                 double alpha, double t);
+
 static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
 {
     const double t = std::max(0.0, title_time - layer.in_time);
@@ -2946,16 +2987,7 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
                        (layer.stroke_fill_type == 2 || ((outline_color >> 24) & 0xFF) > 0);
 
     auto set_stroke_source = [&]() -> cairo_pattern_t * {
-        if (layer.stroke_fill_type == 2) {
-            cairo_pattern_t *pattern = create_stroke_gradient_pattern(
-                layer, 0.0, 0.0, w, h, alpha * eval_outline_opacity(layer, t));
-            cairo_set_source(cr, pattern);
-            return pattern;
-        }
-        double sr, sg, sb, sa;
-        unpack_color(outline_color, sr, sg, sb, sa);
-        cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_outline_opacity(layer, t));
-        return nullptr;
+        return set_layer_outline_source(cr, layer, 0.0, 0.0, w, h, alpha, t);
     };
 
     auto stroke_outline = [&]() {
@@ -3020,6 +3052,169 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
     cairo_restore(cr);
 }
 
+struct ImageBoxLayout {
+    double x = 0.0;
+    double y = 0.0;
+    double w = 0.0;
+    double h = 0.0;
+};
+
+static bool image_box_mode_crops(ImageBoxMode mode)
+{
+    return mode == ImageBoxMode::FitHorizontalCrop ||
+           mode == ImageBoxMode::FitVerticalCrop;
+}
+
+static ImageBoxLayout image_box_layout_for_layer(const Layer &layer, double box_w, double box_h,
+                                                  double image_w, double image_h)
+{
+    ImageBoxLayout out;
+    if (box_w <= 0.0 || box_h <= 0.0 || image_w <= 0.0 || image_h <= 0.0)
+        return out;
+    if (layer.image_box_mode == ImageBoxMode::StretchToFill) {
+        out.w = box_w;
+        out.h = box_h;
+        return out;
+    }
+
+    double scale_x = box_w / image_w;
+    double scale_y = box_h / image_h;
+    double scale = 1.0;
+    switch (layer.image_box_mode) {
+    case ImageBoxMode::FitImageToBox:
+        scale = std::min(scale_x, scale_y);
+        break;
+    case ImageBoxMode::FillHorizontal:
+    case ImageBoxMode::FitHorizontalCrop:
+        scale = scale_x;
+        break;
+    case ImageBoxMode::FillVertical:
+    case ImageBoxMode::FitVerticalCrop:
+        scale = scale_y;
+        break;
+    default:
+        scale = std::min(scale_x, scale_y);
+        break;
+    }
+
+    out.w = std::max(1.0, image_w * scale);
+    out.h = std::max(1.0, image_h * scale);
+    const double ax = std::clamp((double)layer.image_anchor_x, 0.0, 1.0);
+    const double ay = std::clamp((double)layer.image_anchor_y, 0.0, 1.0);
+    out.x = (box_w - out.w) * ax;
+    out.y = (box_h - out.h) * ay;
+    return out;
+}
+
+static QRectF image_visible_rect_for_layout(const ImageBoxLayout &layout, double box_w, double box_h,
+                                            bool crop_to_box)
+{
+    QRectF image_rect(layout.x, layout.y, layout.w, layout.h);
+    if (!crop_to_box)
+        return image_rect;
+    return image_rect.intersected(QRectF(0.0, 0.0, box_w, box_h));
+}
+
+static QImage image_box_shadow_mask(const QImage &argb, const Layer &layer, double box_w, double box_h,
+                                    const ImageBoxLayout &layout)
+{
+    const int mask_w = std::max(1, (int)std::ceil(box_w));
+    const int mask_h = std::max(1, (int)std::ceil(box_h));
+    QImage mask(mask_w, mask_h, QImage::Format_ARGB32_Premultiplied);
+    mask.fill(Qt::transparent);
+    QPainter painter(&mask);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, layer.scale_filter != ImageScaleFilter::Disable);
+    const QRectF visible = image_visible_rect_for_layout(layout, box_w, box_h, image_box_mode_crops(layer.image_box_mode));
+    if (visible.isEmpty())
+        return mask;
+    painter.setClipPath(painter_rounded_rect_corners(visible, layer.corner_radius_tl, layer.corner_radius_tr,
+                                                     layer.corner_radius_br, layer.corner_radius_bl,
+                                                     layer.corner_type));
+    painter.drawImage(QRectF(layout.x, layout.y, layout.w, layout.h), argb);
+    return mask;
+}
+
+static bool layer_has_visible_outline(const Layer &layer, double t)
+{
+    const double outline_width = eval_outline_width(layer, t);
+    const uint32_t outline_color = eval_outline_color(layer, t);
+    return outline_width > 0.0 &&
+           (layer.stroke_fill_type == 2 || ((outline_color >> 24) & 0xFF) > 0);
+}
+
+static cairo_pattern_t *set_layer_outline_source(cairo_t *cr, const Layer &layer,
+                                                 double x, double y, double w, double h,
+                                                 double alpha, double t)
+{
+    if (layer.stroke_fill_type == 2) {
+        cairo_pattern_t *pattern = create_stroke_gradient_pattern(
+            layer, x, y, w, h, alpha * eval_outline_opacity(layer, t));
+        cairo_set_source(cr, pattern);
+        return pattern;
+    }
+
+    double sr, sg, sb, sa;
+    unpack_color(eval_outline_color(layer, t), sr, sg, sb, sa);
+    cairo_set_source_rgba(cr, sr, sg, sb, sa * alpha * eval_outline_opacity(layer, t));
+    return nullptr;
+}
+
+static void stroke_image_visible_outline(cairo_t *cr, const Layer &layer, const QRectF &visible,
+                                         double box_x, double box_y, double alpha, double t)
+{
+    const double outline_width = eval_outline_width(layer, t);
+    if (outline_width <= 0.0 || visible.isEmpty())
+        return;
+
+    auto add_path = [&]() {
+        cairo_add_rounded_rect_corners(cr, box_x + visible.x(), box_y + visible.y(),
+                                       visible.width(), visible.height(),
+                                       layer.corner_radius_tl, layer.corner_radius_tr,
+                                       layer.corner_radius_br, layer.corner_radius_bl,
+                                       layer.corner_type);
+    };
+
+    const int alignment = eval_outline_alignment(layer, t);
+    cairo_save(cr);
+    cairo_set_antialias(cr, outline_cairo_antialias(layer));
+    cairo_set_line_join(cr, outline_cairo_join_style(layer));
+
+    if (alignment == 0) {
+        cairo_push_group(cr);
+        add_path();
+        cairo_set_line_width(cr, outline_width * 2.0);
+        cairo_pattern_t *pattern = set_layer_outline_source(cr, layer, visible.x(), visible.y(),
+                                                            visible.width(), visible.height(), alpha, t);
+        cairo_stroke(cr);
+        if (pattern) cairo_pattern_destroy(pattern);
+        cairo_set_operator(cr, CAIRO_OPERATOR_DEST_OUT);
+        add_path();
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+        cairo_fill(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+        cairo_pop_group_to_source(cr);
+        cairo_paint(cr);
+    } else if (alignment == 2) {
+        add_path();
+        cairo_clip(cr);
+        add_path();
+        cairo_set_line_width(cr, outline_width * 2.0);
+        cairo_pattern_t *pattern = set_layer_outline_source(cr, layer, visible.x(), visible.y(),
+                                                            visible.width(), visible.height(), alpha, t);
+        cairo_stroke(cr);
+        if (pattern) cairo_pattern_destroy(pattern);
+    } else {
+        add_path();
+        cairo_set_line_width(cr, outline_width);
+        cairo_pattern_t *pattern = set_layer_outline_source(cr, layer, visible.x(), visible.y(),
+                                                            visible.width(), visible.height(), alpha, t);
+        cairo_stroke(cr);
+        if (pattern) cairo_pattern_destroy(pattern);
+    }
+
+    cairo_restore(cr);
+}
+
 
 static void render_layer_image(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
 {
@@ -3030,10 +3225,22 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     double h = eval_box_height(layer, t);
     if (w <= 0.0 || h <= 0.0) return;
 
+    const QString image_path = QString::fromStdString(layer.image_path);
+    double image_w = eval_image_width(layer, t);
+    double image_h = eval_image_height(layer, t);
+    if (image_w <= 0.0 || image_h <= 0.0) {
+        QSize intrinsic_size = image_intrinsic_size(image_path);
+        if (!intrinsic_size.isValid() || intrinsic_size.isEmpty())
+            intrinsic_size = QSize(std::max(1, (int)std::ceil(w)), std::max(1, (int)std::ceil(h)));
+        image_w = intrinsic_size.width();
+        image_h = intrinsic_size.height();
+    }
+    ImageBoxLayout image_layout = image_box_layout_for_layer(layer, w, h,
+                                                             image_w, image_h);
     const int max_sample_dim = std::clamp(std::max(title.width, title.height) * 2, 512, 4096);
-    const QSize sample_size(std::clamp((int)std::ceil(w), 1, max_sample_dim),
-                            std::clamp((int)std::ceil(h), 1, max_sample_dim));
-    QImage argb = load_cached_layer_image(QString::fromStdString(layer.image_path), sample_size);
+    const QSize sample_size(std::clamp((int)std::ceil(image_layout.w), 1, max_sample_dim),
+                            std::clamp((int)std::ceil(image_layout.h), 1, max_sample_dim));
+    QImage argb = load_cached_layer_image(image_path, sample_size);
     if (argb.isNull() || argb.width() <= 0 || argb.height() <= 0) return;
 
     auto img_surface = make_image_surface_for_const_qimage(argb);
@@ -3043,18 +3250,18 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     apply_layer_world_transform(cr, title, layer, title_time);
     const double origin_x = eval_origin_x(layer, t);
     const double origin_y = eval_origin_y(layer, t);
+    const double box_x = -origin_x * w;
+    const double box_y = -origin_y * h;
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     if (shadow_params.drop_enabled || shadow_params.long_enabled) {
-        QImage mask = argb.scaled(std::max(1, (int)std::ceil(w)), std::max(1, (int)std::ceil(h)),
-                                  Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
-                          .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QImage mask = image_box_shadow_mask(argb, layer, w, h, image_layout);
         QFileInfo shadow_image_info(QString::fromStdString(layer.image_path));
         const QString shape_key = QStringLiteral("image|%1|%2x%3|%4|%5")
             .arg(QString::fromStdString(layer.image_path)).arg(mask.width()).arg(mask.height())
             .arg(shadow_image_info.exists() ? shadow_image_info.lastModified().toMSecsSinceEpoch() : 0)
             .arg(shadow_image_info.exists() ? shadow_image_info.size() : -1);
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
-        paint_qimage(cr, shadow.image, -origin_x * w + shadow.origin.x(), -origin_y * h + shadow.origin.y(), alpha);
+        paint_qimage(cr, shadow.image, box_x + shadow.origin.x(), box_y + shadow.origin.y(), alpha);
     }
     if (eval_background_enabled(layer, t)) {
         const auto *background_effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
@@ -3068,8 +3275,8 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
         br = bg.redF(); bgc = bg.greenF(); bb = bg.blueF(); ba = bg.alphaF();
         const double stroke_w = eval_background_stroke_width(layer, t);
         if (ba > 0.0 || background_gradient || stroke_w > 0.0) {
-            const double x = -origin_x * w - bg_left;
-            const double y = -origin_y * h - bg_top;
+            const double x = box_x - bg_left;
+            const double y = box_y - bg_top;
             const double bw = std::max(1.0, w + bg_left + bg_right);
             const double bh = std::max(1.0, h + bg_top + bg_bottom);
             cairo_add_rounded_rect_corners(cr, x, y, bw, bh,
@@ -3097,13 +3304,32 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
             }
         }
     }
-    cairo_scale(cr, w / argb.width(), h / argb.height());
+    const QRectF visible = image_visible_rect_for_layout(image_layout, w, h, image_box_mode_crops(layer.image_box_mode));
+    if (visible.isEmpty()) {
+        cairo_restore(cr);
+        return;
+    }
+    const bool has_outline = layer_has_visible_outline(layer, t);
+    if (has_outline && !eval_outline_on_front(layer, t))
+        stroke_image_visible_outline(cr, layer, visible, box_x, box_y, alpha, t);
+    cairo_save(cr);
+    cairo_add_rounded_rect_corners(cr, box_x + visible.x(), box_y + visible.y(),
+                                   visible.width(), visible.height(),
+                                   layer.corner_radius_tl, layer.corner_radius_tr,
+                                   layer.corner_radius_br, layer.corner_radius_bl,
+                                   layer.corner_type);
+    cairo_clip(cr);
+    cairo_translate(cr, box_x + image_layout.x, box_y + image_layout.y);
+    cairo_scale(cr, image_layout.w / argb.width(), image_layout.h / argb.height());
     cairo_set_source_surface(cr, img_surface.get(),
-                             -origin_x * argb.width(),
-                             -origin_y * argb.height());
+                             0.0,
+                             0.0);
     cairo_pattern_set_filter(cairo_get_source(cr),
                              cairo_filter_for_image_scale_filter(layer.scale_filter));
     cairo_paint_with_alpha(cr, alpha);
+    cairo_restore(cr);
+    if (has_outline && eval_outline_on_front(layer, t))
+        stroke_image_visible_outline(cr, layer, visible, box_x, box_y, alpha, t);
     cairo_restore(cr);
 }
 
@@ -4033,6 +4259,16 @@ static QRectF layer_local_effect_bounds(const Layer &layer, double t)
     const double origin_y = eval_origin_y(layer, t);
 
     QRectF bounds(-origin_x * w, -origin_y * h, w, h);
+    if (layer.type == LayerType::Image) {
+        const ImageBoxLayout layout = image_box_layout_for_layer(layer, w, h,
+                                                                 std::max(1.0, eval_image_width(layer, t)),
+                                                                 std::max(1.0, eval_image_height(layer, t)));
+        const QRectF visible = image_visible_rect_for_layout(layout, w, h,
+                                                            image_box_mode_crops(layer.image_box_mode));
+        if (!visible.isEmpty())
+            bounds = bounds.united(QRectF(-origin_x * w + visible.x(), -origin_y * h + visible.y(),
+                                          visible.width(), visible.height()));
+    }
 
     if (eval_background_enabled(layer, t)) {
         bounds = bounds.united(QRectF(-origin_x * w - eval_background_padding_left(layer, t),
@@ -4105,7 +4341,11 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
         QFileInfo info(QString::fromStdString(layer.image_path));
         key << "|image=" << layer.image_path << ','
             << (info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0) << ','
-            << (info.exists() ? info.size() : -1);
+            << (info.exists() ? info.size() : -1)
+            << "|imagebox=" << (int)layer.image_box_mode << ','
+            << layer.image_anchor_x << ',' << layer.image_anchor_y
+            << "|imagesize=" << eval_image_width(layer, t) << 'x' << eval_image_height(layer, t)
+            << "|imagefilter=" << (int)layer.scale_filter;
     }
 
     for (const auto &effect : layer.effects) {

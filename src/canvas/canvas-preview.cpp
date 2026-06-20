@@ -256,6 +256,7 @@ void CanvasPreview::begin_text_edit_for_layer(const std::string &layer_id)
     if (!layer || !is_canvas_text_layer(*layer) || layer->type == LayerType::Clock) return;
     selected_layer_ids_ = {layer_id};
     sel_layer_id_ = layer_id;
+    invalidate_canvas_overlay_caches();
     begin_text_edit(layer);
 }
 
@@ -335,6 +336,7 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
     commit_text_edit(true);
     title_ = t;
     editor_quality_cache_.clear();
+    invalidate_canvas_overlay_caches();
     dirty_ = true;
     adaptive_interaction_active_ = false;
     force_live_full_quality_render_ = false;
@@ -361,6 +363,7 @@ void CanvasPreview::restore_view_state(const ViewState &state)
     fit_zoom_active_ = state.fit_zoom_active;
     fit_zoom_up_to_100_ = state.fit_zoom_up_to_100;
     pan_offset_ = state.pan_offset;
+    invalidate_canvas_overlay_caches();
     dirty_ = true;
     emit zoom_percent_changed(zoom_percent_);
     position_text_editor();
@@ -371,7 +374,10 @@ void CanvasPreview::set_playhead(double t)
 {
     if (std::abs(playhead_ - t) < 1e-9)
         return;
+    const double old_playhead = playhead_;
     playhead_ = t;
+    if (canvas_overlay_changes_with_playhead(old_playhead, playhead_))
+        invalidate_canvas_overlay_caches();
     dirty_ = true;
     position_text_editor();
     update();
@@ -382,6 +388,7 @@ void CanvasPreview::set_selected_layer(const std::string &lid)
     sel_layer_id_ = lid;
     selected_layer_ids_.clear();
     if (!lid.empty()) selected_layer_ids_.push_back(lid);
+    invalidate_canvas_overlay_caches();
     position_text_editor();
     update();
 }
@@ -390,6 +397,7 @@ void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
 {
     selected_layer_ids_ = ids;
     sel_layer_id_ = ids.empty() ? std::string() : ids.back();
+    invalidate_canvas_overlay_caches();
     position_text_editor();
     update();
 }
@@ -491,6 +499,7 @@ void CanvasPreview::refresh_preview()
     // Model edits invalidate only the editor-local reduced-quality cache. The
     // full-quality OBS/prerender cache retains its own independent lifecycle.
     editor_quality_cache_.clear();
+    invalidate_canvas_overlay_caches();
     dirty_ = true;
     position_text_editor();
     if (!inline_text_layer_id_.empty())
@@ -510,6 +519,7 @@ void CanvasPreview::clear_rendered_frame()
     frame_pixmap_canvas_offset_ = QPoint();
     frame_pixmap_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
     frame_pixmap_preview_scale_ = 1.0;
+    invalidate_canvas_overlay_caches();
     dirty_ = false;
     update();
 }
@@ -671,6 +681,7 @@ void CanvasPreview::set_zoom_percent(int percent)
     if (zoom_percent_ == clamped && !fit_zoom_active_) return;
     zoom_percent_ = clamped;
     fit_zoom_active_ = false;
+    invalidate_canvas_overlay_caches();
     emit zoom_percent_changed(zoom_percent_);
     position_text_editor();
     update();
@@ -699,6 +710,7 @@ void CanvasPreview::set_selection_tool_active()
     active_tool_ = CanvasTool::Selection;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    invalidate_canvas_overlay_caches();
     unsetCursor();
     update();
 }
@@ -709,6 +721,7 @@ void CanvasPreview::set_shape_tool_active(ShapeType shape_type)
     active_shape_type_ = shape_type;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
 }
@@ -722,6 +735,7 @@ void CanvasPreview::set_text_tool_active(LayerType type)
     active_text_layer_type_ = type;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    invalidate_canvas_overlay_caches();
     setCursor(Qt::IBeamCursor);
     update();
 }
@@ -732,6 +746,7 @@ void CanvasPreview::set_color_picker_tool_active()
     active_tool_ = CanvasTool::ColorPicker;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
 }
@@ -743,6 +758,7 @@ void CanvasPreview::set_gradient_tool_active()
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
     gradient_tool_dragging_ = false;
+    invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
 }
@@ -751,6 +767,7 @@ void CanvasPreview::set_gradient_editor_active(bool active)
 {
     if (gradient_editor_active_ == active) return;
     gradient_editor_active_ = active;
+    invalidate_canvas_overlay_caches();
     if (!active && active_tool_ != CanvasTool::Gradient) {
         gradient_drag_ = GradientDragState{};
         if (drag_mode_ == DragMode::GradientStart || drag_mode_ == DragMode::GradientEnd ||
@@ -766,6 +783,7 @@ void CanvasPreview::fit_canvas(bool up_to_100)
     fit_zoom_active_ = true;
     fit_zoom_up_to_100_ = up_to_100;
     pan_offset_ = QPointF(0, 0);
+    invalidate_canvas_overlay_caches();
     double scale = fit_scale();
     if (up_to_100) scale = std::min(scale, 1.0);
     int next_percent = std::clamp((int)std::round(scale * 100.0), 5, 1600);
@@ -948,6 +966,185 @@ QRectF CanvasPreview::selected_canvas_bounds() const
         }
     }
     return bounds.normalized();
+}
+
+void CanvasPreview::invalidate_selection_overlay_cache() const
+{
+    selection_overlay_cache_valid_ = false;
+    selection_overlay_cache_ = SelectionOverlayGeometry{};
+}
+
+void CanvasPreview::invalidate_hover_overlay_cache() const
+{
+    hover_overlay_cache_valid_ = false;
+    hover_overlay_cache_ = HoverOverlayGeometry{};
+}
+
+void CanvasPreview::invalidate_canvas_overlay_caches() const
+{
+    invalidate_selection_overlay_cache();
+    invalidate_hover_overlay_cache();
+}
+
+bool CanvasPreview::layer_overlay_changes_with_playhead(const Layer &layer) const
+{
+    if (layer.position.is_animated() || layer.scale.is_animated() || layer.rotation.is_animated() ||
+        layer.size.is_animated() || layer.origin_prop.is_animated())
+        return true;
+
+    std::string parent_id = layer.parent_id;
+    int guard = 0;
+    while (!parent_id.empty() && guard++ < 64) {
+        const Layer *parent = editor_find_layer_by_id(title_, parent_id);
+        if (!parent)
+            break;
+        if (parent->position.is_animated() || parent->scale.is_animated() || parent->rotation.is_animated())
+            return true;
+        parent_id = parent->parent_id;
+    }
+
+    return false;
+}
+
+bool CanvasPreview::overlay_visibility_crosses_playhead_boundary(const Layer &layer,
+                                                                 double old_playhead,
+                                                                 double new_playhead) const
+{
+    const bool was_active = old_playhead >= layer.in_time && old_playhead <= layer.out_time;
+    const bool is_active = new_playhead >= layer.in_time && new_playhead <= layer.out_time;
+    return was_active != is_active;
+}
+
+bool CanvasPreview::canvas_overlay_changes_with_playhead(double old_playhead, double new_playhead) const
+{
+    if (!title_)
+        return false;
+
+    for (const auto &layer : selected_layers()) {
+        if (!layer)
+            continue;
+        if (overlay_visibility_crosses_playhead_boundary(*layer, old_playhead, new_playhead) ||
+            layer_overlay_changes_with_playhead(*layer))
+            return true;
+    }
+
+    if (!hovered_layer_id_.empty()) {
+        if (const Layer *hovered = editor_find_layer_by_id(title_, hovered_layer_id_)) {
+            if (overlay_visibility_crosses_playhead_boundary(*hovered, old_playhead, new_playhead) ||
+                layer_overlay_changes_with_playhead(*hovered))
+                return true;
+        } else {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_geometry() const
+{
+    if (selection_overlay_cache_valid_)
+        return selection_overlay_cache_;
+
+    SelectionOverlayGeometry geometry;
+    const auto layers = selected_layers();
+    geometry.valid = true;
+    geometry.layers.reserve(layers.size());
+
+    for (const auto &layer : layers) {
+        if (!layer)
+            continue;
+
+        const QRectF box = layer_local_rect(*layer);
+        SelectionOverlayLayerGeometry layer_geometry;
+        layer_geometry.layer = layer.get();
+        layer_geometry.editing_text_layer = !inline_text_layer_id_.empty() &&
+            inline_text_layer_id_ == layer->id && is_canvas_text_layer(*layer);
+
+        auto layer_point_to_view = [&](const QPointF &pt) {
+            return canvas_to_view(layer_to_canvas(*layer, pt));
+        };
+        const QPointF corners[] = {
+            layer_point_to_view(box.topLeft()),
+            layer_point_to_view(box.topRight()),
+            layer_point_to_view(box.bottomRight()),
+            layer_point_to_view(box.bottomLeft())
+        };
+        for (const QPointF &corner : corners)
+            layer_geometry.outline << corner;
+
+        layer_geometry.handles[0] = corners[0];
+        layer_geometry.handles[1] = layer_point_to_view(QPointF(box.center().x(), box.top()));
+        layer_geometry.handles[2] = corners[1];
+        layer_geometry.handles[3] = layer_point_to_view(QPointF(box.right(), box.center().y()));
+        layer_geometry.handles[4] = corners[2];
+        layer_geometry.handles[5] = layer_point_to_view(QPointF(box.center().x(), box.bottom()));
+        layer_geometry.handles[6] = corners[3];
+        layer_geometry.handles[7] = layer_point_to_view(QPointF(box.left(), box.center().y()));
+        layer_geometry.origin = layer_point_to_view(QPointF(0, 0));
+        geometry.layers.push_back(layer_geometry);
+    }
+
+    if (geometry.layers.size() > 1) {
+        const QRectF bounds = selected_canvas_bounds();
+        if (bounds.isValid() && !bounds.isEmpty()) {
+            geometry.multi_bounds_view = QRectF(canvas_to_view(bounds.topLeft()),
+                                                canvas_to_view(bounds.bottomRight())).normalized();
+            const QRectF &view_bounds = geometry.multi_bounds_view;
+            geometry.multi_handles[0] = view_bounds.topLeft();
+            geometry.multi_handles[1] = QPointF(view_bounds.center().x(), view_bounds.top());
+            geometry.multi_handles[2] = view_bounds.topRight();
+            geometry.multi_handles[3] = QPointF(view_bounds.right(), view_bounds.center().y());
+            geometry.multi_handles[4] = view_bounds.bottomRight();
+            geometry.multi_handles[5] = QPointF(view_bounds.center().x(), view_bounds.bottom());
+            geometry.multi_handles[6] = view_bounds.bottomLeft();
+            geometry.multi_handles[7] = QPointF(view_bounds.left(), view_bounds.center().y());
+        }
+    }
+
+    selection_overlay_cache_ = geometry;
+    selection_overlay_cache_valid_ = true;
+    return selection_overlay_cache_;
+}
+
+const CanvasPreview::HoverOverlayGeometry &CanvasPreview::hover_overlay_geometry() const
+{
+    if (hover_overlay_cache_valid_)
+        return hover_overlay_cache_;
+
+    HoverOverlayGeometry geometry;
+    if (!title_ || hovered_layer_id_.empty() || drag_mode_ != DragMode::None || drawing_shape_) {
+        hover_overlay_cache_ = geometry;
+        hover_overlay_cache_valid_ = true;
+        return hover_overlay_cache_;
+    }
+
+    auto it = std::find_if(title_->layers.begin(), title_->layers.end(), [this](const std::shared_ptr<Layer> &layer) {
+        return layer && layer->id == hovered_layer_id_;
+    });
+    if (it != title_->layers.end() && *it) {
+        const Layer &layer = **it;
+        if (layer.visible && !layer.locked && playhead_ >= layer.in_time && playhead_ <= layer.out_time) {
+            const QRectF box = layer_local_rect(layer);
+            if (box.isValid() && !box.isEmpty()) {
+                auto layer_point_to_view = [&](const QPointF &pt) {
+                    return canvas_to_view(layer_to_canvas(layer, pt));
+                };
+                geometry.layer = &layer;
+                geometry.hovered_is_selected =
+                    std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), hovered_layer_id_) != selected_layer_ids_.end() ||
+                    sel_layer_id_ == hovered_layer_id_;
+                geometry.outline << layer_point_to_view(box.topLeft())
+                                 << layer_point_to_view(box.topRight())
+                                 << layer_point_to_view(box.bottomRight())
+                                 << layer_point_to_view(box.bottomLeft());
+            }
+        }
+    }
+
+    hover_overlay_cache_ = geometry;
+    hover_overlay_cache_valid_ = true;
+    return hover_overlay_cache_;
 }
 
 bool CanvasPreview::gradient_handles_visible() const
@@ -1167,6 +1364,7 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
     dirty_ = true;
     drag_changed_ = true;
     drag_current_view_ = view_pt;
+    invalidate_canvas_overlay_caches();
     update();
     return true;
 }
@@ -1207,6 +1405,7 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
     begin_gradient_drag(*layer);
     dirty_ = true;
     drag_changed_ = true;
+    invalidate_canvas_overlay_caches();
     update();
     return true;
 }
@@ -1443,6 +1642,7 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
     dirty_ = true;
     drag_changed_ = true;
     drag_current_view_ = view_pt;
+    invalidate_canvas_overlay_caches();
     update();
     return true;
 }
@@ -1637,6 +1837,7 @@ void CanvasPreview::update_marquee(const QPointF &view_pt, Qt::KeyboardModifiers
             selected_layer_ids_.push_back(layer->id);
     }
     sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+    invalidate_canvas_overlay_caches();
     emit layers_selected(selected_layer_ids_);
     update();
 }
@@ -1717,6 +1918,7 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
                                       clone->corner_radius_bl});
     }
     sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+    invalidate_canvas_overlay_caches();
     drag_start_selection_bounds_ = selected_canvas_bounds();
 
     emit layer_structure_changed();
@@ -1762,6 +1964,7 @@ bool CanvasPreview::nudge_selected_layers(double dx, double dy)
 
     begin_adaptive_interaction();
     dirty_ = true;
+    invalidate_canvas_overlay_caches();
     update();
     emit layer_geometry_changed();
     return true;
@@ -2083,6 +2286,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
         dirty_ = true;
         drag_changed_ = true;
+        invalidate_canvas_overlay_caches();
         update();
         return;
     }
@@ -2175,6 +2379,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
         dirty_ = true;
         drag_changed_ = true;
+        invalidate_canvas_overlay_caches();
         update();
         return;
     }
@@ -2380,6 +2585,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
     begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
+    invalidate_canvas_overlay_caches();
     update();
 }
 void CanvasPreview::render_to_pixmap()
@@ -2902,22 +3108,13 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         p.restore();
     }
 
-    auto layers = selected_layers();
+    const SelectionOverlayGeometry &selection_overlay = selection_overlay_geometry();
 
-    auto draw_layer_box = [&](const Layer &layer, bool handles) {
-        QRectF box = layer_local_rect(layer);
-        auto layer_point_to_view = [&](const QPointF &pt) {
-            return canvas_to_view(layer_to_canvas(layer, pt));
-        };
-        const QPointF corners[] = {
-            layer_point_to_view(box.topLeft()),
-            layer_point_to_view(box.topRight()),
-            layer_point_to_view(box.bottomRight()),
-            layer_point_to_view(box.bottomLeft())
-        };
-
-        const bool editing_text_layer = !inline_text_layer_id_.empty() &&
-            inline_text_layer_id_ == layer.id && is_canvas_text_layer(layer);
+    auto draw_layer_box = [&](const SelectionOverlayLayerGeometry &layer_geometry, bool handles) {
+        if (!layer_geometry.layer)
+            return;
+        const Layer &layer = *layer_geometry.layer;
+        const bool editing_text_layer = layer_geometry.editing_text_layer;
         QColor text_box_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::TextBoundingBox);
         if (!handles && text_box_color.alpha() > 210)
             text_box_color.setAlpha(210);
@@ -2934,25 +3131,16 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         p.save();
         p.setBrush(Qt::NoBrush);
         p.setPen(QPen(outline_color, editing_text_layer ? 2.0 : 1.5, Qt::DashLine));
-        QPolygonF outline;
-        for (const QPointF &corner : corners)
-            outline << corner;
-        p.drawPolygon(outline);
+        p.drawPolygon(layer_geometry.outline);
         if (handles) {
             p.setPen(QPen(handle_stroke_color, 1.0));
             p.setBrush(QColor(255, 255, 255));
-            const QPointF handle_points[] = {
-                corners[0], layer_point_to_view(QPointF(box.center().x(), box.top())), corners[1],
-                layer_point_to_view(QPointF(box.right(), box.center().y())), corners[2],
-                layer_point_to_view(QPointF(box.center().x(), box.bottom())), corners[3],
-                layer_point_to_view(QPointF(box.left(), box.center().y()))
-            };
             const double half_handle = CANVAS_CONTROL_SIZE_PX / 2.0;
-            for (const QPointF &pt : handle_points)
+            for (const QPointF &pt : layer_geometry.handles)
                 p.drawRect(QRectF(pt.x() - half_handle, pt.y() - half_handle,
                                   CANVAS_CONTROL_SIZE_PX, CANVAS_CONTROL_SIZE_PX));
 
-            QPointF origin = layer_point_to_view(QPointF(0, 0));
+            QPointF origin = layer_geometry.origin;
             p.setPen(QPen(QColor(255, 160, 0), 1.5));
             p.setBrush(QColor(255, 220, 80));
             p.drawEllipse(origin, CANVAS_ORIGIN_RADIUS_PX, CANVAS_ORIGIN_RADIUS_PX);
@@ -2967,28 +3155,20 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         p.restore();
     };
 
-    if (layers.size() == 1) {
-        draw_layer_box(*layers.front(), true);
-    } else if (layers.size() > 1) {
-        for (const auto &layer : layers)
-            if (layer) draw_layer_box(*layer, false);
+    if (selection_overlay.layers.size() == 1) {
+        draw_layer_box(selection_overlay.layers.front(), true);
+    } else if (selection_overlay.layers.size() > 1) {
+        for (const auto &layer_geometry : selection_overlay.layers)
+            draw_layer_box(layer_geometry, false);
 
-        QRectF bounds = selected_canvas_bounds();
-        if (bounds.isValid() && !bounds.isEmpty()) {
-            QRectF view_bounds(canvas_to_view(bounds.topLeft()), canvas_to_view(bounds.bottomRight()));
-            view_bounds = view_bounds.normalized();
+        if (selection_overlay.multi_bounds_view.isValid() && !selection_overlay.multi_bounds_view.isEmpty()) {
+            const QRectF &view_bounds = selection_overlay.multi_bounds_view;
             p.setBrush(Qt::NoBrush);
             p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.5, Qt::SolidLine));
             p.drawRect(view_bounds);
             p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.0));
             p.setBrush(QColor(255, 255, 255));
-            const QPointF points[] = {
-                view_bounds.topLeft(), QPointF(view_bounds.center().x(), view_bounds.top()), view_bounds.topRight(),
-                QPointF(view_bounds.right(), view_bounds.center().y()), view_bounds.bottomRight(),
-                QPointF(view_bounds.center().x(), view_bounds.bottom()), view_bounds.bottomLeft(),
-                QPointF(view_bounds.left(), view_bounds.center().y())
-            };
-            for (const QPointF &pt : points)
+            for (const QPointF &pt : selection_overlay.multi_handles)
                 p.drawRect(QRectF(pt.x() - CANVAS_CONTROL_SIZE_PX / 2.0,
                                   pt.y() - CANVAS_CONTROL_SIZE_PX / 2.0,
                                   CANVAS_CONTROL_SIZE_PX, CANVAS_CONTROL_SIZE_PX));
@@ -3591,6 +3771,7 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
     const bool hover_changed = hovered_layer_id_ != next_hover;
     if (hover_changed) {
         hovered_layer_id_ = next_hover;
+        invalidate_hover_overlay_cache();
         update();
     }
 
@@ -3613,42 +3794,19 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
 
 void CanvasPreview::draw_hover_layer_box(QPainter &p)
 {
-    if (!title_ || hovered_layer_id_.empty()) return;
-    if (drag_mode_ != DragMode::None || drawing_shape_) return;
-
-    const bool hovered_is_selected =
-        std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), hovered_layer_id_) != selected_layer_ids_.end() ||
-        sel_layer_id_ == hovered_layer_id_;
-
-    auto it = std::find_if(title_->layers.begin(), title_->layers.end(), [this](const std::shared_ptr<Layer> &layer) {
-        return layer && layer->id == hovered_layer_id_;
-    });
-    if (it == title_->layers.end() || !*it) return;
-    const Layer &layer = **it;
-    if (!layer.visible || layer.locked) return;
-    if (playhead_ < layer.in_time || playhead_ > layer.out_time) return;
-
-    const QRectF box = layer_local_rect(layer);
-    if (!box.isValid() || box.isEmpty()) return;
-
-    auto layer_point_to_view = [&](const QPointF &pt) {
-        return canvas_to_view(layer_to_canvas(layer, pt));
-    };
-
-    QPolygonF outline;
-    outline << layer_point_to_view(box.topLeft())
-            << layer_point_to_view(box.topRight())
-            << layer_point_to_view(box.bottomRight())
-            << layer_point_to_view(box.bottomLeft());
+    const HoverOverlayGeometry &hover_overlay = hover_overlay_geometry();
+    if (!hover_overlay.layer)
+        return;
+    const Layer &layer = *hover_overlay.layer;
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, false);
-    if (!hovered_is_selected) {
+    if (!hover_overlay.hovered_is_selected) {
         QPen pen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::HoverBoundingBox), 1.0, Qt::SolidLine);
         pen.setCosmetic(true);
         p.setPen(pen);
         p.setBrush(Qt::NoBrush);
-        p.drawPolygon(outline);
+        p.drawPolygon(hover_overlay.outline);
     }
     if (layer_supports_corner_radius_handles(layer))
         draw_corner_radius_handles(p, layer);
@@ -3848,6 +4006,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         drag_mode_ = DragMode::None;
         selected_layer_ids_.clear();
         sel_layer_id_.clear();
+        invalidate_canvas_overlay_caches();
         drag_current_view_ = ev->pos();
         shape_draw_start_canvas_ = snap_canvas_point(view_to_canvas(ev->pos()), true, true,
                                                      !ev->modifiers().testFlag(Qt::ControlModifier));
@@ -3887,6 +4046,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                 emit layers_selected(next_ids);
                 selected_layer_ids_ = next_ids;
                 sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+                invalidate_canvas_overlay_caches();
                 drag_mode_ = DragMode::Move;
                 break;
             }
@@ -4024,6 +4184,7 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     if (panning_ && (ev->buttons() & Qt::MiddleButton)) {
         pan_offset_ = pan_start_offset_ + (QPointF(ev->pos()) - pan_start_view_);
         fit_zoom_active_ = false;
+        invalidate_canvas_overlay_caches();
         position_text_editor();
         update();
         ev->accept();
@@ -4241,6 +4402,7 @@ void CanvasPreview::leaveEvent(QEvent *ev)
     if (mouse_inside_canvas_ || !hovered_layer_id_.empty()) {
         mouse_inside_canvas_ = false;
         hovered_layer_id_.clear();
+        invalidate_hover_overlay_cache();
         needs_update = true;
     }
     if (snap_cursor_visible_ || final_snap_cursor_visible_) {
@@ -4478,15 +4640,18 @@ void CanvasPreview::wheelEvent(QWheelEvent *ev)
         const double scale = view_scale();
         pan_offset_ = ev->position() - origin_without_pan -
                       QPointF(anchor_canvas.x() * scale, anchor_canvas.y() * scale);
+        invalidate_canvas_overlay_caches();
         emit zoom_percent_changed(zoom_percent_);
     } else if (mods.testFlag(Qt::ControlModifier)) {
         const double horizontal_delta = !qFuzzyIsNull(wheel_delta.y()) ? wheel_delta.y() : wheel_delta.x();
         pan_offset_.rx() += horizontal_delta;
         fit_zoom_active_ = false;
+        invalidate_canvas_overlay_caches();
     } else {
         const double vertical_delta = !qFuzzyIsNull(wheel_delta.y()) ? wheel_delta.y() : wheel_delta.x();
         pan_offset_.ry() += vertical_delta;
         fit_zoom_active_ = false;
+        invalidate_canvas_overlay_caches();
     }
 
     position_text_editor();
@@ -4497,6 +4662,7 @@ void CanvasPreview::wheelEvent(QWheelEvent *ev)
 void CanvasPreview::resizeEvent(QResizeEvent *)
 {
     dirty_ = true;
+    invalidate_canvas_overlay_caches();
     if (fit_zoom_active_) fit_canvas(fit_zoom_up_to_100_);
     position_text_editor();
 }

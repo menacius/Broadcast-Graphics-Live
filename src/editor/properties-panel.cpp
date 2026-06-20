@@ -1244,6 +1244,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     spn_layer_w_ = mk_dspin(0.0, 9999.0, 10.0);
     spn_layer_h_ = mk_dspin(0.0, 9999.0, 10.0);
+    spn_image_box_w_ = mk_dspin(0.0, 9999.0, 10.0);
+    spn_image_box_h_ = mk_dspin(0.0, 9999.0, 10.0);
     chk_text_box_width_to_text_ = new QCheckBox(obsgs_tr("OBSTitles.TextBoxWidthToText"), inner);
     chk_text_box_height_to_text_ = new QCheckBox(obsgs_tr("OBSTitles.TextBoxHeightToText"), inner);
     style_checkbox(chk_text_box_width_to_text_);
@@ -1273,9 +1275,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_shape_roundness_ = mk_dspin(0.0, 1000.0, 1.0);
     btn_kf_width_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleWidthKeyframe"));
     btn_kf_width_->setToolTip(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
+    btn_kf_image_box_size_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
 
     style_transform_spin(spn_layer_w_);
     style_transform_spin(spn_layer_h_);
+    style_transform_spin(spn_image_box_w_);
+    style_transform_spin(spn_image_box_h_);
     style_transform_spin(spn_rect_corner_tl_);
     style_transform_spin(spn_rect_corner_tr_);
     style_transform_spin(spn_rect_corner_br_);
@@ -1474,8 +1479,22 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterBicubic"), (int)ImageScaleFilter::Bicubic);
     cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterLanczos"), (int)ImageScaleFilter::Lanczos);
     cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterArea"), (int)ImageScaleFilter::Area);
+    cmb_image_box_mode_ = new QComboBox(image_form_widget);
+    cmb_image_box_mode_->setFixedHeight(22);
+    cmb_image_box_mode_->setStyleSheet(control_style);
+    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFitImageToBox"), (int)ImageBoxMode::FitImageToBox);
+    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFillHorizontal"), (int)ImageBoxMode::FillHorizontal);
+    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFillVertical"), (int)ImageBoxMode::FillVertical);
+    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFitHorizontalCrop"), (int)ImageBoxMode::FitHorizontalCrop);
+    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFitVerticalCrop"), (int)ImageBoxMode::FitVerticalCrop);
+    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxStretchToFill"), (int)ImageBoxMode::StretchToFill);
+    btn_image_anchor_grid_ = new AnchorGridButton(image_form_widget);
+    btn_image_anchor_grid_->setFixedSize(36, 36);
+    btn_image_anchor_grid_->setToolTip(obsgs_tr("OBSTitles.ImageBoxAnchorTooltip"));
     add_form_row(image_form, obsgs_tr("OBSTitles.PathLabel"), edit_image_path_);
     add_form_row(image_form, "", btn_pick_image_);
+    add_form_row(image_form, obsgs_tr("OBSTitles.ImageBoxMode"), cmb_image_box_mode_);
+    add_form_row(image_form, obsgs_tr("OBSTitles.ImageBoxAnchor"), btn_image_anchor_grid_);
     add_form_row(image_form, obsgs_tr("OBSTitles.Filtering"), cmb_image_scale_filter_);
     image_content_layout->addWidget(image_form_widget, 1);
     image_layout->addWidget(image_content);
@@ -1484,6 +1503,78 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         vl->insertWidget(image_size_index, image_box_);
     else
         vl->addWidget(image_box_);
+
+    image_box_size_box_ = new QWidget(inner);
+    image_box_size_box_->setStyleSheet(QStringLiteral("background:%1;").arg(section_bg_name));
+    auto *image_box_size_layout = new QVBoxLayout(image_box_size_box_);
+    image_box_size_layout->setContentsMargins(14, 0, 14, 12);
+    image_box_size_layout->setSpacing(8);
+    auto *image_box_size_header = new QWidget(image_box_size_box_);
+    image_box_size_header->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *image_box_size_header_layout = new QHBoxLayout(image_box_size_header);
+    image_box_size_header_layout->setContentsMargins(0, 8, 0, 0);
+    image_box_size_header_layout->setSpacing(8);
+    auto *image_box_size_title = new QLabel(obsgs_tr("OBSTitles.ImageBoxSize"), image_box_size_header);
+    image_box_size_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
+    image_box_size_header_layout->addWidget(image_box_size_title);
+    image_box_size_header_layout->addStretch(1);
+    image_box_size_layout->addWidget(image_box_size_header);
+
+    auto *image_box_size_grid = new QGridLayout();
+    image_box_size_grid->setContentsMargins(0, 0, 0, 0);
+    image_box_size_grid->setHorizontalSpacing(8);
+    image_box_size_grid->setVerticalSpacing(8);
+    image_box_size_grid->setColumnMinimumWidth(0, 24);
+    image_box_size_grid->setColumnMinimumWidth(1, 82);
+    image_box_size_grid->setColumnMinimumWidth(2, 86);
+    image_box_size_grid->setColumnMinimumWidth(3, 22);
+    image_box_size_grid->setColumnMinimumWidth(4, 86);
+    image_box_size_grid->setColumnStretch(5, 1);
+    auto make_image_box_size_field = [&](const QString &label, QDoubleSpinBox *spin) {
+        auto *field = new QWidget(image_box_size_box_);
+        field->setObjectName(QStringLiteral("OBSTitlesShapeNumericField"));
+        field->setStyleSheet(QStringLiteral("QWidget#OBSTitlesShapeNumericField{background:%1;border:1px solid %2;"
+                             "border-radius:2px;}").arg(control_bg_name, border_name));
+        auto *field_layout = new QHBoxLayout(field);
+        field_layout->setContentsMargins(5, 0, 0, 0);
+        field_layout->setSpacing(2);
+        auto *field_label = new NumericDragLabel(label, spin, field,
+                                                 [this]() {
+                                                     if (loading_values_) return;
+                                                     numeric_label_dragging_ = true;
+                                                     emit property_changed(true);
+                                                 },
+                                                 [this]() {
+                                                     if (loading_values_) return;
+                                                     numeric_label_dragging_ = false;
+                                                     emit property_changed(true);
+                                                 });
+        field_label->setFixedWidth(16);
+        field_label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        field_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:12px;").arg(control_text_name));
+        field_layout->addWidget(field_label);
+        field_layout->addWidget(spin, 1);
+        field->setFixedSize(104, 24);
+        return field;
+    };
+    chk_image_box_size_lock_ = new TransformLockCheckBox(image_box_size_box_);
+    chk_image_box_size_lock_->setText(QString());
+    chk_image_box_size_lock_->setToolTip(obsgs_tr("OBSTitles.LockAspectRatio"));
+    chk_image_box_size_lock_->setFixedSize(24, 24);
+    chk_image_box_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *image_box_size_label = new QLabel(obsgs_tr("OBSTitles.Size"), image_box_size_box_);
+    image_box_size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
+    image_box_size_grid->addWidget(btn_kf_image_box_size_, 0, 0, Qt::AlignCenter);
+    image_box_size_grid->addWidget(image_box_size_label, 0, 1);
+    image_box_size_grid->addWidget(make_image_box_size_field(obsgs_tr("OBSTitles.W"), spn_image_box_w_), 0, 2);
+    image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 3, Qt::AlignCenter);
+    image_box_size_grid->addWidget(make_image_box_size_field(obsgs_tr("OBSTitles.H"), spn_image_box_h_), 0, 4);
+    image_box_size_layout->addLayout(image_box_size_grid);
+    const int image_box_size_index = vl->indexOf(image_box_);
+    if (image_box_size_index >= 0)
+        vl->insertWidget(image_box_size_index + 1, image_box_size_box_);
+    else
+        vl->addWidget(image_box_size_box_);
 
     vl->addStretch();
     setWidget(inner);
@@ -1530,6 +1621,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto local_time = [this]() {
         return layer_ ? std::clamp(playhead_ - layer_->in_time, 0.0,
                                    std::max(0.0, layer_->out_time - layer_->in_time)) : 0.0;
+    };
+    auto fit_image_size_to_current_image = [this, local_time]() {
+        if (!layer_ || layer_->image_path.empty()) return;
+        const QSize image_size = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
+        if (!image_size.isValid() || image_size.isEmpty()) return;
+        const double t = local_time();
+        layer_->image_width = (float)image_size.width();
+        layer_->image_height = (float)image_size.height();
+        set_animated_x(layer_->image_size, t, layer_->image_width);
+        set_animated_y(layer_->image_size, t, layer_->image_height);
     };
     auto update_text_box_auto_controls = [this]() {
         if (spn_max_text_box_width_)
@@ -1594,6 +1695,24 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     emit_change();
                 });
     };
+    auto install_vec_delete_all_resolved = [&](QPushButton *button, auto prop_for_layer) {
+        if (!button) return;
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(button, &QPushButton::customContextMenuRequested,
+                this, [this, button, prop_for_layer, can_edit, emit_change, menu_style](const QPoint &pos) {
+                    if (!layer_) return;
+                    AnimatedVec2Property *vec = prop_for_layer();
+                    QMenu menu(button);
+                    menu.setStyleSheet(menu_style);
+                    QAction *delete_all = menu.addAction(obsgs_tr("OBSTitles.DeleteAllKeyframes"));
+                    delete_all->setEnabled(can_edit() && vec && !vec->keyframes.empty());
+                    if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit() || !vec) return;
+                    if (vec->keyframes.empty()) return;
+                    vec->keyframes.clear();
+                    load_values();
+                    emit_change();
+                });
+    };
     auto install_group_delete_all = [&](QPushButton *button, std::initializer_list<AnimatedProperty Layer::*> props) {
         std::vector<AnimatedProperty Layer::*> prop_members(props);
         install_delete_all_keyframes_menu(button, [this, prop_members]() {
@@ -1625,7 +1744,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     install_prop_delete_all(btn_kf_baseline_shift_, &Layer::baseline_shift_prop);
     install_prop_delete_all(btn_kf_paragraph_space_before_, &Layer::paragraph_space_before_prop);
     install_prop_delete_all(btn_kf_paragraph_space_after_, &Layer::paragraph_space_after_prop);
-    install_vec_delete_all(btn_kf_width_, &Layer::size);
+    install_vec_delete_all_resolved(btn_kf_width_, [this]() -> AnimatedVec2Property * {
+        if (!layer_) return nullptr;
+        return layer_->type == LayerType::Image ? &layer_->image_size : &layer_->size;
+    });
+    install_vec_delete_all(btn_kf_image_box_size_, &Layer::size);
     install_group_delete_all(btn_kf_text_color_, {&Layer::text_color_a, &Layer::text_color_r,
                                                   &Layer::text_color_g, &Layer::text_color_b});
     install_group_delete_all(btn_kf_fill_color_, {&Layer::fill_color_a, &Layer::fill_color_r,
@@ -3301,6 +3424,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
                 if (!can_edit()) return;
                 double t = local_time();
+                if (layer_->type == LayerType::Image) {
+                    const double old_w = eval_image_width(*layer_, t);
+                    const double old_h = eval_image_height(*layer_, t);
+                    layer_->image_width = (float)v;
+                    set_animated_x(layer_->image_size, t, v);
+                    if (layer_->lock_aspect_ratio && old_w > 0.0) {
+                        layer_->image_height = (float)(v * old_h / old_w);
+                        set_animated_y(layer_->image_size, t, layer_->image_height);
+                        QSignalBlocker block(spn_layer_h_);
+                        spn_layer_h_->setValue(layer_->image_height);
+                    }
+                    emit_change();
+                    return;
+                }
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_width = (float)v;
@@ -3330,6 +3467,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change, apply_shape_size_metric_scaling](double v){
                 if (!can_edit()) return;
                 double t = local_time();
+                if (layer_->type == LayerType::Image) {
+                    const double old_w = eval_image_width(*layer_, t);
+                    const double old_h = eval_image_height(*layer_, t);
+                    layer_->image_height = (float)v;
+                    set_animated_y(layer_->image_size, t, v);
+                    if (layer_->lock_aspect_ratio && old_h > 0.0) {
+                        layer_->image_width = (float)(v * old_w / old_h);
+                        set_animated_x(layer_->image_size, t, layer_->image_width);
+                        QSignalBlocker block(spn_layer_w_);
+                        spn_layer_w_->setValue(layer_->image_width);
+                    }
+                    emit_change();
+                    return;
+                }
                 double old_w = eval_box_width(*layer_, t);
                 double old_h = eval_box_height(*layer_, t);
                 layer_->rect_height = (float)v;
@@ -3413,6 +3564,38 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     }
                 }
                 apply_shape_size_metric_scaling(old_w, old_h, eval_box_width(*layer_, t), eval_box_height(*layer_, t));
+                emit_change();
+            });
+    connect(spn_image_box_w_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit() || layer_->type != LayerType::Image) return;
+                const double t = local_time();
+                const double old_w = eval_box_width(*layer_, t);
+                const double old_h = eval_box_height(*layer_, t);
+                layer_->rect_width = (float)v;
+                set_animated_x(layer_->size, t, v);
+                if (layer_->image_box_lock_aspect_ratio && old_w > 0.0) {
+                    layer_->rect_height = (float)(v * old_h / old_w);
+                    set_animated_y(layer_->size, t, layer_->rect_height);
+                    QSignalBlocker block(spn_image_box_h_);
+                    spn_image_box_h_->setValue(layer_->rect_height);
+                }
+                emit_change();
+            });
+    connect(spn_image_box_h_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit() || layer_->type != LayerType::Image) return;
+                const double t = local_time();
+                const double old_w = eval_box_width(*layer_, t);
+                const double old_h = eval_box_height(*layer_, t);
+                layer_->rect_height = (float)v;
+                set_animated_y(layer_->size, t, v);
+                if (layer_->image_box_lock_aspect_ratio && old_h > 0.0) {
+                    layer_->rect_width = (float)(v * old_w / old_h);
+                    set_animated_x(layer_->size, t, layer_->rect_width);
+                    QSignalBlocker block(spn_image_box_w_);
+                    spn_image_box_w_->setValue(layer_->rect_width);
+                }
                 emit_change();
             });
     auto set_corner_spin_values = [this](double tl, double tr, double br, double bl, QDoubleSpinBox *except = nullptr) {
@@ -3515,6 +3698,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                         QSignalBlocker block(chk_size_lock_);
                         chk_size_lock_->setChecked(locked);
                     }
+                    emit_change();
+                }
+            });
+    connect(chk_image_box_size_lock_, &QCheckBox::toggled,
+            this, [this, can_edit, emit_change](bool locked) {
+                if (can_edit() && layer_->type == LayerType::Image) {
+                    layer_->image_box_lock_aspect_ratio = locked;
                     emit_change();
                 }
             });
@@ -3639,9 +3829,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(spn_gradient_focal_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change, apply_text_fill_format](double v) { if (can_edit()) { layer_->gradient_focal_y = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(edit_image_path_, &QLineEdit::textChanged,
-            this, [this, can_edit, emit_change](const QString &path){
+            this, [this, can_edit, emit_change, fit_image_size_to_current_image](const QString &path){
                 set_image_preview_label(lbl_image_preview_, path);
-                if (can_edit()) { layer_->image_path = path.toStdString(); emit_change(); }
+                if (can_edit()) {
+                    layer_->image_path = path.toStdString();
+                    fit_image_size_to_current_image();
+                    emit_change();
+                }
             });
     connect(cmb_image_scale_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, emit_change](int idx){
@@ -3649,8 +3843,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->scale_filter = (ImageScaleFilter)cmb_image_scale_filter_->itemData(idx).toInt();
                 emit_change();
             });
+    connect(cmb_image_box_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int idx){
+                if (!can_edit() || idx < 0) return;
+                layer_->image_box_mode = (ImageBoxMode)cmb_image_box_mode_->itemData(idx).toInt();
+                emit_change();
+            });
+    if (auto *image_anchor_button = static_cast<AnchorGridButton *>(btn_image_anchor_grid_)) {
+        image_anchor_button->anchor_selected = [this, can_edit, emit_change](int i) {
+            if (!can_edit()) return;
+            QPointF next = anchor_point_from_index(i);
+            layer_->image_anchor_x = (float)next.x();
+            layer_->image_anchor_y = (float)next.y();
+            emit_change();
+        };
+    }
     connect(btn_pick_image_, &QPushButton::clicked,
-            this, [this, can_edit, local_time, emit_change]() {
+            this, [this, can_edit, fit_image_size_to_current_image, emit_change]() {
                 if (!can_edit()) return;
                 QString path = QFileDialog::getOpenFileName(
                     this, obsgs_tr("OBSTitles.ChooseImage"),
@@ -3658,14 +3867,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     obsgs_tr("OBSTitles.ImageFileFilter"));
                 if (path.isEmpty()) return;
                 layer_->image_path = path.toStdString();
-                QSize image_size = editor_image_intrinsic_size(path);
-                if (image_size.isValid() && !image_size.isEmpty()) {
-                    double t = local_time();
-                    layer_->rect_width = (float)image_size.width();
-                    layer_->rect_height = (float)image_size.height();
-                    set_animated_x(layer_->size, t, layer_->rect_width);
-                    set_animated_y(layer_->size, t, layer_->rect_height);
-                }
+                fit_image_size_to_current_image();
                 load_values();
                 emit_change();
             });
@@ -3795,8 +3997,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     });
     connect(btn_kf_width_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
         if (!can_edit()) return;
+        if (layer_->type == LayerType::Image) {
+            toggle_vec2_keyframe(layer_->image_size, local_time(),
+                                 spn_layer_w_->value(), spn_layer_h_->value());
+        } else {
+            toggle_vec2_keyframe(layer_->size, local_time(),
+                                 spn_layer_w_->value(), spn_layer_h_->value());
+        }
+        load_values();
+        emit_change();
+    });
+    connect(btn_kf_image_box_size_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change, toggle_vec2_keyframe]() {
+        if (!can_edit() || layer_->type != LayerType::Image) return;
         toggle_vec2_keyframe(layer_->size, local_time(),
-                             spn_layer_w_->value(), spn_layer_h_->value());
+                             spn_image_box_w_->value(), spn_image_box_h_->value());
         load_values();
         emit_change();
     });
@@ -4085,6 +4299,7 @@ void PropertiesPanel::load_values()
             shape_types_row->setVisible(false);
         if (gradient_box_) gradient_box_->setVisible(false);
         image_box_->setVisible(false);
+        if (image_box_size_box_) image_box_size_box_->setVisible(false);
         if (outline_box_) outline_box_->setVisible(false);
         if (shadow_box_) shadow_box_->setVisible(false);
         spn_px_->setValue(0.0);
@@ -4102,6 +4317,12 @@ void PropertiesPanel::load_values()
             QSignalBlocker block(cmb_image_scale_filter_);
             cmb_image_scale_filter_->setCurrentIndex(1);
         }
+        if (cmb_image_box_mode_) {
+            QSignalBlocker block(cmb_image_box_mode_);
+            int mode_index = cmb_image_box_mode_->findData((int)ImageBoxMode::FitImageToBox);
+            cmb_image_box_mode_->setCurrentIndex(mode_index >= 0 ? mode_index : 0);
+        }
+        if (btn_image_anchor_grid_) { btn_image_anchor_grid_->setProperty("active_index", 4); btn_image_anchor_grid_->update(); }
         style_color_button(btn_text_color_, 0xFFFFFFFF);
         if (btn_text_color_) btn_text_color_->setEnabled(true);
         if (btn_kf_text_color_) btn_kf_text_color_->setEnabled(true);
@@ -4135,6 +4356,8 @@ void PropertiesPanel::load_values()
         if (spn_gradient_focal_y_) spn_gradient_focal_y_->setValue(0.5);
         spn_layer_w_->setValue(0.0);
         spn_layer_h_->setValue(0.0);
+        if (spn_image_box_w_) spn_image_box_w_->setValue(0.0);
+        if (spn_image_box_h_) spn_image_box_h_->setValue(0.0);
         if (spn_rect_corner_tl_) spn_rect_corner_tl_->setValue(0.0);
         if (spn_rect_corner_tr_) spn_rect_corner_tr_->setValue(0.0);
         if (spn_rect_corner_br_) spn_rect_corner_br_->setValue(0.0);
@@ -4154,6 +4377,7 @@ void PropertiesPanel::load_values()
         if (spn_transform_size_h_) spn_transform_size_h_->setValue(0.0);
         if (chk_scale_lock_) chk_scale_lock_->setChecked(true);
         if (chk_transform_size_lock_) chk_transform_size_lock_->setChecked(true);
+        if (chk_image_box_size_lock_) chk_image_box_size_lock_->setChecked(false);
         if (spn_char_scale_x_) spn_char_scale_x_->setValue(100.0);
         if (spn_char_scale_y_) spn_char_scale_y_->setValue(100.0);
         if (spn_baseline_shift_) spn_baseline_shift_->setValue(0.0);
@@ -4202,7 +4426,7 @@ void PropertiesPanel::load_values()
     const bool is_rect = layer_->type == LayerType::SolidRect || layer_->type == LayerType::Shape;
     const bool is_image = layer_->type == LayerType::Image;
     const bool is_scene_mask_layer = layer_->use_as_scene_mask;
-    const bool supports_outline = is_text_like || is_rect;
+    const bool supports_outline = is_text_like || is_rect || is_image;
     if (transform_box_) transform_box_->setVisible(true);
     if (appearance_box_) appearance_box_->setVisible(true);
     if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(true);
@@ -4367,9 +4591,10 @@ void PropertiesPanel::load_values()
     }
     const bool is_shape_layer = layer_->type == LayerType::Shape || layer_->type == LayerType::SolidRect;
     const ShapeType current_shape = layer_->type == LayerType::SolidRect ? ShapeType::RoundedRectangle : layer_->shape_type;
-    const bool show_corner_radius = is_shape_layer &&
-                                    (current_shape == ShapeType::Rectangle ||
-                                     current_shape == ShapeType::RoundedRectangle);
+    const bool show_corner_radius = is_image ||
+                                    (is_shape_layer &&
+                                     (current_shape == ShapeType::Rectangle ||
+                                      current_shape == ShapeType::RoundedRectangle));
     const bool show_star_controls = is_shape_layer && current_shape == ShapeType::Star;
     const bool show_polygon_controls = is_shape_layer && current_shape == ShapeType::Polygon;
     const bool show_roundness = false;
@@ -4389,7 +4614,9 @@ void PropertiesPanel::load_values()
     set_visible(transform_size_field_w_, show_transform_size);
     set_visible(chk_transform_size_lock_, show_transform_size);
     set_visible(transform_size_field_h_, show_transform_size);
-    set_visible(row_shape_scale_options_, is_shape_layer);
+    set_visible(row_shape_scale_options_, is_shape_layer || is_image);
+    set_visible(chk_shape_scale_stroke_, is_shape_layer);
+    set_visible(chk_shape_scale_corners_, is_shape_layer || is_image);
     set_visible(btn_kf_width_, show_shape_panel_size);
     set_visible(shape_size_label_, show_shape_panel_size);
     set_visible(shape_size_field_w_, show_shape_panel_size);
@@ -4453,6 +4680,7 @@ void PropertiesPanel::load_values()
             if (auto *label = form->labelForField(field)) label->setVisible(supports_text_box_auto_size);
     }
     image_box_->setVisible(is_image);
+    if (image_box_size_box_) image_box_size_box_->setVisible(is_image);
     if (shadow_box_) shadow_box_->setVisible(false);
 
     double lt = std::clamp(playhead_ - layer_->in_time, 0.0,
@@ -4524,9 +4752,17 @@ void PropertiesPanel::load_values()
     cmb_anchor_->setCurrentIndex(anchor_index);
     if (btn_anchor_grid_) { btn_anchor_grid_->setProperty("active_index", anchor_index); btn_anchor_grid_->update(); }
 
-    spn_layer_w_->setValue(eval_box_width(*layer_, lt));
-    spn_layer_h_->setValue(eval_box_height(*layer_, lt));
+    if (is_image) {
+        spn_layer_w_->setValue(eval_image_width(*layer_, lt));
+        spn_layer_h_->setValue(eval_image_height(*layer_, lt));
+    } else {
+        spn_layer_w_->setValue(eval_box_width(*layer_, lt));
+        spn_layer_h_->setValue(eval_box_height(*layer_, lt));
+    }
+    if (spn_image_box_w_) spn_image_box_w_->setValue(eval_box_width(*layer_, lt));
+    if (spn_image_box_h_) spn_image_box_h_->setValue(eval_box_height(*layer_, lt));
     if (chk_size_lock_) chk_size_lock_->setChecked(layer_->lock_aspect_ratio);
+    if (chk_image_box_size_lock_) chk_image_box_size_lock_->setChecked(layer_->image_box_lock_aspect_ratio);
     if (chk_corner_lock_) chk_corner_lock_->setChecked(layer_->corner_radius_locked);
     if (spn_rect_corner_tl_) spn_rect_corner_tl_->setValue(layer_->corner_radius_tl);
     if (spn_rect_corner_tr_) spn_rect_corner_tr_->setValue(layer_->corner_radius_tr);
@@ -4559,6 +4795,17 @@ void PropertiesPanel::load_values()
         QSignalBlocker block(cmb_image_scale_filter_);
         int filter_index = cmb_image_scale_filter_->findData((int)layer_->scale_filter);
         cmb_image_scale_filter_->setCurrentIndex(filter_index >= 0 ? filter_index : 1);
+    }
+    if (cmb_image_box_mode_) {
+        QSignalBlocker block(cmb_image_box_mode_);
+        int mode_index = cmb_image_box_mode_->findData((int)layer_->image_box_mode);
+        cmb_image_box_mode_->setCurrentIndex(mode_index >= 0 ? mode_index : 0);
+    }
+    if (btn_image_anchor_grid_) {
+        int image_anchor_x = layer_->image_anchor_x < 0.25f ? 0 : (layer_->image_anchor_x > 0.75f ? 2 : 1);
+        int image_anchor_y = layer_->image_anchor_y < 0.25f ? 0 : (layer_->image_anchor_y > 0.75f ? 2 : 1);
+        btn_image_anchor_grid_->setProperty("active_index", image_anchor_y * 3 + image_anchor_x);
+        btn_image_anchor_grid_->update();
     }
     style_color_button(btn_text_color_, eval_text_color(*layer_, lt));
     style_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
@@ -4625,7 +4872,8 @@ void PropertiesPanel::load_values()
     set_prop_kf_icon(btn_kf_baseline_shift_, layer_->baseline_shift_prop);
     set_prop_kf_icon(btn_kf_paragraph_space_before_, layer_->paragraph_space_before_prop);
     set_prop_kf_icon(btn_kf_paragraph_space_after_, layer_->paragraph_space_after_prop);
-    set_vec_kf_icon(btn_kf_width_, layer_->size);
+    set_vec_kf_icon(btn_kf_width_, is_image ? layer_->image_size : layer_->size);
+    set_vec_kf_icon(btn_kf_image_box_size_, layer_->size);
     set_group_kf_icon(btn_kf_text_color_, {&layer_->text_color_a, &layer_->text_color_r,
                                            &layer_->text_color_g, &layer_->text_color_b});
     set_group_kf_icon(btn_kf_fill_color_, {&layer_->fill_color_a, &layer_->fill_color_r,

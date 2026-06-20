@@ -1420,6 +1420,13 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["fill_color_b"]  = aprop_to_json(l.fill_color_b);
     j["image_path"]    = l.image_path;
     j["scale_filter"]  = (int)l.scale_filter;
+    j["image_box_lock_aspect_ratio"] = l.image_box_lock_aspect_ratio;
+    j["image_box_mode"] = (int)l.image_box_mode;
+    j["image_anchor_x"] = l.image_anchor_x;
+    j["image_anchor_y"] = l.image_anchor_y;
+    j["image_width"] = l.image_width;
+    j["image_height"] = l.image_height;
+    j["image_size"] = vec2_aprop_to_json(l.image_size);
     if (include_embedded_assets && !attach_embedded_image_asset(l, j, require_embedded_assets, error)) {
         if (asset_embed_failed)
             *asset_embed_failed = true;
@@ -2055,8 +2062,20 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
         if (error) *error = "Could not restore an embedded image asset from the template file.";
     }
     l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", l->type == LayerType::Image);
+    l->image_box_lock_aspect_ratio = json_bool(j, "image_box_lock_aspect_ratio", false);
     l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
                                                    0, (int)ImageScaleFilter::Area);
+    l->image_box_mode = (ImageBoxMode)std::clamp(json_int(j, "image_box_mode", (int)ImageBoxMode::FitImageToBox),
+                                                 0, (int)ImageBoxMode::StretchToFill);
+    l->image_anchor_x = (float)std::clamp(finite_or(json_double(j, "image_anchor_x", 0.5), 0.5), 0.0, 1.0);
+    l->image_anchor_y = (float)std::clamp(finite_or(json_double(j, "image_anchor_y", 0.5), 0.5), 0.0, 1.0);
+    l->image_width = (float)std::clamp(finite_or(json_double(j, "image_width", 1920.0), 1920.0), 0.0, (double)kMaxCanvasDimension);
+    l->image_height = (float)std::clamp(finite_or(json_double(j, "image_height", 1080.0), 1080.0), 0.0, (double)kMaxCanvasDimension);
+    l->image_size.static_value.x = l->image_width;
+    l->image_size.static_value.y = l->image_height;
+    if (j.contains("image_size")) vec2_aprop_from_json(j["image_size"], l->image_size);
+    l->image_size.static_value.x = std::clamp(l->image_size.static_value.x, 0.0, (double)kMaxCanvasDimension);
+    l->image_size.static_value.y = std::clamp(l->image_size.static_value.y, 0.0, (double)kMaxCanvasDimension);
     return l;
 }
 
