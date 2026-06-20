@@ -3,6 +3,7 @@
 #include "title-source.h"
 #include "title-preferences.h"
 #include "title-logger.h"
+#include "image-layer-utils.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -2127,7 +2128,7 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
         const std::string cue_value = cue_title->live_text_rows[value_row][col];
         target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
-            target->image_path = cue_value;
+            gsp::apply_exposed_image_cue_value(*target, cue_value);
             continue;
         }
         target->text_content = cue_value;

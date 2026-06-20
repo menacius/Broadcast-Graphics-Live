@@ -157,7 +157,13 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 
     if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
         OGS_LOG_INFO("Plugin", QStringLiteral("Scene collection cleanup"));
-        TitleDataStore::instance().save();
+        /* OBS emits a cleanup event during initial startup before the scene
+         * collection has finished loading. The title store has not changed at
+         * that point, so writing it is both unnecessary and vulnerable to
+         * transient filesystem/antivirus locks. Real collection switches occur
+         * after the frontend is ready and still save the outgoing collection. */
+        if (g_frontend_ready)
+            TitleDataStore::instance().save();
         title_hotkeys_unregister();
     }
 

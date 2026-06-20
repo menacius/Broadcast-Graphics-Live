@@ -292,10 +292,12 @@ set(OBS_GSP_CORE_HEADERS
 
 set(OBS_GSP_LAYER_HEADERS
     src/layers/layer-model.h
+    src/layers/image-layer-utils.h
     src/layers/layer-stack-widget.h
 )
 
 set(OBS_GSP_LAYER_SOURCES
+    src/layers/image-layer-utils.cpp
     src/layers/layer-stack-widget.cpp
 )
 

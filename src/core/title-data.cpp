@@ -7,6 +7,9 @@
 #include <obs-frontend-api.h>
 #include <util/platform.h>
 
+#include <QSaveFile>
+#include <QString>
+
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <random>
@@ -2314,49 +2317,51 @@ bool TitleDataStore::write_snapshot_atomic(
                 root.push_back(title_to_json(*title));
         }
     } catch (const std::exception &e) {
-        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to serialize titles.json: %s", e.what());
+        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to serialize titles file: %s", e.what());
         return false;
     }
 
-    const std::string tmp_path = path + ".tmp";
-    {
-        std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
-        if (!file.is_open()) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to open titles.json for saving");
-            return false;
-        }
-        try {
-            const std::string payload = root.dump(2, ' ', false, json::error_handler_t::replace);
-            file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-        } catch (const std::exception &e) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to encode titles.json: %s", e.what());
-            file.close();
-            std::remove(tmp_path.c_str());
-            return false;
-        }
-        file.flush();
-        if (!file.good()) {
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed while writing titles.json");
-            file.close();
-            std::remove(tmp_path.c_str());
-            return false;
-        }
+    std::string payload;
+    try {
+        payload = root.dump(2, ' ', false, json::error_handler_t::replace);
+    } catch (const std::exception &e) {
+        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to encode titles file: %s", e.what());
+        return false;
     }
 
-    if (std::rename(tmp_path.c_str(), path.c_str()) == 0)
-        return true;
+    /* QSaveFile writes to a temporary file in the destination directory and
+     * atomically replaces the target only when commit() succeeds. Keeping
+     * direct-write fallback disabled is intentional: a temporary filesystem
+     * or antivirus lock must never cause the last valid titles file to be
+     * truncated or deleted. */
+    const QString destination = QString::fromUtf8(path.data(), static_cast<int>(path.size()));
+    QSaveFile file(destination);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) {
+        blog(LOG_WARNING,
+             "[OBS Graphics Studio Pro] Failed to open titles file for atomic saving: %s",
+             file.errorString().toUtf8().constData());
+        return false;
+    }
 
-#if defined(_WIN32)
-    /* Windows does not replace an existing destination with std::rename. Keep
-     * the old file until the complete temporary file has been written. */
-    std::remove(path.c_str());
-    if (std::rename(tmp_path.c_str(), path.c_str()) == 0)
-        return true;
-#endif
+    const qint64 expected = static_cast<qint64>(payload.size());
+    const qint64 written = file.write(payload.data(), expected);
+    if (written != expected) {
+        blog(LOG_WARNING,
+             "[OBS Graphics Studio Pro] Failed while writing titles file: %s",
+             file.errorString().toUtf8().constData());
+        file.cancelWriting();
+        return false;
+    }
 
-    blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to replace titles.json");
-    std::remove(tmp_path.c_str());
-    return false;
+    if (!file.commit()) {
+        blog(LOG_WARNING,
+             "[OBS Graphics Studio Pro] Failed to atomically replace titles file: %s",
+             file.errorString().toUtf8().constData());
+        return false;
+    }
+
+    return true;
 }
 
 void TitleDataStore::save() const
@@ -2589,11 +2594,29 @@ void TitleDataStore::load()
     json root;
     std::string error;
     if (!read_json_file(path, root, &error)) {
+        bool preserved_existing_store = false;
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
-            loaded_path_ = path;
-            titles_.clear();
+            /* A reload of the same collection can briefly race filesystem or
+             * security-software activity. Never turn that transient failure
+             * into an empty in-memory store. A genuinely different collection
+             * still starts empty when it has no saved file. */
+            const bool same_collection = !loaded_path_.empty() && loaded_path_ == path;
+            preserved_existing_store = same_collection && !titles_.empty();
+            if (!preserved_existing_store) {
+                loaded_path_ = path;
+                titles_.clear();
+            }
         }
+
+        if (preserved_existing_store) {
+            blog(LOG_WARNING,
+                 "[OBS Graphics Studio Pro] Failed to reload titles for the current scene collection; "
+                 "keeping the already loaded titles in memory: %s",
+                 error.c_str());
+            return;
+        }
+
         notify_change();
         if (error == "Could not open the file.")
             blog(LOG_INFO, "[OBS Graphics Studio Pro] No saved titles found for this scene collection, starting fresh.");
@@ -2624,12 +2647,26 @@ void TitleDataStore::load()
         }
         notify_change();
         blog(LOG_INFO, "[OBS Graphics Studio Pro] Loaded %zu title(s) for this scene collection.", loaded_count);
-    } catch (std::exception &e) {
+    } catch (const std::exception &e) {
+        bool preserved_existing_store = false;
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
-            loaded_path_ = path;
-            titles_.clear();
+            const bool same_collection = !loaded_path_.empty() && loaded_path_ == path;
+            preserved_existing_store = same_collection && !titles_.empty();
+            if (!preserved_existing_store) {
+                loaded_path_ = path;
+                titles_.clear();
+            }
         }
+
+        if (preserved_existing_store) {
+            blog(LOG_WARNING,
+                 "[OBS Graphics Studio Pro] Failed to parse the current scene collection titles file; "
+                 "keeping the already loaded titles in memory: %s",
+                 e.what());
+            return;
+        }
+
         notify_change();
         blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to parse scene collection titles file: %s", e.what());
     }

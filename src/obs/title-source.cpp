@@ -18,6 +18,7 @@
 #include "title-gpu-filter-pipeline.h"
 #include "title-preferences.h"
 #include "title-logger.h"
+#include "image-layer-utils.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -737,7 +738,7 @@ static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &layer, cons
         return;
     layer->live_cue_hidden_if_empty = layer->exposed_hide_if_empty && value.empty();
     if (layer->type == LayerType::Image) {
-        layer->image_path = value;
+        gsp::apply_exposed_image_cue_value(*layer, value);
         return;
     }
     replace_layer_text_preserving_rich_rules(layer, value);

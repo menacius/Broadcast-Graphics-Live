@@ -11,6 +11,7 @@
 #include "title-localization.h"
 #include "cache-manager.h"
 #include "title-logger.h"
+#include "image-layer-utils.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -232,7 +233,7 @@ static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &target, con
         return;
     target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && value.empty();
     if (target->type == LayerType::Image) {
-        target->image_path = value;
+        gsp::apply_exposed_image_cue_value(*target, value);
         return;
     }
 

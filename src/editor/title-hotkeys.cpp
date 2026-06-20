@@ -1,6 +1,7 @@
 #include "title-hotkeys.h"
 #include "title-data.h"
 #include "cache/cache-manager.h"
+#include "image-layer-utils.h"
 #include <obs-module.h>
 #include <QSettings>
 #include <QTimer>
@@ -233,7 +234,7 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
         const std::string &cue_value = title->live_text_rows[value_row][col];
         target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
-            target->image_path = cue_value;
+            gsp::apply_exposed_image_cue_value(*target, cue_value);
             continue;
         }
         target->text_content = cue_value;
