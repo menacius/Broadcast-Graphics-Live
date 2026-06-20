@@ -4160,6 +4160,7 @@ static bool layer_has_non_transform_animation(const Layer &layer)
 {
     return layer_has_effect_animation(layer) ||
            layer.size.is_animated() ||
+           layer.image_size.is_animated() ||
            layer.origin_prop.is_animated() ||
            layer.paragraph_indent_left_prop.is_animated() ||
            layer.paragraph_indent_right_prop.is_animated() ||
@@ -4178,7 +4179,40 @@ static bool layer_has_non_transform_animation(const Layer &layer)
            layer.fill_color_a.is_animated() ||
            layer.fill_color_r.is_animated() ||
            layer.fill_color_g.is_animated() ||
-           layer.fill_color_b.is_animated();
+           layer.fill_color_b.is_animated() ||
+           layer.background_enabled_prop.is_animated() ||
+           layer.background_opacity_prop.is_animated() ||
+           layer.background_padding_x_prop.is_animated() ||
+           layer.background_padding_y_prop.is_animated() ||
+           layer.background_padding_left_prop.is_animated() ||
+           layer.background_padding_right_prop.is_animated() ||
+           layer.background_padding_top_prop.is_animated() ||
+           layer.background_padding_bottom_prop.is_animated() ||
+           layer.background_corner_radius_prop.is_animated() ||
+           layer.background_corner_radius_tl_prop.is_animated() ||
+           layer.background_corner_radius_tr_prop.is_animated() ||
+           layer.background_corner_radius_br_prop.is_animated() ||
+           layer.background_corner_radius_bl_prop.is_animated() ||
+           layer.background_stroke_width_prop.is_animated() ||
+           layer.background_stroke_opacity_prop.is_animated() ||
+           layer.background_color_a.is_animated() ||
+           layer.background_color_r.is_animated() ||
+           layer.background_color_g.is_animated() ||
+           layer.background_color_b.is_animated() ||
+           layer.background_stroke_color_a.is_animated() ||
+           layer.background_stroke_color_r.is_animated() ||
+           layer.background_stroke_color_g.is_animated() ||
+           layer.background_stroke_color_b.is_animated() ||
+           layer.shadow_enabled_prop.is_animated() ||
+           layer.shadow_opacity_prop.is_animated() ||
+           layer.shadow_distance_prop.is_animated() ||
+           layer.shadow_angle_prop.is_animated() ||
+           layer.shadow_blur_prop.is_animated() ||
+           layer.shadow_spread_prop.is_animated() ||
+           layer.shadow_color_a.is_animated() ||
+           layer.shadow_color_r.is_animated() ||
+           layer.shadow_color_g.is_animated() ||
+           layer.shadow_color_b.is_animated();
 }
 
 static QRect image_alpha_bounds(const QImage &image)
@@ -4573,6 +4607,39 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
         render_layer_unmasked_with_stackable_effects(cr, nullptr, title, base_layer,
                                                      title_time, canvas_w, canvas_h);
         return true;
+    }
+
+    if (!layer_has_non_transform_animation(base_layer) && base_layer.type != LayerType::Ticker) {
+        const auto *cached = ensure_cached_effect_layer(data, title, base_layer, title_time,
+                                                        canvas_w, canvas_h, "|motion-base",
+                                                        false, true);
+        if (cached) {
+            if (cached->image.isNull())
+                return true;
+
+            auto cached_surface = make_image_surface_for_const_qimage(cached->image);
+            if (cached_surface) {
+                auto paint_cached_sample = [&](double sample_time, double alpha) {
+                    cairo_save(cr);
+                    apply_layer_world_transform(cr, title, base_layer, sample_time);
+                    cairo_set_source_surface(cr, cached_surface.get(),
+                                             cached->origin.x(), cached->origin.y());
+                    cairo_paint_with_alpha(cr, alpha * std::clamp(layer_chain_opacity(title, base_layer, sample_time),
+                                                                  0.0, 1.0));
+                    cairo_restore(cr);
+                };
+
+                return paint_fast_motion(
+                    [&](cairo_t *sample_cr, double sample_time) {
+                        (void)sample_cr;
+                        paint_cached_sample(sample_time, 1.0);
+                    },
+                    [&](cairo_t *sample_cr) {
+                        (void)sample_cr;
+                        paint_cached_sample(title_time, 1.0);
+                    });
+            }
+        }
     }
 
     /* Keep the OBS source path pixel-identical to the editor/prerender path.
