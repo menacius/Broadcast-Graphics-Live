@@ -1,65 +1,450 @@
 # OBS Graphics Studio Pro
 
-OBS Graphics Studio Pro is a native C++/Qt graphics plugin for OBS Studio. It adds a dockable graphics manager, an After Effects-inspired editor, a layered canvas, timeline animation, live text cueing, and native OBS source playback so broadcast graphics can be created and played directly inside OBS without browser sources or external titling software.
+<img width="1920" height="1044" alt="Screenshot 2026-06-21 012849" src="https://github.com/user-attachments/assets/3e01f3f6-2b03-400c-bf14-5a1c44cc6e29" />
 
-The project is currently an active **alpha**. Core title creation, editing, serialization, OBS source playback, template import/export, and many editor workflows are implemented, while the codebase is still being modularized and hardened for production use.
+**OBS Graphics Studio Pro** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
+
+> [!WARNING]
+> The project is under active **alpha development**. Core authoring, serialization, playback, live-cue, and caching workflows are implemented, but file formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+
+OBS Graphics Studio Pro is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
 
 ---
 
-## Current Capabilities
+## Highlights
 
-### OBS integration
+### Native OBS integration
 
 - Native OBS input source: **OBS Graphics Studio Pro Title**.
-- Dockable **OBS Graphics Studio Pro** panel for title/template management.
-- One-click add-to-scene workflow for the selected title.
-- Scene-collection/profile persistence through `titles.json`.
-- Scene-mask support for mapping OBS scenes into animated graphics masks.
-- Runtime live-text cueing with foreground/background persistence options.
+- Dockable title and template manager inside OBS Studio.
+- Add the selected title directly to the active scene.
+- Scene-collection-specific title libraries.
+- Native rendering and playback through `libobs`.
+- Scene-mask support for using OBS scenes as animated mask inputs.
+- Persistent plugin preferences and title metadata.
 
-### Editor and canvas
+### Layered editor and canvas
 
-- Non-modal Qt editor with canvas preview, layers, properties, tools, and timeline.
-- Text, clock, ticker, image, solid rectangle, and vector shape layers.
-- Shape primitives: rectangle, rounded rectangle, ellipse, triangle, star, polygon, diamond, and line.
-- Direct canvas interaction for selection, movement, resize handles, origin/anchor editing, and multi-select transforms.
+- Non-modal Qt editor with canvas, tools, layers, properties, effects, styles, and timeline panels.
+- Layer types:
+  - Text
+  - Clock
+  - Ticker
+  - Image
+  - Solid rectangle
+  - Vector shape
+- Shape primitives:
+  - Rectangle
+  - Rounded rectangle
+  - Ellipse
+  - Triangle
+  - Star
+  - Polygon
+  - Diamond
+  - Line
+- Direct canvas selection, movement, resizing, rotation, anchor/origin editing, and multi-selection.
 - Photoshop-style rulers, draggable guides, safe guides, snapping, zoom, and pan.
-- Layer visibility, locking, duplication, parent/child transforms, and track-matte style masks.
-
-### Text and typography
-
-- Rich text model with structured inline formatting and HTML fallback compatibility.
-- On-canvas text editing for text-like layers.
-- Font family/style/size, bold, italic, underline, strikethrough, kerning/tracking, character scale, baseline shift, leading, paragraph spacing, indents, alignment, and overflow controls.
-- Clock layers with configurable time formats.
-- Ticker layers with horizontal scrolling, vertical line-by-line, and vertical smooth modes.
-- Exposed text columns for live data/cue workflows.
-
-### Styling, gradients, effects, and masks
-
-- Solid and gradient fills for supported layer/background/stroke paths.
-- Gradient modes: linear, radial, angle, reflected, and diamond.
-- Intermediate gradient stops with stored opacity/position data.
-- Per-side text/background padding and per-corner radii/corner types.
-- Outlines/strokes for text and shape-oriented layers.
-- Drop shadows and long shadows with multiple blur modes.
-- Stackable layer effects including background color, outline, drop shadow, long shadow, brightness/contrast, saturation, color overlay, glow, inner glow, inner shadow, blur, and motion blur.
-- Blend modes including normal, multiply, additive, screen, overlay, and color.
+- Layer visibility, locking, duplication, ordering, parent/child transforms, blend modes, and track-matte-style masks.
 - Alpha, inverted alpha, luma, and inverted luma masks.
+
+### Typography and rich text
+
+- Structured rich-text document model with inline formatting.
+- Direct on-canvas text editing.
+- Font family, style, size, weight, italic, underline, strikethrough, kerning, tracking, leading, baseline shift, character scaling, paragraph spacing, indentation, alignment, and overflow controls.
+- Inline text styles, mixed formatting, gradients, and preset application.
+- Clock layers with configurable time formats.
+- Ticker layers with:
+  - Horizontal scrolling
+  - Vertical line-by-line movement
+  - Vertical smooth scrolling
+- Rule-based automatic text styling for reusable live graphics.
+
+### Images, fills, gradients, and strokes
+
+- Image layers with independent image size and image-box size.
+- Image fit, fill, stretch, long-side, and short-side layout modes.
+- Internal image anchoring, optional clipping/cropping, aspect-ratio controls, and scalable filtering.
+- Bilinear, bicubic, Lanczos, and area image filters.
+- Solid and gradient fills.
+- Linear, radial, angle, reflected, and diamond gradients.
+- Editable gradient stops, opacity, position, angle, center, focal point, and scale.
+- Outer, centered, and inner stroke alignment.
+- Per-side padding and independent corner radii/types where supported.
+- Placeholder rendering for image boxes without an assigned asset.
+
+### Effects and compositing
+
+Stackable effects currently represented by the editor and renderer include:
+
+- Background Color
+- Outline
+- Drop Shadow
+- Long Shadow
+- Brightness & Contrast
+- Saturation
+- Color Overlay
+- Glow
+- Inner Glow
+- Inner Shadow
+- Blur
+- Motion Blur
+- Bloom
+- Emboss
+
+Supported layer/effect blend modes include Normal, Multiply, Additive, Screen, Overlay, and Color.
 
 ### Timeline and animation
 
-- Timeline with in/out ranges, playhead, transport controls, layer rows, switches/modes, parenting, and mask indicators.
-- Keyframed properties for transform, opacity, text styling, color channels, background, shadow, shape/box size, and origin-related controls.
-- Easing modes: linear, ease in, ease out, ease in/out, cubic Bezier, and hold.
-- Title playback modes: play once, loop in/out, and pause at position; loop type supports restart and ping-pong.
+- Layer-based timeline with in/out ranges, playhead, transport controls, switches, parenting, masks, and cache state display.
+- Keyframeable transform, opacity, typography, color, shape, image, background, shadow, and effect properties.
+- Scalar and two-dimensional animated properties.
+- Easing modes:
+  - Linear
+  - Ease In
+  - Ease Out
+  - Ease In/Out
+  - Cubic Bezier
+  - Hold
+- Playback modes:
+  - Play once
+  - Loop between in/out points
+  - Pause at a defined position
+- Restart and ping-pong loop behavior.
+- End-of-cue options:
+  - Show last frame
+  - Show nothing
+  - Show first frame
 
-### Templates and persistence
+### Live text and image cues
 
-- Built-in starter templates for lower thirds, centered titles, ticker/strap graphics, and clocks.
-- Template import/export through `.ogspt` files with metadata and preview screenshots.
-- Manual title preview screenshot capture for the dock/template list.
-- Editor preferences for colors, guides, and default styles.
+- Expose text, ticker, and image layers to the OBS dock.
+- Multi-row cue table with reorderable exposed columns.
+- Text and image values can be changed without editing the title design.
+- Cue, uncue, row-to-row transition, foreground/background persistence, and unchanged-text persistence workflows.
+- Optional **Do not show if empty** behavior.
+- Optional shared **Single value** columns.
+- Per-title playlist controls, including loop, reverse order, hold duration, restart on source activation, and stop on source deactivation.
+- Import, append, and export workflows for cue data.
+- Per-row and aggregate cache/progress feedback.
+
+### Templates and style presets
+
+- Built-in starter templates.
+- Import and export through `.ogspt` title-template files.
+- Template metadata:
+  - Title
+  - Description
+  - Creator
+  - Creation date
+  - Preview image
+- Embedded image assets in exported templates.
+- Manual preview screenshot capture.
+- Searchable text-style and gradient-style libraries.
+- Preset categories, thumbnails, import/export, and inline rich-text application.
+
+---
+
+## Caching and prerendering
+
+OBS Graphics Studio Pro includes a background frame-cache system intended to keep complex titles and live cues responsive during playback.
+
+### Cache architecture
+
+- Raw image payloads in the RAM cache.
+- Optional disk cache with LZ4-compressed frame data.
+- Configurable RAM limit and disk-cache location.
+- Background render queue with title, timeline, editor, and live-cue priorities.
+- Work-area and full-timeline prerendering.
+- Live-cue frame preparation before playback.
+- Per-frame states for queued, rendering, RAM-resident, disk-resident, stale, and disabled content.
+- Content hashes, frame-state tracking, invalidation, payload sharing, and sparse alpha-bounded cached frames.
+- Cache data can persist between editor sessions when the underlying title state remains valid.
+
+### Clock and ticker titles
+
+Clock and Ticker layers remain live and are never baked into cached pixels.
+
+When possible, the renderer caches the largest z-order-safe static prefix below the first runtime-dynamic output. The Clock/Ticker layer and all layers above that boundary continue rendering live. Dynamic dependencies through parenting and track mattes are included in the cacheability analysis.
+
+Current cacheability states are:
+
+- **Cacheable** — the complete title can be cached.
+- **Partially cacheable** — a safe static prefix can be cached while the dynamic suffix remains live.
+- **Non-cacheable** — the first rendered output is dynamic, so the current single-prefix strategy cannot provide a useful cached underlay.
+
+The current implementation uses one cached prefix rather than multiple independent cache islands. See [`docs/clock-ticker-partial-frame-cache.md`](docs/clock-ticker-partial-frame-cache.md) for details.
+
+---
+
+## Current status and limitations
+
+- The project is an alpha and is not yet recommended as the only copy of production-critical graphics.
+- The primary cross-platform composition and text-rendering path uses Cairo, Pango, and PangoCairo.
+- GPU effect-pipeline infrastructure exists, but the migration of all rendering and effects to a fully GPU-native path is not complete.
+- Partial dynamic caching currently supports one safe static prefix below the first dynamic output.
+- Complex rich text, masks, effects, motion blur, large images, and high-resolution timelines can still require significant CPU, RAM, GPU, and disk resources.
+- Template and title schemas may evolve before a stable release.
+- Automated coverage currently focuses on selected model behavior rather than the complete OBS/editor integration surface.
+
+---
+
+## Requirements
+
+### Build requirements
+
+- CMake 3.16 or newer
+- C++17 compiler
+- OBS Studio development files containing:
+  - `libobs`
+  - `obs-frontend-api`
+  - OBS headers
+- Qt 5.15 or Qt 6 with:
+  - Core
+  - Widgets
+  - SVG
+- Cairo
+- Pango
+- PangoCairo
+- `pkg-config` where available
+
+### Dependencies resolved by CMake
+
+The build configuration pins or resolves the following libraries:
+
+- `nlohmann/json` 3.11.3
+- Qt-Color-Widgets at commit `8491078434b24cba295b5e41cc0d2a94c7049a5b`
+- LZ4 1.10.0 source at commit `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` when a system/vcpkg LZ4 target is unavailable
+
+A clean configuration may therefore require network access unless the dependency sources are already present in the CMake dependency cache or supplied by a dependency provider.
+
+---
+
+## Building
+
+Clone the repository:
+
+```bash
+git clone https://github.com/menacius/OBS-Graphics-Studio-Pro.git
+cd OBS-Graphics-Studio-Pro
+```
+
+### Windows
+
+The recommended Windows workflow uses Visual Studio 2022, CMake, vcpkg, and an OBS SDK/plugin-deps tree.
+
+Install the main vcpkg dependencies:
+
+```powershell
+vcpkg install cairo pango[fontconfig] qt6-base qt6-svg lz4 --triplet x64-windows
+```
+
+Set the required paths:
+
+```powershell
+$env:VCPKG_ROOT = "C:\vcpkg"
+$env:OBS_SDK_DIR = "C:\path\to\obs-plugin-deps-or-obs-studio-sdk"
+```
+
+Build and install with the helper script:
+
+```powershell
+.\build-windows.ps1 -ObsSdkDir $env:OBS_SDK_DIR
+```
+
+Build with validation tests:
+
+```powershell
+.\build-windows.ps1 `
+  -ObsSdkDir $env:OBS_SDK_DIR `
+  -Configuration RelWithDebInfo `
+  -BuildTests
+```
+
+Build without copying the result into OBS:
+
+```powershell
+.\build-windows.ps1 `
+  -ObsSdkDir $env:OBS_SDK_DIR `
+  -SkipInstall
+```
+
+Use `-InstallRoot` to target a portable or custom OBS plugins directory.
+
+Manual configuration:
+
+```powershell
+cmake -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows `
+  -DOBS_SDK_DIR="$env:OBS_SDK_DIR" `
+  -DOBS_GSP_BUILD_TESTS=ON
+
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+### Linux
+
+Package names for OBS development files differ between distributions. Install the OBS SDK/development headers, Qt, Cairo, Pango, CMake, Ninja, and `pkg-config`.
+
+Example Debian/Ubuntu-oriented dependency set:
+
+```bash
+sudo apt install \
+  cmake ninja-build pkg-config \
+  libobs-dev \
+  qt6-base-dev qt6-svg-dev \
+  libcairo2-dev libpango1.0-dev liblz4-dev
+```
+
+Configure and build:
+
+```bash
+cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DOBS_GSP_BUILD_TESTS=ON
+
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+When the OBS CMake packages are not installed in a standard prefix, point CMake at an OBS SDK or build tree:
+
+```bash
+cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DOBS_SDK_DIR=/path/to/obs-sdk-or-plugin-deps
+```
+
+Install into the user plugin root:
+
+```bash
+cmake --install build --prefix "$HOME/.config/obs-studio/plugins"
+```
+
+### macOS
+
+Install the general dependencies:
+
+```bash
+brew install cmake ninja pkg-config qt cairo pango lz4
+```
+
+Configure against an OBS source, SDK, or compatible build tree:
+
+```bash
+cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DOBS_SDK_DIR=/path/to/obs-sdk-or-build-tree
+
+cmake --build build
+```
+
+The exact macOS bundle/install arrangement depends on the OBS build tree and packaging workflow used by the developer.
+
+---
+
+## Plugin layout
+
+CMake stages a directly copyable plugin directory at:
+
+```text
+build/obs-graphics-studio-pro/
+├── bin/
+│   └── 64bit/
+│       ├── obs-graphics-studio-pro.dll
+│       └── dependency DLLs on Windows
+└── data/
+    ├── effects/
+    ├── icons/
+    └── locale/
+```
+
+Typical Windows installation:
+
+```text
+C:\ProgramData\obs-studio\plugins\obs-graphics-studio-pro\
+├── bin\64bit\
+│   ├── obs-graphics-studio-pro.dll
+│   ├── Qt6Core.dll
+│   ├── Qt6Gui.dll
+│   ├── Qt6Widgets.dll
+│   ├── Qt6Svg.dll
+│   ├── cairo.dll
+│   ├── pango-1.0.dll
+│   ├── pangocairo-1.0.dll
+│   └── other required runtime DLLs
+└── data\
+    ├── effects\
+    ├── icons\
+    └── locale\
+```
+
+The Windows build helper copies vcpkg runtime DLLs into the plugin binary directory. Binary redistributors must also include the applicable third-party license notices described below.
+
+---
+
+## Basic workflow
+
+1. Open the **OBS Graphics Studio Pro** dock in OBS Studio.
+2. Create a blank title, select a starter template, or import an `.ogspt` template.
+3. Open the editor and build the composition with layers, text, images, shapes, masks, effects, and keyframes.
+4. Expose text, ticker, or image layers to the dock when the design needs operator-controlled live values.
+5. Add cue rows and optionally enable caching or playlist playback.
+6. Capture or update the title preview image.
+7. Add the selected title to the active OBS scene.
+8. Cue, uncue, or automate rows from the dock while the native OBS source remains on air.
+
+---
+
+## Data and file formats
+
+### Scene-collection title storage
+
+Title libraries are saved per OBS scene collection below the plugin configuration directory:
+
+```text
+obs-graphics-studio-pro/
+└── scene-collection-titles/
+    └── <sanitized-scene-collection-name>-<hash>.json
+```
+
+Typical plugin configuration roots are:
+
+```text
+Windows:
+%APPDATA%\obs-studio\plugin_config\obs-graphics-studio-pro\
+
+Linux:
+~/.config/obs-studio/plugin_config/obs-graphics-studio-pro/
+
+macOS:
+~/Library/Application Support/obs-studio/plugin_config/obs-graphics-studio-pro/
+```
+
+The exact OBS configuration root can vary with portable installations and custom builds.
+
+Writes use an atomic replacement path so an interrupted save does not intentionally overwrite the last valid title file with a partial document.
+
+### Template files
+
+`.ogspt` exports use the format identifier:
+
+```text
+obs-graphics-studio-pro-title-template
+```
+
+The current export schema writes version `3` and can contain:
+
+- Title and layer data
+- Template metadata
+- Preview PNG data
+- Embedded image assets
+- Live-cue structure
+- Animation, masks, gradients, effects, and editor defaults
+
+Imported templates receive new title/layer identifiers so they can coexist with the original design.
 
 ---
 
@@ -68,190 +453,140 @@ The project is currently an active **alpha**. Core title creation, editing, seri
 ```text
 OBS-Graphics-Studio-Pro/
 ├── CMakeLists.txt
+├── LICENSE
+├── README.md
 ├── build-windows.ps1
 ├── data/
-│   ├── icons/        # SVG icons used by the editor/dock
-│   └── locale/       # OBS/Qt localization strings
-├── docs/             # Architecture notes and feature/fix notes
-├── tests/            # Lightweight C++ model tests
+│   ├── effects/          # OBS shader/effect assets
+│   ├── icons/            # UI SVG assets
+│   └── locale/           # OBS/Qt localization strings
+├── docs/                 # Architecture and implementation notes
+├── tests/                # Focused C++ model tests
 └── src/
-    ├── core/         # Title data, serialization, preferences, localization
-    ├── text/         # Rich-text document/model helpers
-    ├── layers/       # Layer model and layer stack UI
-    ├── effects/      # Effect model and effects panel
-    ├── timeline/     # Keyframes, easing, timeline widget
-    ├── canvas/       # Canvas preview, tools, guides, snapping, inline editing
-    ├── editor/       # Dock, title editor, properties, hotkeys, assets
-    ├── rendering/    # GPU/filter pipeline helpers
-    ├── obs/          # OBS module entry point and source renderer
-    └── performance/  # Performance/stability planning area
+    ├── cache/            # RAM/disk cache, state tracking, queue, prerender UI
+    ├── canvas/           # Canvas interaction, preview, snapping, inline text
+    ├── core/             # Title storage, serialization, preferences, logging
+    ├── editor/           # Dock, editor shell, properties, styles, tools
+    ├── effects/          # Effect model and effect-stack UI
+    ├── layers/           # Layer model, image helpers, layer stack
+    ├── obs/              # OBS module entry point and native source
+    ├── rendering/        # Effect registry and GPU pipeline foundations
+    ├── text/             # Rich-text model and helpers
+    └── timeline/         # Animation model and timeline widget
 ```
 
-See [`docs/module-architecture.md`](docs/module-architecture.md) for the current module ownership map, dependency direction, and migration plan.
+Key components:
 
-### Component Map
-
-| Component | Integration | Purpose |
-|---|---|---|
-| `TitleSource` | OBS `INPUT` source | Renders a selected title into OBS and exposes scene-mask/live-cue source settings. |
-| `TitleDock` | `obs_frontend_add_dock()` | Manages titles, templates, live text rows, screenshots, import/export, and add-to-scene actions. |
-| `TitleEditor` | Qt non-modal editor | Hosts the canvas, layer stack, timeline, tools, preferences, and properties workflow. |
-| `CanvasPreview` | Qt canvas widget | Handles preview rendering, selection, transforms, rulers/guides, snapping, masks, and inline text editing. |
-| `PropertiesPanel` | Qt inspector | Edits transform, style, typography, image, shape, effects, masks, and live-text properties. |
-| `TitleDataStore` | Singleton data store | Owns all titles and serializes them to the active OBS configuration path. |
-
----
-
-## Dependencies
-
-| Library | Purpose |
+| Component | Role |
 |---|---|
-| **OBS Studio** (`libobs` + `obs-frontend-api`) | Plugin API, rendering, frontend dock integration. |
-| **Qt 5.15+ or Qt 6** | Editor, dock, canvas, icons, and widgets. |
-| **Cairo** | CPU-side 2D compositing path used by source rendering. |
-| **Pango + PangoCairo** | Font layout and text rendering support. |
-| **nlohmann/json** | JSON serialization; fetched automatically by CMake if not already available. |
+| `TitleSource` | Native OBS input source and runtime title renderer |
+| `TitleDock` | Title library, live-cue table, playlist, cache status, and scene actions |
+| `TitleEditor` | Non-modal authoring environment |
+| `CanvasPreview` | Canvas rendering, transforms, guides, snapping, masks, and inline editing |
+| `PropertiesPanel` | Layer, typography, image, shape, mask, and effect controls |
+| `TimelineWidget` | Layer timing, transport, parenting, keyframes, and cache visualization |
+| `TitleDataStore` | Scene-collection-specific title ownership and atomic persistence |
+| `CacheManager` | Frame caching, invalidation, background scheduling, and live-cue preparation |
+
+See [`docs/module-architecture.md`](docs/module-architecture.md) for the current ownership and dependency map.
 
 ---
 
-## Build Instructions
+## Tests
 
-### Linux (Ubuntu 22.04+)
-
-```bash
-sudo apt install \
-  cmake ninja-build pkg-config \
-  libobs-dev obs-frontend-api-dev \
-  qtbase5-dev libqt5widgets5 libqt5svg5-dev \
-  libcairo2-dev libpango1.0-dev
-
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build
-
-cmake --install build --prefix ~/.config/obs-studio/plugins
-```
-
-The build also stages a copyable OBS plugin layout at `build/obs-graphics-studio-pro`.
-
-### macOS
+Enable the lightweight validation targets with:
 
 ```bash
-brew install cmake cairo pango pkg-config qt
-
-cmake -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DOBS_SOURCE_DIR=/path/to/obs-studio
-
-cmake --build build
+-DOBS_GSP_BUILD_TESTS=ON
 ```
 
-### Windows (Visual Studio / vcpkg)
+Current CTest targets include:
 
-Install dependencies with vcpkg, point CMake at an OBS SDK/plugin-deps package or OBS Studio install tree, then build:
+- `rich_text_model_test`
+- `animation_model_test`
 
-```bat
-vcpkg install cairo pango[fontconfig] qt6-base
+Run them with:
 
-set OBS_SDK_DIR=C:\path\to\plugin-deps-or-obs-studio
-cmake -B build -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
-  -DOBS_SDK_DIR=%OBS_SDK_DIR%
-
-cmake --build build --config Release
+```bash
+ctest --test-dir build --output-on-failure
 ```
 
-Or use the helper script:
+For multi-configuration generators such as Visual Studio:
 
 ```powershell
-.\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio
-.\build-windows.ps1 -ObsSdkDir C:\path\to\plugin-deps-or-obs-studio -Configuration RelWithDebInfo -BuildTests
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-The helper validates the modular source-tree paths, configures CMake, builds the selected configuration, optionally runs lightweight tests, and installs/stages the plugin layout.
+---
 
-Expected Windows OBS plugin layout:
+## Contributing
 
-```text
-C:\ProgramData\obs-studio\plugins\obs-graphics-studio-pro\
-├── bin\64bit\obs-graphics-studio-pro.dll
-├── bin\64bit\cairo.dll
-├── bin\64bit\pango-1.0.dll
-├── bin\64bit\pangocairo-1.0.dll
-├── bin\64bit\Qt6Core.dll / Qt5Core.dll
-├── bin\64bit\Qt6Gui.dll / Qt5Gui.dll
-├── bin\64bit\Qt6Widgets.dll / Qt5Widgets.dll
-└── data\locale\en-US.ini
-```
+Bug reports, focused pull requests, build fixes, documentation improvements, and reproducible performance reports are welcome.
 
-Use `-InstallRoot` for a portable OBS/custom plugin root. If OBS reports that the plugin failed to load on Windows, verify that the required dependency DLLs are beside `obs-graphics-studio-pro.dll`.
+When changing the project:
+
+- Keep UI strings in `data/locale/en-US.ini`.
+- Put implementation notes in `docs/`.
+- Update serialization for every persistent model change.
+- Keep editor preview and OBS source behavior consistent.
+- Add or update tests for model-level changes where practical.
+- Preserve all upstream copyright and license notices.
+- Do not add external assets, source files, or dependencies without recording their origin and license.
+
+Use the repository issue tracker for defects and feature proposals:
+
+- <https://github.com/menacius/OBS-Graphics-Studio-Pro/issues>
 
 ---
 
-## Basic Workflow
+## Project license
 
-1. Open the **OBS Graphics Studio Pro** dock in OBS.
-2. Create a blank title, choose a starter template, or import an `.ogspt` template.
-3. Edit layers, text, styling, masks, effects, and keyframes in the editor.
-4. Capture/update a preview screenshot if desired.
-5. Use the dock live-text table for exposed text layers and cue transitions when building data-driven graphics.
-6. Click **Add to Scene** / **Scene** to add the selected title as a native OBS source.
+The repository includes the **GNU General Public License, version 3** as its project license. Unless an individual file or asset states different terms, project-authored source code is distributed under **GPL-3.0-only**.
 
----
+See [`LICENSE`](LICENSE) for the complete license text.
 
-## Data Format
-
-Titles are saved in the OBS profile config directory:
-
-```text
-%APPDATA%\obs-studio\plugin_config\obs-graphics-studio-pro\titles.json
-~/.config/obs-studio/plugin_config/obs-graphics-studio-pro/titles.json
-~/Library/Application Support/obs-studio/plugin_config/obs-graphics-studio-pro/titles.json
-```
-
-A title contains metadata, timeline/playback settings, canvas size, editor defaults, live-text rows, preview screenshot data, and a bottom-to-top layer list. Layers store transform/timing state, rich text, shape/image/ticker/clock-specific fields, masks, effects, gradients, keyframes, and rendering style properties.
-
-### Easing values
-
-| Value | Easing |
-|---:|---|
-| 0 | Linear |
-| 1 | Ease In |
-| 2 | Ease Out |
-| 3 | Ease In/Out |
-| 4 | Cubic Bezier |
-| 5 | Hold / jump cut |
+The software is provided without warranty, as described by the GPL.
 
 ---
 
-## Developer Notes
+## Third-party software and assets
 
-### Adding a new layer type
+OBS Graphics Studio Pro uses, links to, fetches, or redistributes components owned by other projects. Those components remain under their own licenses.
 
-1. Add the enum value and model fields in `src/layers/layer-model.h`.
-2. Add JSON serialization/deserialization in `src/core/title-data.cpp`.
-3. Add source rendering in `src/obs/title-source.cpp`.
-4. Add editor preview/canvas behavior in `src/canvas/canvas-preview.cpp` and editor wiring in `src/editor/title-editor.cpp`.
-5. Add controls in `src/editor/properties-panel.cpp` / `.h`.
-6. Add localization strings in `data/locale/en-US.ini`.
-7. Add or update focused tests where model behavior is affected.
+| Component | Use in OBS Graphics Studio Pro | Upstream license / notice |
+|---|---|---|
+| [OBS Studio](https://github.com/obsproject/obs-studio) | Runtime host, `libobs`, graphics API, and frontend dock API | GPL-2.0-or-later; see the upstream `COPYING` file |
+| [Qt](https://www.qt.io/) Core, Widgets, and SVG | Dock, editor, widgets, SVG rendering, and application UI | Open-source Qt is generally available under LGPL-3.0 and/or GPL-3.0, with commercial licensing also available; verify the exact Qt package and module terms used for distribution |
+| [Cairo](https://www.cairographics.org/) | 2D composition and raster rendering | LGPL-2.1 or MPL-1.1, at the recipient's option |
+| [Pango](https://docs.gtk.org/Pango/) and [PangoCairo](https://docs.gtk.org/PangoCairo/) | Text layout and Cairo text rendering | LGPL-2.1-or-later |
+| [GLib](https://docs.gtk.org/glib/) and [GObject](https://docs.gtk.org/gobject/) | Runtime dependencies used by the Pango stack and fallback CMake linking | LGPL-2.1-or-later |
+| [HarfBuzz](https://github.com/harfbuzz/harfbuzz) | Text shaping dependency used by the Pango stack | Old MIT-style license; see upstream `COPYING` |
+| [nlohmann/json](https://github.com/nlohmann/json) 3.11.3 | JSON serialization and template/title persistence | MIT; retain the upstream `LICENSE.MIT` and notices in `LICENSES/` for included third-party portions |
+| [Qt-Color-Widgets](https://gitlab.com/mattbas/Qt-Color-Widgets) | Color wheel, selectors, palettes, and dialogs; fetched at commit `8491078434b24cba295b5e41cc0d2a94c7049a5b` and compiled as a static library | LGPL-3.0-or-later; copyright Mattia Basaglia and contributors |
+| [LZ4](https://github.com/lz4/lz4) 1.10.0 | Disk frame-cache compression; fetched at commit `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` when no suitable system target is available | BSD-2-Clause; copyright Yann Collet and contributors |
+| [Font Awesome Free](https://fontawesome.com/) 6 | SVG artwork used by the editor and dock icons | SVG icons are licensed under CC BY 4.0; copyright Fonticons, Inc. |
 
-### Adding animated property support
+Font Awesome attribution is also documented in [`data/icons/README.md`](data/icons/README.md), and individual imported SVGs include source/license comments where applicable.
 
-1. Add an `AnimatedProperty` field to the relevant model.
-2. Persist it in title JSON.
-3. Evaluate it in the OBS renderer and canvas preview at local layer time.
-4. Expose keyframe controls in the properties panel/timeline where appropriate.
+### Redistribution notes
+
+When distributing compiled builds:
+
+1. Include this project's `LICENSE`.
+2. Include the copyright notices and full license texts required by every bundled library and asset.
+3. Preserve Font Awesome attribution for the included SVG artwork.
+4. Preserve the Qt-Color-Widgets LGPL notice, particularly because the current CMake build compiles it statically into the plugin.
+5. Preserve the nlohmann/json MIT notice and its upstream third-party notices.
+6. Preserve the LZ4 BSD-2-Clause notice when the bundled/pinned implementation is used.
+7. Include notices for Qt, Cairo, Pango, GLib, HarfBuzz, and any other runtime DLLs copied into a binary package.
+8. Review the exact licenses of the versions produced by your package manager, OBS SDK, or Qt distribution; those packages may contain additional third-party components not enumerated here.
+
+This section is an attribution summary, not a replacement for the complete upstream license texts or legal advice.
 
 ---
 
-## Roadmap / Active Work
+## Acknowledgements
 
-- Continue stabilizing alpha editor workflows and source rendering parity.
-- Complete modular ownership migration described in `docs/module-architecture.md`.
-- Expand automated tests around serialization, animation, rich text, masks, and effects.
-- Improve GPU rendering/filter integration and performance for complex compositions.
-- Refine template/library workflows and live-data integrations.
-- Continue hardening undo/redo, multi-select editing, effect-stack ordering, and advanced keyframe controls.
+OBS Graphics Studio Pro is built on the work of the OBS Project, The Qt Company and Qt contributors, the Cairo and GNOME/Pango communities, the HarfBuzz project, Niels Lohmann and contributors, Mattia Basaglia and contributors, Yann Collet and LZ4 contributors, and Fonticons, Inc.
 
-### Sparse cached playback: direct crop drawing
-Cached alpha-bounded payloads are now uploaded and drawn directly at their canvas offsets in OBS, and the editor preview uses the same sparse metadata instead of stretching cropped images over the full canvas.
+Their projects make native, cross-platform broadcast graphics inside OBS possible.
