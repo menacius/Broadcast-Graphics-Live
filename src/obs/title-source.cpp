@@ -10,6 +10,7 @@
  */
 
 #include "cache-manager.h"
+#include "title-cache-policy.h"
 #include "title-source.h"
 #include "style-presets.h"
 #include "title-data.h"
@@ -296,6 +297,11 @@ struct TitleSourceData {
     bool        first_tick   = true;
     bool        waiting_for_cue = true;
     bool        force_cue_state_sync = false; /* title switch may race an already-issued cue */
+    std::chrono::steady_clock::time_point last_cue_cache_check;
+    std::string cue_cache_check_title_id;
+    uint64_t    cue_cache_check_revision = std::numeric_limits<uint64_t>::max();
+    int         cue_cache_check_row = -1;
+    bool        cue_cache_check_ready = false;
 
     /* GPU texture */
     std::mutex    texture_mutex;
@@ -5136,7 +5142,12 @@ static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image
     return true;
 }
 
-static QImage render_title_region_impl(const Title &title, double t, const QRect &requested_region, double output_scale = 1.0)
+static QImage render_title_region_impl(
+    const Title &title, double t, const QRect &requested_region,
+    double output_scale = 1.0,
+    std::size_t first_layer = 0,
+    std::size_t last_layer = std::numeric_limits<std::size_t>::max(),
+    const QImage *base_image = nullptr)
 {
     output_scale = std::clamp(output_scale, 0.125, 1.0);
     const int canvas_w = std::max(1, title.width);
@@ -5149,12 +5160,19 @@ static QImage render_title_region_impl(const Title &title, double t, const QRect
     const int output_w = std::max(1, (int)std::ceil(region.width() * output_scale));
     const int output_h = std::max(1, (int)std::ceil(region.height() * output_scale));
     QImage image(output_w, output_h, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    if (base_image && !base_image->isNull()) {
+        QPainter base_painter(&image);
+        base_painter.setCompositionMode(QPainter::CompositionMode_Source);
+        base_painter.drawImage(QRect(0, 0, output_w, output_h), *base_image, region);
+        base_painter.end();
+    }
+
     auto surface = make_image_surface_for_qimage(image);
     auto cr = make_cairo_context(surface.get());
-    if (!surface || !cr) {
-        image.fill(Qt::transparent);
+    if (!surface || !cr)
         return image;
-    }
 
     /* The renderer continues to use absolute canvas coordinates. Translate the
      * destination context so only the requested tile/region is rasterized. */
@@ -5163,11 +5181,13 @@ static QImage render_title_region_impl(const Title &title, double t, const QRect
     cairo_rectangle(cr.get(), region.x(), region.y(), region.width(), region.height());
     cairo_clip(cr.get());
 
-    double br, bg, bb, ba;
-    unpack_color(title.bg_color, br, bg, bb, ba);
-    cairo_set_operator(cr.get(), CAIRO_OPERATOR_SOURCE);
-    cairo_set_source_rgba(cr.get(), br, bg, bb, ba);
-    cairo_paint(cr.get());
+    if (!base_image) {
+        double br, bg, bb, ba;
+        unpack_color(title.bg_color, br, bg, bb, ba);
+        cairo_set_operator(cr.get(), CAIRO_OPERATOR_SOURCE);
+        cairo_set_source_rgba(cr.get(), br, bg, bb, ba);
+        cairo_paint(cr.get());
+    }
     cairo_set_operator(cr.get(), CAIRO_OPERATOR_OVER);
 
     const double clamped_time = std::clamp(t, 0.0, std::max(0.0, title.duration));
@@ -5177,7 +5197,10 @@ static QImage render_title_region_impl(const Title &title, double t, const QRect
     const auto exposed = background_persistence ? exposed_text_layers(title)
                                                 : std::vector<std::shared_ptr<Layer>>();
 
-    for (auto &layer : title.layers) {
+    const std::size_t begin = std::min(first_layer, title.layers.size());
+    const std::size_t finish = std::min(last_layer, title.layers.size());
+    for (std::size_t layer_index = begin; layer_index < finish; ++layer_index) {
+        const auto &layer = title.layers[layer_index];
         if (!layer) continue;
 
         double layer_time = clamped_time;
@@ -5227,24 +5250,65 @@ static QImage render_title_region_impl(const Title &title, double t, const QRect
     return image;
 }
 
-QImage render_title_region_to_image(const Title &title, double t, const QRect &region)
+static bool layer_range_has_advanced_blend(const Title &title,
+                                           std::size_t first_layer,
+                                           std::size_t last_layer)
+{
+    const std::size_t begin = std::min(first_layer, title.layers.size());
+    const std::size_t finish = std::min(last_layer, title.layers.size());
+    for (std::size_t i = begin; i < finish; ++i) {
+        const auto &layer = title.layers[i];
+        if (layer && layer->blend_mode != EffectBlendMode::Normal)
+            return true;
+    }
+    return false;
+}
+
+static QImage render_title_layer_range_region(const Title &title, double t,
+                                              const QRect &region,
+                                              std::size_t first_layer,
+                                              std::size_t last_layer)
 {
     const QRect canvas_rect(0, 0, std::max(1, title.width), std::max(1, title.height));
     const QRect clipped = region.intersected(canvas_rect);
     if (clipped.isEmpty())
         return QImage();
 
-    /* Advanced blend modes use canvas-sized intermediate surfaces whose source
-     * coordinate system must remain anchored at (0,0). Preserve exact output
-     * for those uncommon cases and use true regional rasterization for the
-     * normal-compositing path used by lower thirds and bug graphics. */
-    if (clipped != canvas_rect) {
-        for (const auto &layer : title.layers) {
-            if (layer && layer->blend_mode != EffectBlendMode::Normal)
-                return render_title_region_impl(title, t, canvas_rect).copy(clipped);
-        }
+    if (clipped != canvas_rect &&
+        layer_range_has_advanced_blend(title, first_layer, last_layer)) {
+        return render_title_region_impl(title, t, canvas_rect, 1.0,
+                                        first_layer, last_layer).copy(clipped);
     }
-    return render_title_region_impl(title, t, clipped);
+    return render_title_region_impl(title, t, clipped, 1.0,
+                                    first_layer, last_layer);
+}
+
+static QImage expand_cached_frame_for_composite(const QImage &cached,
+                                                int canvas_w, int canvas_h)
+{
+    if (cached.isNull() || canvas_w <= 0 || canvas_h <= 0)
+        return QImage();
+
+    QImage expanded(canvas_w, canvas_h, QImage::Format_ARGB32_Premultiplied);
+    expanded.fill(Qt::transparent);
+
+    int crop_x = 0, crop_y = 0, metadata_w = 0, metadata_h = 0;
+    const bool sparse = cached_sparse_frame_metadata(cached, crop_x, crop_y,
+                                                     metadata_w, metadata_h) &&
+                        metadata_w == canvas_w && metadata_h == canvas_h;
+    QPainter painter(&expanded);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    if (sparse)
+        painter.drawImage(QPoint(crop_x, crop_y), cached);
+    else
+        painter.drawImage(QRect(0, 0, canvas_w, canvas_h), cached);
+    painter.end();
+    return expanded;
+}
+
+QImage render_title_region_to_image(const Title &title, double t, const QRect &region)
+{
+    return render_title_layer_range_region(title, t, region, 0, title.layers.size());
 }
 
 QImage render_title_to_image(const Title &title, double t)
@@ -5252,6 +5316,52 @@ QImage render_title_to_image(const Title &title, double t)
     return render_title_region_impl(title, t,
                                     QRect(0, 0, std::max(1, title.width),
                                           std::max(1, title.height)));
+}
+
+QImage render_title_cache_region_to_image(const Title &title, double t, const QRect &region)
+{
+    const TitleDynamicLayerAnalysis analysis = analyze_title_dynamic_layers(title);
+    if (analysis.has_dynamic_layers && !analysis.has_cacheable_prefix)
+        return QImage();
+    const std::size_t cache_end = analysis.has_dynamic_layers
+        ? analysis.first_dynamic_layer
+        : title.layers.size();
+    return render_title_layer_range_region(title, t, region, 0, cache_end);
+}
+
+QImage render_title_cache_to_image(const Title &title, double t)
+{
+    const TitleDynamicLayerAnalysis analysis = analyze_title_dynamic_layers(title);
+    if (analysis.has_dynamic_layers && !analysis.has_cacheable_prefix)
+        return QImage();
+    const std::size_t cache_end = analysis.has_dynamic_layers
+        ? analysis.first_dynamic_layer
+        : title.layers.size();
+    return render_title_region_impl(title, t,
+                                    QRect(0, 0, std::max(1, title.width),
+                                          std::max(1, title.height)),
+                                    1.0, 0, cache_end);
+}
+
+QImage render_title_over_cached_frame(const Title &title, double t,
+                                      const QImage &cached_prefix)
+{
+    const TitleDynamicLayerAnalysis analysis = analyze_title_dynamic_layers(title);
+    if (!analysis.has_dynamic_layers)
+        return cached_prefix;
+    if (!analysis.has_cacheable_prefix)
+        return render_title_to_image(title, t);
+
+    const int canvas_w = std::max(1, title.width);
+    const int canvas_h = std::max(1, title.height);
+    const QImage expanded = expand_cached_frame_for_composite(cached_prefix,
+                                                              canvas_w, canvas_h);
+    if (expanded.isNull())
+        return QImage();
+
+    return render_title_region_impl(title, t, QRect(0, 0, canvas_w, canvas_h),
+                                    1.0, analysis.first_dynamic_layer,
+                                    title.layers.size(), &expanded);
 }
 
 QImage render_title_to_image_scaled(const Title &title, double t, double scale,
@@ -5489,52 +5599,87 @@ static void source_video_tick(void *priv, float seconds)
     if (!title) return;
 
     if (data->force_cue_state_sync || title->cue_revision != data->seen_cue_revision) {
-        data->force_cue_state_sync = false;
-        double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
-        double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
-        bool has_pending = title->pending_cue_row >= 0 &&
-                           title->pending_cue_row < (int)title->live_text_rows.size();
-        bool has_current = title->current_cue_row >= 0 &&
-                           title->current_cue_row < (int)title->live_text_rows.size();
-        bool is_uncue = title->cue_uncue_requested && !has_pending && has_current;
-        data->manual_uncue = is_uncue;
-        if (title->playback_mode == 1) {
-            if (has_pending) {
-                data->playhead = loop_end;
-                data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
-            } else if (is_uncue) {
-                data->playhead = loop_end;
-                data->cue_phase = TitleSourceData::CuePhase::OutroOnly;
-            } else {
-                data->playhead = 0.0;
-                data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+        const int requested_cue_row = title->pending_cue_row >= 0
+            ? title->pending_cue_row
+            : title->current_cue_row;
+        const bool is_uncue_request = title->cue_uncue_requested &&
+            title->pending_cue_row < 0 && title->current_cue_row >= 0;
+        bool cache_gate_ready = true;
+        if (!is_uncue_request && requested_cue_row >= 0 &&
+            requested_cue_row < static_cast<int>(title->live_text_rows.size()) &&
+            CacheManager::instance().cacheEnabled() &&
+            CacheManager::instance().titleCacheability(title) != TitleCacheability::NonCacheable) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool target_changed = data->cue_cache_check_title_id != title->id ||
+                data->cue_cache_check_revision != title->cue_revision ||
+                data->cue_cache_check_row != requested_cue_row;
+            const bool retry_due = data->last_cue_cache_check.time_since_epoch().count() == 0 ||
+                now - data->last_cue_cache_check >= std::chrono::milliseconds(100);
+            if (target_changed || retry_due) {
+                data->cue_cache_check_ready =
+                    CacheManager::instance().prepareLiveCueForPlayback(title, requested_cue_row);
+                data->cue_cache_check_title_id = title->id;
+                data->cue_cache_check_revision = title->cue_revision;
+                data->cue_cache_check_row = requested_cue_row;
+                data->last_cue_cache_check = now;
             }
-        } else if (title->playback_mode == 2 && (has_pending || is_uncue)) {
-            data->playhead = pause_time;
-            data->cue_phase = has_pending
-                ? TitleSourceData::CuePhase::OutroThenIntro
-                : TitleSourceData::CuePhase::OutroOnly;
-        } else {
-            if (has_pending) {
-                apply_live_text_row(title, title->pending_cue_row);
-                title->current_cue_row = title->pending_cue_row;
-                title->pending_cue_row = -1;
-                has_current = true;
-                TitleDataStore::instance().touch_runtime_change();
-            }
-            if (!is_uncue)
-                data->playhead = 0.0;
-            data->cue_phase = TitleSourceData::CuePhase::FreeRun;
+            cache_gate_ready = data->cue_cache_check_ready;
         }
-        if (has_current)
-            data->active_cue_row = title->current_cue_row;
-        data->seen_cue_revision = title->cue_revision;
-        data->playback_reverse = false;
-        data->waiting_for_cue = false;
-        data->playing = true;
-        if (!data->manual_uncue)
-            data->output_visible = true;
-        data->dirty = true;
+
+        if (!cache_gate_ready) {
+            /* Keep the current cue/frame running, but do not consume the new cue
+             * revision. The request is retried after the required prefix/transition
+             * is resident in either RAM or SSD. */
+            data->waiting_for_cue = true;
+            data->dirty = true;
+        } else {
+            data->force_cue_state_sync = false;
+            double loop_end = std::clamp(title->loop_end, title->loop_start, title->duration);
+            double pause_time = std::clamp(title->pause_time, 0.0, title->duration);
+            bool has_pending = title->pending_cue_row >= 0 &&
+                               title->pending_cue_row < (int)title->live_text_rows.size();
+            bool has_current = title->current_cue_row >= 0 &&
+                               title->current_cue_row < (int)title->live_text_rows.size();
+            bool is_uncue = title->cue_uncue_requested && !has_pending && has_current;
+            data->manual_uncue = is_uncue;
+            if (title->playback_mode == 1) {
+                if (has_pending) {
+                    data->playhead = loop_end;
+                    data->cue_phase = TitleSourceData::CuePhase::OutroThenIntro;
+                } else if (is_uncue) {
+                    data->playhead = loop_end;
+                    data->cue_phase = TitleSourceData::CuePhase::OutroOnly;
+                } else {
+                    data->playhead = 0.0;
+                    data->cue_phase = TitleSourceData::CuePhase::IntroLoop;
+                }
+            } else if (title->playback_mode == 2 && (has_pending || is_uncue)) {
+                data->playhead = pause_time;
+                data->cue_phase = has_pending
+                    ? TitleSourceData::CuePhase::OutroThenIntro
+                    : TitleSourceData::CuePhase::OutroOnly;
+            } else {
+                if (has_pending) {
+                    apply_live_text_row(title, title->pending_cue_row);
+                    title->current_cue_row = title->pending_cue_row;
+                    title->pending_cue_row = -1;
+                    has_current = true;
+                    TitleDataStore::instance().touch_runtime_change();
+                }
+                if (!is_uncue)
+                    data->playhead = 0.0;
+                data->cue_phase = TitleSourceData::CuePhase::FreeRun;
+            }
+            if (has_current)
+                data->active_cue_row = title->current_cue_row;
+            data->seen_cue_revision = title->cue_revision;
+            data->playback_reverse = false;
+            data->waiting_for_cue = false;
+            data->playing = true;
+            if (!data->manual_uncue)
+                data->output_visible = true;
+            data->dirty = true;
+        }
     }
 
     const bool has_clock_layer = title_has_clock_layer(title);
@@ -5741,8 +5886,9 @@ static void source_video_tick(void *priv, float seconds)
          * complete title/layer/keyframe graph for every video tick. A render
          * snapshot is created only if the exact cached frame is unavailable and
          * the uncached correctness fallback is actually needed. */
+        const TitleCacheability source_cacheability = cache.titleCacheability(title);
         const bool use_cached_source_frame = cache.cacheEnabled() &&
-            cache.titleCacheability(title) != TitleCacheability::NonCacheable;
+            source_cacheability != TitleCacheability::NonCacheable;
         if (use_cached_source_frame) {
             /* The content identity is stable for all timeline frames until the
              * title-store revision changes. Do not serialize every layer and
@@ -5792,7 +5938,25 @@ static void source_video_tick(void *priv, float seconds)
             if (cached.isNull() && !requested_live_cue_frame)
                 cached = cache.requestFrameRealtime(title, data->playhead, frame_content_hash);
             if (!cached.isNull()) {
-                upload_cached_title_frame(data, cached);
+                if (source_cacheability == TitleCacheability::PartiallyCacheable) {
+                    /* The worker cache contains only the largest z-order-safe
+                     * static prefix. Render the clock/ticker suffix live over
+                     * that prefix, preserving layers, masks and blend modes
+                     * above the first dynamic output. */
+                    const Title render_snapshot = snapshot_title_for_render(*title);
+                    QImage composed = render_title_over_cached_frame(render_snapshot,
+                                                                     data->playhead,
+                                                                     cached);
+                    if (!composed.isNull()) {
+                        if (composed.format() != QImage::Format_ARGB32)
+                            composed = composed.convertToFormat(QImage::Format_ARGB32);
+                        upload_cached_title_frame(data, composed);
+                    } else {
+                        data->dirty = true;
+                    }
+                } else {
+                    upload_cached_title_frame(data, cached);
+                }
             } else {
                 /* A cache miss must never invoke the heavy Cairo renderer from
                  * the OBS video tick. Keep the last valid texture while the

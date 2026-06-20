@@ -2653,11 +2653,9 @@ void CanvasPreview::render_to_pixmap()
      * immediately.  Previously only corner-radius manipulation bypassed the
      * cache, so move/scale/rotate/gradient/origin drags kept displaying the
      * previous cached frame until the invalidation timer completed. */
-    const bool dynamic_text_title = title_has_dynamic_text_layer(title_);
-    /* Clock and ticker layers are intentionally excluded from prerender/cache,
-     * so their editor preview must always use the live uncached renderer.
-     * Sending them through requestFrame() returns no cached image and leaves
-     * the clock/ticker content invisible even though the canvas keeps ticking. */
+    /* Clock/ticker titles may now use a cached z-order-safe static prefix.
+     * requestFrame() composites the live suffix over that prefix, while direct
+     * manipulation still bypasses every cache so edits remain immediate. */
     const bool model_is_interactive = !inline_text_layer_id_.empty() || live_corner_radius_drag ||
         live_geometry_drag || adaptive_interaction_active_ || force_live_full_quality_render_;
     const double preview_scale = adaptive_preview_scale();
@@ -2689,7 +2687,7 @@ void CanvasPreview::render_to_pixmap()
                 editor_quality_cache_.insert(editor_cache_key, image);
             }
         }
-    } else if (dynamic_text_title || model_is_interactive) {
+    } else if (model_is_interactive) {
         image = CacheManager::instance().renderUncachedFrame(title_, playhead_);
     } else {
         image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);
@@ -3482,31 +3480,48 @@ void CanvasPreview::draw_color_picker_tooltip(QPainter &p)
         return;
 
     const QString hex = editor_color_hex(color_picker_tooltip_color_);
-    const QFontMetrics fm(font());
-    const int swatch = 18;
-    const int pad = 8;
-    const int gap = 7;
-    const int width = pad * 2 + swatch + gap + fm.horizontalAdvance(hex);
-    const int height = std::max(30, pad * 2 + swatch);
-    QPointF pos = color_picker_tooltip_pos_ + QPointF(16.0, 18.0);
+    const QString name = obsgs_tr("OBSTitles.ColorPickerTool");
+    QFont name_font = font();
+    name_font.setPointSizeF(name_font.pointSizeF() * 1.35);
+    name_font.setBold(true);
+    QFont hex_font = font();
+    hex_font.setPointSizeF(hex_font.pointSizeF() * 1.05);
+    const QFontMetrics name_fm(name_font);
+    const QFontMetrics hex_fm(hex_font);
+    const int swatch = 72;
+    const int pad = 16;
+    const int gap = 14;
+    const int text_width = std::max(name_fm.horizontalAdvance(name), hex_fm.horizontalAdvance(hex));
+    const int width = pad * 2 + swatch + gap + text_width;
+    const int text_height = name_fm.height() + 5 + hex_fm.height();
+    const int height = std::max(pad * 2 + swatch, pad * 2 + text_height);
+    QPointF pos = color_picker_tooltip_pos_ + QPointF(20.0, 22.0);
     if (pos.x() + width + 4 > rect().right())
-        pos.setX(color_picker_tooltip_pos_.x() - width - 16.0);
+        pos.setX(color_picker_tooltip_pos_.x() - width - 20.0);
     if (pos.y() + height + 4 > rect().bottom())
-        pos.setY(color_picker_tooltip_pos_.y() - height - 16.0);
+        pos.setY(color_picker_tooltip_pos_.y() - height - 20.0);
     pos.setX(std::max(4.0, pos.x()));
     pos.setY(std::max(4.0, pos.y()));
 
     QRectF box(pos, QSizeF(width, height));
     QRectF swatch_rect(box.left() + pad, box.top() + (box.height() - swatch) / 2.0, swatch, swatch);
-    QRectF text_rect(swatch_rect.right() + gap, box.top(), width - pad - swatch - gap, height);
+    QRectF text_rect(swatch_rect.right() + gap, box.top() + (box.height() - text_height) / 2.0,
+                     width - pad - swatch - gap, text_height);
+
+    const QPalette pal = qApp->palette();
+    QColor base = pal.color(QPalette::ToolTipBase);
+    QColor text = pal.color(QPalette::ToolTipText);
+    QColor border = pal.color(QPalette::Mid);
+    QColor subtle = text.lightness() < 128 ? text.lighter(145) : text.darker(145);
+    base.setAlpha(242);
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(QColor(18, 18, 18), 1.0));
-    p.setBrush(QColor(48, 48, 48, 235));
+    p.setPen(QPen(border, 1.0));
+    p.setBrush(base);
     p.drawRoundedRect(box, 4.0, 4.0);
 
-    const int cell = 5;
+    const int cell = 8;
     p.setPen(Qt::NoPen);
     for (int y = (int)swatch_rect.top(); y < (int)swatch_rect.bottom(); y += cell) {
         for (int x = (int)swatch_rect.left(); x < (int)swatch_rect.right(); x += cell) {
@@ -3516,12 +3531,19 @@ void CanvasPreview::draw_color_picker_tooltip(QPainter &p)
         }
     }
     p.fillRect(swatch_rect, color_picker_tooltip_color_);
-    p.setPen(QPen(QColor(16, 16, 16), 1.0));
+    p.setPen(QPen(border, 1.0));
     p.setBrush(Qt::NoBrush);
     p.drawRect(swatch_rect.adjusted(0.0, 0.0, -1.0, -1.0));
 
-    p.setPen(QColor(235, 235, 235));
-    p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft, hex);
+    p.setFont(name_font);
+    p.setPen(text);
+    p.drawText(QRectF(text_rect.left(), text_rect.top(), text_rect.width(), name_fm.height()),
+               Qt::AlignLeft | Qt::AlignVCenter, name);
+    p.setFont(hex_font);
+    p.setPen(subtle);
+    p.drawText(QRectF(text_rect.left(), text_rect.top() + name_fm.height() + 5,
+                      text_rect.width(), hex_fm.height()),
+               Qt::AlignLeft | Qt::AlignVCenter, hex);
     p.restore();
 }
 
@@ -4053,16 +4075,18 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
-    if (ev->button() != Qt::LeftButton) return;
-
     if (active_tool_ == CanvasTool::ColorPicker) {
+        if (ev->button() != Qt::LeftButton && ev->button() != Qt::RightButton)
+            return;
         clear_draw_tool_snap_cursor();
         update_color_picker_tooltip(ev->pos());
         if (color_picker_tooltip_visible_)
-            emit color_picked(color_picker_tooltip_color_);
+            emit color_picked(color_picker_tooltip_color_, ev->button() == Qt::LeftButton);
         ev->accept();
         return;
     }
+
+    if (ev->button() != Qt::LeftButton) return;
 
     if (active_tool_ == CanvasTool::Gradient) {
         if (begin_gradient_tool_drag(ev->pos(), ev->modifiers())) {

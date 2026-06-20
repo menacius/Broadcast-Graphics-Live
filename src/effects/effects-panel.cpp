@@ -548,7 +548,7 @@ void EffectsPanel::load_settings()
         auto *button = new QPushButton(box);
         set_color_button_argb(button, argb);
         connect(button, &QPushButton::clicked, this, [this, button, setter]() {
-            QColor picked = QColorDialog::getColor(color_from_argb(color_button_argb(button)), this, obsgs_tr("OBSTitles.ChooseColor"), QColorDialog::ShowAlphaChannel);
+            QColor picked = obsgs_pick_color(color_from_argb(color_button_argb(button)), this, obsgs_tr("OBSTitles.ChooseColor"));
             if (!picked.isValid()) return;
             uint32_t argb = argb_from_color(picked);
             set_color_button_argb(button, argb);

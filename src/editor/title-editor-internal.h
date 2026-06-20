@@ -67,7 +67,6 @@
 #include <QGroupBox>
 #include <QFormLayout>
 #include <QGridLayout>
-#include <QColorDialog>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QDir>
@@ -117,6 +116,7 @@
 #include <QSettings>
 #include <QWindow>
 #include <QContextMenuEvent>
+#include <QTimer>
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -126,6 +126,8 @@
 #include <limits>
 #include <tuple>
 #include <functional>
+
+#include <QtColorWidgets/ColorDialog>
 
 
 constexpr const char *kEditorLayoutSettingsGroup = "TitleEditorLayout";
@@ -141,6 +143,127 @@ constexpr const char *kStylesDockObjectName = "OBSGraphicsStudioProStylesDock";
 constexpr const char *kColorSwatchesDockObjectName = "OBSGraphicsStudioProColorSwatchesDock";
 constexpr const char *kTimelineDockObjectName = "OBSGraphicsStudioProTimelineDock";
 constexpr const char *kPrerenderDockObjectName = "OBSGraphicsStudioProPrerenderDock";
+
+static QString obsgs_color_dialog_style()
+{
+    const QPalette pal = qApp->palette();
+    const QColor window = pal.color(QPalette::Window);
+    const QColor window_text = pal.color(QPalette::WindowText);
+    const QColor base = pal.color(QPalette::Base);
+    const QColor text = pal.color(QPalette::Text);
+    const QColor button = pal.color(QPalette::Button);
+    const QColor button_text = pal.color(QPalette::ButtonText);
+    const QColor mid = pal.color(QPalette::Mid);
+    const QColor highlight = pal.color(QPalette::Highlight);
+    const QColor highlighted_text = pal.color(QPalette::HighlightedText);
+    const QColor hover = button.lightness() < 128 ? button.lighter(122) : button.darker(108);
+    const QColor disabled = text.lightness() < 128 ? text.lighter(160) : text.darker(160);
+
+    QString css = QStringLiteral(
+        "QDialog{background:@window@;color:@windowText@;}"
+        "QWidget{color:@windowText@;selection-background-color:@highlight@;selection-color:@highlightedText@;}"
+        "QLabel{color:@windowText@;background:transparent;}"
+        "QLineEdit,QSpinBox{color:@text@;background:@base@;border:1px solid @mid@;border-radius:2px;padding:2px 4px;selection-background-color:@highlight@;selection-color:@highlightedText@;}"
+        "QLineEdit:focus,QSpinBox:focus{border-color:@highlight@;}"
+        "QLineEdit:disabled,QSpinBox:disabled{color:@disabled@;background:@window@;}"
+        "QPushButton{color:@buttonText@;background:@button@;border:1px solid @mid@;border-radius:3px;padding:3px 8px;}"
+        "QPushButton:hover{background:@hover@;border-color:@mid@;}"
+        "QPushButton:pressed{background:@highlight@;color:@highlightedText@;border-color:@highlight@;}"
+        "QPushButton:disabled{color:@disabled@;background:@window@;}"
+        "QDialogButtonBox QPushButton{min-width:64px;}"
+        "QSpinBox::up-button,QSpinBox::down-button{background:@button@;border-left:1px solid @mid@;}"
+        "QSpinBox::up-button:hover,QSpinBox::down-button:hover{background:@hover@;}");
+    css.replace(QStringLiteral("@window@"), window.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@windowText@"), window_text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@base@"), base.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@text@"), text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@button@"), button.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@buttonText@"), button_text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@mid@"), mid.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@highlight@"), highlight.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@highlightedText@"), highlighted_text.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@hover@"), hover.name(QColor::HexRgb));
+    css.replace(QStringLiteral("@disabled@"), disabled.name(QColor::HexRgb));
+    return css;
+}
+
+static void obsgs_apply_color_dialog_theme(color_widgets::ColorDialog *dialog)
+{
+    if (!dialog)
+        return;
+
+    const QPalette pal = qApp->palette();
+    dialog->setPalette(pal);
+    for (QWidget *child : dialog->findChildren<QWidget *>())
+        child->setPalette(pal);
+    dialog->setStyleSheet(obsgs_color_dialog_style());
+}
+
+static QColor obsgs_pick_color(const QColor &initial, QWidget *parent, const QString &title, bool alpha = true)
+{
+    color_widgets::ColorDialog picker(parent);
+    picker.setWindowTitle(title);
+    picker.setAlphaEnabled(alpha);
+    picker.setButtonMode(color_widgets::ColorDialog::OkCancel);
+    picker.setColor(initial.isValid() ? initial : QColor(Qt::white));
+    obsgs_apply_color_dialog_theme(&picker);
+    return picker.exec() == QDialog::Accepted ? picker.color() : QColor();
+}
+
+static QStringList obsgs_load_recent_color_hexes()
+{
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Color"));
+    return settings.value(QStringLiteral("recentColorHexes")).toStringList();
+}
+
+static void obsgs_save_recent_color_hexes(const QStringList &hexes)
+{
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Color"));
+    settings.setValue(QStringLiteral("recentColorHexes"), hexes);
+    settings.sync();
+}
+
+static QString obsgs_color_swatch_tooltip(const QString &name, const QColor &color, const QString &hex)
+{
+    const QString safe_name = (name.trimmed().isEmpty() ? hex : name.trimmed()).toHtmlEscaped();
+    const QString safe_hex = hex.toHtmlEscaped();
+    const QString fill = color.isValid() ? color.name(QColor::HexArgb) : QStringLiteral("#00000000");
+    const QPalette pal = qApp->palette();
+    const QString base = pal.color(QPalette::ToolTipBase).name(QColor::HexRgb);
+    const QString text = pal.color(QPalette::ToolTipText).name(QColor::HexRgb);
+    const QString border = pal.color(QPalette::Mid).name(QColor::HexRgb);
+    const QString subtle = (pal.color(QPalette::ToolTipText).lightness() < 128
+                                ? pal.color(QPalette::ToolTipText).lighter(145)
+                                : pal.color(QPalette::ToolTipText).darker(145)).name(QColor::HexRgb);
+    return QStringLiteral(
+        "<table cellspacing='0' cellpadding='0' style='background:%1;color:%2;'>"
+        "<tr>"
+        "<td style='padding:8px 14px 8px 8px;'>"
+        "<div style='width:72px;height:72px;background:%3;border:1px solid %4;'></div>"
+        "</td>"
+        "<td style='vertical-align:middle;padding:8px 12px 8px 0;color:%2;'>"
+        "<div style='font-size:13pt;font-weight:600;white-space:nowrap;'>%5</div>"
+        "<div style='font-size:10pt;color:%6;white-space:nowrap;margin-top:4px;'>%7</div>"
+        "</td>"
+        "</tr>"
+        "</table>")
+        .arg(base, text, fill, border, safe_name, subtle, safe_hex);
+}
+
+static void obsgs_prepare_embedded_color_dialog(color_widgets::ColorDialog *dialog, const QColor &initial, bool alpha = true)
+{
+    if (!dialog)
+        return;
+
+    dialog->setWindowFlags(Qt::Widget);
+    dialog->setAlphaEnabled(alpha);
+    dialog->setButtonMode(color_widgets::ColorDialog::Close);
+    dialog->setColor(initial.isValid() ? initial : QColor(Qt::white));
+    dialog->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    if (auto *button_box = dialog->findChild<QDialogButtonBox *>())
+        button_box->hide();
+    obsgs_apply_color_dialog_theme(dialog);
+}
 
 static QPoint clamp_popup_position_to_screen(const QPoint &desired, const QSize &popup_size, QWidget *anchor)
 {
@@ -481,166 +604,6 @@ protected:
         }
         event->accept();
     }
-};
-
-class HsvColorPicker : public QWidget {
-public:
-    explicit HsvColorPicker(QWidget *parent = nullptr) : QWidget(parent)
-    {
-        setFixedSize(250, 250);
-        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setMouseTracking(true);
-    }
-
-    void set_color(const QColor &color)
-    {
-        current_ = color.isValid() ? color : QColor(Qt::white);
-        const int h = current_.hsvHue();
-        hue_ = h < 0 ? 0.0 : (double)h;
-        saturation_ = std::clamp((double)current_.hsvSaturationF(), 0.0, 1.0);
-        value_ = std::clamp((double)current_.valueF(), 0.0, 1.0);
-        alpha_ = std::clamp((double)current_.alphaF(), 0.0, 1.0);
-        update();
-    }
-
-    QColor color() const
-    {
-        QColor color;
-        color.setHsvF(std::clamp(hue_ / 359.0, 0.0, 1.0), saturation_, value_, alpha_);
-        return color;
-    }
-
-    std::function<void(const QColor &)> color_changed;
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        const QPointF c = wheel_center();
-        const double outer = wheel_outer_radius();
-        const double inner = wheel_inner_radius();
-
-        QImage wheel(size(), QImage::Format_ARGB32_Premultiplied);
-        wheel.fill(Qt::transparent);
-        for (int y = 0; y < wheel.height(); ++y) {
-            for (int x = 0; x < wheel.width(); ++x) {
-                const double dx = x + 0.5 - c.x();
-                const double dy = y + 0.5 - c.y();
-                const double r = std::sqrt(dx * dx + dy * dy);
-                if (r < inner || r > outer)
-                    continue;
-                double deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
-                if (deg < 0.0)
-                    deg += 360.0;
-                QColor hc;
-                hc.setHsvF(deg / 359.0, 1.0, 1.0, 1.0);
-                wheel.setPixelColor(x, y, hc);
-            }
-        }
-        p.drawImage(0, 0, wheel);
-
-        p.setPen(QPen(QColor(0, 0, 0, 90), 1));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(c, outer, outer);
-        p.drawEllipse(c, inner, inner);
-
-        const double angle = hue_ * 3.14159265358979323846 / 180.0;
-        const QPointF hue_handle(c.x() + std::cos(angle) * ((inner + outer) * 0.5),
-                                 c.y() + std::sin(angle) * ((inner + outer) * 0.5));
-        p.setPen(QPen(Qt::white, 3));
-        p.drawEllipse(hue_handle, 10, 10);
-        p.setPen(QPen(QColor(20, 20, 20), 2));
-        p.drawEllipse(hue_handle, 11, 11);
-
-        const QRect sv = sv_rect();
-        QImage image(sv.size(), QImage::Format_RGB32);
-        for (int y = 0; y < image.height(); ++y) {
-            const double v = 1.0 - (double)y / std::max(1, image.height() - 1);
-            for (int x = 0; x < image.width(); ++x) {
-                const double s = (double)x / std::max(1, image.width() - 1);
-                QColor col;
-                col.setHsvF(std::clamp(hue_ / 359.0, 0.0, 1.0), s, v, 1.0);
-                image.setPixelColor(x, y, col);
-            }
-        }
-        p.drawImage(sv.topLeft(), image);
-        p.setPen(QPen(QColor(0, 0, 0, 160), 1));
-        p.drawRect(sv.adjusted(0, 0, -1, -1));
-
-        const QPoint sv_handle(sv.left() + (int)std::round(saturation_ * (sv.width() - 1)),
-                               sv.top() + (int)std::round((1.0 - value_) * (sv.height() - 1)));
-        p.setPen(QPen(Qt::white, 2));
-        p.drawEllipse(sv_handle, 7, 7);
-        p.setPen(QPen(QColor(20, 20, 20), 1));
-        p.drawEllipse(sv_handle, 8, 8);
-    }
-
-    void mousePressEvent(QMouseEvent *event) override
-    {
-        update_from_pos(event->pos());
-        event->accept();
-    }
-
-    void mouseMoveEvent(QMouseEvent *event) override
-    {
-        if (event->buttons() & Qt::LeftButton) {
-            update_from_pos(event->pos());
-            event->accept();
-            return;
-        }
-        QWidget::mouseMoveEvent(event);
-    }
-
-private:
-    QPointF wheel_center() const { return QPointF(width() * 0.5, height() * 0.48); }
-    double wheel_outer_radius() const { return std::min(width(), height()) * 0.44; }
-    double wheel_inner_radius() const { return std::min(width(), height()) * 0.32; }
-    QRect sv_rect() const
-    {
-        const int side = (int)std::round(wheel_inner_radius() * 1.28);
-        const QPointF c = wheel_center();
-        return QRect((int)std::round(c.x() - side * 0.5),
-                     (int)std::round(c.y() - side * 0.5),
-                     side, side);
-    }
-
-    void update_from_pos(const QPoint &pos)
-    {
-        const QRect sv = sv_rect();
-        bool changed = false;
-        if (sv.contains(pos)) {
-            saturation_ = std::clamp((double)(pos.x() - sv.left()) / std::max(1, sv.width() - 1), 0.0, 1.0);
-            value_ = std::clamp(1.0 - (double)(pos.y() - sv.top()) / std::max(1, sv.height() - 1), 0.0, 1.0);
-            changed = true;
-        } else {
-            const QPointF c = wheel_center();
-            const double dx = pos.x() - c.x();
-            const double dy = pos.y() - c.y();
-            const double r = std::sqrt(dx * dx + dy * dy);
-            if (r >= wheel_inner_radius() && r <= wheel_outer_radius()) {
-                double deg = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
-                if (deg < 0.0)
-                    deg += 360.0;
-                hue_ = std::clamp(deg, 0.0, 359.0);
-                changed = true;
-            }
-        }
-
-        if (!changed)
-            return;
-        current_ = color();
-        update();
-        if (color_changed)
-            color_changed(current_);
-    }
-
-    QColor current_ = Qt::white;
-    double hue_ = 0.0;
-    double saturation_ = 0.0;
-    double value_ = 1.0;
-    double alpha_ = 1.0;
 };
 
 static QString gradient_editor_hex(const QColor &color)

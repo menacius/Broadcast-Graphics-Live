@@ -13,6 +13,10 @@
 #include <QScreen>
 #include <QWindow>
 #include <QTimer>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDir>
 
 #include <cmath>
 
@@ -27,6 +31,103 @@ double editor_playback_ui_frame_duration()
 int editor_playback_ui_timer_interval_ms()
 {
     return std::max(1, static_cast<int>(std::lround(editor_playback_ui_frame_duration() * 1000.0)));
+}
+
+QString editor_recent_color_hex(const QColor &color)
+{
+    if (!color.isValid())
+        return QString();
+    if (color.alpha() < 255) {
+        return QStringLiteral("#%1%2%3%4")
+            .arg(color.red(), 2, 16, QLatin1Char('0'))
+            .arg(color.green(), 2, 16, QLatin1Char('0'))
+            .arg(color.blue(), 2, 16, QLatin1Char('0'))
+            .arg(color.alpha(), 2, 16, QLatin1Char('0'))
+            .toUpper();
+    }
+    return color.name(QColor::HexRgb).toUpper();
+}
+
+bool editor_parse_recent_color_hex(const QString &hex, QColor &color)
+{
+    QString s = hex.trimmed();
+    if (s.startsWith(QLatin1Char('#')))
+        s.remove(0, 1);
+
+    bool ok = false;
+    if (s.size() == 6) {
+        const int r = s.mid(0, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        const int g = s.mid(2, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        const int b = s.mid(4, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        color = QColor(r, g, b, 255);
+        return color.isValid();
+    }
+
+    if (s.size() == 8) {
+        const int r = s.mid(0, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        const int g = s.mid(2, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        const int b = s.mid(4, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        const int a = s.mid(6, 2).toInt(&ok, 16);
+        if (!ok) return false;
+        color = QColor(r, g, b, a);
+        return color.isValid();
+    }
+
+    return false;
+}
+
+QString editor_color_swatch_style(const QColor &color, bool enabled = true)
+{
+    const QPalette pal = qApp->palette();
+    const QString border = pal.color(QPalette::Mid).name(QColor::HexRgb);
+    const QString highlight = pal.color(QPalette::Highlight).name(QColor::HexRgb);
+    if (!enabled || !color.isValid()) {
+        const QString bg = pal.color(QPalette::Window).name(QColor::HexRgb);
+        return QStringLiteral("QToolButton{background:%1;border:1px dashed %2;border-radius:3px;}"
+                              "QToolButton:hover{border:1px dashed %2;}")
+            .arg(bg, border);
+    }
+
+    const QString bg = color.name(color.alpha() < 255 ? QColor::HexArgb : QColor::HexRgb);
+    return QStringLiteral("QToolButton{background:%1;border:1px solid %2;border-radius:3px;}"
+                          "QToolButton:hover{border:2px solid %3;}")
+        .arg(bg, border, highlight);
+}
+
+QString editor_slugify(QString text)
+{
+    text = text.trimmed().toLower();
+    QString slug;
+    bool previous_dash = false;
+    for (const QChar ch : text) {
+        const bool valid = ch.isLetterOrNumber();
+        if (valid) {
+            slug.append(ch);
+            previous_dash = false;
+        } else if (!previous_dash && !slug.isEmpty()) {
+            slug.append(QLatin1Char('-'));
+            previous_dash = true;
+        }
+    }
+    while (slug.endsWith(QLatin1Char('-')))
+        slug.chop(1);
+    return slug.isEmpty() ? QStringLiteral("library") : slug;
+}
+
+QString editor_color_libraries_path()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QStringLiteral("/OBS Graphics Studio Pro");
+    QDir dir(base);
+    dir.mkpath(QStringLiteral("palettes"));
+    return dir.filePath(QStringLiteral("palettes/user-color-libraries.palette.json"));
 }
 
 class LongPressToolButton final : public QToolButton {
@@ -445,51 +546,555 @@ QWidget *TitleEditor::create_color_swatches_panel()
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
 
-    auto *hint = new QLabel(obsgs_tr("OBSTitles.ReusableColorPalettes"), panel);
-    hint->setWordWrap(true);
-    QFont hint_font = hint->font();
-    hint_font.setBold(true);
-    hint->setFont(hint_font);
-    hint->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(qApp->palette().color(QPalette::WindowText).name(QColor::HexRgb)));
-    layout->addWidget(hint);
+    auto *recent_label = new QLabel(obsgs_tr("OBSTitles.RecentColors"), panel);
+    QFont section_font = recent_label->font();
+    section_font.setBold(true);
+    recent_label->setFont(section_font);
+    layout->addWidget(recent_label);
 
-    auto *grid_widget = new QWidget(panel);
-    auto *grid = new QGridLayout(grid_widget);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(6);
-    grid->setVerticalSpacing(6);
-
-    const std::array<QColor, 24> colors = {
-        QColor("#ffffff"), QColor("#d9d9d9"), QColor("#a6a6a6"), QColor("#6f6f6f"),
-        QColor("#262626"), QColor("#000000"), QColor("#ff4b4b"), QColor("#ff9f1c"),
-        QColor("#ffd166"), QColor("#2ec4b6"), QColor("#00a8e8"), QColor("#7b61ff"),
-        QColor("#f72585"), QColor("#b5179e"), QColor("#7209b7"), QColor("#3a0ca3"),
-        QColor("#4361ee"), QColor("#4cc9f0"), QColor("#52b788"), QColor("#95d5b2"),
-        QColor("#f4a261"), QColor("#e76f51"), QColor("#8d6e63"), QColor("#3d405b")
-    };
-
-    for (int i = 0; i < (int)colors.size(); ++i) {
-        auto *swatch = new QToolButton(grid_widget);
-        swatch->setObjectName(QStringLiteral("OBSGraphicsStudioProColorSwatch"));
+    auto *recent_grid_widget = new QWidget(panel);
+    recent_color_swatches_grid_ = new QGridLayout(recent_grid_widget);
+    recent_color_swatches_grid_->setContentsMargins(0, 0, 0, 0);
+    recent_color_swatches_grid_->setHorizontalSpacing(6);
+    recent_color_swatches_grid_->setVerticalSpacing(6);
+    recent_color_swatches_grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    recent_color_swatch_buttons_.clear();
+    recent_color_swatch_buttons_.reserve(16);
+    for (int i = 0; i < 16; ++i) {
+        auto *swatch = new QToolButton(recent_grid_widget);
+        swatch->setObjectName(QStringLiteral("OBSGraphicsStudioProRecentColorSwatch"));
         swatch->setFixedSize(24, 24);
         swatch->setAutoRaise(false);
-        swatch->setToolTip(colors[i].name(QColor::HexRgb).toUpper());
-        swatch->setStyleSheet(QStringLiteral("QToolButton{background:%1;border:1px solid %2;border-radius:3px;}"
-                                             "QToolButton:hover{border:2px solid %3;}" )
-                              .arg(colors[i].name(QColor::HexRgb),
-                                   qApp->palette().color(QPalette::Mid).name(QColor::HexRgb),
-                                   qApp->palette().color(QPalette::Highlight).name(QColor::HexRgb)));
-        grid->addWidget(swatch, i / 6, i % 6);
+        connect(swatch, &QToolButton::clicked, this, [this, i]() {
+            QStringList recent_hexes = obsgs_load_recent_color_hexes();
+            if (title_) {
+                for (const auto &hex : title_->editor_recent_color_hexes) {
+                    const QString value = QString::fromStdString(hex);
+                    if (!recent_hexes.contains(value, Qt::CaseInsensitive))
+                        recent_hexes << value;
+                }
+            }
+            if (i >= recent_hexes.size())
+                return;
+            QColor color;
+            if (!editor_parse_recent_color_hex(recent_hexes[i], color))
+                return;
+            apply_picked_color_to_selection(color);
+            remember_recent_color(color);
+        });
+        swatch->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(swatch, &QToolButton::customContextMenuRequested, this, [this, swatch, i](const QPoint &pos) {
+            QStringList recent_hexes = obsgs_load_recent_color_hexes();
+            if (title_) {
+                for (const auto &hex : title_->editor_recent_color_hexes) {
+                    const QString value = QString::fromStdString(hex);
+                    if (!recent_hexes.contains(value, Qt::CaseInsensitive))
+                        recent_hexes << value;
+                }
+            }
+            if (i >= recent_hexes.size())
+                return;
+            QColor color;
+            const bool has_color = editor_parse_recent_color_hex(recent_hexes[i], color);
+            QMenu menu(swatch);
+            QAction *save_action = nullptr;
+            if (has_color)
+                save_action = menu.addAction(obsgs_tr("OBSTitles.AddToLibrary"));
+            QAction *remove_action = menu.addAction(obsgs_tr("OBSTitles.Delete"));
+            QAction *selected = menu.exec(swatch->mapToGlobal(pos));
+            if (selected == save_action)
+                show_add_color_to_library_dialog(color);
+            else if (selected == remove_action)
+                remove_recent_color(i);
+        });
+        recent_color_swatches_grid_->addWidget(swatch, i / 8, i % 8);
+        recent_color_swatch_buttons_.push_back(swatch);
+    }
+    layout->addWidget(recent_grid_widget, 0, Qt::AlignTop | Qt::AlignLeft);
+
+    auto *library_label = new QLabel(obsgs_tr("OBSTitles.ColorLibraries"), panel);
+    library_label->setFont(section_font);
+    layout->addWidget(library_label);
+
+    auto *library_toolbar = new QWidget(panel);
+    auto *library_toolbar_layout = new QHBoxLayout(library_toolbar);
+    library_toolbar_layout->setContentsMargins(0, 0, 0, 0);
+    library_toolbar_layout->setSpacing(4);
+    color_library_combo_ = new QComboBox(library_toolbar);
+    color_library_combo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    color_library_add_button_ = new QToolButton(library_toolbar);
+    color_library_add_button_->setIcon(obs_icon("add.svg"));
+    color_library_add_button_->setToolTip(obsgs_tr("OBSTitles.New"));
+    color_library_rename_button_ = new QToolButton(library_toolbar);
+    color_library_rename_button_->setIcon(obs_icon("settings.svg"));
+    color_library_rename_button_->setToolTip(obsgs_tr("OBSTitles.Rename"));
+    color_library_delete_button_ = new QToolButton(library_toolbar);
+    color_library_delete_button_->setIcon(obs_icon("delete.svg"));
+    color_library_delete_button_->setToolTip(obsgs_tr("OBSTitles.Delete"));
+    for (auto *button : {color_library_add_button_, color_library_rename_button_, color_library_delete_button_})
+        button->setFixedSize(26, 24);
+    library_toolbar_layout->addWidget(color_library_combo_, 1);
+    library_toolbar_layout->addWidget(color_library_add_button_);
+    library_toolbar_layout->addWidget(color_library_rename_button_);
+    library_toolbar_layout->addWidget(color_library_delete_button_);
+    layout->addWidget(library_toolbar);
+
+    auto *library_scroll = new QScrollArea(panel);
+    library_scroll->setWidgetResizable(true);
+    library_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    library_scroll->setMinimumHeight(140);
+    color_library_swatch_widget_ = new QWidget(library_scroll);
+    color_library_swatches_grid_ = new QGridLayout(color_library_swatch_widget_);
+    color_library_swatches_grid_->setContentsMargins(0, 0, 0, 0);
+    color_library_swatches_grid_->setHorizontalSpacing(6);
+    color_library_swatches_grid_->setVerticalSpacing(6);
+    color_library_swatches_grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    library_scroll->setWidget(color_library_swatch_widget_);
+    layout->addWidget(library_scroll, 1);
+
+    connect(color_library_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (index < 0 || index >= (int)color_libraries_.size())
+            return;
+        selected_color_library_index_ = index;
+        refresh_color_library_controls();
+    });
+    connect(color_library_add_button_, &QToolButton::clicked, this, &TitleEditor::create_color_library);
+    connect(color_library_rename_button_, &QToolButton::clicked, this, &TitleEditor::rename_current_color_library);
+    connect(color_library_delete_button_, &QToolButton::clicked, this, &TitleEditor::delete_current_color_library);
+
+    load_color_libraries();
+    refresh_color_library_controls();
+    refresh_color_swatches_panel();
+    return panel;
+}
+
+void TitleEditor::remember_recent_color(const QColor &color)
+{
+    if (!color.isValid() || color.alpha() <= 0)
+        return;
+
+    const QString hex = editor_recent_color_hex(color);
+    if (hex.isEmpty())
+        return;
+
+    QStringList recent_hexes = obsgs_load_recent_color_hexes();
+    for (int i = recent_hexes.size() - 1; i >= 0; --i) {
+        if (recent_hexes[i].compare(hex, Qt::CaseInsensitive) == 0)
+            recent_hexes.removeAt(i);
+    }
+    recent_hexes.prepend(hex);
+    while (recent_hexes.size() > 16)
+        recent_hexes.removeLast();
+    obsgs_save_recent_color_hexes(recent_hexes);
+
+    if (title_) {
+        title_->editor_recent_color_hexes.clear();
+        for (const QString &entry : recent_hexes)
+            title_->editor_recent_color_hexes.push_back(entry.toStdString());
     }
 
-    layout->addWidget(grid_widget, 0, Qt::AlignTop | Qt::AlignLeft);
-    auto *footer = new QLabel(obsgs_tr("OBSTitles.PaletteWorkflowHint"), panel);
-    footer->setWordWrap(true);
-    footer->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg((qApp->palette().color(QPalette::WindowText).lightness() < 128 ? qApp->palette().color(QPalette::WindowText).lighter(145) : qApp->palette().color(QPalette::WindowText).darker(145)).name(QColor::HexRgb)));
-    layout->addWidget(footer);
-    layout->addStretch(1);
+    refresh_color_swatches_panel();
+    persist_recent_colors();
+}
 
-    return panel;
+void TitleEditor::remove_recent_color(int index)
+{
+    QStringList recent_hexes = obsgs_load_recent_color_hexes();
+    if (title_) {
+        for (const auto &hex : title_->editor_recent_color_hexes) {
+            const QString value = QString::fromStdString(hex);
+            if (!recent_hexes.contains(value, Qt::CaseInsensitive))
+                recent_hexes << value;
+        }
+    }
+    if (index < 0 || index >= recent_hexes.size())
+        return;
+
+    recent_hexes.removeAt(index);
+    obsgs_save_recent_color_hexes(recent_hexes);
+    if (title_) {
+        title_->editor_recent_color_hexes.clear();
+        for (const QString &hex : recent_hexes)
+            title_->editor_recent_color_hexes.push_back(hex.toStdString());
+    }
+    refresh_color_swatches_panel();
+    persist_recent_colors();
+}
+
+void TitleEditor::persist_recent_colors()
+{
+    if (!title_)
+        return;
+
+    auto stored = TitleDataStore::instance().get_title(editing_title_id_.empty() ? title_->id : editing_title_id_);
+    if (!stored)
+        return;
+
+    stored->editor_recent_color_hexes = title_->editor_recent_color_hexes;
+    QStringList recent_hexes;
+    for (const auto &hex : title_->editor_recent_color_hexes)
+        recent_hexes << QString::fromStdString(hex);
+    obsgs_save_recent_color_hexes(recent_hexes);
+    TitleDataStore::instance().save_async();
+}
+
+void TitleEditor::load_color_libraries()
+{
+    color_libraries_.clear();
+
+    ColorLibrary open_color;
+    open_color.name = QStringLiteral("Open Color");
+    open_color.slug = QStringLiteral("open-color");
+    open_color.built_in = true;
+    auto add_open_color = [&](const QString &group, const QStringList &hexes) {
+        for (int i = 0; i < hexes.size(); ++i) {
+            QColor color(hexes[i]);
+            if (color.isValid())
+                open_color.colors.push_back({QStringLiteral("%1 %2").arg(group).arg(i), color});
+        }
+    };
+    open_color.colors.push_back({QStringLiteral("white"), QColor(QStringLiteral("#ffffff"))});
+    open_color.colors.push_back({QStringLiteral("black"), QColor(QStringLiteral("#000000"))});
+    add_open_color(QStringLiteral("gray"), {"#f8f9fa", "#f1f3f5", "#e9ecef", "#dee2e6", "#ced4da", "#adb5bd", "#868e96", "#495057", "#343a40", "#212529"});
+    add_open_color(QStringLiteral("red"), {"#fff5f5", "#ffe3e3", "#ffc9c9", "#ffa8a8", "#ff8787", "#ff6b6b", "#fa5252", "#f03e3e", "#e03131", "#c92a2a"});
+    add_open_color(QStringLiteral("pink"), {"#fff0f6", "#ffdeeb", "#fcc2d7", "#faa2c1", "#f783ac", "#f06595", "#e64980", "#d6336c", "#c2255c", "#a61e4d"});
+    add_open_color(QStringLiteral("grape"), {"#f8f0fc", "#f3d9fa", "#eebefa", "#e599f7", "#da77f2", "#cc5de8", "#be4bdb", "#ae3ec9", "#9c36b5", "#862e9c"});
+    add_open_color(QStringLiteral("violet"), {"#f3f0ff", "#e5dbff", "#d0bfff", "#b197fc", "#9775fa", "#845ef7", "#7950f2", "#7048e8", "#6741d9", "#5f3dc4"});
+    add_open_color(QStringLiteral("indigo"), {"#edf2ff", "#dbe4ff", "#bac8ff", "#91a7ff", "#748ffc", "#5c7cfa", "#4c6ef5", "#4263eb", "#3b5bdb", "#364fc7"});
+    add_open_color(QStringLiteral("blue"), {"#e7f5ff", "#d0ebff", "#a5d8ff", "#74c0fc", "#4dabf7", "#339af0", "#228be6", "#1c7ed6", "#1971c2", "#1864ab"});
+    add_open_color(QStringLiteral("cyan"), {"#e3fafc", "#c5f6fa", "#99e9f2", "#66d9e8", "#3bc9db", "#22b8cf", "#15aabf", "#1098ad", "#0c8599", "#0b7285"});
+    add_open_color(QStringLiteral("teal"), {"#e6fcf5", "#c3fae8", "#96f2d7", "#63e6be", "#38d9a9", "#20c997", "#12b886", "#0ca678", "#099268", "#087f5b"});
+    add_open_color(QStringLiteral("green"), {"#ebfbee", "#d3f9d8", "#b2f2bb", "#8ce99a", "#69db7c", "#51cf66", "#40c057", "#37b24d", "#2f9e44", "#2b8a3e"});
+    add_open_color(QStringLiteral("lime"), {"#f4fce3", "#e9fac8", "#d8f5a2", "#c0eb75", "#a9e34b", "#94d82d", "#82c91e", "#74b816", "#66a80f", "#5c940d"});
+    add_open_color(QStringLiteral("yellow"), {"#fff9db", "#fff3bf", "#ffec99", "#ffe066", "#ffd43b", "#fcc419", "#fab005", "#f59f00", "#f08c00", "#e67700"});
+    add_open_color(QStringLiteral("orange"), {"#fff4e6", "#ffe8cc", "#ffd8a8", "#ffc078", "#ffa94d", "#ff922b", "#fd7e14", "#f76707", "#e8590c", "#d9480f"});
+    color_libraries_.push_back(open_color);
+
+    QFile file(editor_color_libraries_path());
+    if (file.open(QIODevice::ReadOnly)) {
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        const QJsonArray palettes = doc.object().value(QStringLiteral("palettes")).toArray();
+        for (const QJsonValue &value : palettes) {
+            const QJsonObject object = value.toObject();
+            ColorLibrary library;
+            library.name = object.value(QStringLiteral("name")).toString().trimmed();
+            library.slug = object.value(QStringLiteral("slug")).toString().trimmed();
+            library.built_in = false;
+            if (library.name.isEmpty())
+                continue;
+            if (library.slug.isEmpty())
+                library.slug = editor_slugify(library.name);
+
+            const QJsonArray colors = object.value(QStringLiteral("colors")).toArray();
+            for (int i = 0; i < colors.size(); ++i) {
+                const QJsonObject color_object = colors[i].toObject();
+                const QString hex = color_object.value(QStringLiteral("hex")).toString();
+                QColor color;
+                if (!editor_parse_recent_color_hex(hex, color))
+                    continue;
+                const QString color_name = color_object.value(QStringLiteral("name")).toString(
+                    QStringLiteral("%1 %2").arg(library.name).arg(i + 1));
+                library.colors.push_back({color_name, color});
+            }
+            color_libraries_.push_back(library);
+        }
+    }
+
+    selected_color_library_index_ = std::clamp(selected_color_library_index_, 0, (int)color_libraries_.size() - 1);
+}
+
+void TitleEditor::save_color_libraries() const
+{
+    QJsonArray palettes;
+    for (const ColorLibrary &library : color_libraries_) {
+        if (library.built_in)
+            continue;
+        QJsonObject object;
+        object.insert(QStringLiteral("name"), library.name);
+        object.insert(QStringLiteral("slug"), library.slug.isEmpty() ? editor_slugify(library.name) : library.slug);
+        object.insert(QStringLiteral("type"), QStringLiteral("categorical"));
+        QJsonArray colors;
+        for (const ColorLibraryColor &entry : library.colors) {
+            QJsonObject color;
+            if (!entry.name.isEmpty())
+                color.insert(QStringLiteral("name"), entry.name);
+            color.insert(QStringLiteral("hex"), editor_recent_color_hex(entry.color));
+            colors.append(color);
+        }
+        object.insert(QStringLiteral("colors"), colors);
+        palettes.append(object);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("palettes"), palettes);
+    QFile file(editor_color_libraries_path());
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+void TitleEditor::refresh_color_library_controls()
+{
+    if (!color_library_combo_)
+        return;
+
+    QSignalBlocker blocker(color_library_combo_);
+    color_library_combo_->clear();
+    for (const ColorLibrary &library : color_libraries_)
+        color_library_combo_->addItem(library.name, library.slug);
+    selected_color_library_index_ = std::clamp(selected_color_library_index_, 0, std::max(0, (int)color_libraries_.size() - 1));
+    color_library_combo_->setCurrentIndex(selected_color_library_index_);
+
+    const bool editable = selected_color_library_index_ >= 0 &&
+        selected_color_library_index_ < (int)color_libraries_.size() &&
+        !color_libraries_[selected_color_library_index_].built_in;
+    if (color_library_rename_button_)
+        color_library_rename_button_->setEnabled(editable);
+    if (color_library_delete_button_)
+        color_library_delete_button_->setEnabled(editable);
+    refresh_color_library_swatches();
+}
+
+void TitleEditor::refresh_color_library_swatches()
+{
+    if (!color_library_swatches_grid_ || !color_library_swatch_widget_)
+        return;
+
+    while (QLayoutItem *item = color_library_swatches_grid_->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+        return;
+
+    const auto &colors = color_libraries_[selected_color_library_index_].colors;
+    const int columns = 8;
+    for (int i = 0; i < (int)colors.size(); ++i) {
+        const ColorLibraryColor entry = colors[i];
+        auto *swatch = new QToolButton(color_library_swatch_widget_);
+        swatch->setObjectName(QStringLiteral("OBSGraphicsStudioProLibraryColorSwatch"));
+        swatch->setFixedSize(24, 24);
+        swatch->setAutoRaise(false);
+        swatch->setToolTip(obsgs_color_swatch_tooltip(entry.name, entry.color, editor_recent_color_hex(entry.color)));
+        swatch->setStyleSheet(editor_color_swatch_style(entry.color));
+        connect(swatch, &QToolButton::clicked, this, [this, color = entry.color]() {
+            apply_picked_color_to_selection(color);
+            remember_recent_color(color);
+        });
+        swatch->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(swatch, &QToolButton::customContextMenuRequested, this, [this, swatch, i](const QPoint &pos) {
+            if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+                return;
+            if (color_libraries_[selected_color_library_index_].built_in)
+                return;
+            QMenu menu(swatch);
+            QAction *remove_action = menu.addAction(obsgs_tr("OBSTitles.Delete"));
+            if (menu.exec(swatch->mapToGlobal(pos)) == remove_action)
+                remove_color_from_current_library(i);
+        });
+        color_library_swatches_grid_->addWidget(swatch, i / columns, i % columns);
+    }
+}
+
+void TitleEditor::create_color_library()
+{
+    prompt_create_color_library();
+}
+
+int TitleEditor::prompt_create_color_library()
+{
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, obsgs_tr("OBSTitles.ColorLibraries"),
+                                               obsgs_tr("OBSTitles.Name"), QLineEdit::Normal,
+                                               QString(), &ok).trimmed();
+    if (!ok || name.isEmpty())
+        return -1;
+
+    ColorLibrary library;
+    library.name = name;
+    library.slug = editor_slugify(name);
+    int suffix = 2;
+    auto slug_exists = [&]() {
+        return std::any_of(color_libraries_.begin(), color_libraries_.end(), [&](const ColorLibrary &candidate) {
+            return candidate.slug.compare(library.slug, Qt::CaseInsensitive) == 0;
+        });
+    };
+    const QString base_slug = library.slug;
+    while (slug_exists())
+        library.slug = QStringLiteral("%1-%2").arg(base_slug).arg(suffix++);
+    color_libraries_.push_back(library);
+    selected_color_library_index_ = (int)color_libraries_.size() - 1;
+    save_color_libraries();
+    refresh_color_library_controls();
+    return selected_color_library_index_;
+}
+
+void TitleEditor::rename_current_color_library()
+{
+    if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+        return;
+    ColorLibrary &library = color_libraries_[selected_color_library_index_];
+    if (library.built_in)
+        return;
+
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, obsgs_tr("OBSTitles.ColorLibraries"),
+                                               obsgs_tr("OBSTitles.Name"), QLineEdit::Normal,
+                                               library.name, &ok).trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    library.name = name;
+    library.slug = editor_slugify(name);
+    save_color_libraries();
+    refresh_color_library_controls();
+}
+
+void TitleEditor::delete_current_color_library()
+{
+    if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+        return;
+    if (color_libraries_[selected_color_library_index_].built_in)
+        return;
+
+    if (QMessageBox::question(this, obsgs_tr("OBSTitles.ColorLibraries"),
+                              obsgs_tr("OBSTitles.DeleteColorLibraryQuestionFormat").arg(color_libraries_[selected_color_library_index_].name)) != QMessageBox::Yes)
+        return;
+    color_libraries_.erase(color_libraries_.begin() + selected_color_library_index_);
+    selected_color_library_index_ = std::clamp(selected_color_library_index_, 0, std::max(0, (int)color_libraries_.size() - 1));
+    save_color_libraries();
+    refresh_color_library_controls();
+}
+
+void TitleEditor::add_color_to_current_library(const QColor &color)
+{
+    if (!color.isValid() || selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+        return;
+    add_color_to_library(selected_color_library_index_, color, editor_recent_color_hex(color));
+}
+
+bool TitleEditor::show_add_color_to_library_dialog(const QColor &color)
+{
+    if (!color.isValid() || color.alpha() <= 0)
+        return false;
+    load_color_libraries();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(obsgs_tr("OBSTitles.AddToLibrary"));
+    auto *root = new QHBoxLayout(&dialog);
+    root->setContentsMargins(12, 12, 12, 12);
+    root->setSpacing(12);
+
+    auto *left = new QWidget(&dialog);
+    auto *left_layout = new QVBoxLayout(left);
+    left_layout->setContentsMargins(0, 0, 0, 0);
+    left_layout->setSpacing(8);
+
+    auto *swatch = new QLabel(left);
+    swatch->setFixedSize(96, 96);
+    swatch->setStyleSheet(QStringLiteral("QLabel{background:%1;border:1px solid %2;border-radius:4px;}")
+                               .arg(color.name(QColor::HexArgb),
+                                    qApp->palette().color(QPalette::Mid).name(QColor::HexRgb)));
+    swatch->setToolTip(obsgs_color_swatch_tooltip(editor_recent_color_hex(color), color, editor_recent_color_hex(color)));
+    auto *name_edit = new QLineEdit(editor_recent_color_hex(color), left);
+    auto *hex_label = new QLabel(editor_recent_color_hex(color), left);
+    hex_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    left_layout->addWidget(swatch, 0, Qt::AlignLeft);
+    left_layout->addWidget(name_edit);
+    left_layout->addWidget(hex_label);
+    left_layout->addStretch(1);
+
+    auto *right = new QWidget(&dialog);
+    auto *right_layout = new QVBoxLayout(right);
+    right_layout->setContentsMargins(0, 0, 0, 0);
+    right_layout->setSpacing(8);
+    auto *library_list = new QListWidget(right);
+    library_list->addItem(obsgs_tr("OBSTitles.AddNewLibrary"));
+    for (int i = 0; i < (int)color_libraries_.size(); ++i) {
+        if (color_libraries_[i].built_in)
+            continue;
+        auto *item = new QListWidgetItem(color_libraries_[i].name, library_list);
+        item->setData(Qt::UserRole, i);
+    }
+    library_list->setCurrentRow(library_list->count() > 1 ? 1 : 0);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, right);
+    right_layout->addWidget(library_list, 1);
+    right_layout->addWidget(buttons);
+
+    root->addWidget(left);
+    root->addWidget(right, 1);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted)
+        return false;
+
+    int library_index = -1;
+    if (library_list->currentRow() == 0) {
+        library_index = prompt_create_color_library();
+    } else if (auto *item = library_list->currentItem()) {
+        library_index = item->data(Qt::UserRole).toInt();
+    }
+    if (library_index < 0)
+        return false;
+
+    add_color_to_library(library_index, color, name_edit->text().trimmed());
+    selected_color_library_index_ = library_index;
+    refresh_color_library_controls();
+    return true;
+}
+
+void TitleEditor::add_color_to_library(int library_index, const QColor &color, const QString &name)
+{
+    if (!color.isValid() || library_index < 0 || library_index >= (int)color_libraries_.size())
+        return;
+    ColorLibrary &library = color_libraries_[library_index];
+    if (library.built_in)
+        return;
+
+    const QString hex = editor_recent_color_hex(color);
+    library.colors.erase(std::remove_if(library.colors.begin(), library.colors.end(), [&](const ColorLibraryColor &entry) {
+        return editor_recent_color_hex(entry.color).compare(hex, Qt::CaseInsensitive) == 0;
+    }), library.colors.end());
+    library.colors.push_back({name.trimmed().isEmpty() ? hex : name.trimmed(), color});
+    save_color_libraries();
+    refresh_color_library_swatches();
+}
+
+void TitleEditor::remove_color_from_current_library(int index)
+{
+    if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+        return;
+    ColorLibrary &library = color_libraries_[selected_color_library_index_];
+    if (library.built_in || index < 0 || index >= (int)library.colors.size())
+        return;
+
+    library.colors.erase(library.colors.begin() + index);
+    save_color_libraries();
+    refresh_color_library_swatches();
+}
+
+void TitleEditor::refresh_color_swatches_panel()
+{
+    QStringList recent_hexes = obsgs_load_recent_color_hexes();
+    if (title_) {
+        for (const auto &hex : title_->editor_recent_color_hexes) {
+            const QString value = QString::fromStdString(hex);
+            if (!recent_hexes.contains(value, Qt::CaseInsensitive))
+                recent_hexes << value;
+        }
+    }
+    for (int i = 0; i < (int)recent_color_swatch_buttons_.size(); ++i) {
+        auto *button = recent_color_swatch_buttons_[i];
+        if (!button)
+            continue;
+
+        QColor color;
+        const bool has_color = i < recent_hexes.size() && editor_parse_recent_color_hex(recent_hexes[i], color);
+        button->setEnabled(has_color);
+        button->setToolTip(has_color ? obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.RecentColors"), color, editor_recent_color_hex(color)) : QString());
+        button->setStyleSheet(editor_color_swatch_style(color, has_color));
+    }
 }
 
 void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
@@ -2124,6 +2729,13 @@ void TitleEditor::build_ui()
             this, [this](bool active) {
                 if (canvas_) canvas_->set_gradient_editor_active(active);
             });
+    connect(props_, &PropertiesPanel::recent_colors_changed,
+            this, [this]() {
+                refresh_color_swatches_panel();
+                persist_recent_colors();
+            });
+    connect(props_, &PropertiesPanel::color_library_add_requested,
+            this, &TitleEditor::show_add_color_to_library_dialog);
     connect(props_, &PropertiesPanel::color_picker_tool_requested,
             this, [this]() {
                 reopen_color_tab_after_canvas_pick_ = true;
@@ -2214,7 +2826,23 @@ void TitleEditor::build_ui()
                     update_layer_panels(layer, playhead_);
             });
     connect(canvas_, &CanvasPreview::color_picked,
-            this, &TitleEditor::apply_picked_color_to_selection);
+            this, [this](const QColor &color, bool foreground) {
+                if (!color.isValid())
+                    return;
+                if (foreground) {
+                    default_foreground_color_ = color;
+                    apply_picked_color_to_selection(color);
+                } else {
+                    default_background_color_ = color;
+                }
+                remember_recent_color(color);
+                save_sidebar_default_colors();
+                update_sidebar_color_swatches(nullptr);
+                if (tools_sidebar_)
+                    tools_sidebar_->activate_selection_tool();
+                else if (canvas_)
+                    canvas_->set_selection_tool_active();
+            });
     connect(canvas_, &CanvasPreview::layer_structure_changed,
             this, [this]() {
                 layers_->refresh();
@@ -3235,6 +3863,7 @@ void TitleEditor::open_title(const std::string &tid)
     timeline_->set_title(title_);
     props_->set_title(title_);
     title_props_->set_title(title_);
+    refresh_color_swatches_panel();
     if (prerender_panel_) prerender_panel_->setTitle(title_);
     CacheManager::instance().restoreDiskStates(title_);
     CacheManager::instance().reprioritize(title_, playhead_);
@@ -4270,11 +4899,14 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         target_grid->addWidget(name, row, 0);
         target_grid->addWidget(button, row, 1);
         connect(button, &QPushButton::clicked, dialog, [dialog, button, label, apply_color_button, apply_color, current_color]() mutable {
-            auto *picker = new QColorDialog(current_color(), dialog);
+            auto *picker = new color_widgets::ColorDialog(dialog);
             picker->setAttribute(Qt::WA_DeleteOnClose);
             picker->setWindowTitle(label);
-            picker->setOption(QColorDialog::ShowAlphaChannel, true);
-            connect(picker, &QColorDialog::currentColorChanged, dialog, [button, apply_color_button, apply_color](const QColor &color) mutable {
+            picker->setAlphaEnabled(true);
+            picker->setButtonMode(color_widgets::ColorDialog::OkApplyCancel);
+            picker->setColor(current_color());
+            obsgs_apply_color_dialog_theme(picker);
+            connect(picker, &color_widgets::ColorDialog::colorChanged, dialog, [button, apply_color_button, apply_color](const QColor &color) mutable {
                 if (!color.isValid())
                     return;
                 apply_color(color);
@@ -5248,9 +5880,8 @@ void TitleEditor::open_default_sidebar_color_popup(bool foreground)
         update_controls();
     };
     connect(swatch, &QPushButton::clicked, &popup, [&]() {
-        QColor picked = QColorDialog::getColor(target, &popup,
-            foreground ? obsgs_tr("OBSTitles.ForegroundColor") : obsgs_tr("OBSTitles.BackgroundColor"),
-            QColorDialog::ShowAlphaChannel);
+        QColor picked = obsgs_pick_color(target, &popup,
+            foreground ? obsgs_tr("OBSTitles.ForegroundColor") : obsgs_tr("OBSTitles.BackgroundColor"));
         apply_color(picked);
     });
     connect(hex, &QLineEdit::editingFinished, &popup, [&]() {

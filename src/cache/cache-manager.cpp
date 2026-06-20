@@ -1,4 +1,5 @@
 #include "cache-manager.h"
+#include "title-cache-policy.h"
 #include "title-localization.h"
 #include "title-source.h"
 #include "title-preferences.h"
@@ -221,6 +222,17 @@ static int clamp_cache_priority(qint64 priority)
         priority,
         std::numeric_limits<int>::min() + 1,
         std::numeric_limits<int>::max()));
+}
+
+static quint64 available_system_memory_bytes()
+{
+#ifdef _WIN32
+    MEMORYSTATUSEX status = {};
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status))
+        return static_cast<quint64>(status.ullAvailPhys);
+#endif
+    return std::numeric_limits<quint64>::max();
 }
 }
 
@@ -873,6 +885,14 @@ QString CacheManager::contentHash(const Title &title) const
             add(rule.cached_mask); add_char_format(rule.cached_format);
         }
     };
+    const TitleDynamicLayerAnalysis cache_analysis = analyze_title_dynamic_layers(title);
+    if (cache_analysis.has_cacheable_prefix) {
+        /* Keep partial-prefix payloads distinct from legacy/full-frame cache
+         * entries even when the visible title content is otherwise identical. */
+        add(QStringLiteral("partial-prefix-cache-v1"));
+        add((quint64)cache_analysis.first_dynamic_layer);
+    }
+
     /* Content hash intentionally tracks rendered pixels only. Title id/name are
      * metadata and must not force a prerender rebuild when the visible output
      * did not change. The title id is already part of CacheFrameKey. */
@@ -1356,7 +1376,8 @@ QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double ti
 {
     if (!title)
         return QImage();
-    if (titleCacheability(title) == TitleCacheability::NonCacheable)
+    const TitleCacheability cacheability = titleCacheability(title);
+    if (cacheability == TitleCacheability::NonCacheable)
         return renderUncachedFrame(title, time);
     /* requestFrame() is the editor-facing path. During an interactive edit the
      * cached-frames-only playback preference must not blank or freeze the
@@ -1366,12 +1387,19 @@ QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double ti
     if (interactive_bypass_.load() || !cache_enabled_.load())
         return renderUncachedFrame(title, time);
 
+    const double clamped_time = std::clamp(time, 0.0, std::max(0.0, title->duration));
+    const auto finish_cached_frame = [&](const QImage &cached_frame) {
+        if (cacheability != TitleCacheability::PartiallyCacheable)
+            return cached_frame;
+        return render_title_over_cached_frame(*title, clamped_time, cached_frame);
+    };
+
     const QString content_hash = contentHash(*title);
     const CacheFrameKey key = keyForTime(*title, time, content_hash);
     QImage image;
     if (state_tracker_.state(key) != FrameCacheState::Stale && ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
-        return image;
+        return finish_cached_frame(image);
     }
 
     /* The editor is allowed to synchronously promote its currently visible
@@ -1384,7 +1412,7 @@ QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double ti
         ram_cache_.put(key, image);
         state_tracker_.setState(key, FrameCacheState::CachedRam);
         emit diagnosticsChanged();
-        return image;
+        return finish_cached_frame(image);
     }
 
     queueRealtimeJob(title, time, false, -1, QString(), content_hash);
@@ -1815,12 +1843,12 @@ TitleCacheability CacheManager::titleCacheability(const std::shared_ptr<Title> &
 {
     if (!title)
         return TitleCacheability::NonCacheable;
-    for (const auto &layer : title->layers) {
-        if (!layer) continue;
-        if (layer->type == LayerType::Clock || layer->type == LayerType::Ticker)
-            return TitleCacheability::NonCacheable;
-    }
-    return TitleCacheability::Cacheable;
+    const TitleDynamicLayerAnalysis analysis = analyze_title_dynamic_layers(*title);
+    if (!analysis.has_dynamic_layers)
+        return TitleCacheability::Cacheable;
+    return analysis.has_cacheable_prefix
+        ? TitleCacheability::PartiallyCacheable
+        : TitleCacheability::NonCacheable;
 }
 
 QString CacheManager::titleCacheabilityMessage(const std::shared_ptr<Title> &title) const
@@ -2012,7 +2040,7 @@ QImage CacheManager::renderDirtyTiles(const RenderQueueManager::Job &job,
     for (const auto &tile : dirty_tiles) {
         if (tile.rect.isEmpty())
             continue;
-        const QImage tile_image = render_title_region_to_image(*job.title, job.time, tile.rect);
+        const QImage tile_image = render_title_cache_region_to_image(*job.title, job.time, tile.rect);
         if (tile_image.isNull())
             continue;
         painter.drawImage(tile.rect.topLeft(), tile_image);
@@ -2811,7 +2839,7 @@ void CacheManager::queueLiveCueVariantSet(
         if (state_tracker_.state(required.key) == FrameCacheState::Rendering ||
             queue_.contains(required.key)) {
             active_or_queued = true;
-            if (!urgent)
+            if (!urgent && !hydrate_disk_to_ram)
                 continue;
         }
         if (urgent)
@@ -2938,9 +2966,15 @@ void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
     const QString title_id = QString::fromStdString(title->id);
     const QString row_id = liveCueRowIdentity(title, row);
     if (liveCueRowRenderPausedLocked(title_id, row_id)) {
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped manual live cue rebuild for paused row title=%1 row=%2")
-                                    .arg(title_id).arg(row));
-        return;
+        /* Manual cache is an explicit user command and must win over the
+         * edit-focus pause. A leaked/stale focus pause previously made the
+         * cache button a permanent no-op. */
+        QSet<QString> &paused_rows = live_cue_paused_row_ids_[title_id];
+        paused_rows.remove(row_id);
+        if (paused_rows.isEmpty())
+            live_cue_paused_row_ids_.remove(title_id);
+        OGS_LOG_INFO("LiveCue", QStringLiteral("Manual rebuild force-resumed paused live cue row title=%1 row=%2")
+                                   .arg(title_id).arg(row));
     }
     QVector<QString> rebuild_states;
     /* A row's manual refresh must rebuild only its steady state. Transition
@@ -3034,7 +3068,8 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
         return image;
     }
     if (existing_state != FrameCacheState::Stale && disk_cache_.get(key, image)) {
-        ram_cache_.put(key, image);
+        if (!liveCueUseDiskStreaming())
+            ram_cache_.put(key, image);
         live_cue_known_keys_.insert(key);
         ++live_cue_stats_.hits;
         ++live_cue_stats_.reuses;
@@ -3168,6 +3203,79 @@ bool CacheManager::liveCueStateFullyResidentInRam(const QString &state_key) cons
     return true;
 }
 
+bool CacheManager::liveCueStateStartResidentInRam(const QString &state_key) const
+{
+    const QVector<CacheFrameKey> keys = live_cue_required_keys_.value(state_key);
+    if (keys.isEmpty())
+        return false;
+
+    QHash<QString, CacheFrameKey> first_key_by_content;
+    for (const CacheFrameKey &key : keys) {
+        const QString content_key = QStringLiteral("%1:%2:%3x%4")
+            .arg(key.title_id, key.content_hash)
+            .arg(key.width).arg(key.height);
+        auto it = first_key_by_content.find(content_key);
+        if (it == first_key_by_content.end() || key.frame < it.value().frame)
+            first_key_by_content[content_key] = key;
+    }
+
+    QImage ignored;
+    for (const CacheFrameKey &key : first_key_by_content) {
+        if (!ram_cache_.get(key, ignored))
+            return false;
+    }
+    return true;
+}
+
+bool CacheManager::liveCueStateRangePlayable(const QString &state_key, int first_frame, int last_frame) const
+{
+    const QVector<CacheFrameKey> keys = live_cue_required_keys_.value(state_key);
+    if (keys.isEmpty())
+        return false;
+
+    const int clamped_first = std::max(0, first_frame);
+    const int clamped_last = std::max(clamped_first, last_frame);
+    bool found_required_frame = false;
+    QImage ignored;
+    for (const CacheFrameKey &key : keys) {
+        if (key.frame < clamped_first || key.frame > clamped_last)
+            continue;
+        found_required_frame = true;
+        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+            continue;
+        return false;
+    }
+    return found_required_frame;
+}
+
+bool CacheManager::liveCueStateFullyPlayable(const QString &state_key) const
+{
+    const QVector<CacheFrameKey> keys = live_cue_required_keys_.value(state_key);
+    if (keys.isEmpty())
+        return false;
+
+    QImage ignored;
+    for (const CacheFrameKey &key : keys) {
+        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+            continue;
+        return false;
+    }
+    return true;
+}
+
+
+bool CacheManager::liveCueUseDiskStreaming() const
+{
+    constexpr quint64 kMinSystemHeadroom = 512ull * 1024ull * 1024ull;
+    constexpr quint64 kMinCacheHeadroom = 96ull * 1024ull * 1024ull;
+    const quint64 available = available_system_memory_bytes();
+    const quint64 limit = ram_cache_.maxBytes();
+    const quint64 used = ram_cache_.bytesUsed();
+    const quint64 cache_headroom = limit > used ? limit - used : 0;
+    return available < kMinSystemHeadroom ||
+           (used >= (limit * 85ull) / 100ull && cache_headroom < kMinCacheHeadroom);
+}
+
 bool CacheManager::prepareLiveCueForPlayback(const std::shared_ptr<Title> &title, int row)
 {
     apply_persisted_live_cue_persistence(title);
@@ -3179,28 +3287,53 @@ bool CacheManager::prepareLiveCueForPlayback(const std::shared_ptr<Title> &title
 
     const QString steady_key = liveCueStateKey(title, row);
     const auto steady_variants = liveCueVariants(title, row);
-    queueLiveCueVariantSet(title, row, steady_key, steady_variants, false, true);
+    const bool disk_streaming = liveCueUseDiskStreaming();
+    auto ensure_playback_state = [&](const QString &state_key,
+                                     const QVector<std::shared_ptr<Title>> &variants) {
+        const FrameCacheState state = live_cue_states_.value(state_key, FrameCacheState::NotCached);
+        if (state == FrameCacheState::Queued || state == FrameCacheState::Rendering)
+            return;
+        queueLiveCueVariantSet(title, row, state_key, variants, false, !disk_streaming);
+    };
+    ensure_playback_state(steady_key, steady_variants);
 
-    QVector<QString> required_states{steady_key};
+    const double duration = std::max(0.0, title->duration);
+    double steady_end_time = duration;
+    if (title->playback_mode == 1) {
+        const double loop_start = std::clamp(title->loop_start, 0.0, duration);
+        steady_end_time = std::clamp(title->loop_end, loop_start, duration);
+    } else if (title->playback_mode == 2) {
+        steady_end_time = std::clamp(title->pause_time, 0.0, duration);
+    }
+    const int steady_last_frame = titleHasTimelineChanges(*title)
+        ? std::clamp(frameForTime(steady_end_time), 0,
+                     cache_last_frame_for_title(*title, effectiveFrameRate()))
+        : 0;
+
+    bool ready = liveCueStateRangePlayable(steady_key, 0, steady_last_frame);
+    int required_state_count = 1;
     const int active_row = title->current_cue_row;
     if (active_row >= 0 && active_row != row &&
         active_row < static_cast<int>(title->live_text_rows.size()) &&
         (title->playback_mode == 1 || title->playback_mode == 2 || title->cue_background_persistence)) {
         const QString transition_key = liveCueTransitionStateKey(title, active_row, row);
         const auto transition_variants = liveCueTransitionVariants(title, active_row, row);
-        queueLiveCueVariantSet(title, row, transition_key, transition_variants, false, true);
-        required_states.push_back(transition_key);
+        ensure_playback_state(transition_key, transition_variants);
+        /* A row-to-row cue starts on the outgoing suffix and then enters the
+         * incoming prefix. Require the complete transition state so playback
+         * can never fall through to uncached rendering between those phases. */
+        ready = ready && liveCueStateFullyPlayable(transition_key);
+        ++required_state_count;
     }
 
-    bool ready = true;
-    for (const QString &state_key : required_states)
-        ready = ready && liveCueStateFullyResidentInRam(state_key);
-
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Playback hydration title=%1 row=%2 states=%3 ready=%4")
+    OGS_LOG_INFO("LiveCue", QStringLiteral("Playback cache gate title=%1 row=%2 states=%3 ready=%4 requiredEndFrame=%5 storage=ram-or-ssd hydrate=%6")
                               .arg(QString::fromStdString(title->id)).arg(row)
-                              .arg(required_states.size()).arg(ready));
+                              .arg(required_state_count).arg(ready)
+                              .arg(steady_last_frame)
+                              .arg(disk_streaming ? QStringLiteral("ssd-stream") : QStringLiteral("ram-prefetch")));
     return ready;
 }
+
 
 bool CacheManager::isLiveCueReady(const std::shared_ptr<Title> &title, int row)
 {
@@ -3619,6 +3752,17 @@ void CacheManager::setLiveCueRowRenderPaused(const std::shared_ptr<Title> &title
 
     if (!paused) {
         refreshLiveCueStructure(title);
+        /* refreshLiveCueStructure() may already have accepted the edited row's
+         * new fingerprint while the row was paused. In that case it sees no new
+         * change here and would not requeue the jobs that focus-in cancelled.
+         * Explicitly restore the steady row and every transition involving it. */
+        queueLiveCue(title, row);
+        for (int other = 0; other < static_cast<int>(title->live_text_rows.size()); ++other) {
+            if (other == row)
+                continue;
+            queueLiveCueTransition(title, row, other);
+            queueLiveCueTransition(title, other, row);
+        }
         wakeWorker();
     }
 }
@@ -3963,9 +4107,9 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
             const QImage expanded_previous = expand_sparse_frame(previous, job.key.width, job.key.height);
             image = renderDirtyTiles(job, expanded_previous);
             if (image.isNull())
-                image = render_title_to_image(*job.title, job.time);
+                image = render_title_cache_to_image(*job.title, job.time);
         } else {
-            image = render_title_to_image(*job.title, job.time);
+            image = render_title_cache_to_image(*job.title, job.time);
         }
         loaded_from_disk = false;
     } else {
@@ -4044,12 +4188,16 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
         return;
     }
 
+    const bool disk_stream_live_cue = job.live_cue && liveCueUseDiskStreaming();
     /* If the canonical payload had fallen out of RAM and was restored from
      * disk for an alias, promote the canonical key as well. Both puts retain
-     * the same implicitly-shared backing store and are charged only once. */
-    if (temporal_reuse && loaded_from_disk && have_temporal_canonical_key)
+     * the same implicitly-shared backing store and are charged only once. Under
+     * memory pressure, live-cue playback stays SSD-backed and keeps only the
+     * current QImage as a transient upload buffer. */
+    if (!disk_stream_live_cue && temporal_reuse && loaded_from_disk && have_temporal_canonical_key)
         ram_cache_.put(temporal_canonical_key, image);
-    ram_cache_.put(job.key, image);
+    if (!disk_stream_live_cue)
+        ram_cache_.put(job.key, image);
     if (!loaded_from_disk)
         disk_cache_.put(job.key, image);
     {

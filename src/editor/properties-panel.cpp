@@ -2,6 +2,12 @@
 
 #include <memory>
 #include <QRegularExpression>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QFile>
+#include <QDir>
+#include <QStandardPaths>
 
 static QString auto_style_marker_label(const std::string &marker, size_t offset, const std::string &custom_chars)
 {
@@ -29,6 +35,94 @@ static std::vector<std::string> auto_style_split_ids(const QString &text)
     for (const QString &part : parts)
         ids.push_back(part.trimmed().toStdString());
     return ids;
+}
+
+struct PropertiesColorLibraryColor {
+    QString name;
+    QColor color;
+};
+
+struct PropertiesColorLibrary {
+    QString name;
+    std::vector<PropertiesColorLibraryColor> colors;
+};
+
+static QString properties_color_libraries_path()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (base.isEmpty())
+        base = QDir::homePath() + QStringLiteral("/OBS Graphics Studio Pro");
+    QDir dir(base);
+    dir.mkpath(QStringLiteral("palettes"));
+    return dir.filePath(QStringLiteral("palettes/user-color-libraries.palette.json"));
+}
+
+static bool properties_parse_color_hex(QString text, QColor &color)
+{
+    text = text.trimmed();
+    if (text.startsWith(QStringLiteral("#")))
+        text.remove(0, 1);
+    if (text.size() != 6 && text.size() != 8)
+        return false;
+    bool ok = false;
+    const uint value = text.toUInt(&ok, 16);
+    if (!ok)
+        return false;
+    color = text.size() == 6
+        ? QColor((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF, 255)
+        : QColor((value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
+    return color.isValid();
+}
+
+static std::vector<PropertiesColorLibrary> properties_load_color_libraries()
+{
+    std::vector<PropertiesColorLibrary> libraries;
+    PropertiesColorLibrary open_color;
+    open_color.name = QStringLiteral("Open Color");
+    auto add_open_color = [&](const QString &group, const QStringList &hexes) {
+        for (int i = 0; i < hexes.size(); ++i) {
+            QColor color(hexes[i]);
+            if (color.isValid())
+                open_color.colors.push_back({QStringLiteral("%1 %2").arg(group).arg(i), color});
+        }
+    };
+    open_color.colors.push_back({QStringLiteral("white"), QColor(QStringLiteral("#ffffff"))});
+    open_color.colors.push_back({QStringLiteral("black"), QColor(QStringLiteral("#000000"))});
+    add_open_color(QStringLiteral("gray"), {"#f8f9fa", "#f1f3f5", "#e9ecef", "#dee2e6", "#ced4da", "#adb5bd", "#868e96", "#495057", "#343a40", "#212529"});
+    add_open_color(QStringLiteral("red"), {"#fff5f5", "#ffe3e3", "#ffc9c9", "#ffa8a8", "#ff8787", "#ff6b6b", "#fa5252", "#f03e3e", "#e03131", "#c92a2a"});
+    add_open_color(QStringLiteral("pink"), {"#fff0f6", "#ffdeeb", "#fcc2d7", "#faa2c1", "#f783ac", "#f06595", "#e64980", "#d6336c", "#c2255c", "#a61e4d"});
+    add_open_color(QStringLiteral("grape"), {"#f8f0fc", "#f3d9fa", "#eebefa", "#e599f7", "#da77f2", "#cc5de8", "#be4bdb", "#ae3ec9", "#9c36b5", "#862e9c"});
+    add_open_color(QStringLiteral("violet"), {"#f3f0ff", "#e5dbff", "#d0bfff", "#b197fc", "#9775fa", "#845ef7", "#7950f2", "#7048e8", "#6741d9", "#5f3dc4"});
+    add_open_color(QStringLiteral("indigo"), {"#edf2ff", "#dbe4ff", "#bac8ff", "#91a7ff", "#748ffc", "#5c7cfa", "#4c6ef5", "#4263eb", "#3b5bdb", "#364fc7"});
+    add_open_color(QStringLiteral("blue"), {"#e7f5ff", "#d0ebff", "#a5d8ff", "#74c0fc", "#4dabf7", "#339af0", "#228be6", "#1c7ed6", "#1971c2", "#1864ab"});
+    add_open_color(QStringLiteral("cyan"), {"#e3fafc", "#c5f6fa", "#99e9f2", "#66d9e8", "#3bc9db", "#22b8cf", "#15aabf", "#1098ad", "#0c8599", "#0b7285"});
+    add_open_color(QStringLiteral("teal"), {"#e6fcf5", "#c3fae8", "#96f2d7", "#63e6be", "#38d9a9", "#20c997", "#12b886", "#0ca678", "#099268", "#087f5b"});
+    add_open_color(QStringLiteral("green"), {"#ebfbee", "#d3f9d8", "#b2f2bb", "#8ce99a", "#69db7c", "#51cf66", "#40c057", "#37b24d", "#2f9e44", "#2b8a3e"});
+    add_open_color(QStringLiteral("lime"), {"#f4fce3", "#e9fac8", "#d8f5a2", "#c0eb75", "#a9e34b", "#94d82d", "#82c91e", "#74b816", "#66a80f", "#5c940d"});
+    add_open_color(QStringLiteral("yellow"), {"#fff9db", "#fff3bf", "#ffec99", "#ffe066", "#ffd43b", "#fcc419", "#fab005", "#f59f00", "#f08c00", "#e67700"});
+    add_open_color(QStringLiteral("orange"), {"#fff4e6", "#ffe8cc", "#ffd8a8", "#ffc078", "#ffa94d", "#ff922b", "#fd7e14", "#f76707", "#e8590c", "#d9480f"});
+    libraries.push_back(open_color);
+
+    QFile file(properties_color_libraries_path());
+    if (file.open(QIODevice::ReadOnly)) {
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        for (const QJsonValue &value : doc.object().value(QStringLiteral("palettes")).toArray()) {
+            const QJsonObject object = value.toObject();
+            PropertiesColorLibrary library;
+            library.name = object.value(QStringLiteral("name")).toString().trimmed();
+            if (library.name.isEmpty())
+                continue;
+            for (const QJsonValue &color_value : object.value(QStringLiteral("colors")).toArray()) {
+                const QJsonObject color_object = color_value.toObject();
+                QColor color;
+                if (!properties_parse_color_hex(color_object.value(QStringLiteral("hex")).toString(), color))
+                    continue;
+                library.colors.push_back({color_object.value(QStringLiteral("name")).toString(color.name(QColor::HexRgb)), color});
+            }
+            libraries.push_back(library);
+        }
+    }
+    return libraries;
 }
 
 static QString auto_style_join_ids(const std::vector<std::string> &ids)
@@ -2204,8 +2298,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change, apply_text_char_format, current_text_char_format]() {
                 if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_text_color(*layer_, local_time()));
-                QColor picked = QColorDialog::getColor(initial, this, obsgs_tr("OBSTitles.TextColor"),
-                                                        QColorDialog::ShowAlphaChannel);
+                QColor picked = obsgs_pick_color(initial, this, obsgs_tr("OBSTitles.TextColor"));
                 if (!picked.isValid()) return;
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.fill.type = 0;
@@ -2323,13 +2416,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         const QColor original_color = selected_color;
         bool syncing_color_controls = false;
         bool closing_for_eyedropper = false;
-        QStringList recent_color_hexes;
+        QStringList recent_color_hexes = obsgs_load_recent_color_hexes();
         if (title_) {
-            for (const auto &hex : title_->editor_recent_color_hexes)
-                recent_color_hexes << QString::fromStdString(hex);
+            for (const auto &hex : title_->editor_recent_color_hexes) {
+                const QString value = QString::fromStdString(hex);
+                if (!recent_color_hexes.contains(value, Qt::CaseInsensitive))
+                    recent_color_hexes << value;
+            }
         } else {
             static QStringList fallback_recent_color_hexes;
-            recent_color_hexes = fallback_recent_color_hexes;
+            for (const QString &hex : fallback_recent_color_hexes) {
+                if (!recent_color_hexes.contains(hex, Qt::CaseInsensitive))
+                    recent_color_hexes << hex;
+            }
         }
 
         auto color_hex = [](const QColor &color) {
@@ -2379,9 +2478,26 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         wheel_layout->setContentsMargins(0, 0, 0, 0);
         wheel_layout->setSpacing(6);
 
-        auto *color_picker = new HsvColorPicker(wheel_column);
-        color_picker->set_color(selected_color);
-        wheel_layout->addWidget(color_picker, 0, Qt::AlignHCenter);
+        auto *picker_row = new QWidget(wheel_column);
+        auto *picker_row_layout = new QHBoxLayout(picker_row);
+        picker_row_layout->setContentsMargins(0, 0, 0, 0);
+        picker_row_layout->setSpacing(8);
+
+        auto *picker_actions = new QWidget(picker_row);
+        auto *picker_actions_layout = new QVBoxLayout(picker_actions);
+        picker_actions_layout->setContentsMargins(0, 0, 0, 0);
+        picker_actions_layout->setSpacing(6);
+        auto *add_to_library_button = new QPushButton(obsgs_tr("OBSTitles.AddToLibrary"), picker_actions);
+        add_to_library_button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        picker_actions_layout->addWidget(add_to_library_button);
+        picker_actions_layout->addStretch(1);
+
+        auto *color_picker = new color_widgets::ColorDialog(picker_row, Qt::Widget);
+        obsgs_prepare_embedded_color_dialog(color_picker, selected_color);
+        picker_row_layout->addWidget(picker_actions);
+        picker_row_layout->addWidget(color_picker, 1);
+        wheel_layout->addWidget(picker_row, 1);
+        connect(color_picker, &QDialog::rejected, &popup, &QDialog::reject);
 
         auto *swatch_row = new QWidget(wheel_column);
         auto *swatch_row_layout = new QHBoxLayout(swatch_row);
@@ -2398,6 +2514,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         swap_button->setToolTip(obsgs_tr("OBSTitles.SwapForegroundBackground"));
         swap_button->setFixedSize(30, 30);
         auto *eyedropper_button = new QPushButton(QStringLiteral("⌕"), swatch_row);
+        eyedropper_button->setIcon(obs_icon("eyedropper.svg"));
+        eyedropper_button->setText(QString());
         eyedropper_button->setToolTip(obsgs_tr("OBSTitles.PickColor"));
         eyedropper_button->setFixedSize(30, 30);
         swatch_row_layout->addWidget(none_button);
@@ -2407,23 +2525,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         swatch_row_layout->addStretch(1);
         swatch_row_layout->addWidget(eyedropper_button);
         wheel_layout->addWidget(swatch_row);
-
-        auto *opacity_row = new QWidget(wheel_column);
-        auto *opacity_layout = new QHBoxLayout(opacity_row);
-        opacity_layout->setContentsMargins(0, 0, 0, 0);
-        opacity_layout->setSpacing(8);
-        auto *opacity_label = new QLabel(obsgs_tr("OBSTitles.Opacity"), opacity_row);
-        auto *opacity_slider = new QSlider(Qt::Horizontal, opacity_row);
-        opacity_slider->setRange(0, 100);
-        opacity_slider->setMinimumWidth(180);
-        auto *opacity_spin = new QSpinBox(opacity_row);
-        opacity_spin->setRange(0, 100);
-        opacity_spin->setSuffix(QStringLiteral(" %"));
-        opacity_spin->setFixedWidth(72);
-        opacity_layout->addWidget(opacity_label);
-        opacity_layout->addWidget(opacity_slider, 1);
-        opacity_layout->addWidget(opacity_spin);
-        wheel_layout->addWidget(opacity_row);
 
         auto *recent_label = new QLabel(obsgs_tr("OBSTitles.RecentColors"), wheel_column);
         wheel_layout->addWidget(recent_label);
@@ -2441,54 +2542,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         recent_layout->addStretch(1);
         wheel_layout->addWidget(recent_row);
 
-        color_layout->addWidget(wheel_column, 0, Qt::AlignTop);
-
-        auto *value_column = new QWidget(color_tab);
-        auto *value_layout = new QVBoxLayout(value_column);
-        value_layout->setContentsMargins(0, 0, 0, 0);
-        value_layout->setSpacing(6);
-
-        auto *model_combo = new QComboBox(value_column);
-        model_combo->addItems({obsgs_tr("OBSTitles.RGB"), obsgs_tr("OBSTitles.HSV"), obsgs_tr("OBSTitles.HSL"), obsgs_tr("OBSTitles.CMYK"), obsgs_tr("OBSTitles.Hex")});
-        model_combo->setCurrentText(obsgs_tr("OBSTitles.RGB"));
-        value_layout->addWidget(model_combo);
-
-        auto make_spin_row = [&](const QString &label, int min, int max) {
-            auto *row = new QWidget(value_column);
-            auto *layout = new QHBoxLayout(row);
-            layout->setContentsMargins(0, 0, 0, 0);
-            layout->setSpacing(8);
-            auto *l = new QLabel(label, row);
-            l->setFixedWidth(18);
-            auto *spin = new QSpinBox(row);
-            spin->setRange(min, max);
-            spin->setFixedWidth(72);
-            layout->addWidget(l);
-            layout->addWidget(spin);
-            return std::pair<QWidget *, QSpinBox *>(row, spin);
-        };
-        auto r_row = make_spin_row(obsgs_tr("OBSTitles.R"), 0, 255);
-        auto g_row = make_spin_row(obsgs_tr("OBSTitles.G"), 0, 255);
-        auto b_row = make_spin_row(obsgs_tr("OBSTitles.B"), 0, 255);
-        auto a_row = make_spin_row(obsgs_tr("OBSTitles.A"), 0, 100);
-        value_layout->addWidget(r_row.first);
-        value_layout->addWidget(g_row.first);
-        value_layout->addWidget(b_row.first);
-        value_layout->addWidget(a_row.first);
-
-        auto *hex_row = new QWidget(value_column);
-        auto *hex_layout = new QHBoxLayout(hex_row);
-        hex_layout->setContentsMargins(0, 0, 0, 0);
-        hex_layout->setSpacing(8);
-        auto *hex_label = new QLabel(QStringLiteral("#"), hex_row);
-        hex_label->setFixedWidth(18);
-        auto *hex_edit = new QLineEdit(hex_row);
-        hex_edit->setFixedWidth(104);
-        hex_layout->addWidget(hex_label);
-        hex_layout->addWidget(hex_edit);
-        value_layout->addWidget(hex_row);
-        value_layout->addStretch(1);
-        color_layout->addWidget(value_column, 0, Qt::AlignTop);
+        color_layout->addWidget(wheel_column, 1);
 
         auto update_recent_buttons = [&]() {
             for (int i = 0; i < (int)recent_buttons.size(); ++i) {
@@ -2499,7 +2553,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     parse_hex(recent_color_hexes[i], c);
                     b->setEnabled(true);
                     b->setStyleSheet(swatch_style(c, 22));
-                    b->setToolTip(recent_color_hexes[i]);
+                    b->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.RecentColors"), c, color_hex(c)));
                 } else {
                     b->setEnabled(false);
                     b->setStyleSheet(QStringLiteral(
@@ -2511,17 +2565,64 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             }
         };
 
+        auto persist_recent_colors = [&]() {
+            if (title_) {
+                title_->editor_recent_color_hexes.clear();
+                for (const QString &hex : recent_color_hexes)
+                    title_->editor_recent_color_hexes.push_back(hex.toStdString());
+            } else {
+                static QStringList fallback_recent_color_hexes;
+                fallback_recent_color_hexes = recent_color_hexes;
+            }
+            obsgs_save_recent_color_hexes(recent_color_hexes);
+            update_recent_buttons();
+            emit recent_colors_changed();
+        };
+
+        auto remove_recent_color_at = [&](int index) {
+            if (index < 0 || index >= recent_color_hexes.size())
+                return;
+            recent_color_hexes.removeAt(index);
+            persist_recent_colors();
+        };
+
+        QString last_committed_recent_hex;
+        auto commit_recent_color = [&](const QColor &color, bool force) {
+            if (!color.isValid() || color.alpha() <= 0)
+                return;
+
+            const QString hex = color_hex(color).toUpper();
+            if (!force && hex.compare(last_committed_recent_hex, Qt::CaseInsensitive) == 0)
+                return;
+
+            for (int i = recent_color_hexes.size() - 1; i >= 0; --i) {
+                if (recent_color_hexes[i].compare(hex, Qt::CaseInsensitive) == 0)
+                    recent_color_hexes.removeAt(i);
+            }
+            recent_color_hexes.prepend(hex);
+            while (recent_color_hexes.size() > 16)
+                recent_color_hexes.removeLast();
+
+            last_committed_recent_hex = hex;
+            persist_recent_colors();
+        };
+
+        QTimer recent_commit_timer(&popup);
+        recent_commit_timer.setSingleShot(true);
+        recent_commit_timer.setInterval(450);
+        connect(&recent_commit_timer, &QTimer::timeout, &popup,
+                [&]() { commit_recent_color(selected_color, false); });
+
         auto update_color_controls = [&]() {
             syncing_color_controls = true;
             foreground_button->setStyleSheet(swatch_style(selected_color, 30));
             background_button->setStyleSheet(swatch_style(background_color, 30));
-            hex_edit->setText(color_hex(selected_color));
-            r_row.second->setValue(selected_color.red());
-            g_row.second->setValue(selected_color.green());
-            b_row.second->setValue(selected_color.blue());
-            a_row.second->setValue((int)std::round(selected_color.alphaF() * 100.0));
-            opacity_slider->setValue((int)std::round(selected_color.alphaF() * 100.0));
-            opacity_spin->setValue((int)std::round(selected_color.alphaF() * 100.0));
+            foreground_button->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.ForegroundColor"), selected_color, color_hex(selected_color)));
+            background_button->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.BackgroundColor"), background_color, color_hex(background_color)));
+            {
+                QSignalBlocker blocker(color_picker);
+                color_picker->setColor(selected_color);
+            }
             update_recent_buttons();
             syncing_color_controls = false;
         };
@@ -2529,39 +2630,24 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto apply_and_sync_color = [&](const QColor &color, bool update_picker) {
             if (!color.isValid()) return;
             selected_color = color;
-            if (update_picker) color_picker->set_color(color);
+            if (update_picker) {
+                QSignalBlocker blocker(color_picker);
+                color_picker->setColor(color);
+            }
             update_color_controls();
             apply_solid_color(color);
+            if (color.alpha() > 0)
+                recent_commit_timer.start();
         };
 
-        auto rgb_changed = [&]() {
-            if (syncing_color_controls) return;
-            QColor c(r_row.second->value(), g_row.second->value(), b_row.second->value(),
-                     (int)std::round(a_row.second->value() * 2.55));
-            apply_and_sync_color(c, true);
-        };
-        connect(r_row.second, QOverload<int>::of(&QSpinBox::valueChanged), &popup, [=, &rgb_changed](int) { rgb_changed(); });
-        connect(g_row.second, QOverload<int>::of(&QSpinBox::valueChanged), &popup, [=, &rgb_changed](int) { rgb_changed(); });
-        connect(b_row.second, QOverload<int>::of(&QSpinBox::valueChanged), &popup, [=, &rgb_changed](int) { rgb_changed(); });
-        connect(a_row.second, QOverload<int>::of(&QSpinBox::valueChanged), &popup, [=, &rgb_changed](int) { rgb_changed(); });
-        connect(opacity_slider, &QSlider::valueChanged, &popup, [=, &apply_and_sync_color, &selected_color, &syncing_color_controls](int v) {
-            if (syncing_color_controls) return;
-            QColor c = selected_color;
-            c.setAlpha((int)std::round(v * 2.55));
-            apply_and_sync_color(c, true);
-        });
-        connect(opacity_spin, QOverload<int>::of(&QSpinBox::valueChanged), &popup, [=, &apply_and_sync_color, &selected_color, &syncing_color_controls](int v) {
-            if (syncing_color_controls) return;
-            QColor c = selected_color;
-            c.setAlpha((int)std::round(v * 2.55));
-            apply_and_sync_color(c, true);
-        });
-        connect(opacity_slider, &QSlider::valueChanged, opacity_spin, &QSpinBox::setValue);
-        connect(opacity_spin, QOverload<int>::of(&QSpinBox::valueChanged), opacity_slider, &QSlider::setValue);
-        connect(hex_edit, &QLineEdit::editingFinished, &popup, [=, &apply_and_sync_color, &parse_hex]() {
-            QColor parsed;
-            if (parse_hex(hex_edit->text(), parsed))
-                apply_and_sync_color(parsed, true);
+        connect(color_picker, &color_widgets::ColorDialog::colorChanged, &popup,
+                [=, &apply_and_sync_color, &syncing_color_controls](const QColor &color) {
+                    if (syncing_color_controls) return;
+                    apply_and_sync_color(color, false);
+                });
+        connect(add_to_library_button, &QPushButton::clicked, &popup, [this, &selected_color]() {
+            if (selected_color.isValid() && selected_color.alpha() > 0)
+                emit color_library_add_requested(selected_color);
         });
         connect(none_button, &QPushButton::clicked, &popup, [=, &selected_color, &update_color_controls, &update_main_swatch, &emit_change, &apply_text_fill_format]() {
             if (!layer_) return;
@@ -2588,9 +2674,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             emit_change();
         });
         connect(swap_button, &QPushButton::clicked, &popup, [=, &selected_color, &background_color, &apply_and_sync_color]() {
-            const QColor old_foreground = selected_color;
-            apply_and_sync_color(background_color, true);
-            background_color = old_foreground;
+            const QColor new_foreground = background_color;
+            background_color = selected_color;
+            apply_and_sync_color(new_foreground, true);
         });
         connect(eyedropper_button, &QPushButton::clicked, &popup, [this, &popup, &closing_for_eyedropper]() {
             // Reuse the editor/sidebar eyedropper instead of spawning a second color picker.
@@ -2605,37 +2691,30 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             auto *button = recent_buttons[i];
             connect(button, &QPushButton::clicked, &popup, [=, &apply_and_sync_color, &parse_hex]() {
                 QColor c;
-                if (i < recent_color_hexes.size() && parse_hex(recent_color_hexes[i], c))
+                if (i < recent_color_hexes.size() && parse_hex(recent_color_hexes[i], c)) {
                     apply_and_sync_color(c, true);
+                    commit_recent_color(c, true);
+                }
+            });
+            button->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(button, &QPushButton::customContextMenuRequested, &popup, [=, &parse_hex](const QPoint &pos) {
+                QColor c;
+                if (i >= recent_color_hexes.size() || !parse_hex(recent_color_hexes[i], c))
+                    return;
+                QMenu menu(button);
+                QAction *add_action = menu.addAction(obsgs_tr("OBSTitles.AddToLibrary"));
+                QAction *delete_action = menu.addAction(obsgs_tr("OBSTitles.Delete"));
+                QAction *selected = menu.exec(button->mapToGlobal(pos));
+                if (selected == add_action)
+                    emit color_library_add_requested(c);
+                else if (selected == delete_action)
+                    remove_recent_color_at(i);
             });
         }
-        color_picker->color_changed = [&](const QColor &color) {
-            apply_and_sync_color(color, false);
-        };
-        connect(&popup, &QDialog::finished, &popup, [=, &recent_color_hexes, &selected_color, &original_color, &color_hex, &closing_for_eyedropper]() mutable {
-            // Photoshop-style recent colors: commit the final selected color only
-            // when the user really closes the selector, store newest-first, remove
-            // older duplicates, and persist the list with the title/template.
-            // Temporary closes for the canvas/sidebar eyedropper do not count.
-            if (!closing_for_eyedropper && selected_color.isValid() && selected_color != original_color && selected_color.alpha() > 0) {
-                const QString hex = color_hex(selected_color).toUpper();
-                for (int i = recent_color_hexes.size() - 1; i >= 0; --i) {
-                    if (recent_color_hexes[i].compare(hex, Qt::CaseInsensitive) == 0)
-                        recent_color_hexes.removeAt(i);
-                }
-                recent_color_hexes.prepend(hex);
-                while (recent_color_hexes.size() > 16)
-                    recent_color_hexes.removeLast();
-            }
-
-            if (title_) {
-                title_->editor_recent_color_hexes.clear();
-                for (const QString &hex : recent_color_hexes)
-                    title_->editor_recent_color_hexes.push_back(hex.toStdString());
-            } else {
-                static QStringList fallback_recent_color_hexes;
-                fallback_recent_color_hexes = recent_color_hexes;
-            }
+        connect(&popup, &QDialog::finished, &popup, [=, &recent_commit_timer, &commit_recent_color, &selected_color, &closing_for_eyedropper]() mutable {
+            recent_commit_timer.stop();
+            if (!closing_for_eyedropper)
+                commit_recent_color(selected_color, true);
         });
 
         update_color_controls();
@@ -2643,10 +2722,53 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
         auto *swatches_tab = new QWidget(tabs);
         auto *swatches_layout = new QVBoxLayout(swatches_tab);
-        auto *swatches_label = new QLabel(obsgs_tr("OBSTitles.SwatchesNotImplemented"), swatches_tab);
-        swatches_layout->addWidget(swatches_label);
+        swatches_layout->setContentsMargins(8, 8, 8, 8);
+        swatches_layout->setSpacing(6);
+        auto *swatches_combo = new QComboBox(swatches_tab);
+        auto *swatches_scroll = new QScrollArea(swatches_tab);
+        swatches_scroll->setWidgetResizable(true);
+        swatches_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *swatches_grid_widget = new QWidget(swatches_scroll);
+        auto *swatches_grid = new QGridLayout(swatches_grid_widget);
+        swatches_grid->setContentsMargins(0, 0, 0, 0);
+        swatches_grid->setHorizontalSpacing(6);
+        swatches_grid->setVerticalSpacing(6);
+        swatches_grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        swatches_scroll->setWidget(swatches_grid_widget);
+        swatches_layout->addWidget(swatches_combo);
+        swatches_layout->addWidget(swatches_scroll, 1);
+        auto swatch_libraries = std::make_shared<std::vector<PropertiesColorLibrary>>(properties_load_color_libraries());
+        for (const auto &library : *swatch_libraries)
+            swatches_combo->addItem(library.name);
+        auto refresh_swatches_tab = [swatches_grid, swatches_grid_widget, swatches_combo, swatch_libraries,
+                                     color_hex, swatch_style, &apply_and_sync_color, &popup]() {
+            while (QLayoutItem *item = swatches_grid->takeAt(0)) {
+                if (QWidget *widget = item->widget())
+                    widget->deleteLater();
+                delete item;
+            }
+            const int library_index = swatches_combo->currentIndex();
+            if (library_index < 0 || library_index >= (int)swatch_libraries->size())
+                return;
+            const auto &colors = (*swatch_libraries)[library_index].colors;
+            const int columns = 8;
+            for (int i = 0; i < (int)colors.size(); ++i) {
+                const auto entry = colors[i];
+                auto *button = new QPushButton(swatches_grid_widget);
+                button->setFixedSize(24, 24);
+                button->setText(QString());
+                button->setToolTip(obsgs_color_swatch_tooltip(entry.name, entry.color, color_hex(entry.color)));
+                button->setStyleSheet(swatch_style(entry.color, 24));
+                connect(button, &QPushButton::clicked, &popup, [=, &apply_and_sync_color]() {
+                    apply_and_sync_color(entry.color, true);
+                });
+                swatches_grid->addWidget(button, i / columns, i % columns);
+            }
+        };
+        connect(swatches_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), &popup,
+                [&refresh_swatches_tab](int) { refresh_swatches_tab(); });
+        refresh_swatches_tab();
         tabs->addTab(swatches_tab, obsgs_tr("OBSTitles.Swatches"));
-        tabs->setTabEnabled(tabs->indexOf(swatches_tab), false);
 
         auto *gradient_tab = new QWidget(tabs);
         auto *gradient_layout = new QVBoxLayout(gradient_tab);
@@ -2881,6 +3003,31 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         stop_actions_layout->addStretch(1);
         stops_layout->addWidget(stop_actions);
 
+        auto *gradient_color_picker = new color_widgets::ColorDialog(gradient_tab, Qt::Widget);
+        obsgs_prepare_embedded_color_dialog(gradient_color_picker, color_from_argb(stroke ? layer_->stroke_gradient_start_color
+                                                                                          : layer_->gradient_start_color));
+        gradient_color_picker->setVisible(false);
+        int active_gradient_stop = -1;
+        bool syncing_gradient_color_picker = false;
+        auto set_gradient_color_picker_target = [&](int stop_index) {
+            if (stop_index < 0 || stop_index >= preview->stop_count()) {
+                active_gradient_stop = -1;
+                gradient_color_picker->setVisible(false);
+                return;
+            }
+
+            active_gradient_stop = stop_index;
+            QColor color = color_from_argb(preview->stop_color_argb(stop_index));
+            color.setAlphaF(preview->stop_opacity(stop_index));
+            syncing_gradient_color_picker = true;
+            {
+                QSignalBlocker blocker(gradient_color_picker);
+                gradient_color_picker->setColor(color);
+            }
+            syncing_gradient_color_picker = false;
+            gradient_color_picker->setVisible(true);
+        };
+
         auto make_preset = [&](uint32_t a, uint32_t b) {
             auto *button = new QPushButton(preset_strip);
             button->setFixedSize(28, 28);
@@ -2922,6 +3069,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_layout->addWidget(gradient_form);
         gradient_layout->addWidget(preview);
         gradient_layout->addWidget(stops_box);
+        gradient_layout->addWidget(gradient_color_picker);
         gradient_layout->addWidget(preset_box, 0, Qt::AlignTop);
         tabs->addTab(gradient_tab, obsgs_tr("OBSTitles.Gradient"));
         // With the Color tab hidden, open directly on Gradient.
@@ -3019,39 +3167,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             update_main_swatch();
             emit_change();
         };
-        auto pick_gradient_color = [&](bool start) {
-            QColor initial = color_from_argb(stroke
-                ? (start ? layer_->stroke_gradient_start_color : layer_->stroke_gradient_end_color)
-                : (start ? layer_->gradient_start_color : layer_->gradient_end_color));
-            QColor picked = QColorDialog::getColor(initial, &popup, obsgs_tr("OBSTitles.GradientColor"),
-                                                    QColorDialog::ShowAlphaChannel);
-            if (!picked.isValid()) return;
-            if (stroke) {
-                if (start) layer_->stroke_gradient_start_color = argb_from_color(picked);
-                else layer_->stroke_gradient_end_color = argb_from_color(picked);
-            } else {
-                if (start) layer_->gradient_start_color = argb_from_color(picked);
-                else layer_->gradient_end_color = argb_from_color(picked);
-            }
-            style_color_button(start ? start_color : end_color, argb_from_color(picked));
-            (start ? start_color : end_color)->setText(QString());
-            apply_gradient();
-        };
-        auto show_stop_color_popup = [=, &popup](int stop_index, const QPoint &global_pos) {
-            Q_UNUSED(global_pos);
-            if (stop_index < 0 || stop_index >= preview->stop_count())
+        auto apply_gradient_stop_color = [=, &apply_gradient](int stop_index, const QColor &picked) {
+            if (!picked.isValid() || stop_index < 0 || stop_index >= preview->stop_count())
                 return;
 
             auto *color_button = stop_index == 0 ? start_color : (stop_index == 1 ? end_color : nullptr);
-            QColor initial = color_from_argb(preview->stop_color_argb(stop_index));
-            initial.setAlphaF(preview->stop_opacity(stop_index));
-
-            // Use the existing Qt/OBS color dialog here; do not create a second custom picker for gradient stops.
-            QColor picked = QColorDialog::getColor(initial, &popup, obsgs_tr("OBSTitles.GradientStopColor"),
-                                                    QColorDialog::ShowAlphaChannel);
-            if (!picked.isValid())
-                return;
-
             const uint32_t argb = argb_from_color(QColor(picked.red(), picked.green(), picked.blue(), 255));
             if (stroke) {
                 if (stop_index == 0) layer_->stroke_gradient_start_color = argb;
@@ -3073,10 +3193,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             preview->set_stop_color(stop_index, picked);
             apply_gradient();
         };
-
-        color_picker->color_changed = [&](const QColor &color) {
-            apply_and_sync_color(color, false);
+        auto show_stop_color_popup = [=, &set_gradient_color_picker_target](int stop_index, const QPoint &global_pos) {
+            Q_UNUSED(global_pos);
+            if (stop_index < 0 || stop_index >= preview->stop_count())
+                return;
+            set_gradient_color_picker_target(stop_index);
         };
+
         connect(tabs, &QTabWidget::currentChanged, &popup, [=, &selected_color](int idx) {
             emit gradient_editor_active_changed(idx == 2);
             if (idx == 0)
@@ -3089,7 +3212,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 &popup, [=](QAbstractButton *button) {
                     type->setCurrentIndex(std::max(0, type->findData(type_group->id(button))));
                 });
-        preview->selection_changed = [=](int) { sync_stop_rows(); };
+        connect(gradient_color_picker, &color_widgets::ColorDialog::colorChanged, &popup,
+                [=, &active_gradient_stop, &syncing_gradient_color_picker, &apply_gradient_stop_color](const QColor &color) {
+                    if (syncing_gradient_color_picker)
+                        return;
+                    apply_gradient_stop_color(active_gradient_stop, color);
+                });
+        preview->selection_changed = [=, &set_gradient_color_picker_target](int stop_index) {
+            sync_stop_rows();
+            if (gradient_color_picker->isVisible())
+                set_gradient_color_picker_target(stop_index);
+        };
         preview->gradient_changed = [=]() {
             *preview_change_in_progress = true;
             {
@@ -3866,8 +3999,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_fill_color(*layer_, local_time()));
-                QColor picked = QColorDialog::getColor(initial, this, obsgs_tr("OBSTitles.FillColor"),
-                                                        QColorDialog::ShowAlphaChannel);
+                QColor picked = obsgs_pick_color(initial, this, obsgs_tr("OBSTitles.FillColor"));
                 if (!picked.isValid()) return;
                 layer_->fill_color = argb_from_color(picked);
                 set_color_channels_at(*layer_, false, local_time(), layer_->fill_color);
@@ -3890,8 +4022,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                                  const char *title_key, bool text_fill) {
         connect(button, &QPushButton::clicked, this, [this, can_edit, emit_change, apply_text_fill_format, button, member, title_key, text_fill]() {
             if (!can_edit()) return;
-            QColor picked = QColorDialog::getColor(color_from_argb((*layer_).*member), this, obsgs_tr(title_key),
-                                                    QColorDialog::ShowAlphaChannel);
+            QColor picked = obsgs_pick_color(color_from_argb((*layer_).*member), this, obsgs_tr(title_key));
             if (!picked.isValid()) return;
             (*layer_).*member = argb_from_color(picked);
             style_color_button(button, (*layer_).*member);

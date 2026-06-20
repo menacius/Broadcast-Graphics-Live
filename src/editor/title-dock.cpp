@@ -2458,6 +2458,24 @@ TitleDock::TitleDock(QWidget *parent)
         if (revision == seen_store_revision_ || updating_exposed_text_) return;
         seen_store_revision_ = revision;
         sync_playlist_runtime_state();
+
+        bool playlist_active = false;
+        for (const auto &candidate : TitleDataStore::instance().titles()) {
+            if (candidate && candidate->playlist_active) {
+                playlist_active = true;
+                break;
+            }
+        }
+        if (playlist_active) {
+            /* Playlist cue changes are runtime-only revisions. Rebuilding the
+             * complete table here destroys every cell editor and steals focus on
+             * each step. Update only cue/cache decoration while any playlist runs. */
+            auto selected_title = TitleDataStore::instance().get_title(selected_id());
+            if (selected_title)
+                update_live_text_runtime_status(selected_title);
+            update_playlist_countdown_label();
+            return;
+        }
         populate_exposed_text();
     });
     live_refresh_timer_->start();
@@ -2487,7 +2505,7 @@ TitleDock::TitleDock(QWidget *parent)
                                                 .arg(title_id).arg(row));
                     cache_waiting_cue_row_ = -1;
                     cache_waiting_title_id_.clear();
-                    cue_live_text_row(row, false);
+                    cue_live_text_row_for_title(title, row, false, true);
                 }
             });
     connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this,
@@ -3938,7 +3956,7 @@ bool TitleDock::cue_live_text_row(int row, bool allow_uncue)
     return cue_live_text_row_for_title(title, row, allow_uncue);
 }
 
-bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue)
+bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue, bool force_restart)
 {
     if (!title) return false;
     const QString title_id = QString::fromStdString(title->id);
@@ -3971,6 +3989,13 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
 
     const bool require_cached_cue = CacheManager::instance().cacheEnabled() &&
         CacheManager::instance().titleCacheability(title) != TitleCacheability::NonCacheable;
+    if (require_cached_cue && cache_waiting_title_id_ == title_id && cache_waiting_cue_row_ == row) {
+        if (selected_title)
+            update_live_text_runtime_status_fast(title, row);
+        else
+            schedule_title_list_cache_icon_update(title_id);
+        return false;
+    }
     if (require_cached_cue && !CacheManager::instance().prepareLiveCueForPlayback(title, row)) {
         cache_waiting_cue_row_ = row;
         cache_waiting_title_id_ = QString::fromStdString(title->id);
@@ -3995,7 +4020,7 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
                 CacheManager::instance().prepareLiveCueForPlayback(title, row)) {
                 cache_waiting_cue_row_ = -1;
                 cache_waiting_title_id_.clear();
-                cue_live_text_row_for_title(title, row, false);
+                cue_live_text_row_for_title(title, row, false, true);
             }
         });
         return false;
@@ -4003,8 +4028,8 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
 
     updating_exposed_text_ = true;
     apply_persistence_settings_to_title(title);
-    const bool is_active_cue = title->current_cue_row == row;
-    const bool is_pending_cue = title->pending_cue_row == row;
+    const bool is_active_cue = !force_restart && title->current_cue_row == row;
+    const bool is_pending_cue = !force_restart && title->pending_cue_row == row;
     const int previous_row = title->current_cue_row >= 0 ? title->current_cue_row : title->pending_cue_row;
     const bool can_persist_transition = title->cue_background_persistence &&
         (title->playback_mode == 1 || title->playback_mode == 2) &&
@@ -4045,7 +4070,7 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
         title->cue_persistence_transition = true;
     } else if (needs_outro_before_cue) {
         title->pending_cue_row = row;
-    } else if (!is_active_cue || title->pending_cue_row >= 0) {
+    } else if (force_restart || !is_active_cue || title->pending_cue_row >= 0) {
         for (int col = 0; col < (int)exposed_now.size(); ++col) {
             auto &target = exposed_now[col];
             const int value_row = target && target->exposed_single_value ? 0 : row;

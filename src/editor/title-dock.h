@@ -109,7 +109,7 @@ private:
     void load_dock_settings();
     void save_dock_settings() const;
     bool cue_live_text_row(int row, bool allow_uncue);
-    bool cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue);
+    bool cue_live_text_row_for_title(const std::shared_ptr<Title> &title, int row, bool allow_uncue, bool force_restart = false);
     int live_text_playlist_row_count(const std::shared_ptr<Title> &title) const;
     void start_playlist_step();
     void start_playlist_step_for_title(const std::shared_ptr<Title> &title);

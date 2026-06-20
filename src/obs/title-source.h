@@ -21,6 +21,9 @@ QImage render_title_to_image(const Title &title, double t);
 QImage render_title_to_image_scaled(const Title &title, double t, double scale,
                                     bool editor_draft = false);
 QImage render_title_region_to_image(const Title &title, double t, const QRect &region);
+QImage render_title_cache_to_image(const Title &title, double t);
+QImage render_title_cache_region_to_image(const Title &title, double t, const QRect &region);
+QImage render_title_over_cached_frame(const Title &title, double t, const QImage &cached_prefix);
 
 /* Source settings keys */
 #define PROP_TITLE_ID      "title_id"

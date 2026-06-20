@@ -282,9 +282,9 @@ public:
     FrameCacheState liveCueState(const std::shared_ptr<Title> &title, int row) const;
     int liveCueProgressPercent(const std::shared_ptr<Title> &title, int row) const;
     bool isLiveCueReady(const std::shared_ptr<Title> &title, int row);
-    // Playback readiness is stricter than badge readiness: disk-resident frames
-    // are valid cache data, but a cue must not start until every frame in the
-    // reachable steady/transition state has been promoted to RAM.
+    // Playback readiness is stricter than badge readiness. Normally the first
+    // reachable frames are promoted to RAM before start; under memory pressure
+    // SSD-resident frames are accepted and RAM is used only as a small buffer.
     bool prepareLiveCueForPlayback(const std::shared_ptr<Title> &title, int row);
     FrameCacheState liveCueAggregateState(const std::shared_ptr<Title> &title) const;
     int liveCueAggregateProgressPercent(const std::shared_ptr<Title> &title) const;
@@ -338,6 +338,10 @@ private:
                                 const QVector<std::shared_ptr<Title>> &variants, bool urgent,
                                 bool hydrate_disk_to_ram = false, int manual_priority_group = 0);
     bool liveCueStateFullyResidentInRam(const QString &state_key) const;
+    bool liveCueStateStartResidentInRam(const QString &state_key) const;
+    bool liveCueStateRangePlayable(const QString &state_key, int first_frame, int last_frame) const;
+    bool liveCueStateFullyPlayable(const QString &state_key) const;
+    bool liveCueUseDiskStreaming() const;
     QString liveCueRowIdentity(const std::shared_ptr<Title> &title, int row) const;
     QString liveCueStateKey(const std::shared_ptr<Title> &title, int row) const;
     QString liveCueTransitionStateKey(const std::shared_ptr<Title> &title, int from_row, int to_row) const;

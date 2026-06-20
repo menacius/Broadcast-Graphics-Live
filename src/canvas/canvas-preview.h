@@ -130,7 +130,7 @@ signals:
     void text_edit_changed(const std::string &layer_id);
     void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
-    void color_picked(const QColor &color);
+    void color_picked(const QColor &color, bool foreground);
     void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
     void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
 

@@ -72,6 +72,7 @@ class QMenuBar;
 class QMenu;
 class QActionGroup;
 class QVBoxLayout;
+class QGridLayout;
 class QTextEdit;
 struct RichTextCharFormat;
 
@@ -178,6 +179,22 @@ private:
     QWidget *create_effects_panel();
     QWidget *create_styles_panel();
     QWidget *create_color_swatches_panel();
+    void remember_recent_color(const QColor &color);
+    void remove_recent_color(int index);
+    void persist_recent_colors();
+    void refresh_color_swatches_panel();
+    void load_color_libraries();
+    void save_color_libraries() const;
+    void refresh_color_library_controls();
+    void refresh_color_library_swatches();
+    void create_color_library();
+    int prompt_create_color_library();
+    void rename_current_color_library();
+    void delete_current_color_library();
+    bool show_add_color_to_library_dialog(const QColor &color);
+    void add_color_to_current_library(const QColor &color);
+    void add_color_to_library(int library_index, const QColor &color, const QString &name);
+    void remove_color_from_current_library(int index);
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     void update_sidebar_color_swatches(std::shared_ptr<Layer> layer);
     void set_default_sidebar_colors_from_layer(const Layer &layer);
@@ -235,6 +252,26 @@ private:
     QDockWidget     *timeline_dock_ = nullptr;
     QDockWidget     *prerender_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
+    QGridLayout     *recent_color_swatches_grid_ = nullptr;
+    std::vector<QToolButton *> recent_color_swatch_buttons_;
+    struct ColorLibraryColor {
+        QString name;
+        QColor color;
+    };
+    struct ColorLibrary {
+        QString name;
+        QString slug;
+        bool built_in = false;
+        std::vector<ColorLibraryColor> colors;
+    };
+    std::vector<ColorLibrary> color_libraries_;
+    int              selected_color_library_index_ = 0;
+    QComboBox       *color_library_combo_ = nullptr;
+    QToolButton     *color_library_add_button_ = nullptr;
+    QToolButton     *color_library_rename_button_ = nullptr;
+    QToolButton     *color_library_delete_button_ = nullptr;
+    QWidget         *color_library_swatch_widget_ = nullptr;
+    QGridLayout     *color_library_swatches_grid_ = nullptr;
     ToolsSidebar    *tools_sidebar_ = nullptr;
     PrerenderDock   *prerender_panel_ = nullptr;
     QColor           default_foreground_color_ = QColor(34, 34, 34);

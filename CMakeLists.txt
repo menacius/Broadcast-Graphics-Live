@@ -277,6 +277,60 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+# QtColorWidgets provides the OBS-themed color wheel/dialog used by all editor
+# color pickers. Keep the tag pinned so clean builds stay reproducible.
+FetchContent_Declare(
+  QtColorWidgets
+  GIT_REPOSITORY https://gitlab.com/mattbas/Qt-Color-Widgets.git
+  GIT_TAG 8491078434b24cba295b5e41cc0d2a94c7049a5b
+  SOURCE_SUBDIR cmake-do-not-add
+  GIT_PROGRESS FALSE
+)
+FetchContent_MakeAvailable(QtColorWidgets)
+
+set(OBS_GSP_QTCOLORWIDGETS_ROOT "${qtcolorwidgets_SOURCE_DIR}")
+set(OBS_GSP_QTCOLORWIDGETS_SOURCES
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/abstract_widget_list.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/bound_color_selector.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_2d_slider.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_delegate.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_dialog.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_dialog.ui"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_line_edit.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_list_widget.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_names.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_model.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_widget.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_widget.ui"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_preview.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_selector.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_utils.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_wheel.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_editor.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_list_model.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_slider.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/harmony_color_wheel.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/hue_slider.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/swatch.cpp"
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/resources/QtColorWidgets/color_widgets.qrc"
+)
+file(GLOB OBS_GSP_QTCOLORWIDGETS_HEADERS CONFIGURE_DEPENDS
+     "${OBS_GSP_QTCOLORWIDGETS_ROOT}/include/QtColorWidgets/*.hpp")
+
+add_library(QtColorWidgets STATIC
+    ${OBS_GSP_QTCOLORWIDGETS_SOURCES}
+    ${OBS_GSP_QTCOLORWIDGETS_HEADERS}
+)
+target_compile_definitions(QtColorWidgets PUBLIC QTCOLORWIDGETS_STATICALLY_LINKED)
+target_include_directories(QtColorWidgets PUBLIC
+    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/include")
+target_link_libraries(QtColorWidgets PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+set_target_properties(QtColorWidgets PROPERTIES
+    CXX_STANDARD 11
+    CXX_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON)
+
 # ── Sources ─────────────────────────────────────────────────────────
 set(OBS_GSP_CORE_SOURCES
     src/core/title-data.cpp
@@ -345,6 +399,7 @@ set(OBS_GSP_CACHE_SOURCES
 )
 set(OBS_GSP_CACHE_HEADERS
     src/cache/cache-manager.h
+    src/cache/title-cache-policy.h
     src/cache/prerender-dock.h
 )
 
@@ -485,6 +540,7 @@ target_link_libraries(obs-graphics-studio-pro PRIVATE
     OBS::libobs
     OBS::obs-frontend-api
     ${QT_LIBS}
+    QtColorWidgets
     ${OBS_GSP_TEXT_RENDER_TARGETS}
     nlohmann_json::nlohmann_json
     ${OBS_GSP_LZ4_TARGET}
