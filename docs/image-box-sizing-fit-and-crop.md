@@ -1,0 +1,5 @@
+# Image Box sizing, fit modes, and crop
+
+Image layers now keep **Image Size** and **Image Box Size** as separate concepts. Canvas resize handles and the Image Box Size controls edit the box. Image Size reports the actual rendered dimensions inside that box; editing those fields switches the image to a manual size override. The Defaults button restores automatic sizing from the selected Image Box option.
+
+The available automatic modes are Fit Image to Image Box, Fill Horizontally, Fill Vertically, Fit to Long Side, Fit to Short Side, and Stretch to Fill. Fit to Long Side and Fit to Short Side are determined from the image’s own orientation: for a landscape image they target its width/height respectively, and for a portrait image they target its height/width respectively. Stretch mirrors the box dimensions in Image Size and disables the image aspect lock. Cropping is independent from the fit mode through **Crop when out of Image Box**. Legacy horizontal/vertical crop modes are migrated to their corresponding fill mode with crop enabled.

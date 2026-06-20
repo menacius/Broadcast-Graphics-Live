@@ -55,12 +55,14 @@ enum class ImageScaleFilter {
 };
 
 enum class ImageBoxMode {
-    FitImageToBox,
-    FillHorizontal,
-    FillVertical,
-    FitHorizontalCrop,
-    FitVerticalCrop,
-    StretchToFill,
+    FitImageToBox = 0,
+    FillHorizontal = 1,
+    FillVertical = 2,
+    LegacyFitHorizontalCrop = 3,
+    LegacyFitVerticalCrop = 4,
+    StretchToFill = 5,
+    FitToLongSide = 6,
+    FitToShortSide = 7,
 };
 
 struct GradientStop {
@@ -351,6 +353,8 @@ struct Layer {
     bool        image_box_lock_aspect_ratio = false;
     ImageScaleFilter scale_filter = ImageScaleFilter::Bilinear;
     ImageBoxMode image_box_mode = ImageBoxMode::FitImageToBox;
+    bool        image_size_auto_fit = true;
+    bool        image_crop_when_outside_box = false;
     float       image_anchor_x = 0.5f;
     float       image_anchor_y = 0.5f;
     float       image_width = 1920.0f;

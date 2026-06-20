@@ -258,6 +258,7 @@ private:
     QPushButton     *btn_pick_image_ = nullptr;
     QComboBox       *cmb_image_scale_filter_ = nullptr;
     QComboBox       *cmb_image_box_mode_ = nullptr;
+    QCheckBox       *chk_image_crop_when_outside_box_ = nullptr;
     QPushButton     *btn_image_anchor_grid_ = nullptr;
     QDoubleSpinBox  *spn_image_box_w_ = nullptr;
     QDoubleSpinBox  *spn_image_box_h_ = nullptr;

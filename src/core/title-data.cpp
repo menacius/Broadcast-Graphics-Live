@@ -1427,6 +1427,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["scale_filter"]  = (int)l.scale_filter;
     j["image_box_lock_aspect_ratio"] = l.image_box_lock_aspect_ratio;
     j["image_box_mode"] = (int)l.image_box_mode;
+    j["image_size_auto_fit"] = l.image_size_auto_fit;
+    j["image_crop_when_outside_box"] = l.image_crop_when_outside_box;
     j["image_anchor_x"] = l.image_anchor_x;
     j["image_anchor_y"] = l.image_anchor_y;
     j["image_width"] = l.image_width;
@@ -2073,8 +2075,21 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->image_box_lock_aspect_ratio = json_bool(j, "image_box_lock_aspect_ratio", false);
     l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
                                                    0, (int)ImageScaleFilter::Area);
-    l->image_box_mode = (ImageBoxMode)std::clamp(json_int(j, "image_box_mode", (int)ImageBoxMode::FitImageToBox),
-                                                 0, (int)ImageBoxMode::StretchToFill);
+    const int stored_image_box_mode = std::clamp(
+        json_int(j, "image_box_mode", (int)ImageBoxMode::FitImageToBox),
+        0, (int)ImageBoxMode::FitToShortSide);
+    const bool legacy_horizontal_crop = stored_image_box_mode == (int)ImageBoxMode::LegacyFitHorizontalCrop;
+    const bool legacy_vertical_crop = stored_image_box_mode == (int)ImageBoxMode::LegacyFitVerticalCrop;
+    l->image_box_mode = legacy_horizontal_crop ? ImageBoxMode::FillHorizontal
+                        : legacy_vertical_crop ? ImageBoxMode::FillVertical
+                                               : (ImageBoxMode)stored_image_box_mode;
+    l->image_size_auto_fit = json_bool(j, "image_size_auto_fit", true);
+    l->image_crop_when_outside_box = json_bool(
+        j, "image_crop_when_outside_box", legacy_horizontal_crop || legacy_vertical_crop);
+    if (l->image_box_mode == ImageBoxMode::StretchToFill) {
+        l->image_size_auto_fit = true;
+        l->lock_aspect_ratio = false;
+    }
     l->image_anchor_x = (float)std::clamp(finite_or(json_double(j, "image_anchor_x", 0.5), 0.5), 0.0, 1.0);
     l->image_anchor_y = (float)std::clamp(finite_or(json_double(j, "image_anchor_y", 0.5), 0.5), 0.0, 1.0);
     l->image_width = (float)std::clamp(finite_or(json_double(j, "image_width", 1920.0), 1920.0), 0.0, (double)kMaxCanvasDimension);

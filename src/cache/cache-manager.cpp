@@ -1019,7 +1019,8 @@ QString CacheManager::contentHash(const Title &title) const
         const QString image_path = QString::fromStdString(layer->image_path);
         add(image_path); add((int)layer->scale_filter);
         add(layer->image_box_lock_aspect_ratio);
-        add((int)layer->image_box_mode); add(layer->image_anchor_x); add(layer->image_anchor_y);
+        add((int)layer->image_box_mode); add(layer->image_size_auto_fit);
+        add(layer->image_crop_when_outside_box); add(layer->image_anchor_x); add(layer->image_anchor_y);
         if (!image_path.isEmpty()) {
             const QFileInfo image_info(image_path);
             add(image_info.exists());

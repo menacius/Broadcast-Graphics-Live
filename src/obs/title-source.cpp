@@ -3068,46 +3068,16 @@ struct ImageBoxLayout {
     double h = 0.0;
 };
 
-static bool image_box_mode_crops(ImageBoxMode mode)
-{
-    return mode == ImageBoxMode::FitHorizontalCrop ||
-           mode == ImageBoxMode::FitVerticalCrop;
-}
-
 static ImageBoxLayout image_box_layout_for_layer(const Layer &layer, double box_w, double box_h,
                                                   double image_w, double image_h)
 {
     ImageBoxLayout out;
-    if (box_w <= 0.0 || box_h <= 0.0 || image_w <= 0.0 || image_h <= 0.0)
+    const gsp::ImageDisplaySize display = gsp::calculate_image_display_size(
+        layer.image_box_mode, layer.image_size_auto_fit, box_w, box_h, image_w, image_h);
+    out.w = display.width;
+    out.h = display.height;
+    if (out.w <= 0.0 || out.h <= 0.0)
         return out;
-    if (layer.image_box_mode == ImageBoxMode::StretchToFill) {
-        out.w = box_w;
-        out.h = box_h;
-        return out;
-    }
-
-    double scale_x = box_w / image_w;
-    double scale_y = box_h / image_h;
-    double scale = 1.0;
-    switch (layer.image_box_mode) {
-    case ImageBoxMode::FitImageToBox:
-        scale = std::min(scale_x, scale_y);
-        break;
-    case ImageBoxMode::FillHorizontal:
-    case ImageBoxMode::FitHorizontalCrop:
-        scale = scale_x;
-        break;
-    case ImageBoxMode::FillVertical:
-    case ImageBoxMode::FitVerticalCrop:
-        scale = scale_y;
-        break;
-    default:
-        scale = std::min(scale_x, scale_y);
-        break;
-    }
-
-    out.w = std::max(1.0, image_w * scale);
-    out.h = std::max(1.0, image_h * scale);
     const double ax = std::clamp((double)layer.image_anchor_x, 0.0, 1.0);
     const double ay = std::clamp((double)layer.image_anchor_y, 0.0, 1.0);
     out.x = (box_w - out.w) * ax;
@@ -3133,7 +3103,7 @@ static QImage image_box_shadow_mask(const QImage &argb, const Layer &layer, doub
     mask.fill(Qt::transparent);
     QPainter painter(&mask);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, layer.scale_filter != ImageScaleFilter::Disable);
-    const QRectF visible = image_visible_rect_for_layout(layout, box_w, box_h, image_box_mode_crops(layer.image_box_mode));
+    const QRectF visible = image_visible_rect_for_layout(layout, box_w, box_h, layer.image_crop_when_outside_box);
     if (visible.isEmpty())
         return mask;
     painter.setClipPath(painter_rounded_rect_corners(visible, layer.corner_radius_tl, layer.corner_radius_tr,
@@ -3313,7 +3283,7 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
             }
         }
     }
-    const QRectF visible = image_visible_rect_for_layout(image_layout, w, h, image_box_mode_crops(layer.image_box_mode));
+    const QRectF visible = image_visible_rect_for_layout(image_layout, w, h, layer.image_crop_when_outside_box);
     if (visible.isEmpty()) {
         cairo_restore(cr);
         return;
@@ -4307,7 +4277,7 @@ static QRectF layer_local_effect_bounds(const Layer &layer, double t)
                                                                  std::max(1.0, eval_image_width(layer, t)),
                                                                  std::max(1.0, eval_image_height(layer, t)));
         const QRectF visible = image_visible_rect_for_layout(layout, w, h,
-                                                            image_box_mode_crops(layer.image_box_mode));
+                                                            layer.image_crop_when_outside_box);
         if (!visible.isEmpty())
             bounds = bounds.united(QRectF(-origin_x * w + visible.x(), -origin_y * h + visible.y(),
                                           visible.width(), visible.height()));
@@ -4386,6 +4356,7 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
             << (info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0) << ','
             << (info.exists() ? info.size() : -1)
             << "|imagebox=" << (int)layer.image_box_mode << ','
+            << layer.image_size_auto_fit << ',' << layer.image_crop_when_outside_box << ','
             << layer.image_anchor_x << ',' << layer.image_anchor_y
             << "|imagesize=" << eval_image_width(layer, t) << 'x' << eval_image_height(layer, t)
             << "|imagefilter=" << (int)layer.scale_filter;

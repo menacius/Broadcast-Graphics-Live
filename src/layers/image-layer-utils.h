@@ -8,6 +8,18 @@
 
 namespace gsp {
 
+struct ImageDisplaySize {
+    double width = 0.0;
+    double height = 0.0;
+};
+
+/* Resolve the actual rendered dimensions of an image inside its image box.
+ * Auto-fit modes derive the dimensions from the box and the image aspect;
+ * manual image sizes are returned unchanged. */
+ImageDisplaySize calculate_image_display_size(ImageBoxMode mode, bool auto_fit,
+                                               double box_width, double box_height,
+                                               double image_width, double image_height);
+
 /* Returns the natural pixel size of a bitmap or SVG asset. Results are cached
  * against the file timestamp/size because live cue variants can query the same
  * image repeatedly while prerendering. */

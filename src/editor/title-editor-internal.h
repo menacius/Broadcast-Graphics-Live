@@ -20,6 +20,7 @@
 #include "cache-manager.h"
 #include "prerender-dock.h"
 #include "style-presets.h"
+#include "image-layer-utils.h"
 
 #include <obs-module.h>
 

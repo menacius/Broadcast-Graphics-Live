@@ -2431,9 +2431,10 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             return start_xf.inverted().map(canvas_pt);
         };
         const bool alt_resize = modifiers.testFlag(Qt::AltModifier);
-        const bool lock_aspect_resize = (layer->type == LayerType::Image || layer_is_shape_sized(*layer)) &&
-                                        layer->lock_aspect_ratio &&
-                                        drag_start_h_ > 0.0f;
+        const bool lock_aspect_resize =
+            ((layer->type == LayerType::Image && layer->image_box_lock_aspect_ratio) ||
+             (layer_is_shape_sized(*layer) && layer->lock_aspect_ratio)) &&
+            drag_start_h_ > 0.0f;
         Qt::KeyboardModifiers resize_modifiers = modifiers;
         if (lock_aspect_resize)
             resize_modifiers |= Qt::ShiftModifier;

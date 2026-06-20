@@ -65,6 +65,62 @@ double finite_nonnegative_or(double value, double fallback)
 
 namespace gsp {
 
+ImageDisplaySize calculate_image_display_size(ImageBoxMode mode, bool auto_fit,
+                                               double box_width, double box_height,
+                                               double image_width, double image_height)
+{
+    ImageDisplaySize out;
+    if (!std::isfinite(box_width) || !std::isfinite(box_height) ||
+        !std::isfinite(image_width) || !std::isfinite(image_height) ||
+        box_width <= 0.0 || box_height <= 0.0 ||
+        image_width <= 0.0 || image_height <= 0.0) {
+        return out;
+    }
+
+    if (!auto_fit) {
+        out.width = image_width;
+        out.height = image_height;
+        return out;
+    }
+
+    if (mode == ImageBoxMode::StretchToFill) {
+        out.width = box_width;
+        out.height = box_height;
+        return out;
+    }
+
+    const double scale_x = box_width / image_width;
+    const double scale_y = box_height / image_height;
+    double scale = 1.0;
+    switch (mode) {
+    case ImageBoxMode::FitImageToBox:
+        scale = std::min(scale_x, scale_y);
+        break;
+    case ImageBoxMode::FillHorizontal:
+    case ImageBoxMode::LegacyFitHorizontalCrop:
+        scale = scale_x;
+        break;
+    case ImageBoxMode::FillVertical:
+    case ImageBoxMode::LegacyFitVerticalCrop:
+        scale = scale_y;
+        break;
+    case ImageBoxMode::FitToLongSide:
+        // Fit the image's own longest side to the matching box dimension.
+        scale = image_width >= image_height ? scale_x : scale_y;
+        break;
+    case ImageBoxMode::FitToShortSide:
+        // Fit the image's own shortest side to the matching box dimension.
+        scale = image_width >= image_height ? scale_y : scale_x;
+        break;
+    case ImageBoxMode::StretchToFill:
+        break;
+    }
+
+    out.width = std::max(1.0, image_width * scale);
+    out.height = std::max(1.0, image_height * scale);
+    return out;
+}
+
 QSize image_intrinsic_size_for_path(const std::string &path_value)
 {
     const QString path = QString::fromStdString(path_value).trimmed();
@@ -142,6 +198,8 @@ bool apply_exposed_image_cue_value(Layer &layer, const std::string &path)
 
     layer.image_width = static_cast<float>(new_width);
     layer.image_height = static_cast<float>(new_height);
+    if (layer.image_box_mode == ImageBoxMode::StretchToFill)
+        layer.lock_aspect_ratio = false;
     return true;
 }
 
