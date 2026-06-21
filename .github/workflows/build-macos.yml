@@ -9,13 +9,23 @@ on:
 permissions:
   contents: read
 
+env:
+  OBS_TEMPLATE_REF: 3e7d7ac3b5342cd7d9b88890b9c70b472d1520fc
+
 jobs:
   macos-arm64:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-plugintemplate
+          ref: ${{ env.OBS_TEMPLATE_REF }}
+          path: .ci/obs-plugintemplate
+      - name: Prepare OBS SDK
+        run: bash scripts/ci/prepare-macos.sh
       - name: Configure
-        run: cmake -S . -B build-macos -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DOBS_GSP_BUILD_TESTS=ON
+        run: cmake -S . -B build-macos -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 -DOBS_SDK_DIR="$OBS_GSP_DEPS_ROOT" -DCMAKE_PREFIX_PATH="$OBS_GSP_PREFIX_PATH" -DOBS_GSP_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build-macos --config RelWithDebInfo --parallel
       - name: Test
