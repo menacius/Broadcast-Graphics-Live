@@ -239,8 +239,12 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
 
     selection_button_ = make_tool_button(obsgs_tr("OBSTitles.SelectionTool"), cursor_tool_icon(),
                                          obsgs_tr("OBSTitles.SelectionToolTooltip") + QStringLiteral(" (V)"));
+    direct_selection_button_ = make_tool_button(obsgs_tr("OBSTitles.DirectSelectionTool"), direct_selection_tool_icon(),
+                                                obsgs_tr("OBSTitles.DirectSelectionToolTooltip") + QStringLiteral(" (A)"));
     shape_button_ = make_tool_button(obsgs_tr("OBSTitles.ShapeTool"), shape_tool_icon(selected_shape_),
                                      obsgs_tr("OBSTitles.ShapeToolTooltip") + QStringLiteral(" (M)"));
+    pen_button_ = make_tool_button(obsgs_tr("OBSTitles.PenTool"), pen_tool_icon(),
+                                   obsgs_tr("OBSTitles.PenToolTooltip") + QStringLiteral(" (P)"));
     text_button_ = make_tool_button(obsgs_tr("OBSTitles.TextTool"), text_tool_icon(selected_text_layer_type_),
                                     obsgs_tr("OBSTitles.TextToolTooltip") + QStringLiteral(" (T)"));
     image_button_ = make_tool_button(obsgs_tr("OBSTitles.ImageTool"), obs_icon("image.svg"),
@@ -253,8 +257,12 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     auto *selection_action = new QAction(cursor_tool_icon(), obsgs_tr("OBSTitles.SelectionTool"), this);
     selection_action->setCheckable(true);
     selection_action->setChecked(true);
+    auto *direct_selection_action = new QAction(direct_selection_tool_icon(), obsgs_tr("OBSTitles.DirectSelectionTool"), this);
+    direct_selection_action->setCheckable(true);
     auto *shape_action = new QAction(shape_tool_icon(selected_shape_), obsgs_tr("OBSTitles.ShapeTool"), this);
     shape_action->setCheckable(true);
+    auto *pen_action = new QAction(pen_tool_icon(), obsgs_tr("OBSTitles.PenTool"), this);
+    pen_action->setCheckable(true);
     auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), obsgs_tr("OBSTitles.TextTool"), this);
     text_action->setCheckable(true);
     auto *image_action = new QAction(obs_icon("image.svg"), obsgs_tr("OBSTitles.ImageTool"), this);
@@ -264,13 +272,17 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     auto *gradient_action = new QAction(gradient_tool_icon(), obsgs_tr("OBSTitles.GradientTool"), this);
     gradient_action->setCheckable(true);
     tool_group_->addAction(selection_action);
+    tool_group_->addAction(direct_selection_action);
     tool_group_->addAction(shape_action);
+    tool_group_->addAction(pen_action);
     tool_group_->addAction(text_action);
     tool_group_->addAction(image_action);
     tool_group_->addAction(color_picker_action);
     tool_group_->addAction(gradient_action);
     selection_button_->setDefaultAction(selection_action);
+    direct_selection_button_->setDefaultAction(direct_selection_action);
     shape_button_->setDefaultAction(shape_action);
+    pen_button_->setDefaultAction(pen_action);
     text_button_->setDefaultAction(text_action);
     image_button_->setDefaultAction(image_action);
     color_picker_button_->setDefaultAction(color_picker_action);
@@ -286,8 +298,14 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     connect(selection_action, &QAction::triggered, this, [this]() {
         emit selection_tool_requested();
     });
+    connect(direct_selection_action, &QAction::triggered, this, [this]() {
+        emit direct_selection_tool_requested();
+    });
     connect(shape_action, &QAction::triggered, this, [this]() {
         emit shape_tool_requested(selected_shape_);
+    });
+    connect(pen_action, &QAction::triggered, this, [this]() {
+        emit pen_tool_requested();
     });
     connect(text_action, &QAction::triggered, this, [this]() {
         emit text_tool_requested(selected_text_layer_type_);
@@ -394,11 +412,23 @@ void ToolsSidebar::activate_selection_tool()
         selection_button_->defaultAction()->trigger();
 }
 
+void ToolsSidebar::activate_direct_selection_tool()
+{
+    if (direct_selection_button_ && direct_selection_button_->defaultAction())
+        direct_selection_button_->defaultAction()->trigger();
+}
+
 void ToolsSidebar::activate_shape_tool(ShapeType shape_type)
 {
     set_selected_shape(shape_type);
     if (shape_button_ && shape_button_->defaultAction())
         shape_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_pen_tool()
+{
+    if (pen_button_ && pen_button_->defaultAction())
+        pen_button_->defaultAction()->trigger();
 }
 
 void ToolsSidebar::activate_text_tool(LayerType type)

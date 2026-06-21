@@ -21,6 +21,7 @@
 #include "prerender-dock.h"
 #include "style-presets.h"
 #include "image-layer-utils.h"
+#include "path-geometry.h"
 
 #include <obs-module.h>
 
@@ -2189,6 +2190,7 @@ static QString shape_display_name(ShapeType shape_type)
     case ShapeType::Polygon: return obsgs_tr("OBSTitles.Polygon");
     case ShapeType::Diamond: return obsgs_tr("OBSTitles.Diamond");
     case ShapeType::Line: return obsgs_tr("OBSTitles.Line");
+    case ShapeType::Path: return obsgs_tr("OBSTitles.Path");
     case ShapeType::Rectangle:
     default: return obsgs_tr("OBSTitles.Rectangle");
     }
@@ -2247,6 +2249,12 @@ static QPainterPath tool_shape_path(ShapeType shape_type, const QRectF &rect)
         path.moveTo(rect.left(), rect.center().y());
         path.lineTo(rect.right(), rect.center().y());
         break;
+    case ShapeType::Path:
+        path.moveTo(rect.left(), rect.bottom());
+        path.cubicTo(rect.left() + rect.width() * 0.25, rect.top(),
+                     rect.left() + rect.width() * 0.75, rect.bottom(),
+                     rect.right(), rect.top());
+        break;
     case ShapeType::Rectangle:
     default:
         path.addRect(rect);
@@ -2259,59 +2267,7 @@ static QPainterPath editor_layer_rounded_rect_path(const Layer &layer, const QRe
 
 static QPainterPath editor_scene_mask_shape_path(const Layer &layer, const QRectF &rect)
 {
-    QPainterPath path;
-    const ShapeType shape_type = layer.type == LayerType::Shape ? layer.shape_type : ShapeType::RoundedRectangle;
-    switch (shape_type) {
-    case ShapeType::Ellipse:
-        path.addEllipse(rect);
-        break;
-    case ShapeType::Triangle:
-    case ShapeType::Polygon:
-    case ShapeType::Diamond: {
-        const int sides = shape_type == ShapeType::Triangle
-            ? 3
-            : (shape_type == ShapeType::Diamond ? 4 : std::clamp(layer.shape_sides, 3, 64));
-        const QPointF center = rect.center();
-        const double rx = rect.width() / 2.0;
-        const double ry = rect.height() / 2.0;
-        for (int i = 0; i < sides; ++i) {
-            const double a = -kToolIconPi / 2.0 + 2.0 * kToolIconPi * i / sides;
-            const QPointF pt(center.x() + std::cos(a) * rx, center.y() + std::sin(a) * ry);
-            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
-        }
-        path.closeSubpath();
-        break;
-    }
-    case ShapeType::Star: {
-        const QPointF center = rect.center();
-        const double rx = rect.width() / 2.0;
-        const double ry = rect.height() / 2.0;
-        const int points = std::clamp(layer.shape_points, 3, 64);
-        const double inner = std::clamp((double)layer.shape_inner_radius, 0.0, 1.0) * 2.0;
-        const double outer = std::clamp((double)layer.shape_outer_radius, 0.0, 1.0) * 2.0;
-        for (int i = 0; i < points * 2; ++i) {
-            const double factor = (i % 2 == 0) ? outer : inner;
-            const double a = -kToolIconPi / 2.0 + kToolIconPi * i / points;
-            const QPointF pt(center.x() + std::cos(a) * rx * factor,
-                             center.y() + std::sin(a) * ry * factor);
-            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
-        }
-        path.closeSubpath();
-        break;
-    }
-    case ShapeType::Line:
-        path.moveTo(rect.left(), rect.center().y());
-        path.lineTo(rect.right(), rect.center().y());
-        break;
-    case ShapeType::RoundedRectangle:
-        path = editor_layer_rounded_rect_path(layer, rect);
-        break;
-    case ShapeType::Rectangle:
-    default:
-        path = editor_layer_rounded_rect_path(layer, rect);
-        break;
-    }
-    return path;
+    return gsp::layer_shape_path(layer, rect);
 }
 
 static QPainterPath editor_corner_rect_path(const QRectF &rect, double top_left, double top_right,
@@ -2436,6 +2392,34 @@ static QIcon cursor_tool_icon()
     painter.setBrush(QColor(65, 65, 65));
     painter.drawPath(path);
     return QIcon(pixmap);
+}
+
+static QIcon direct_selection_tool_icon()
+{
+    QPixmap pixmap(24, 24);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath path;
+    path.moveTo(6, 4);
+    path.lineTo(6, 19);
+    path.lineTo(10, 15);
+    path.lineTo(13, 21);
+    path.lineTo(16, 19);
+    path.lineTo(13, 13);
+    path.lineTo(18, 13);
+    path.closeSubpath();
+    painter.setPen(QPen(QColor(230, 230, 230), 1.4));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(path);
+    painter.setBrush(QColor(230, 230, 230));
+    painter.drawRect(QRectF(3.5, 3.5, 4.0, 4.0));
+    return QIcon(pixmap);
+}
+
+static QIcon pen_tool_icon()
+{
+    return obs_icon("pen-nib.svg");
 }
 
 static QIcon gradient_tool_icon()

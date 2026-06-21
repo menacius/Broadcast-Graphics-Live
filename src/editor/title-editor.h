@@ -124,6 +124,7 @@ private:
     static void show_preferences_dialog(QWidget *parent, TitleEditor *editor);
     void build_ui();
     void build_toolbar();
+    void update_corner_toolbar();
     void update_title_bar();
     void set_dirty(bool dirty);
     void begin_title_name_edit();
@@ -163,6 +164,7 @@ private:
     void delete_selected_layer();
     std::shared_ptr<Layer> create_basic_layer(LayerType type, const QString &name_override = QString());
     void create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt);
+    void create_pen_path_layer_from_canvas(const std::vector<BezierPathPoint> &canvas_points, bool closed);
     void create_text_layer_from_canvas(LayerType type, const QPointF &canvas_pt);
     void create_image_layer_from_canvas(const QPointF &canvas_pt);
     void choose_image_file_for_layer(const std::string &layer_id);
@@ -286,6 +288,21 @@ private:
     QLabel          *dirty_indicator_ = nullptr;
 
     QToolBar        *toolbar_   = nullptr;
+    QWidget         *dynamic_toolbar_widget_ = nullptr;
+    QAction         *dynamic_toolbar_action_ = nullptr;
+    QAction         *dynamic_toolbar_separator_ = nullptr;
+    QWidget         *corner_toolbar_widget_ = nullptr;
+    QLabel          *corner_toolbar_label_ = nullptr;
+    QComboBox       *corner_toolbar_type_ = nullptr;
+    QDoubleSpinBox  *corner_toolbar_radius_ = nullptr;
+    QCheckBox       *corner_toolbar_sync_ = nullptr;
+    QWidget         *point_toolbar_widget_ = nullptr;
+    QToolButton     *point_toolbar_corner_ = nullptr;
+    QToolButton     *point_toolbar_smooth_ = nullptr;
+    QToolButton     *point_toolbar_handles_ = nullptr;
+    QDoubleSpinBox  *point_toolbar_x_ = nullptr;
+    QDoubleSpinBox  *point_toolbar_y_ = nullptr;
+    bool             updating_corner_toolbar_ = false;
     QAction         *act_play_  = nullptr;
     QAction         *act_full_loop_ = nullptr;
     QAction         *act_rew_   = nullptr;

@@ -29,6 +29,7 @@ enum class ShapeType {
     Polygon,
     Diamond,
     Line,
+    Path,      /* arbitrary cubic Bézier path created by the Pen tool */
 };
 
 enum class CornerType {
@@ -63,6 +64,23 @@ enum class ImageBoxMode {
     StretchToFill = 5,
     FitToLongSide = 6,
     FitToShortSide = 7,
+};
+
+
+struct BezierPathPoint {
+    /* Coordinates are normalized to the layer editable box. Handle positions
+     * are absolute (not offsets) in the same normalized coordinate space. */
+    double x = 0.0;
+    double y = 0.0;
+    double in_x = 0.0;
+    double in_y = 0.0;
+    double out_x = 0.0;
+    double out_y = 0.0;
+    bool has_in = false;
+    bool has_out = false;
+    bool smooth = false;
+    /* Illustrator-style live-corner radius in layer-local pixels. */
+    double corner_radius = 0.0;
 };
 
 struct GradientStop {
@@ -288,11 +306,14 @@ struct Layer {
     bool        corner_radius_locked = true;
     CornerType  corner_type = CornerType::Round;
     ShapeType   shape_type = ShapeType::Rectangle;
+    std::vector<BezierPathPoint> path_points;
+    bool        path_closed = true;
     int         shape_points = 5;
     int         shape_sides = 6;
     float       shape_inner_radius = 0.20f;
     float       shape_outer_radius = 0.5f;
-    float       shape_roundness = 0.0f;
+    float       shape_roundness = 0.0f;       /* polygon / star outer corners */
+    float       shape_inner_roundness = 0.0f; /* star inner corners */
     bool        scale_stroke_with_shape = false;
     bool        scale_corners_with_shape = false;
 

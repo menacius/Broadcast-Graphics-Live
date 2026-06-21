@@ -18,6 +18,7 @@
 namespace {
 constexpr int kCanvasRulerThickness = 24;
 constexpr double kCanvasGuideHitTolerancePx = 5.0;
+constexpr double kPenBezierActivationDistancePx = 5.0;
 constexpr const char *kEditorRulersVisibleKey = "rulersVisible";
 constexpr const char *kEditorGuidesVisibleKey = "guidesVisible";
 constexpr const char *kEditorGuidesLockedKey = "guidesLocked";
@@ -86,12 +87,24 @@ double shape_resize_metric_factor(double old_w, double old_h, double new_w, doub
     return 1.0;
 }
 
+std::vector<double> capture_path_corner_radii(const Layer &layer)
+{
+    std::vector<double> radii;
+    radii.reserve(layer.path_points.size());
+    for (const auto &point : layer.path_points)
+        radii.push_back(point.corner_radius);
+    return radii;
+}
+
 void apply_shape_resize_metrics_from_state(Layer &layer, double old_w, double old_h,
                                            float start_stroke_width,
                                            float start_corner_radius_tl,
                                            float start_corner_radius_tr,
                                            float start_corner_radius_br,
                                            float start_corner_radius_bl,
+                                           float start_shape_roundness,
+                                           float start_shape_inner_roundness,
+                                           const std::vector<double> &start_path_corner_radii,
                                            double new_w, double new_h)
 {
     if (!layer_is_shape_sized(layer))
@@ -111,6 +124,12 @@ void apply_shape_resize_metrics_from_state(Layer &layer, double old_w, double ol
                                (float)std::clamp((double)start_corner_radius_tr * factor, 0.0, 9999.0),
                                (float)std::clamp((double)start_corner_radius_br * factor, 0.0, 9999.0),
                                (float)std::clamp((double)start_corner_radius_bl * factor, 0.0, 9999.0));
+        layer.shape_roundness = (float)std::clamp((double)start_shape_roundness * factor, 0.0, 9999.0);
+        layer.shape_inner_roundness = (float)std::clamp((double)start_shape_inner_roundness * factor, 0.0, 9999.0);
+        if (start_path_corner_radii.size() == layer.path_points.size()) {
+            for (size_t i = 0; i < layer.path_points.size(); ++i)
+                layer.path_points[i].corner_radius = std::clamp(start_path_corner_radii[i] * factor, 0.0, 9999.0);
+        }
     }
 }
 
@@ -387,9 +406,14 @@ void CanvasPreview::set_playhead(double t)
 
 void CanvasPreview::set_selected_layer(const std::string &lid)
 {
+    const bool changed = sel_layer_id_ != lid;
     sel_layer_id_ = lid;
     selected_layer_ids_.clear();
     if (!lid.empty()) selected_layer_ids_.push_back(lid);
+    if (changed) {
+        clear_path_point_selection();
+        clear_corner_selection();
+    }
     invalidate_canvas_overlay_caches();
     position_text_editor();
     update();
@@ -397,8 +421,14 @@ void CanvasPreview::set_selected_layer(const std::string &lid)
 
 void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
 {
+    const std::string next = ids.empty() ? std::string() : ids.back();
+    const bool changed = sel_layer_id_ != next || selected_layer_ids_ != ids;
     selected_layer_ids_ = ids;
-    sel_layer_id_ = ids.empty() ? std::string() : ids.back();
+    sel_layer_id_ = next;
+    if (changed) {
+        clear_path_point_selection();
+        clear_corner_selection();
+    }
     invalidate_canvas_overlay_caches();
     position_text_editor();
     update();
@@ -743,35 +773,69 @@ void CanvasPreview::set_checkerboard_pattern(int pattern)
 
 void CanvasPreview::set_selection_tool_active()
 {
+    if (pen_path_active_) finish_pen_path(false);
     commit_text_edit(true);
     active_tool_ = CanvasTool::Selection;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
     invalidate_canvas_overlay_caches();
     unsetCursor();
     update();
 }
 
+void CanvasPreview::set_direct_selection_tool_active()
+{
+    if (pen_path_active_) finish_pen_path(false);
+    commit_text_edit(true);
+    active_tool_ = CanvasTool::DirectSelection;
+    drawing_shape_ = false;
+    color_picker_tooltip_visible_ = false;
+    clear_corner_selection();
+    invalidate_canvas_overlay_caches();
+    setCursor(Qt::ArrowCursor);
+    update();
+}
+
 void CanvasPreview::set_shape_tool_active(ShapeType shape_type)
 {
+    if (pen_path_active_) finish_pen_path(false);
     active_tool_ = CanvasTool::Shape;
     active_shape_type_ = shape_type;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
     invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
 }
 
+void CanvasPreview::set_pen_tool_active()
+{
+    commit_text_edit(true);
+    active_tool_ = CanvasTool::Pen;
+    drawing_shape_ = false;
+    color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
+    invalidate_canvas_overlay_caches();
+    setCursor(Qt::CrossCursor);
+    update();
+}
 
 void CanvasPreview::set_text_tool_active(LayerType type)
 {
+    if (pen_path_active_) finish_pen_path(false);
     if (type != LayerType::Text && type != LayerType::Clock && type != LayerType::Ticker)
         type = LayerType::Text;
     active_tool_ = CanvasTool::Text;
     active_text_layer_type_ = type;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
     invalidate_canvas_overlay_caches();
     setCursor(Qt::IBeamCursor);
     update();
@@ -779,10 +843,13 @@ void CanvasPreview::set_text_tool_active(LayerType type)
 
 void CanvasPreview::set_image_tool_active()
 {
+    if (pen_path_active_) finish_pen_path(false);
     commit_text_edit(true);
     active_tool_ = CanvasTool::Image;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
     invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
@@ -790,10 +857,13 @@ void CanvasPreview::set_image_tool_active()
 
 void CanvasPreview::set_color_picker_tool_active()
 {
+    if (pen_path_active_) finish_pen_path(false);
     commit_text_edit(true);
     active_tool_ = CanvasTool::ColorPicker;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
     invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
@@ -801,11 +871,14 @@ void CanvasPreview::set_color_picker_tool_active()
 
 void CanvasPreview::set_gradient_tool_active()
 {
+    if (pen_path_active_) finish_pen_path(false);
     commit_text_edit(true);
     active_tool_ = CanvasTool::Gradient;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
     gradient_tool_dragging_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
     invalidate_canvas_overlay_caches();
     setCursor(Qt::CrossCursor);
     update();
@@ -946,6 +1019,16 @@ static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &tit
     return xf;
 }
 
+static QTransform editor_parent_world_transform(const std::shared_ptr<Title> &title,
+                                                const Layer &layer, double playhead)
+{
+    if (!layer.parent_id.empty()) {
+        if (const Layer *parent = editor_find_layer_by_id(title, layer.parent_id))
+            return editor_layer_world_transform(title, *parent, playhead);
+    }
+    return QTransform();
+}
+
 static bool editor_layer_has_ancestor(const std::shared_ptr<Title> &title,
                                       const Layer &layer,
                                       const std::string &ancestor_id)
@@ -971,6 +1054,801 @@ QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas
 QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
 {
     return editor_layer_world_transform(title_, layer, playhead_).map(layer_pt);
+}
+
+
+void CanvasPreview::clear_path_point_selection()
+{
+    const bool changed = !selected_path_point_indices_.empty() || path_marquee_active_;
+    selected_path_point_indices_.clear();
+    path_marquee_base_selection_.clear();
+    path_marquee_layer_id_.clear();
+    path_marquee_active_ = false;
+    path_drag_point_index_ = -1;
+    path_alt_break_active_ = false;
+    path_drag_start_points_.clear();
+    if (changed)
+        notify_corner_context_changed();
+}
+
+QPointF CanvasPreview::path_normalized_to_canvas(const Layer &layer, double x, double y) const
+{
+    const QRectF rect = layer_local_rect(layer);
+    return layer_to_canvas(layer, QPointF(rect.left() + x * rect.width(),
+                                          rect.top() + y * rect.height()));
+}
+
+QPointF CanvasPreview::path_canvas_to_normalized(const Layer &layer, const QPointF &canvas_pt) const
+{
+    const QRectF rect = layer_local_rect(layer);
+    const QPointF local = canvas_to_layer(layer, canvas_pt);
+    return QPointF((local.x() - rect.left()) / std::max(1e-9, rect.width()),
+                   (local.y() - rect.top()) / std::max(1e-9, rect.height()));
+}
+
+QPointF CanvasPreview::constrain_path_direction(const QPointF &anchor, const QPointF &target,
+                                                Qt::KeyboardModifiers modifiers) const
+{
+    QPointF delta = target - anchor;
+    if (!modifiers.testFlag(Qt::ShiftModifier) || QLineF(QPointF(), delta).length() < 1e-9)
+        return target;
+    const double length = std::hypot(delta.x(), delta.y());
+    const double angle = std::atan2(delta.y(), delta.x());
+    const double step = 3.14159265358979323846 / 4.0;
+    const double snapped_angle = std::round(angle / step) * step;
+    return anchor + QPointF(std::cos(snapped_angle) * length,
+                            std::sin(snapped_angle) * length);
+}
+
+bool CanvasPreview::event(QEvent *ev)
+{
+    /* The editor owns Ctrl+Z/Ctrl+Shift+Z actions with a WidgetWithChildren
+     * shortcut context.  Claim those shortcuts while a Pen path is in
+     * progress so the unfinished path uses its own lightweight history
+     * instead of changing the already committed title. */
+    if (ev && ev->type() == QEvent::ShortcutOverride &&
+        active_tool_ == CanvasTool::Pen && pen_path_active_) {
+        auto *key_ev = static_cast<QKeyEvent *>(ev);
+        if (key_ev->key() == Qt::Key_Z &&
+            key_ev->modifiers().testFlag(Qt::ControlModifier)) {
+            ev->accept();
+            return true;
+        }
+    }
+    return QWidget::event(ev);
+}
+
+void CanvasPreview::finish_pen_path(bool closed, bool keep)
+{
+    if (!pen_path_active_)
+        return;
+    std::vector<BezierPathPoint> points = pen_path_points_;
+    const bool valid = keep && points.size() >= 2;
+    pen_path_points_.clear();
+    pen_redo_points_.clear();
+    pen_path_active_ = false;
+    pen_close_pending_ = false;
+    pen_drag_point_index_ = -1;
+    pen_alt_break_active_ = false;
+    pen_ctrl_unequal_active_ = false;
+    pen_space_reposition_ = false;
+    clear_snap_feedback();
+    snap_cursor_visible_ = false;
+    final_snap_cursor_visible_ = false;
+    update();
+    if (valid)
+        emit pen_path_finished(points, closed);
+}
+
+void CanvasPreview::cancel_pen_path()
+{
+    finish_pen_path(false, false);
+}
+
+void CanvasPreview::undo_pen_path_point()
+{
+    if (!pen_path_active_ || pen_path_points_.empty())
+        return;
+
+    pen_redo_points_.push_back(pen_path_points_.back());
+    pen_path_points_.pop_back();
+    pen_close_pending_ = false;
+    pen_drag_point_index_ = -1;
+    pen_alt_break_active_ = false;
+    pen_ctrl_unequal_active_ = false;
+    pen_space_reposition_ = false;
+    clear_snap_feedback();
+    snap_cursor_visible_ = false;
+    final_snap_cursor_visible_ = false;
+    update();
+}
+
+void CanvasPreview::redo_pen_path_point()
+{
+    if (!pen_path_active_ || pen_redo_points_.empty())
+        return;
+
+    pen_path_points_.push_back(pen_redo_points_.back());
+    pen_redo_points_.pop_back();
+    pen_close_pending_ = false;
+    pen_drag_point_index_ = -1;
+    pen_alt_break_active_ = false;
+    pen_ctrl_unequal_active_ = false;
+    pen_space_reposition_ = false;
+    clear_snap_feedback();
+    snap_cursor_visible_ = false;
+    final_snap_cursor_visible_ = false;
+    update();
+}
+
+void CanvasPreview::draw_pen_path_preview(QPainter &p)
+{
+    if (!pen_path_active_ || pen_path_points_.empty())
+        return;
+
+    auto to_view = [this](double x, double y) { return canvas_to_view(QPointF(x, y)); };
+    QPainterPath path;
+    const auto &points = pen_path_points_;
+    path.moveTo(to_view(points.front().x, points.front().y));
+    for (size_t i = 0; i + 1 < points.size(); ++i) {
+        const BezierPathPoint &from = points[i];
+        const BezierPathPoint &to = points[i + 1];
+        const QPointF from_anchor = to_view(from.x, from.y);
+        const QPointF to_anchor = to_view(to.x, to.y);
+        const QPointF c1 = from.has_out ? to_view(from.out_x, from.out_y) : from_anchor;
+        const QPointF c2 = to.has_in ? to_view(to.in_x, to.in_y) : to_anchor;
+        if (from.has_out || to.has_in)
+            path.cubicTo(c1, c2, to_anchor);
+        else
+            path.lineTo(to_anchor);
+    }
+
+    if (!pen_close_pending_ && mouse_inside_canvas_ && pen_drag_point_index_ < 0) {
+        const BezierPathPoint &last = points.back();
+        const QPointF from_anchor = to_view(last.x, last.y);
+        const QPointF target = canvas_to_view(shape_draw_current_canvas_);
+        const QPointF c1 = last.has_out ? to_view(last.out_x, last.out_y) : from_anchor;
+        if (last.has_out)
+            path.cubicTo(c1, target, target);
+        else
+            path.lineTo(target);
+    }
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QColor path_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+    p.setPen(QPen(path_color, 1.5));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(path);
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        const BezierPathPoint &point = points[i];
+        const QPointF anchor = to_view(point.x, point.y);
+        p.setPen(QPen(path_color, 1.0));
+        p.setBrush(i == 0 ? QColor(255, 215, 80) : QColor(255, 255, 255));
+        p.drawRect(QRectF(anchor.x() - 3.5, anchor.y() - 3.5, 7.0, 7.0));
+        if (point.has_in) {
+            const QPointF handle = to_view(point.in_x, point.in_y);
+            p.drawLine(anchor, handle);
+            p.setBrush(QColor(255, 255, 255));
+            p.drawEllipse(handle, 3.0, 3.0);
+        }
+        if (point.has_out) {
+            const QPointF handle = to_view(point.out_x, point.out_y);
+            p.drawLine(anchor, handle);
+            p.setBrush(QColor(255, 255, 255));
+            p.drawEllipse(handle, 3.0, 3.0);
+        }
+    }
+    p.restore();
+}
+
+void CanvasPreview::update_pen_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    if (!pen_path_active_ || pen_drag_point_index_ < 0 ||
+        (size_t)pen_drag_point_index_ >= pen_path_points_.size())
+        return;
+    BezierPathPoint &point = pen_path_points_[(size_t)pen_drag_point_index_];
+    const QPointF anchor(point.x, point.y);
+
+    /* Decide whether this is a click or a Bézier drag from the real pointer
+     * travel in view coordinates.  Measuring after snapping made a one-pixel
+     * hand movement jump to a nearby guide/object and create long handles. */
+    const double pointer_drag_px = QLineF(canvas_to_view(anchor), view_pt).length();
+    if (pointer_drag_px < kPenBezierActivationDistancePx) {
+        /* Closing an existing path must not erase handles already belonging
+         * to its first anchor just because the mouse moved a few pixels. */
+        if (!pen_close_pending_) {
+            point.has_in = false;
+            point.has_out = false;
+            point.in_x = point.out_x = point.x;
+            point.in_y = point.out_y = point.y;
+            point.smooth = false;
+        }
+        pen_alt_break_active_ = false;
+        pen_ctrl_unequal_active_ = false;
+        update();
+        return;
+    }
+
+    QPointF target = constrain_path_direction(anchor, view_to_canvas(view_pt), modifiers);
+    target = snap_canvas_point(target, true, true, !modifiers.testFlag(Qt::ControlModifier));
+    if (modifiers.testFlag(Qt::ShiftModifier))
+        target = constrain_path_direction(anchor, target, modifiers);
+
+    const QPointF delta = target - anchor;
+    const double handle_length = QLineF(anchor, target).length();
+
+    point.has_out = true;
+    point.out_x = target.x();
+    point.out_y = target.y();
+
+    if (modifiers.testFlag(Qt::AltModifier) || pen_alt_break_active_) {
+        /* Illustrator-style Anchor Point modifier: retain the incoming handle
+         * at the position where Alt was first pressed and keep the pair broken
+         * for the remainder of this mouse gesture. */
+        if (!pen_alt_break_active_) {
+            pen_alt_fixed_in_canvas_ = point.has_in
+                ? QPointF(point.in_x, point.in_y)
+                : anchor - delta;
+            pen_alt_break_active_ = true;
+        }
+        point.has_in = QLineF(anchor, pen_alt_fixed_in_canvas_).length() >=
+                       1.0 / std::max(0.1, view_scale());
+        point.in_x = pen_alt_fixed_in_canvas_.x();
+        point.in_y = pen_alt_fixed_in_canvas_.y();
+        point.smooth = false;
+        pen_ctrl_unequal_active_ = false;
+    } else {
+        const QPointF unit = delta / std::max(handle_length, 1e-9);
+        double incoming_length = handle_length;
+        if (modifiers.testFlag(Qt::ControlModifier)) {
+            /* Ctrl/Command keeps the handles collinear but allows unequal
+             * lengths, matching Illustrator's smooth-point modifier. */
+            if (!pen_ctrl_unequal_active_) {
+                incoming_length = point.has_in
+                    ? QLineF(anchor, QPointF(point.in_x, point.in_y)).length()
+                    : handle_length;
+                pen_ctrl_fixed_in_length_ = incoming_length;
+                pen_ctrl_unequal_active_ = true;
+            }
+            incoming_length = pen_ctrl_fixed_in_length_;
+        } else {
+            pen_ctrl_unequal_active_ = false;
+        }
+        const QPointF incoming = anchor - unit * incoming_length;
+        point.has_in = incoming_length >= 1.0 / std::max(0.1, view_scale());
+        point.in_x = incoming.x();
+        point.in_y = incoming.y();
+        point.smooth = true;
+    }
+    update();
+}
+
+bool CanvasPreview::direct_selection_supported(const Layer &layer) const
+{
+    return layer.type == LayerType::Shape;
+}
+
+bool CanvasPreview::ensure_direct_selection_path(const std::shared_ptr<Layer> &layer)
+{
+    if (!layer || !direct_selection_supported(*layer))
+        return false;
+    const bool already_path = layer->shape_type == ShapeType::Path;
+    if (!gsp::ensure_editable_path(*layer))
+        return false;
+    if (!already_path) {
+        dirty_ = true;
+        emit layer_geometry_changed();
+    }
+    return true;
+}
+
+CanvasPreview::PathHit CanvasPreview::hit_test_direct_path(const Layer &layer, const QPointF &view_pt) const
+{
+    PathHit result;
+    if (layer.shape_type != ShapeType::Path)
+        return result;
+    constexpr double anchor_radius = 7.0;
+    constexpr double handle_radius = 6.0;
+
+    for (int index : selected_path_point_indices_) {
+        if (index < 0 || (size_t)index >= layer.path_points.size())
+            continue;
+        const BezierPathPoint &point = layer.path_points[(size_t)index];
+        if (point.has_in) {
+            const QPointF handle = canvas_to_view(path_normalized_to_canvas(layer, point.in_x, point.in_y));
+            if (QLineF(handle, view_pt).length() <= handle_radius)
+                return {DragMode::PathInHandle, index};
+        }
+        if (point.has_out) {
+            const QPointF handle = canvas_to_view(path_normalized_to_canvas(layer, point.out_x, point.out_y));
+            if (QLineF(handle, view_pt).length() <= handle_radius)
+                return {DragMode::PathOutHandle, index};
+        }
+    }
+
+    double best = anchor_radius + 1.0;
+    for (size_t i = 0; i < layer.path_points.size(); ++i) {
+        const BezierPathPoint &point = layer.path_points[i];
+        const QPointF anchor = canvas_to_view(path_normalized_to_canvas(layer, point.x, point.y));
+        const double distance = QLineF(anchor, view_pt).length();
+        if (distance <= anchor_radius && distance < best) {
+            best = distance;
+            result = {DragMode::PathAnchor, (int)i};
+        }
+    }
+    return result;
+}
+
+void CanvasPreview::draw_direct_selection_path(QPainter &p, const Layer &layer)
+{
+    if (active_tool_ != CanvasTool::DirectSelection || layer.shape_type != ShapeType::Path)
+        return;
+    const QRectF local_rect = layer_local_rect(layer);
+    QPainterPath local_path = gsp::layer_shape_path(layer, local_rect);
+    QPainterPath canvas_path = editor_layer_world_transform(title_, layer, playhead_).map(local_path);
+    QTransform canvas_to_view_transform;
+    canvas_to_view_transform.translate(view_origin().x(), view_origin().y());
+    canvas_to_view_transform.scale(view_scale(), view_scale());
+    const QPainterPath view_path = canvas_to_view_transform.map(canvas_path);
+
+    QColor path_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(path_color, 1.4));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(view_path);
+
+    for (size_t i = 0; i < layer.path_points.size(); ++i) {
+        const BezierPathPoint &point = layer.path_points[i];
+        const QPointF anchor = canvas_to_view(path_normalized_to_canvas(layer, point.x, point.y));
+        const bool selected = selected_path_point_indices_.find((int)i) != selected_path_point_indices_.end();
+        if (selected && (show_selected_path_handles_ || selected_path_point_indices_.size() == 1)) {
+            p.setPen(QPen(path_color, 1.0));
+            if (point.has_in) {
+                const QPointF handle = canvas_to_view(path_normalized_to_canvas(layer, point.in_x, point.in_y));
+                p.drawLine(anchor, handle);
+                p.setBrush(QColor(255, 255, 255));
+                p.drawEllipse(handle, 3.2, 3.2);
+            }
+            if (point.has_out) {
+                const QPointF handle = canvas_to_view(path_normalized_to_canvas(layer, point.out_x, point.out_y));
+                p.drawLine(anchor, handle);
+                p.setBrush(QColor(255, 255, 255));
+                p.drawEllipse(handle, 3.2, 3.2);
+            }
+        }
+        p.setPen(QPen(path_color, 1.0));
+        p.setBrush(selected ? path_color : QColor(255, 255, 255));
+        p.drawRect(QRectF(anchor.x() - 3.5, anchor.y() - 3.5, 7.0, 7.0));
+    }
+    p.restore();
+}
+
+bool CanvasPreview::select_direct_object_at(const QPointF &view_pt)
+{
+    const QPointF canvas = view_to_canvas(view_pt);
+    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+        const auto &candidate = *it;
+        if (!candidate || !candidate->visible || candidate->locked || !direct_selection_supported(*candidate))
+            continue;
+        if (playhead_ < candidate->in_time || playhead_ > candidate->out_time)
+            continue;
+        if (!layer_local_rect(*candidate).contains(canvas_to_layer(*candidate, canvas)))
+            continue;
+        emit layers_selected({candidate->id});
+        selected_layer_ids_ = {candidate->id};
+        sel_layer_id_ = candidate->id;
+        clear_path_point_selection();
+        clear_corner_selection();
+        ensure_direct_selection_path(candidate);
+        invalidate_canvas_overlay_caches();
+        notify_corner_context_changed();
+        update();
+        return true;
+    }
+
+    clear_path_point_selection();
+    clear_corner_selection();
+    emit layers_selected({});
+    selected_layer_ids_.clear();
+    sel_layer_id_.clear();
+    invalidate_canvas_overlay_caches();
+    notify_corner_context_changed();
+    update();
+    return true;
+}
+
+void CanvasPreview::begin_path_point_marquee(const QPointF &view_pt,
+                                             Qt::KeyboardModifiers modifiers)
+{
+    auto layer = selected_layer();
+    if (!layer || !ensure_direct_selection_path(layer) || layer->shape_type != ShapeType::Path)
+        return;
+    drag_mode_ = DragMode::PathMarquee;
+    path_marquee_active_ = true;
+    path_marquee_layer_id_ = layer->id;
+    path_marquee_base_selection_ = modifiers.testFlag(Qt::ShiftModifier)
+        ? selected_path_point_indices_
+        : std::set<int>{};
+    drag_start_view_ = view_pt;
+    drag_current_view_ = view_pt;
+    drag_changed_ = false;
+    update();
+}
+
+void CanvasPreview::update_path_point_marquee(const QPointF &view_pt,
+                                              Qt::KeyboardModifiers modifiers)
+{
+    if (!path_marquee_active_ || drag_mode_ != DragMode::PathMarquee)
+        return;
+    auto layer = title_ ? title_->find_layer(path_marquee_layer_id_) : nullptr;
+    if (!layer || layer->shape_type != ShapeType::Path)
+        return;
+
+    drag_current_view_ = view_pt;
+    drag_changed_ = QLineF(drag_start_view_, drag_current_view_).length() >= 3.0;
+    if (!drag_changed_) {
+        selected_path_point_indices_ = path_marquee_base_selection_;
+        update();
+        return;
+    }
+
+    const QRectF marquee(drag_start_view_, drag_current_view_);
+    const QRectF normalized = marquee.normalized();
+    std::set<int> next = modifiers.testFlag(Qt::ShiftModifier)
+        ? path_marquee_base_selection_
+        : std::set<int>{};
+    for (size_t i = 0; i < layer->path_points.size(); ++i) {
+        const BezierPathPoint &point = layer->path_points[i];
+        const QPointF anchor_view = canvas_to_view(path_normalized_to_canvas(*layer, point.x, point.y));
+        if (normalized.contains(anchor_view))
+            next.insert((int)i);
+    }
+    selected_path_point_indices_ = std::move(next);
+    clear_corner_selection(false);
+    selected_corner_layer_id_ = layer->id;
+    const auto corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+    for (const auto &corner : corners) {
+        if (selected_path_point_indices_.find(corner.point_index) != selected_path_point_indices_.end())
+            selected_corner_indices_.insert(corner.point_index);
+    }
+    if (selected_corner_indices_.empty())
+        selected_corner_layer_id_.clear();
+    invalidate_canvas_overlay_caches();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::finish_path_point_marquee(const QPointF &view_pt,
+                                              Qt::KeyboardModifiers modifiers)
+{
+    if (!path_marquee_active_)
+        return;
+    update_path_point_marquee(view_pt, modifiers);
+    const bool moved = drag_changed_;
+    path_marquee_active_ = false;
+    path_marquee_layer_id_.clear();
+    path_marquee_base_selection_.clear();
+    drag_mode_ = DragMode::None;
+    drag_changed_ = false;
+    if (!moved)
+        select_direct_object_at(view_pt);
+    else
+        notify_corner_context_changed();
+    update();
+}
+
+bool CanvasPreview::begin_direct_selection(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    auto layer = selected_layer();
+    if (layer && direct_selection_supported(*layer)) {
+        ensure_direct_selection_path(layer);
+        const PathHit hit = hit_test_direct_path(*layer, view_pt);
+        if (hit.mode != DragMode::None) {
+            clear_corner_selection();
+            if (hit.mode == DragMode::PathAnchor) {
+                if (modifiers.testFlag(Qt::ShiftModifier)) {
+                    auto it = selected_path_point_indices_.find(hit.point_index);
+                    if (it == selected_path_point_indices_.end())
+                        selected_path_point_indices_.insert(hit.point_index);
+                    else
+                        selected_path_point_indices_.erase(it);
+                } else if (selected_path_point_indices_.find(hit.point_index) == selected_path_point_indices_.end()) {
+                    selected_path_point_indices_.clear();
+                    selected_path_point_indices_.insert(hit.point_index);
+                }
+            } else {
+                selected_path_point_indices_.insert(hit.point_index);
+            }
+            if (hit.mode == DragMode::PathAnchor) {
+                selected_corner_layer_id_ = layer->id;
+                selected_corner_indices_.clear();
+                const auto live_corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+                for (const auto &corner : live_corners) {
+                    if (selected_path_point_indices_.find(corner.point_index) != selected_path_point_indices_.end())
+                        selected_corner_indices_.insert(corner.point_index);
+                }
+                if (selected_corner_indices_.empty())
+                    selected_corner_layer_id_.clear();
+            }
+            notify_corner_context_changed();
+            drag_mode_ = hit.mode;
+            path_drag_point_index_ = hit.point_index;
+            path_alt_break_active_ = false;
+            path_drag_start_points_ = layer->path_points;
+            drag_start_view_ = view_pt;
+            drag_current_view_ = view_pt;
+            drag_start_canvas_ = view_to_canvas(view_pt);
+            drag_changed_ = false;
+            begin_adaptive_interaction();
+            update();
+            return true;
+        }
+
+        /* Illustrator-style Direct Selection marquee. Once a path is selected,
+         * dragging from empty canvas selects any anchor points enclosed by the
+         * rectangle. Shift-drag adds to the existing point selection. */
+        begin_path_point_marquee(view_pt, modifiers);
+        if (path_marquee_active_)
+            return true;
+    }
+    return select_direct_object_at(view_pt);
+}
+
+void CanvasPreview::apply_direct_path_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+{
+    auto layer = selected_layer();
+    if (!layer || layer->shape_type != ShapeType::Path || path_drag_point_index_ < 0 ||
+        path_drag_start_points_.size() != layer->path_points.size())
+        return;
+
+    const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
+    if (drag_mode_ == DragMode::PathAnchor) {
+        const BezierPathPoint &active_start = path_drag_start_points_[(size_t)path_drag_point_index_];
+        const QPointF active_anchor = path_normalized_to_canvas(*layer, active_start.x, active_start.y);
+        QPointF target = active_anchor + (view_to_canvas(view_pt) - drag_start_canvas_);
+        target = constrain_path_direction(active_anchor, target, modifiers);
+        target = snap_canvas_point(target, true, true, allow_snap);
+        if (modifiers.testFlag(Qt::ShiftModifier))
+            target = constrain_path_direction(active_anchor, target, modifiers);
+        QPointF delta = target - active_anchor;
+
+        layer->path_points = path_drag_start_points_;
+        for (int index : selected_path_point_indices_) {
+            if (index < 0 || (size_t)index >= layer->path_points.size()) continue;
+            const BezierPathPoint &start = path_drag_start_points_[(size_t)index];
+            BezierPathPoint &point = layer->path_points[(size_t)index];
+            const QPointF anchor = path_canvas_to_normalized(*layer,
+                path_normalized_to_canvas(*layer, start.x, start.y) + delta);
+            point.x = anchor.x(); point.y = anchor.y();
+            if (start.has_in) {
+                const QPointF handle = path_canvas_to_normalized(*layer,
+                    path_normalized_to_canvas(*layer, start.in_x, start.in_y) + delta);
+                point.in_x = handle.x(); point.in_y = handle.y();
+            }
+            if (start.has_out) {
+                const QPointF handle = path_canvas_to_normalized(*layer,
+                    path_normalized_to_canvas(*layer, start.out_x, start.out_y) + delta);
+                point.out_x = handle.x(); point.out_y = handle.y();
+            }
+        }
+    } else {
+        layer->path_points = path_drag_start_points_;
+        BezierPathPoint &point = layer->path_points[(size_t)path_drag_point_index_];
+        const BezierPathPoint &start = path_drag_start_points_[(size_t)path_drag_point_index_];
+        const QPointF anchor_canvas = path_normalized_to_canvas(*layer, start.x, start.y);
+        QPointF target_canvas = constrain_path_direction(anchor_canvas, view_to_canvas(view_pt), modifiers);
+        target_canvas = snap_canvas_point(target_canvas, true, true, allow_snap);
+        if (modifiers.testFlag(Qt::ShiftModifier))
+            target_canvas = constrain_path_direction(anchor_canvas, target_canvas, modifiers);
+        const QPointF normalized = path_canvas_to_normalized(*layer, target_canvas);
+        const bool dragging_in = drag_mode_ == DragMode::PathInHandle;
+        if (dragging_in) {
+            point.has_in = true;
+            point.in_x = normalized.x(); point.in_y = normalized.y();
+        } else {
+            point.has_out = true;
+            point.out_x = normalized.x(); point.out_y = normalized.y();
+        }
+
+        if (modifiers.testFlag(Qt::AltModifier))
+            path_alt_break_active_ = true;
+        if (start.smooth && !path_alt_break_active_) {
+            const QPointF vector = target_canvas - anchor_canvas;
+            const double length = std::hypot(vector.x(), vector.y());
+            if (length > 1e-9) {
+                const QPointF unit = vector / length;
+                const QPointF opposite_start = dragging_in
+                    ? path_normalized_to_canvas(*layer, start.out_x, start.out_y)
+                    : path_normalized_to_canvas(*layer, start.in_x, start.in_y);
+                const double opposite_length = QLineF(anchor_canvas, opposite_start).length();
+                const QPointF opposite_canvas = anchor_canvas - unit * opposite_length;
+                const QPointF opposite = path_canvas_to_normalized(*layer, opposite_canvas);
+                if (dragging_in && start.has_out) {
+                    point.out_x = opposite.x(); point.out_y = opposite.y();
+                } else if (!dragging_in && start.has_in) {
+                    point.in_x = opposite.x(); point.in_y = opposite.y();
+                }
+                point.smooth = true;
+            }
+        } else if (path_alt_break_active_) {
+            point.smooth = false;
+        }
+    }
+
+    drag_changed_ = true;
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::reframe_custom_path(Layer &layer, const std::vector<QPointF> &anchors_local,
+                                        const std::vector<QPointF> &in_handles_local,
+                                        const std::vector<QPointF> &out_handles_local,
+                                        const std::vector<bool> &has_in,
+                                        const std::vector<bool> &has_out)
+{
+    if (anchors_local.size() < 2 || anchors_local.size() != layer.path_points.size() ||
+        in_handles_local.size() != anchors_local.size() ||
+        out_handles_local.size() != anchors_local.size() ||
+        has_in.size() != anchors_local.size() || has_out.size() != anchors_local.size())
+        return;
+    QPainterPath geometry;
+    geometry.moveTo(anchors_local.front());
+    const size_t segment_count = layer.path_closed ? anchors_local.size() : anchors_local.size() - 1;
+    for (size_t i = 0; i < segment_count; ++i) {
+        const size_t next_index = (i + 1) % anchors_local.size();
+        const QPointF control1 = has_out[i] ? out_handles_local[i] : anchors_local[i];
+        const QPointF control2 = has_in[next_index] ? in_handles_local[next_index] : anchors_local[next_index];
+        if (has_out[i] || has_in[next_index])
+            geometry.cubicTo(control1, control2, anchors_local[next_index]);
+        else
+            geometry.lineTo(anchors_local[next_index]);
+    }
+    if (layer.path_closed)
+        geometry.closeSubpath();
+
+    QRectF bounds = geometry.boundingRect();
+    if (bounds.width() < 1.0) {
+        const double center_x = bounds.center().x();
+        bounds.setLeft(center_x - 0.5);
+        bounds.setWidth(1.0);
+    }
+    if (bounds.height() < 1.0) {
+        const double center_y = bounds.center().y();
+        bounds.setTop(center_y - 0.5);
+        bounds.setHeight(1.0);
+    }
+    const double width = bounds.width();
+    const double height = bounds.height();
+
+    const QTransform old_world = editor_layer_world_transform(title_, layer, playhead_);
+    const QPointF center_canvas = old_world.map(bounds.center());
+    const QTransform parent_world = editor_parent_world_transform(title_, layer, playhead_);
+    const QPointF new_position = parent_world.inverted().map(center_canvas);
+    const double lt = std::clamp(playhead_ - layer.in_time, 0.0,
+                                 std::max(0.0, layer.out_time - layer.in_time));
+    set_animated_value(layer.position, lt, {new_position.x(), new_position.y()});
+    set_animated_value(layer.size, lt, {width, height});
+    layer.rect_width = (float)width;
+    layer.rect_height = (float)height;
+    layer.origin_x = 0.5f;
+    layer.origin_y = 0.5f;
+    set_animated_value(layer.origin_prop, lt, {0.5, 0.5});
+
+    for (size_t i = 0; i < layer.path_points.size(); ++i) {
+        BezierPathPoint &point = layer.path_points[i];
+        auto normalize = [&](const QPointF &value) {
+            return QPointF((value.x() - bounds.left()) / width,
+                           (value.y() - bounds.top()) / height);
+        };
+        const QPointF anchor = normalize(anchors_local[i]);
+        point.x = anchor.x(); point.y = anchor.y();
+        if (has_in[i]) {
+            const QPointF handle = normalize(in_handles_local[i]);
+            point.in_x = handle.x(); point.in_y = handle.y();
+        } else {
+            point.in_x = point.x; point.in_y = point.y;
+        }
+        if (has_out[i]) {
+            const QPointF handle = normalize(out_handles_local[i]);
+            point.out_x = handle.x(); point.out_y = handle.y();
+        } else {
+            point.out_x = point.x; point.out_y = point.y;
+        }
+    }
+}
+
+bool CanvasPreview::nudge_selected_path_points(double dx, double dy)
+{
+    auto layer = selected_layer();
+    if (!layer || layer->shape_type != ShapeType::Path || selected_path_point_indices_.empty())
+        return false;
+
+    const QRectF rect = layer_local_rect(*layer);
+    std::vector<QPointF> anchors, in_handles, out_handles;
+    std::vector<bool> has_in, has_out;
+    anchors.reserve(layer->path_points.size());
+    in_handles.reserve(layer->path_points.size());
+    out_handles.reserve(layer->path_points.size());
+    has_in.reserve(layer->path_points.size());
+    has_out.reserve(layer->path_points.size());
+
+    const QPointF canvas_delta(dx, dy);
+    for (size_t i = 0; i < layer->path_points.size(); ++i) {
+        const BezierPathPoint &point = layer->path_points[i];
+        QPointF anchor = gsp::path_point_to_local(point, rect);
+        QPointF in_handle = gsp::path_in_handle_to_local(point, rect);
+        QPointF out_handle = gsp::path_out_handle_to_local(point, rect);
+        if (selected_path_point_indices_.find((int)i) != selected_path_point_indices_.end()) {
+            anchor = canvas_to_layer(*layer, layer_to_canvas(*layer, anchor) + canvas_delta);
+            if (point.has_in)
+                in_handle = canvas_to_layer(*layer, layer_to_canvas(*layer, in_handle) + canvas_delta);
+            if (point.has_out)
+                out_handle = canvas_to_layer(*layer, layer_to_canvas(*layer, out_handle) + canvas_delta);
+        }
+        anchors.push_back(anchor);
+        in_handles.push_back(in_handle);
+        out_handles.push_back(out_handle);
+        has_in.push_back(point.has_in);
+        has_out.push_back(point.has_out);
+    }
+
+    reframe_custom_path(*layer, anchors, in_handles, out_handles, has_in, has_out);
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    update();
+    return true;
+}
+
+void CanvasPreview::delete_selected_path_points()
+{
+    auto layer = selected_layer();
+    if (!layer || layer->shape_type != ShapeType::Path || selected_path_point_indices_.empty())
+        return;
+    std::vector<BezierPathPoint> remaining;
+    remaining.reserve(layer->path_points.size());
+    for (size_t i = 0; i < layer->path_points.size(); ++i) {
+        if (selected_path_point_indices_.find((int)i) == selected_path_point_indices_.end())
+            remaining.push_back(layer->path_points[i]);
+    }
+    const size_t minimum = layer->path_closed ? 3 : 2;
+    if (remaining.size() < minimum) {
+        const std::string id = layer->id;
+        title_->remove_layer(id);
+        selected_layer_ids_.clear();
+        sel_layer_id_.clear();
+        clear_path_point_selection();
+        emit layers_selected({});
+        emit layer_structure_changed();
+    } else {
+        layer->path_points = std::move(remaining);
+        const QRectF rect = layer_local_rect(*layer);
+        std::vector<QPointF> anchors, in_handles, out_handles;
+        std::vector<bool> has_in, has_out;
+        anchors.reserve(layer->path_points.size());
+        in_handles.reserve(layer->path_points.size());
+        out_handles.reserve(layer->path_points.size());
+        has_in.reserve(layer->path_points.size());
+        has_out.reserve(layer->path_points.size());
+        for (const auto &point : layer->path_points) {
+            anchors.push_back(gsp::path_point_to_local(point, rect));
+            in_handles.push_back(gsp::path_in_handle_to_local(point, rect));
+            out_handles.push_back(gsp::path_out_handle_to_local(point, rect));
+            has_in.push_back(point.has_in);
+            has_out.push_back(point.has_out);
+        }
+        reframe_custom_path(*layer, anchors, in_handles, out_handles, has_in, has_out);
+        clear_path_point_selection();
+        dirty_ = true;
+        emit layer_geometry_changed();
+    }
+    invalidate_canvas_overlay_caches();
+    update();
 }
 
 QRectF CanvasPreview::layer_canvas_bounds(const Layer &layer) const
@@ -1463,149 +2341,663 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
 
 bool CanvasPreview::layer_supports_corner_radius_handles(const Layer &layer) const
 {
-    if (layer.locked || !layer.visible || layer.type != LayerType::Shape)
+    if (layer.locked || !layer.visible ||
+        (layer.type != LayerType::Shape && layer.type != LayerType::SolidRect))
         return false;
     if (playhead_ < layer.in_time || playhead_ > layer.out_time)
         return false;
-    return layer.shape_type == ShapeType::Rectangle || layer.shape_type == ShapeType::RoundedRectangle;
+    return !gsp::layer_live_corners(layer, layer_local_rect(layer)).empty();
 }
 
-QPointF CanvasPreview::corner_radius_handle_local_pos(const Layer &layer, const QRectF &box, DragMode mode) const
+void CanvasPreview::notify_corner_context_changed()
 {
-    const double max_radius = std::max(0.0, std::min(box.width(), box.height()) / 2.0);
-    auto radius = [max_radius](float value) {
-        return std::clamp((double)value, 0.0, max_radius);
-    };
-    switch (mode) {
-    case DragMode::CornerRadiusTL: {
-        const double r = radius(layer.corner_radius_tl);
-        return QPointF(box.left() + r, box.top() + r);
-    }
-    case DragMode::CornerRadiusTR: {
-        const double r = radius(layer.corner_radius_tr);
-        return QPointF(box.right() - r, box.top() + r);
-    }
-    case DragMode::CornerRadiusBR: {
-        const double r = radius(layer.corner_radius_br);
-        return QPointF(box.right() - r, box.bottom() - r);
-    }
-    case DragMode::CornerRadiusBL: {
-        const double r = radius(layer.corner_radius_bl);
-        return QPointF(box.left() + r, box.bottom() - r);
-    }
-    default:
-        return QPointF();
+    emit corner_context_changed();
+}
+
+void CanvasPreview::clear_corner_selection(bool notify)
+{
+    const bool changed = !selected_corner_layer_id_.empty() || !selected_corner_indices_.empty();
+    selected_corner_layer_id_.clear();
+    selected_corner_indices_.clear();
+    if (changed) {
+        invalidate_canvas_overlay_caches();
+        if (notify)
+            notify_corner_context_changed();
+        update();
     }
 }
 
-QPointF CanvasPreview::corner_radius_visual_offset_view(const Layer &layer, const QRectF &box, DragMode mode) const
+std::vector<int> CanvasPreview::corner_indices_for_layer(const Layer &layer, bool selected_only) const
+{
+    std::vector<int> result;
+    const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+    result.reserve(corners.size());
+    for (const auto &corner : corners) {
+        if (selected_only &&
+            (selected_corner_layer_id_ != layer.id ||
+             selected_corner_indices_.find(corner.point_index) == selected_corner_indices_.end()))
+            continue;
+        result.push_back(corner.point_index);
+    }
+    return result;
+}
+
+std::vector<int> CanvasPreview::mapped_corner_indices(const Layer &source, const Layer &target,
+                                                       const std::vector<int> &source_indices) const
+{
+    const auto source_corners = gsp::layer_live_corners(source, layer_local_rect(source));
+    const auto target_corners = gsp::layer_live_corners(target, layer_local_rect(target));
+    std::vector<int> result;
+    if (source_corners.empty() || target_corners.empty() || source_indices.empty())
+        return result;
+
+    for (int source_index : source_indices) {
+        auto source_it = std::find_if(source_corners.begin(), source_corners.end(),
+            [source_index](const gsp::LiveCornerGeometry &corner) {
+                return corner.point_index == source_index;
+            });
+        if (source_it == source_corners.end())
+            continue;
+        const size_t source_position = (size_t)std::distance(source_corners.begin(), source_it);
+
+        auto exact = std::find_if(target_corners.begin(), target_corners.end(),
+            [source_index](const gsp::LiveCornerGeometry &corner) {
+                return corner.point_index == source_index;
+            });
+        if (source_corners.size() == target_corners.size() && exact != target_corners.end()) {
+            result.push_back(exact->point_index);
+            continue;
+        }
+
+        const double fraction = source_corners.size() <= 1
+            ? 0.0
+            : (double)source_position / (double)(source_corners.size() - 1);
+        const size_t target_position = (size_t)std::clamp(
+            (long long)std::llround(fraction * (double)(target_corners.size() - 1)),
+            0LL, (long long)target_corners.size() - 1);
+        result.push_back(target_corners[target_position].point_index);
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
+}
+
+bool CanvasPreview::corner_controls_available() const
+{
+    if (active_tool_ == CanvasTool::DirectSelection && !selected_path_point_indices_.empty())
+        return !selected_corner_layer_id_.empty() && !selected_corner_indices_.empty();
+    for (const auto &layer : selected_layers()) {
+        if (layer && layer_supports_corner_radius_handles(*layer))
+            return true;
+    }
+    return false;
+}
+
+double CanvasPreview::corner_control_radius(bool *mixed) const
+{
+    if (mixed) *mixed = false;
+    auto layers = selected_layers();
+    if (layers.empty())
+        return 0.0;
+
+    std::shared_ptr<Layer> source;
+    if (!selected_corner_layer_id_.empty() && title_)
+        source = title_->find_layer(selected_corner_layer_id_);
+    if (!source)
+        source = selected_layer();
+    if (!source)
+        source = layers.back();
+    if (!source || !layer_supports_corner_radius_handles(*source))
+        return 0.0;
+
+    const bool selected_only = selected_corner_layer_id_ == source->id && !selected_corner_indices_.empty();
+    const std::vector<int> source_indices = corner_indices_for_layer(*source, selected_only);
+    bool have_value = false;
+    double value = 0.0;
+    bool is_mixed = false;
+    for (const auto &layer : layers) {
+        if (!layer || !layer_supports_corner_radius_handles(*layer))
+            continue;
+        const std::vector<int> indices = selected_only
+            ? mapped_corner_indices(*source, *layer, source_indices)
+            : corner_indices_for_layer(*layer, false);
+        for (int index : indices) {
+            const double current = corner_radius_value(*layer, index);
+            if (!have_value) {
+                value = current;
+                have_value = true;
+            } else if (std::abs(current - value) > 1e-4) {
+                is_mixed = true;
+            }
+        }
+    }
+    if (mixed) *mixed = is_mixed;
+    return have_value ? value : 0.0;
+}
+
+bool CanvasPreview::corner_control_sync(bool *mixed) const
+{
+    if (mixed) *mixed = false;
+    bool have_value = false;
+    bool value = true;
+    bool is_mixed = false;
+    for (const auto &layer : selected_layers()) {
+        if (!layer || !layer_supports_corner_radius_handles(*layer))
+            continue;
+        if (!have_value) {
+            value = layer->corner_radius_locked;
+            have_value = true;
+        } else if (layer->corner_radius_locked != value) {
+            is_mixed = true;
+        }
+    }
+    if (mixed) *mixed = is_mixed;
+    return have_value ? value : true;
+}
+
+CornerType CanvasPreview::corner_control_type(bool *mixed) const
+{
+    if (mixed) *mixed = false;
+    bool have_value = false;
+    CornerType value = CornerType::Round;
+    bool is_mixed = false;
+    for (const auto &layer : selected_layers()) {
+        if (!layer || !layer_supports_corner_radius_handles(*layer))
+            continue;
+        if (!have_value) {
+            value = layer->corner_type;
+            have_value = true;
+        } else if (layer->corner_type != value) {
+            is_mixed = true;
+        }
+    }
+    if (mixed) *mixed = is_mixed;
+    return value;
+}
+
+QPointF CanvasPreview::corner_radius_handle_view_pos(const Layer &layer,
+                                                     const gsp::LiveCornerGeometry &corner) const
 {
     constexpr double kCornerRadiusHandleOffsetPx = 20.0;
-    const double max_radius = std::max(0.0, std::min(box.width(), box.height()) / 2.0);
-    auto radius = [max_radius](float value) {
-        return std::clamp((double)value, 0.0, max_radius);
-    };
-    QPointF corner;
-    QPointF inward;
-    double current_radius = 0.0;
-    switch (mode) {
-    case DragMode::CornerRadiusTL:
-        corner = box.topLeft();
-        inward = corner + QPointF(1.0, 1.0);
-        current_radius = radius(layer.corner_radius_tl);
-        break;
-    case DragMode::CornerRadiusTR:
-        corner = box.topRight();
-        inward = corner + QPointF(-1.0, 1.0);
-        current_radius = radius(layer.corner_radius_tr);
-        break;
-    case DragMode::CornerRadiusBR:
-        corner = box.bottomRight();
-        inward = corner + QPointF(-1.0, -1.0);
-        current_radius = radius(layer.corner_radius_br);
-        break;
-    case DragMode::CornerRadiusBL:
-        corner = box.bottomLeft();
-        inward = corner + QPointF(1.0, -1.0);
-        current_radius = radius(layer.corner_radius_bl);
-        break;
-    default:
-        return QPointF();
-    }
+    const QPointF toward_previous = corner.previous - corner.anchor;
+    const QPointF toward_next = corner.next - corner.anchor;
+    const double previous_length = std::hypot(toward_previous.x(), toward_previous.y());
+    const double next_length = std::hypot(toward_next.x(), toward_next.y());
+    if (previous_length <= 1e-9 || next_length <= 1e-9)
+        return canvas_to_view(layer_to_canvas(layer, corner.anchor));
 
-    const QPointF corner_view = canvas_to_view(layer_to_canvas(layer, corner));
-    const QPointF inward_view = canvas_to_view(layer_to_canvas(layer, inward));
-    const QLineF direction(corner_view, inward_view);
-    if (direction.length() <= 0.001)
-        return QPointF();
-    const double t = max_radius > 0.0 ? std::clamp(current_radius / max_radius, 0.0, 1.0) : 0.0;
-    const double offset_px = kCornerRadiusHandleOffsetPx * (1.0 - 2.0 * t);
-    return (inward_view - corner_view) / direction.length() * offset_px;
+    const QPointF previous_unit = toward_previous / previous_length;
+    const QPointF next_unit = toward_next / next_length;
+    QPointF inward = previous_unit + next_unit;
+    const double inward_length = std::hypot(inward.x(), inward.y());
+    if (inward_length <= 1e-9)
+        return canvas_to_view(layer_to_canvas(layer, corner.anchor));
+    inward /= inward_length;
+
+    const double cosine = std::clamp(QPointF::dotProduct(previous_unit, next_unit), -1.0, 1.0);
+    const double sin_half_angle = std::max(1e-6, std::sqrt(std::max(0.0, (1.0 - cosine) * 0.5)));
+    const double center_distance = corner.radius / sin_half_angle;
+    const QPointF geometric_local = corner.anchor + inward * center_distance;
+    const QPointF geometric_view = canvas_to_view(layer_to_canvas(layer, geometric_local));
+    const QPointF anchor_view = canvas_to_view(layer_to_canvas(layer, corner.anchor));
+    const QPointF inward_view_probe = canvas_to_view(layer_to_canvas(layer, corner.anchor + inward));
+    const QPointF inward_view_delta = inward_view_probe - anchor_view;
+    const double inward_view_length = std::hypot(inward_view_delta.x(), inward_view_delta.y());
+    const QPointF inward_view = inward_view_length > 1e-9
+        ? inward_view_delta / inward_view_length
+        : QPointF();
+    const double radius_fraction = corner.max_radius > 1e-9
+        ? std::clamp(corner.radius / corner.max_radius, 0.0, 1.0)
+        : 0.0;
+    const double offset_px = kCornerRadiusHandleOffsetPx * (1.0 - 2.0 * radius_fraction);
+    return geometric_view + inward_view * offset_px;
 }
 
-QPointF CanvasPreview::corner_radius_handle_view_pos(const Layer &layer, const QRectF &box, DragMode mode) const
-{
-    return canvas_to_view(layer_to_canvas(layer, corner_radius_handle_local_pos(layer, box, mode))) +
-           corner_radius_visual_offset_view(layer, box, mode);
-}
-
-CanvasPreview::DragMode CanvasPreview::hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const
+int CanvasPreview::hit_test_corner_radius_handle_index(const Layer &layer, const QPointF &view_pt) const
 {
     if (!layer_supports_corner_radius_handles(layer))
-        return DragMode::None;
-    const QRectF box = layer_local_rect(layer);
-    if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
-        return DragMode::None;
-    for (DragMode mode : {DragMode::CornerRadiusTL, DragMode::CornerRadiusTR,
-                          DragMode::CornerRadiusBR, DragMode::CornerRadiusBL}) {
-        const QPointF view = corner_radius_handle_view_pos(layer, box, mode);
-        if (QLineF(view_pt, view).length() <= CANVAS_CONTROL_HIT_RADIUS_PX * 1.25)
-            return mode;
+        return -1;
+    const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+    double best_distance = CANVAS_CONTROL_HIT_RADIUS_PX * 1.5;
+    int best_index = -1;
+    for (const auto &corner : corners) {
+        const double distance = QLineF(view_pt, corner_radius_handle_view_pos(layer, corner)).length();
+        if (distance <= best_distance) {
+            best_distance = distance;
+            best_index = corner.point_index;
+        }
     }
-    return DragMode::None;
+    return best_index;
+}
+
+std::shared_ptr<Layer> CanvasPreview::hit_test_selected_corner_layer(const QPointF &view_pt,
+                                                                     int &point_index) const
+{
+    point_index = -1;
+    auto layers = selected_layers();
+    if (layers.empty())
+        return nullptr;
+
+    if (auto primary = selected_layer()) {
+        point_index = hit_test_corner_radius_handle_index(*primary, view_pt);
+        if (point_index >= 0)
+            return primary;
+    }
+    for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (!layer || (selected_layer() && layer->id == selected_layer()->id))
+            continue;
+        point_index = hit_test_corner_radius_handle_index(*layer, view_pt);
+        if (point_index >= 0)
+            return layer;
+    }
+    return nullptr;
+}
+
+CanvasPreview::DragMode CanvasPreview::hit_test_corner_radius_handles(const Layer &layer,
+                                                                      const QPointF &view_pt) const
+{
+    return hit_test_corner_radius_handle_index(layer, view_pt) >= 0
+        ? DragMode::CornerRadius
+        : DragMode::None;
+}
+
+double CanvasPreview::corner_radius_value(const Layer &layer, int point_index) const
+{
+    if (layer.shape_type == ShapeType::Path) {
+        if (point_index >= 0 && (size_t)point_index < layer.path_points.size())
+            return std::max(0.0, layer.path_points[(size_t)point_index].corner_radius);
+        return 0.0;
+    }
+    if (layer.shape_type == ShapeType::Rectangle || layer.shape_type == ShapeType::RoundedRectangle) {
+        switch (point_index) {
+        case 0: return layer.corner_radius_tl;
+        case 1: return layer.corner_radius_tr;
+        case 2: return layer.corner_radius_br;
+        case 3: return layer.corner_radius_bl;
+        default: return 0.0;
+        }
+    }
+    if (layer.shape_type == ShapeType::Star && point_index % 2 != 0)
+        return std::max(0.0, (double)layer.shape_inner_roundness);
+    return std::max(0.0, (double)layer.shape_roundness);
+}
+
+void CanvasPreview::set_corner_radius_value(Layer &layer, int point_index, double radius, bool affect_group)
+{
+    radius = std::max(0.0, radius);
+    if (layer.shape_type == ShapeType::Path) {
+        if (affect_group) {
+            const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+            for (const auto &corner : corners) {
+                if (corner.point_index >= 0 && (size_t)corner.point_index < layer.path_points.size())
+                    layer.path_points[(size_t)corner.point_index].corner_radius = radius;
+            }
+        } else if (point_index >= 0 && (size_t)point_index < layer.path_points.size()) {
+            layer.path_points[(size_t)point_index].corner_radius = radius;
+        }
+        return;
+    }
+
+    if (layer.shape_type == ShapeType::Rectangle || layer.shape_type == ShapeType::RoundedRectangle) {
+        if (affect_group) {
+            set_layer_all_corner_radii(layer, (float)radius);
+        } else {
+            switch (point_index) {
+            case 0: layer.corner_radius_tl = (float)radius; break;
+            case 1: layer.corner_radius_tr = (float)radius; break;
+            case 2: layer.corner_radius_br = (float)radius; break;
+            case 3: layer.corner_radius_bl = (float)radius; break;
+            default: break;
+            }
+            set_layer_corner_radii(layer, layer.corner_radius_tl, layer.corner_radius_tr,
+                                   layer.corner_radius_br, layer.corner_radius_bl);
+        }
+        return;
+    }
+
+    if (layer.shape_type == ShapeType::Star && point_index % 2 != 0)
+        layer.shape_inner_roundness = (float)radius;
+    else
+        layer.shape_roundness = (float)radius;
+}
+
+void CanvasPreview::set_corner_control_radius(double radius)
+{
+    radius = std::max(0.0, radius);
+    auto layers = selected_layers();
+    if (layers.empty())
+        return;
+    std::shared_ptr<Layer> source = !selected_corner_layer_id_.empty() && title_
+        ? title_->find_layer(selected_corner_layer_id_) : selected_layer();
+    if (!source) source = layers.back();
+    if (!source) return;
+
+    const bool selected_only = selected_corner_layer_id_ == source->id && !selected_corner_indices_.empty();
+    const std::vector<int> source_indices = corner_indices_for_layer(*source, selected_only);
+    bool changed = false;
+    for (auto &layer : layers) {
+        if (!layer || !layer_supports_corner_radius_handles(*layer))
+            continue;
+        std::vector<int> indices = selected_only
+            ? mapped_corner_indices(*source, *layer, source_indices)
+            : corner_indices_for_layer(*layer, false);
+        if (selected_only && layer->shape_type != ShapeType::Path &&
+            layer->shape_type != ShapeType::Rectangle &&
+            layer->shape_type != ShapeType::RoundedRectangle) {
+            if (gsp::ensure_editable_path(*layer))
+                indices = mapped_corner_indices(*source, *layer, source_indices);
+        }
+        for (int index : indices)
+            set_corner_radius_value(*layer, index, radius, false);
+        if (selected_only)
+            layer->corner_radius_locked = false;
+        changed = changed || !indices.empty();
+    }
+    if (!changed) return;
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::set_corner_control_sync(bool enabled)
+{
+    bool changed = false;
+    for (auto &layer : selected_layers()) {
+        if (!layer || !layer_supports_corner_radius_handles(*layer))
+            continue;
+        layer->corner_radius_locked = enabled;
+        if (enabled) {
+            const auto corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+            if (!corners.empty()) {
+                const double radius = corner_radius_value(*layer, corners.front().point_index);
+                for (const auto &corner : corners)
+                    set_corner_radius_value(*layer, corner.point_index, radius, false);
+            }
+        }
+        changed = true;
+    }
+    if (!changed) return;
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::set_corner_control_type(CornerType type)
+{
+    bool changed = false;
+    for (auto &layer : selected_layers()) {
+        if (!layer || !layer_supports_corner_radius_handles(*layer))
+            continue;
+        layer->corner_type = type;
+        changed = true;
+    }
+    if (!changed) return;
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+bool CanvasPreview::point_controls_available() const
+{
+    const auto layer = selected_layer();
+    return active_tool_ == CanvasTool::DirectSelection && layer &&
+           layer->shape_type == ShapeType::Path && !selected_path_point_indices_.empty();
+}
+
+QPointF CanvasPreview::point_control_position(bool *x_mixed, bool *y_mixed) const
+{
+    if (x_mixed) *x_mixed = false;
+    if (y_mixed) *y_mixed = false;
+    const auto layer = selected_layer();
+    if (!layer || layer->shape_type != ShapeType::Path || selected_path_point_indices_.empty())
+        return QPointF();
+
+    bool have = false;
+    QPointF value;
+    for (int index : selected_path_point_indices_) {
+        if (index < 0 || (size_t)index >= layer->path_points.size())
+            continue;
+        const BezierPathPoint &point = layer->path_points[(size_t)index];
+        const QPointF canvas = path_normalized_to_canvas(*layer, point.x, point.y);
+        if (!have) {
+            value = canvas;
+            have = true;
+        } else {
+            if (x_mixed && std::abs(canvas.x() - value.x()) > 0.01) *x_mixed = true;
+            if (y_mixed && std::abs(canvas.y() - value.y()) > 0.01) *y_mixed = true;
+        }
+    }
+    return value;
+}
+
+bool CanvasPreview::point_control_smooth(bool *mixed) const
+{
+    if (mixed) *mixed = false;
+    const auto layer = selected_layer();
+    if (!layer || layer->shape_type != ShapeType::Path || selected_path_point_indices_.empty())
+        return false;
+    bool have = false;
+    bool value = false;
+    for (int index : selected_path_point_indices_) {
+        if (index < 0 || (size_t)index >= layer->path_points.size())
+            continue;
+        const bool smooth = layer->path_points[(size_t)index].smooth;
+        if (!have) {
+            value = smooth;
+            have = true;
+        } else if (smooth != value && mixed) {
+            *mixed = true;
+        }
+    }
+    return value;
+}
+
+namespace {
+void collect_path_local_geometry(const Layer &layer, const QRectF &rect,
+                                 std::vector<QPointF> &anchors,
+                                 std::vector<QPointF> &in_handles,
+                                 std::vector<QPointF> &out_handles,
+                                 std::vector<bool> &has_in,
+                                 std::vector<bool> &has_out)
+{
+    anchors.clear(); in_handles.clear(); out_handles.clear(); has_in.clear(); has_out.clear();
+    anchors.reserve(layer.path_points.size());
+    in_handles.reserve(layer.path_points.size());
+    out_handles.reserve(layer.path_points.size());
+    has_in.reserve(layer.path_points.size());
+    has_out.reserve(layer.path_points.size());
+    for (const BezierPathPoint &point : layer.path_points) {
+        anchors.push_back(gsp::path_point_to_local(point, rect));
+        in_handles.push_back(gsp::path_in_handle_to_local(point, rect));
+        out_handles.push_back(gsp::path_out_handle_to_local(point, rect));
+        has_in.push_back(point.has_in);
+        has_out.push_back(point.has_out);
+    }
+}
+}
+
+void CanvasPreview::set_point_control_x(double x)
+{
+    auto layer = selected_layer();
+    if (!point_controls_available() || !layer)
+        return;
+    const QRectF rect = layer_local_rect(*layer);
+    std::vector<QPointF> anchors, in_handles, out_handles;
+    std::vector<bool> has_in, has_out;
+    collect_path_local_geometry(*layer, rect, anchors, in_handles, out_handles, has_in, has_out);
+    for (int index : selected_path_point_indices_) {
+        if (index < 0 || (size_t)index >= anchors.size()) continue;
+        const QPointF anchor_canvas = layer_to_canvas(*layer, anchors[(size_t)index]);
+        const QPointF delta(x - anchor_canvas.x(), 0.0);
+        anchors[(size_t)index] = canvas_to_layer(*layer, anchor_canvas + delta);
+        if (has_in[(size_t)index])
+            in_handles[(size_t)index] = canvas_to_layer(*layer, layer_to_canvas(*layer, in_handles[(size_t)index]) + delta);
+        if (has_out[(size_t)index])
+            out_handles[(size_t)index] = canvas_to_layer(*layer, layer_to_canvas(*layer, out_handles[(size_t)index]) + delta);
+    }
+    reframe_custom_path(*layer, anchors, in_handles, out_handles, has_in, has_out);
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::set_point_control_y(double y)
+{
+    auto layer = selected_layer();
+    if (!point_controls_available() || !layer)
+        return;
+    const QRectF rect = layer_local_rect(*layer);
+    std::vector<QPointF> anchors, in_handles, out_handles;
+    std::vector<bool> has_in, has_out;
+    collect_path_local_geometry(*layer, rect, anchors, in_handles, out_handles, has_in, has_out);
+    for (int index : selected_path_point_indices_) {
+        if (index < 0 || (size_t)index >= anchors.size()) continue;
+        const QPointF anchor_canvas = layer_to_canvas(*layer, anchors[(size_t)index]);
+        const QPointF delta(0.0, y - anchor_canvas.y());
+        anchors[(size_t)index] = canvas_to_layer(*layer, anchor_canvas + delta);
+        if (has_in[(size_t)index])
+            in_handles[(size_t)index] = canvas_to_layer(*layer, layer_to_canvas(*layer, in_handles[(size_t)index]) + delta);
+        if (has_out[(size_t)index])
+            out_handles[(size_t)index] = canvas_to_layer(*layer, layer_to_canvas(*layer, out_handles[(size_t)index]) + delta);
+    }
+    reframe_custom_path(*layer, anchors, in_handles, out_handles, has_in, has_out);
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::convert_selected_points_to_corner()
+{
+    auto layer = selected_layer();
+    if (!point_controls_available() || !layer)
+        return;
+    for (int index : selected_path_point_indices_) {
+        if (index >= 0 && (size_t)index < layer->path_points.size()) {
+            BezierPathPoint &point = layer->path_points[(size_t)index];
+            point.smooth = false;
+            point.has_in = false;
+            point.has_out = false;
+            point.in_x = point.out_x = point.x;
+            point.in_y = point.out_y = point.y;
+        }
+    }
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::convert_selected_points_to_smooth()
+{
+    auto layer = selected_layer();
+    if (!point_controls_available() || !layer || layer->path_points.size() < 2)
+        return;
+    const QRectF rect = layer_local_rect(*layer);
+    const size_t count = layer->path_points.size();
+    for (int selected : selected_path_point_indices_) {
+        if (selected < 0 || (size_t)selected >= count) continue;
+        const size_t i = (size_t)selected;
+        BezierPathPoint &point = layer->path_points[i];
+        const bool has_previous = layer->path_closed || i > 0;
+        const bool has_next = layer->path_closed || i + 1 < count;
+        const QPointF anchor = gsp::path_point_to_local(point, rect);
+        QPointF direction;
+        if (has_previous && has_next) {
+            const size_t previous = (i + count - 1) % count;
+            const size_t next = (i + 1) % count;
+            direction = gsp::path_point_to_local(layer->path_points[next], rect) -
+                        gsp::path_point_to_local(layer->path_points[previous], rect);
+        } else if (has_next) {
+            direction = gsp::path_point_to_local(layer->path_points[i + 1], rect) - anchor;
+        } else if (has_previous) {
+            direction = anchor - gsp::path_point_to_local(layer->path_points[i - 1], rect);
+        }
+        const double direction_length = std::hypot(direction.x(), direction.y());
+        if (direction_length <= 1e-9)
+            continue;
+        const QPointF unit = direction / direction_length;
+        double in_length = point.has_in ? QLineF(anchor, gsp::path_in_handle_to_local(point, rect)).length() : 0.0;
+        double out_length = point.has_out ? QLineF(anchor, gsp::path_out_handle_to_local(point, rect)).length() : 0.0;
+        if (has_previous && in_length <= 1e-6) {
+            const size_t previous = (i + count - 1) % count;
+            in_length = QLineF(anchor, gsp::path_point_to_local(layer->path_points[previous], rect)).length() / 3.0;
+        }
+        if (has_next && out_length <= 1e-6) {
+            const size_t next = (i + 1) % count;
+            out_length = QLineF(anchor, gsp::path_point_to_local(layer->path_points[next], rect)).length() / 3.0;
+        }
+        auto normalize = [&](const QPointF &local) {
+            return QPointF((local.x() - rect.left()) / std::max(1e-9, rect.width()),
+                           (local.y() - rect.top()) / std::max(1e-9, rect.height()));
+        };
+        if (has_previous) {
+            const QPointF in = normalize(anchor - unit * in_length);
+            point.has_in = true; point.in_x = in.x(); point.in_y = in.y();
+        }
+        if (has_next) {
+            const QPointF out = normalize(anchor + unit * out_length);
+            point.has_out = true; point.out_x = out.x(); point.out_y = out.y();
+        }
+        point.smooth = true;
+    }
+    dirty_ = true;
+    invalidate_canvas_overlay_caches();
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    update();
+}
+
+void CanvasPreview::set_point_control_show_handles(bool show)
+{
+    if (show_selected_path_handles_ == show)
+        return;
+    show_selected_path_handles_ = show;
+    invalidate_canvas_overlay_caches();
+    notify_corner_context_changed();
+    update();
 }
 
 void CanvasPreview::draw_corner_radius_handles(QPainter &p, const Layer &layer)
 {
     if (!layer_supports_corner_radius_handles(layer))
         return;
-    const QRectF box = layer_local_rect(layer);
-    if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
+    const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+    if (corners.empty())
         return;
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen guide_pen(QColor(255, 255, 255, 180), 1.0, Qt::DashLine);
+    QPen guide_pen(QColor(255, 255, 255, 170), 1.0, Qt::DashLine);
     guide_pen.setCosmetic(true);
-    p.setPen(guide_pen);
-    p.setBrush(Qt::NoBrush);
-
-    auto to_view = [&](const QPointF &local) {
-        return canvas_to_view(layer_to_canvas(layer, local));
-    };
-    auto draw_handle = [&](DragMode mode) {
-        QPointF corner;
-        switch (mode) {
-        case DragMode::CornerRadiusTL: corner = box.topLeft(); break;
-        case DragMode::CornerRadiusTR: corner = box.topRight(); break;
-        case DragMode::CornerRadiusBR: corner = box.bottomRight(); break;
-        case DragMode::CornerRadiusBL: corner = box.bottomLeft(); break;
-            default: return;
-        }
-        const QPointF view = corner_radius_handle_view_pos(layer, box, mode);
-        p.drawLine(to_view(corner), view);
-        p.setPen(QPen(QColor(25, 25, 25, 230), 3.0));
-        p.setBrush(QColor(255, 255, 255, 245));
-        p.drawEllipse(view, 5.0, 5.0);
-        p.setPen(QPen(QColor(0, 120, 255, 255), 1.4));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(view, 5.0, 5.0);
+    for (const auto &corner : corners) {
+        const QPointF anchor_view = canvas_to_view(layer_to_canvas(layer, corner.anchor));
+        const QPointF handle_view = corner_radius_handle_view_pos(layer, corner);
+        const bool selected = selected_corner_layer_id_ == layer.id &&
+            selected_corner_indices_.find(corner.point_index) != selected_corner_indices_.end();
         p.setPen(guide_pen);
-    };
-    draw_handle(DragMode::CornerRadiusTL);
-    draw_handle(DragMode::CornerRadiusTR);
-    draw_handle(DragMode::CornerRadiusBR);
-    draw_handle(DragMode::CornerRadiusBL);
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(anchor_view, handle_view);
+        const bool at_limit = corner.max_radius > 0.0 && corner.radius >= corner.max_radius - 0.25;
+        const QColor outline = at_limit ? QColor(235, 55, 55, 255) : QColor(0, 120, 255, 255);
+        p.setPen(QPen(QColor(25, 25, 25, 230), selected ? 3.5 : 3.0));
+        p.setBrush(selected ? outline : QColor(255, 255, 255, 245));
+        p.drawEllipse(handle_view, selected ? 5.8 : 5.0, selected ? 5.8 : 5.0);
+        p.setPen(QPen(outline, selected ? 1.8 : 1.4));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(handle_view, selected ? 5.8 : 5.0, selected ? 5.8 : 5.0);
+    }
     p.restore();
 }
 
@@ -1614,79 +3006,150 @@ void CanvasPreview::begin_corner_radius_drag(const Layer &layer)
     corner_radius_drag_ = CornerRadiusDragState{};
     if (!layer_supports_corner_radius_handles(layer))
         return;
-    const QRectF box = layer_local_rect(layer);
-    if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
+    const int point_index = hit_test_corner_radius_handle_index(layer, drag_start_view_);
+    if (point_index < 0)
         return;
+
+    const bool preselected = selected_corner_layer_id_ == layer.id &&
+        selected_corner_indices_.find(point_index) != selected_corner_indices_.end();
     corner_radius_drag_.active = true;
-    corner_radius_drag_.local_rect = box;
-    corner_radius_drag_.top_left = layer.corner_radius_tl;
-    corner_radius_drag_.top_right = layer.corner_radius_tr;
-    corner_radius_drag_.bottom_right = layer.corner_radius_br;
-    corner_radius_drag_.bottom_left = layer.corner_radius_bl;
-    corner_radius_drag_.locked = layer.corner_radius_locked;
+    corner_radius_drag_.primary_layer_id = layer.id;
+    corner_radius_drag_.point_index = point_index;
+    corner_radius_drag_.primary_start_radius = corner_radius_value(layer, point_index);
+    corner_radius_drag_.isolated = preselected;
+
+    std::vector<int> source_targets;
+    if (preselected) {
+        source_targets.assign(selected_corner_indices_.begin(), selected_corner_indices_.end());
+    } else {
+        const auto source_corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+        for (const auto &corner : source_corners) {
+            if (layer.shape_type == ShapeType::Star &&
+                (corner.point_index & 1) != (point_index & 1))
+                continue;
+            source_targets.push_back(corner.point_index);
+        }
+    }
+
+    for (auto &target_layer : selected_layers()) {
+        if (!target_layer || !layer_supports_corner_radius_handles(*target_layer))
+            continue;
+        CornerLayerDragState state;
+        state.id = target_layer->id;
+        state.sync = target_layer->corner_radius_locked;
+        const auto corners = gsp::layer_live_corners(*target_layer, layer_local_rect(*target_layer));
+        for (const auto &corner : corners)
+            state.points.push_back({corner.point_index, corner_radius_value(*target_layer, corner.point_index)});
+
+        if (preselected) {
+            state.target_indices = mapped_corner_indices(layer, *target_layer, source_targets);
+        } else if (layer.shape_type == ShapeType::Star && target_layer->shape_type == ShapeType::Star) {
+            for (const auto &corner : corners) {
+                if ((corner.point_index & 1) == (point_index & 1))
+                    state.target_indices.push_back(corner.point_index);
+            }
+        } else {
+            for (const auto &corner : corners)
+                state.target_indices.push_back(corner.point_index);
+        }
+        corner_radius_drag_.layers.push_back(std::move(state));
+    }
 }
 
 bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
 {
-    if (!corner_radius_drag_.active)
+    if (!corner_radius_drag_.active || drag_mode_ != DragMode::CornerRadius || !title_)
         return false;
-    if (drag_mode_ != DragMode::CornerRadiusTL && drag_mode_ != DragMode::CornerRadiusTR &&
-        drag_mode_ != DragMode::CornerRadiusBR && drag_mode_ != DragMode::CornerRadiusBL)
-        return false;
-    auto layer = selected_layer();
+    auto layer = title_->find_layer(corner_radius_drag_.primary_layer_id);
     if (!layer || layer->locked)
         return false;
 
-    const QRectF box = corner_radius_drag_.local_rect;
-    const double max_radius = std::max(0.0, std::min(box.width(), box.height()) / 2.0);
-    auto radius_from_local = [&](const QPointF &local) {
-        switch (drag_mode_) {
-        case DragMode::CornerRadiusTL:
-            return std::min(local.x() - box.left(), local.y() - box.top());
-        case DragMode::CornerRadiusTR:
-            return std::min(box.right() - local.x(), local.y() - box.top());
-        case DragMode::CornerRadiusBR:
-            return std::min(box.right() - local.x(), box.bottom() - local.y());
-        case DragMode::CornerRadiusBL:
-            return std::min(local.x() - box.left(), box.bottom() - local.y());
-        default:
-            return 0.0;
-        }
-    };
-    auto set_preview_radius = [&](double value) {
-        switch (drag_mode_) {
-        case DragMode::CornerRadiusTL: layer->corner_radius_tl = (float)value; break;
-        case DragMode::CornerRadiusTR: layer->corner_radius_tr = (float)value; break;
-        case DragMode::CornerRadiusBR: layer->corner_radius_br = (float)value; break;
-        case DragMode::CornerRadiusBL: layer->corner_radius_bl = (float)value; break;
-        default: break;
-        }
-    };
+    const auto corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+    const auto it = std::find_if(corners.begin(), corners.end(), [&](const gsp::LiveCornerGeometry &corner) {
+        return corner.point_index == corner_radius_drag_.point_index;
+    });
+    if (it == corners.end())
+        return false;
+    const gsp::LiveCornerGeometry &corner = *it;
 
-    double radius = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        set_preview_radius(radius);
-        const QPointF local = canvas_to_layer(*layer, view_to_canvas(
-            view_pt - corner_radius_visual_offset_view(*layer, box, drag_mode_)));
-        radius = std::clamp(radius_from_local(local), 0.0, max_radius);
+    const QPointF previous_vector = corner.previous - corner.anchor;
+    const QPointF next_vector = corner.next - corner.anchor;
+    const double previous_length = std::hypot(previous_vector.x(), previous_vector.y());
+    const double next_length = std::hypot(next_vector.x(), next_vector.y());
+    if (previous_length <= 1e-9 || next_length <= 1e-9)
+        return false;
+    const QPointF previous_unit = previous_vector / previous_length;
+    const QPointF next_unit = next_vector / next_length;
+    QPointF inward = previous_unit + next_unit;
+    const double inward_length = std::hypot(inward.x(), inward.y());
+    if (inward_length <= 1e-9)
+        return false;
+    inward /= inward_length;
+
+    const QPointF anchor_view = canvas_to_view(layer_to_canvas(*layer, corner.anchor));
+    const QPointF probe_view = canvas_to_view(layer_to_canvas(*layer, corner.anchor + inward));
+    const QPointF probe_delta = probe_view - anchor_view;
+    const double pixels_per_local = std::hypot(probe_delta.x(), probe_delta.y());
+    if (pixels_per_local <= 1e-9)
+        return false;
+    const QPointF inward_view = probe_delta / pixels_per_local;
+    constexpr double kCornerRadiusHandleOffsetPx = 20.0;
+    const double pointer_projection_px = QPointF::dotProduct(view_pt - anchor_view, inward_view);
+    const double cosine = std::clamp(QPointF::dotProduct(previous_unit, next_unit), -1.0, 1.0);
+    const double sin_half_angle = std::max(1e-6, std::sqrt(std::max(0.0, (1.0 - cosine) * 0.5)));
+    double radius = std::clamp(corner_radius_drag_.primary_start_radius, 0.0, corner.max_radius);
+    for (int iteration = 0; iteration < 6; ++iteration) {
+        const double fraction = corner.max_radius > 1e-9
+            ? std::clamp(radius / corner.max_radius, 0.0, 1.0) : 0.0;
+        const double offset_px = kCornerRadiusHandleOffsetPx * (1.0 - 2.0 * fraction);
+        const double center_distance_local = std::max(0.0,
+            (pointer_projection_px - offset_px) / pixels_per_local);
+        const double next_radius = std::clamp(center_distance_local * sin_half_angle,
+                                              0.0, corner.max_radius);
+        if (std::abs(next_radius - radius) <= 1e-4) {
+            radius = next_radius;
+            break;
+        }
+        radius = next_radius;
     }
     if (modifiers.testFlag(Qt::ShiftModifier))
         radius = std::round(radius);
+    const double delta = radius - corner_radius_drag_.primary_start_radius;
+    const double drag_distance = QLineF(view_pt, drag_start_view_).length();
+    if (drag_distance < 2.0 && !corner_radius_drag_.moved)
+        return true;
+    corner_radius_drag_.moved = true;
+    corner_radius_drag_.value_changed = std::abs(delta) > 1e-5;
 
-    if (corner_radius_drag_.locked || layer->corner_radius_locked) {
-        set_layer_all_corner_radii(*layer, (float)radius);
-        layer->corner_radius_locked = true;
-    } else {
-        switch (drag_mode_) {
-        case DragMode::CornerRadiusTL: layer->corner_radius_tl = (float)radius; break;
-        case DragMode::CornerRadiusTR: layer->corner_radius_tr = (float)radius; break;
-        case DragMode::CornerRadiusBR: layer->corner_radius_br = (float)radius; break;
-        case DragMode::CornerRadiusBL: layer->corner_radius_bl = (float)radius; break;
-        default: break;
+    for (const CornerLayerDragState &state : corner_radius_drag_.layers) {
+        auto target_layer = title_->find_layer(state.id);
+        if (!target_layer)
+            continue;
+        if (corner_radius_drag_.isolated && target_layer->shape_type != ShapeType::Path &&
+            target_layer->shape_type != ShapeType::Rectangle &&
+            target_layer->shape_type != ShapeType::RoundedRectangle)
+            gsp::ensure_editable_path(*target_layer);
+        for (const CornerPointDragState &point : state.points)
+            set_corner_radius_value(*target_layer, point.point_index, point.radius, false);
+
+        const auto current_corners = gsp::layer_live_corners(*target_layer, layer_local_rect(*target_layer));
+        for (int target_index : state.target_indices) {
+            auto start = std::find_if(state.points.begin(), state.points.end(),
+                [target_index](const CornerPointDragState &point) {
+                    return point.point_index == target_index;
+                });
+            if (start == state.points.end())
+                continue;
+            auto geometry = std::find_if(current_corners.begin(), current_corners.end(),
+                [target_index](const gsp::LiveCornerGeometry &item) {
+                    return item.point_index == target_index;
+                });
+            const double maximum = geometry == current_corners.end() ? 9999.0 : geometry->max_radius;
+            set_corner_radius_value(*target_layer, target_index,
+                                    std::clamp(start->radius + delta, 0.0, maximum), false);
         }
-        set_layer_corner_radii(*layer, layer->corner_radius_tl, layer->corner_radius_tr,
-                               layer->corner_radius_br, layer->corner_radius_bl);
-        layer->corner_radius_locked = false;
+        target_layer->corner_radius_locked =
+            (corner_radius_drag_.isolated && corner_radius_drag_.value_changed) ? false : state.sync;
     }
 
     clear_snap_feedback();
@@ -1695,6 +3158,7 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
     drag_changed_ = true;
     drag_current_view_ = view_pt;
     invalidate_canvas_overlay_caches();
+    notify_corner_context_changed();
     update();
     return true;
 }
@@ -1824,8 +3288,9 @@ void CanvasPreview::set_cursor_for_drag_mode(DragMode mode, bool dragging)
     else if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
     else if (mode == DragMode::GradientStart || mode == DragMode::GradientEnd ||
              mode == DragMode::GradientRadius) setCursor(Qt::SizeAllCursor);
-    else if (mode == DragMode::CornerRadiusTL || mode == DragMode::CornerRadiusTR ||
-             mode == DragMode::CornerRadiusBR || mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
+    else if (mode == DragMode::CornerRadius || mode == DragMode::CornerRadiusTL ||
+             mode == DragMode::CornerRadiusTR || mode == DragMode::CornerRadiusBR ||
+             mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
     else if (mode == DragMode::ResizeN || mode == DragMode::ResizeS) setCursor(Qt::SizeVerCursor);
     else if (mode == DragMode::ResizeE || mode == DragMode::ResizeW) setCursor(Qt::SizeHorCursor);
     else if (mode == DragMode::ResizeNE || mode == DragMode::ResizeSW) setCursor(Qt::SizeBDiagCursor);
@@ -1971,7 +3436,10 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
                                       clone->corner_radius_tl,
                                       clone->corner_radius_tr,
                                       clone->corner_radius_br,
-                                      clone->corner_radius_bl});
+                                      clone->corner_radius_bl,
+                                      clone->shape_roundness,
+                                      clone->shape_inner_roundness,
+                                      capture_path_corner_radii(*clone)});
     }
     sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
     invalidate_canvas_overlay_caches();
@@ -2429,6 +3897,9 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                                                           state.corner_radius_tr,
                                                           state.corner_radius_br,
                                                           state.corner_radius_bl,
+                                                          state.shape_roundness,
+                                                          state.shape_inner_roundness,
+                                                          state.path_corner_radii,
                                                           layer->rect_width,
                                                           layer->rect_height);
                 }
@@ -2611,6 +4082,9 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                                                       start_state->corner_radius_tr,
                                                       start_state->corner_radius_br,
                                                       start_state->corner_radius_bl,
+                                                      start_state->shape_roundness,
+                                                      start_state->shape_inner_roundness,
+                                                      start_state->path_corner_radii,
                                                       new_w,
                                                       new_h);
             }
@@ -2685,8 +4159,9 @@ void CanvasPreview::render_to_pixmap()
      * visually transparent over the canvas-rendered text. */
     const bool live_corner_radius_drag =
         corner_radius_drag_.active &&
-        (drag_mode_ == DragMode::CornerRadiusTL || drag_mode_ == DragMode::CornerRadiusTR ||
-         drag_mode_ == DragMode::CornerRadiusBR || drag_mode_ == DragMode::CornerRadiusBL);
+        (drag_mode_ == DragMode::CornerRadius || drag_mode_ == DragMode::CornerRadiusTL ||
+         drag_mode_ == DragMode::CornerRadiusTR || drag_mode_ == DragMode::CornerRadiusBR ||
+         drag_mode_ == DragMode::CornerRadiusBL);
     const bool live_geometry_drag =
         drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
         drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY;
@@ -3224,8 +4699,9 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     };
 
     if (selection_overlay.layers.size() == 1) {
-        draw_layer_box(selection_overlay.layers.front(), true);
-    } else if (selection_overlay.layers.size() > 1) {
+        if (active_tool_ != CanvasTool::DirectSelection)
+            draw_layer_box(selection_overlay.layers.front(), true);
+    } else if (selection_overlay.layers.size() > 1 && active_tool_ != CanvasTool::DirectSelection) {
         for (const auto &layer_geometry : selection_overlay.layers)
             draw_layer_box(layer_geometry, false);
 
@@ -3243,6 +4719,21 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         }
     }
 
+    if (active_tool_ == CanvasTool::DirectSelection) {
+        if (auto layer = selected_layer())
+            draw_direct_selection_path(p, *layer);
+    }
+    const bool show_selected_live_corners =
+        active_tool_ == CanvasTool::Selection ||
+        active_tool_ == CanvasTool::DirectSelection ||
+        active_tool_ == CanvasTool::Shape;
+    if (show_selected_live_corners) {
+        for (const auto &layer : selected_layers()) {
+            if (layer && layer_supports_corner_radius_handles(*layer))
+                draw_corner_radius_handles(p, *layer);
+        }
+    }
+    draw_pen_path_preview(p);
     draw_toolbar_preview(p);
     draw_snap_cursor_indicator(p);
 
@@ -3263,7 +4754,8 @@ void CanvasPreview::paintEvent(QPaintEvent *)
         p.restore();
     }
 
-    if (drag_mode_ == DragMode::Marquee && marquee_active_) {
+    if ((drag_mode_ == DragMode::Marquee && marquee_active_) ||
+        (drag_mode_ == DragMode::PathMarquee && path_marquee_active_)) {
         QRectF marquee(drag_start_view_, drag_current_view_);
         marquee = marquee.normalized();
         QColor marquee_fill = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
@@ -3621,8 +5113,9 @@ QString CanvasPreview::canvas_drag_tooltip_text() const
                mode == DragMode::ResizeSW || mode == DragMode::ResizeW;
     };
     auto is_corner_radius_drag = [](DragMode mode) {
-        return mode == DragMode::CornerRadiusTL || mode == DragMode::CornerRadiusTR ||
-               mode == DragMode::CornerRadiusBR || mode == DragMode::CornerRadiusBL;
+        return mode == DragMode::CornerRadius || mode == DragMode::CornerRadiusTL ||
+               mode == DragMode::CornerRadiusTR || mode == DragMode::CornerRadiusBR ||
+               mode == DragMode::CornerRadiusBL;
     };
 
     if (drag_mode_ == DragMode::Move) {
@@ -3660,13 +5153,17 @@ QString CanvasPreview::canvas_drag_tooltip_text() const
         auto layer = selected_layer();
         if (!layer)
             return QString();
-        double radius = 0.0;
-        switch (drag_mode_) {
-        case DragMode::CornerRadiusTL: radius = layer->corner_radius_tl; break;
-        case DragMode::CornerRadiusTR: radius = layer->corner_radius_tr; break;
-        case DragMode::CornerRadiusBR: radius = layer->corner_radius_br; break;
-        case DragMode::CornerRadiusBL: radius = layer->corner_radius_bl; break;
-        default: break;
+        double radius = drag_mode_ == DragMode::CornerRadius
+            ? corner_radius_value(*layer, corner_radius_drag_.point_index)
+            : 0.0;
+        if (drag_mode_ != DragMode::CornerRadius) {
+            switch (drag_mode_) {
+            case DragMode::CornerRadiusTL: radius = layer->corner_radius_tl; break;
+            case DragMode::CornerRadiusTR: radius = layer->corner_radius_tr; break;
+            case DragMode::CornerRadiusBR: radius = layer->corner_radius_br; break;
+            case DragMode::CornerRadiusBL: radius = layer->corner_radius_bl; break;
+            default: break;
+            }
         }
         return obsgs_tr("OBSTitles.RadiusPixelReadout").arg(std::round(radius), 0, 'f', 0);
     }
@@ -3757,7 +5254,7 @@ void CanvasPreview::update_draw_tool_snap_cursor(const QPointF &view_pt, Qt::Key
 {
     if (!title_ || drawing_shape_ ||
         (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text &&
-         active_tool_ != CanvasTool::Image)) {
+         active_tool_ != CanvasTool::Image && active_tool_ != CanvasTool::Pen)) {
         clear_draw_tool_snap_cursor();
         return;
     }
@@ -3784,7 +5281,7 @@ void CanvasPreview::update_draw_tool_snap_cursor(const QPointF &view_pt, Qt::Key
 void CanvasPreview::draw_snap_cursor_indicator(QPainter &p)
 {
     if (active_tool_ != CanvasTool::Shape && active_tool_ != CanvasTool::Text &&
-        active_tool_ != CanvasTool::Image && !drawing_shape_)
+        active_tool_ != CanvasTool::Image && active_tool_ != CanvasTool::Pen && !drawing_shape_)
         return;
     if (!snap_cursor_visible_ && !final_snap_cursor_visible_)
         return;
@@ -3980,7 +5477,7 @@ void CanvasPreview::draw_hover_layer_box(QPainter &p)
         p.setBrush(Qt::NoBrush);
         p.drawPolygon(hover_overlay.outline);
     }
-    if (layer_supports_corner_radius_handles(layer))
+    if (!hover_overlay.hovered_is_selected && layer_supports_corner_radius_handles(layer))
         draw_corner_radius_handles(p, layer);
     p.restore();
 }
@@ -4030,6 +5527,18 @@ void CanvasPreview::draw_ruler_mouse_indicators(QPainter &p, const QRectF &canva
 
 void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
 {
+    if (ev->button() == Qt::LeftButton && active_tool_ == CanvasTool::Pen && pen_path_active_) {
+        if (pen_path_points_.size() >= 2) {
+            const auto &last = pen_path_points_.back();
+            const auto &previous = pen_path_points_[pen_path_points_.size() - 2];
+            if (QLineF(QPointF(last.x, last.y), QPointF(previous.x, previous.y)).length() <
+                2.0 / std::max(0.1, view_scale()))
+                pen_path_points_.pop_back();
+        }
+        finish_pen_path(false);
+        ev->accept();
+        return;
+    }
     if (ev->button() == Qt::LeftButton) {
         auto layer = text_layer_at_view_pos(ev->pos());
         if (layer) {
@@ -4127,6 +5636,13 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
+    if (active_tool_ == CanvasTool::Pen && pen_path_active_ &&
+        ev->button() == Qt::RightButton) {
+        undo_pen_path_point();
+        ev->accept();
+        return;
+    }
+
     if (active_tool_ == CanvasTool::ColorPicker) {
         if (ev->button() != Qt::LeftButton && ev->button() != Qt::RightButton)
             return;
@@ -4139,6 +5655,109 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     }
 
     if (ev->button() != Qt::LeftButton) return;
+
+    if (active_tool_ == CanvasTool::Pen) {
+        if (pen_path_active_ && pen_path_points_.size() >= 2 &&
+            ev->modifiers().testFlag(Qt::ControlModifier)) {
+            const QPointF first_view = canvas_to_view(QPointF(pen_path_points_.front().x,
+                                                              pen_path_points_.front().y));
+            if (QLineF(first_view, ev->pos()).length() > 8.0) {
+                finish_pen_path(false);
+                ev->accept();
+                return;
+            }
+        }
+        const bool allow_snap = !ev->modifiers().testFlag(Qt::ControlModifier);
+        QPointF anchor = snap_canvas_point(view_to_canvas(ev->pos()), true, true, allow_snap);
+        if (pen_path_active_ && !pen_path_points_.empty() && ev->modifiers().testFlag(Qt::ShiftModifier)) {
+            const QPointF previous(pen_path_points_.back().x, pen_path_points_.back().y);
+            anchor = constrain_path_direction(previous, anchor, ev->modifiers());
+        }
+        if (pen_path_active_ && pen_path_points_.size() >= 2) {
+            const QPointF first_view = canvas_to_view(QPointF(pen_path_points_.front().x,
+                                                              pen_path_points_.front().y));
+            if (QLineF(first_view, ev->pos()).length() <= 8.0) {
+                pen_close_pending_ = true;
+                pen_drag_point_index_ = 0;
+                pen_press_canvas_ = QPointF(pen_path_points_.front().x,
+                                            pen_path_points_.front().y);
+                pen_last_drag_canvas_ = pen_press_canvas_;
+                pen_alt_break_active_ = false;
+                pen_ctrl_unequal_active_ = false;
+                pen_space_reposition_ = false;
+                shape_draw_current_canvas_ = pen_press_canvas_;
+                update();
+                ev->accept();
+                return;
+            }
+        }
+
+        BezierPathPoint point;
+        point.x = point.in_x = point.out_x = anchor.x();
+        point.y = point.in_y = point.out_y = anchor.y();
+        pen_redo_points_.clear();
+        pen_path_points_.push_back(point);
+        pen_path_active_ = true;
+        pen_close_pending_ = false;
+        pen_drag_point_index_ = (int)pen_path_points_.size() - 1;
+        pen_press_canvas_ = anchor;
+        pen_last_drag_canvas_ = anchor;
+        pen_alt_break_active_ = false;
+        pen_ctrl_unequal_active_ = false;
+        pen_space_reposition_ = false;
+        shape_draw_current_canvas_ = anchor;
+        snap_cursor_visible_ = !snap_feedback_.empty();
+        snap_cursor_canvas_ = anchor;
+        update();
+        ev->accept();
+        return;
+    }
+
+    if ((active_tool_ == CanvasTool::Selection ||
+         active_tool_ == CanvasTool::DirectSelection ||
+         active_tool_ == CanvasTool::Shape)) {
+        int corner_index = -1;
+        auto corner_layer = hit_test_selected_corner_layer(ev->pos(), corner_index);
+        if (corner_layer && corner_index >= 0) {
+            if (ev->modifiers().testFlag(Qt::AltModifier)) {
+                CornerType next = CornerType::Round;
+                switch (corner_layer->corner_type) {
+                case CornerType::Round: next = CornerType::Concave; break;
+                case CornerType::Concave: next = CornerType::Straight; break;
+                case CornerType::Straight:
+                case CornerType::Cutout:
+                default: next = CornerType::Round; break;
+                }
+                set_corner_control_type(next);
+                ev->accept();
+                return;
+            }
+            drag_mode_ = DragMode::CornerRadius;
+            drag_changed_ = false;
+            drag_start_view_ = ev->pos();
+            drag_current_view_ = ev->pos();
+            drag_start_canvas_ = view_to_canvas(ev->pos());
+            drag_start_selection_bounds_ = selected_canvas_bounds();
+            drag_layer_states_.clear();
+            gradient_drag_ = GradientDragState{};
+            corner_radius_drag_ = CornerRadiusDragState{};
+            begin_corner_radius_drag(*corner_layer);
+            setCursor(Qt::SizeAllCursor);
+            ev->accept();
+            return;
+        }
+    }
+
+    /* A click away from a live-corner widget returns the widgets to their
+     * neutral state. This keeps the next direct drag linked, matching the
+     * Illustrator interaction model after an isolated corner operation. */
+    clear_corner_selection();
+
+    if (active_tool_ == CanvasTool::DirectSelection) {
+        begin_direct_selection(ev->pos(), ev->modifiers());
+        ev->accept();
+        return;
+    }
 
     if (active_tool_ == CanvasTool::Gradient) {
         if (begin_gradient_tool_drag(ev->pos(), ev->modifiers())) {
@@ -4280,7 +5899,10 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                                       selected->corner_radius_tl,
                                       selected->corner_radius_tr,
                                       selected->corner_radius_br,
-                                      selected->corner_radius_bl});
+                                      selected->corner_radius_bl,
+                                      selected->shape_roundness,
+                                      selected->shape_inner_roundness,
+                                      capture_path_corner_radii(*selected)});
     }
 
     auto selected_contains = [&](const std::string &id) {
@@ -4314,7 +5936,10 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                                                 candidate->corner_radius_tl,
                                                 candidate->corner_radius_tr,
                                                 candidate->corner_radius_br,
-                                                candidate->corner_radius_bl});
+                                                candidate->corner_radius_bl,
+                                                candidate->shape_roundness,
+                                                candidate->shape_inner_roundness,
+                                                capture_path_corner_radii(*candidate)});
         }
     }
 
@@ -4342,8 +5967,9 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         else if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
         else if (mode == DragMode::GradientStart || mode == DragMode::GradientEnd ||
                  mode == DragMode::GradientRadius) setCursor(Qt::SizeAllCursor);
-        else if (mode == DragMode::CornerRadiusTL || mode == DragMode::CornerRadiusTR ||
-                 mode == DragMode::CornerRadiusBR || mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
+        else if (mode == DragMode::CornerRadius || mode == DragMode::CornerRadiusTL ||
+                 mode == DragMode::CornerRadiusTR || mode == DragMode::CornerRadiusBR ||
+                 mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
         else if (mode == DragMode::ResizeN || mode == DragMode::ResizeS) setCursor(Qt::SizeVerCursor);
         else if (mode == DragMode::ResizeE || mode == DragMode::ResizeW) setCursor(Qt::SizeHorCursor);
         else if (mode == DragMode::ResizeNE || mode == DragMode::ResizeSW) setCursor(Qt::SizeBDiagCursor);
@@ -4363,6 +5989,64 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         invalidate_canvas_overlay_caches();
         position_text_editor();
         update();
+        ev->accept();
+        return;
+    }
+
+    if (active_tool_ == CanvasTool::Pen) {
+        if ((ev->buttons() & Qt::LeftButton) && pen_drag_point_index_ >= 0) {
+            if (pen_space_reposition_ && (size_t)pen_drag_point_index_ < pen_path_points_.size()) {
+                BezierPathPoint &point = pen_path_points_[(size_t)pen_drag_point_index_];
+                const bool allow_snap = !ev->modifiers().testFlag(Qt::ControlModifier);
+                QPointF target = snap_canvas_point(view_to_canvas(ev->pos()), true, true, allow_snap);
+                const QPointF current(point.x, point.y);
+                const QPointF delta = target - current;
+                point.x += delta.x(); point.y += delta.y();
+                point.in_x += delta.x(); point.in_y += delta.y();
+                point.out_x += delta.x(); point.out_y += delta.y();
+                pen_press_canvas_ += delta;
+                pen_last_drag_canvas_ = target;
+                shape_draw_current_canvas_ = target;
+                update();
+            } else {
+                update_pen_drag(ev->pos(), ev->modifiers());
+                pen_last_drag_canvas_ = view_to_canvas(ev->pos());
+            }
+            ev->accept();
+            return;
+        }
+        if (!(ev->buttons() & Qt::LeftButton)) {
+            update_draw_tool_snap_cursor(ev->pos(), ev->modifiers());
+            shape_draw_current_canvas_ = snap_cursor_visible_
+                ? snap_cursor_canvas_
+                : view_to_canvas(ev->pos());
+            if (pen_path_active_ && !pen_path_points_.empty() &&
+                ev->modifiers().testFlag(Qt::ShiftModifier)) {
+                const QPointF previous(pen_path_points_.back().x, pen_path_points_.back().y);
+                shape_draw_current_canvas_ = constrain_path_direction(previous, shape_draw_current_canvas_,
+                                                                       ev->modifiers());
+            }
+            bool close_cursor = false;
+            if (pen_path_active_ && pen_path_points_.size() >= 2) {
+                const QPointF first_view = canvas_to_view(QPointF(pen_path_points_.front().x,
+                                                                  pen_path_points_.front().y));
+                close_cursor = QLineF(first_view, ev->pos()).length() <= 8.0;
+            }
+            setCursor(close_cursor ? Qt::PointingHandCursor : Qt::CrossCursor);
+            update();
+            return;
+        }
+    }
+
+    if (drag_mode_ == DragMode::PathMarquee && (ev->buttons() & Qt::LeftButton)) {
+        update_path_point_marquee(ev->pos(), ev->modifiers());
+        ev->accept();
+        return;
+    }
+
+    if ((drag_mode_ == DragMode::PathAnchor || drag_mode_ == DragMode::PathInHandle ||
+         drag_mode_ == DragMode::PathOutHandle) && (ev->buttons() & Qt::LeftButton)) {
+        apply_direct_path_drag(ev->pos(), ev->modifiers());
         ev->accept();
         return;
     }
@@ -4391,6 +6075,26 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     if (drag_mode_ != DragMode::None && (ev->buttons() & Qt::LeftButton)) {
         apply_drag(ev->pos(), ev->modifiers());
         ev->accept();
+        return;
+    }
+
+    if (active_tool_ == CanvasTool::DirectSelection) {
+        clear_draw_tool_snap_cursor();
+        if (auto layer = selected_layer()) {
+            if (hit_test_corner_radius_handle_index(*layer, ev->pos()) >= 0) {
+                setCursor(Qt::SizeAllCursor);
+            } else {
+                const PathHit hit = hit_test_direct_path(*layer, ev->pos());
+                if (hit.mode == DragMode::PathAnchor)
+                    setCursor(Qt::SizeAllCursor);
+                else if (hit.mode == DragMode::PathInHandle || hit.mode == DragMode::PathOutHandle)
+                    setCursor(Qt::CrossCursor);
+                else
+                    setCursor(Qt::ArrowCursor);
+            }
+        } else {
+            setCursor(Qt::ArrowCursor);
+        }
         return;
     }
 
@@ -4455,8 +6159,9 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     else if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
     else if (mode == DragMode::GradientStart || mode == DragMode::GradientEnd ||
              mode == DragMode::GradientRadius) setCursor(Qt::SizeAllCursor);
-    else if (mode == DragMode::CornerRadiusTL || mode == DragMode::CornerRadiusTR ||
-             mode == DragMode::CornerRadiusBR || mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
+    else if (mode == DragMode::CornerRadius || mode == DragMode::CornerRadiusTL ||
+             mode == DragMode::CornerRadiusTR || mode == DragMode::CornerRadiusBR ||
+             mode == DragMode::CornerRadiusBL) setCursor(Qt::SizeAllCursor);
     else if (mode == DragMode::ResizeN || mode == DragMode::ResizeS) setCursor(Qt::SizeVerCursor);
     else if (mode == DragMode::ResizeE || mode == DragMode::ResizeW) setCursor(Qt::SizeHorCursor);
     else if (mode == DragMode::ResizeNE || mode == DragMode::ResizeSW) setCursor(Qt::SizeBDiagCursor);
@@ -4608,6 +6313,81 @@ void CanvasPreview::keyPressEvent(QKeyEvent *ev)
         return;
     }
 
+    if (corner_radius_drag_.active && drag_mode_ == DragMode::CornerRadius &&
+        (ev->key() == Qt::Key_Up || ev->key() == Qt::Key_Down)) {
+        if (title_) {
+            auto layer = title_->find_layer(corner_radius_drag_.primary_layer_id);
+            if (layer) {
+                const bool forward = ev->key() == Qt::Key_Up;
+                CornerType next = CornerType::Round;
+                switch (layer->corner_type) {
+                case CornerType::Round:
+                    next = forward ? CornerType::Concave : CornerType::Straight;
+                    break;
+                case CornerType::Concave:
+                    next = forward ? CornerType::Straight : CornerType::Round;
+                    break;
+                case CornerType::Straight:
+                case CornerType::Cutout:
+                default:
+                    next = forward ? CornerType::Round : CornerType::Concave;
+                    break;
+                }
+                for (auto &selected : selected_layers())
+                    if (selected && layer_supports_corner_radius_handles(*selected))
+                        selected->corner_type = next;
+                dirty_ = true;
+                drag_changed_ = true;
+                invalidate_canvas_overlay_caches();
+                notify_corner_context_changed();
+                update();
+            }
+        }
+        ev->accept();
+        return;
+    }
+
+    if (active_tool_ == CanvasTool::Pen && pen_path_active_) {
+        if (ev->key() == Qt::Key_Z &&
+            ev->modifiers().testFlag(Qt::ControlModifier)) {
+            if (ev->modifiers().testFlag(Qt::ShiftModifier))
+                redo_pen_path_point();
+            else
+                undo_pen_path_point();
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_Space && pen_drag_point_index_ >= 0) {
+            pen_space_reposition_ = true;
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_Return || ev->key() == Qt::Key_Enter || ev->key() == Qt::Key_Escape) {
+            finish_pen_path(false);
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_Backspace || ev->key() == Qt::Key_Delete) {
+            undo_pen_path_point();
+            ev->accept();
+            return;
+        }
+    }
+
+    if (active_tool_ == CanvasTool::DirectSelection) {
+        if (ev->key() == Qt::Key_Delete || ev->key() == Qt::Key_Backspace) {
+            delete_selected_path_points();
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_Escape) {
+            clear_path_point_selection();
+            update();
+            ev->accept();
+            return;
+        }
+    }
+
     double dx = 0.0;
     double dy = 0.0;
     const double amount = ev->modifiers().testFlag(Qt::ShiftModifier) ? 10.0 : 1.0;
@@ -4630,10 +6410,22 @@ void CanvasPreview::keyPressEvent(QKeyEvent *ev)
         return;
     }
 
-    if (nudge_selected_layers(dx, dy))
+    if (active_tool_ == CanvasTool::DirectSelection && nudge_selected_path_points(dx, dy))
+        ev->accept();
+    else if (nudge_selected_layers(dx, dy))
         ev->accept();
     else
         QWidget::keyPressEvent(ev);
+}
+
+void CanvasPreview::keyReleaseEvent(QKeyEvent *ev)
+{
+    if (ev && ev->key() == Qt::Key_Space && pen_space_reposition_) {
+        pen_space_reposition_ = false;
+        ev->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(ev);
 }
 
 void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
@@ -4641,6 +6433,73 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
     if (ev->button() == Qt::MiddleButton && panning_) {
         panning_ = false;
         unsetCursor();
+        ev->accept();
+        return;
+    }
+
+    if (ev->button() == Qt::LeftButton && active_tool_ == CanvasTool::Pen) {
+        if (pen_close_pending_) {
+            const QPointF release_canvas = view_to_canvas(ev->pos());
+            if (pen_drag_point_index_ == 0 && !pen_space_reposition_ &&
+                QLineF(pen_press_canvas_, release_canvas).length() >= 1.0 / std::max(0.1, view_scale()))
+                update_pen_drag(ev->pos(), ev->modifiers());
+            finish_pen_path(true);
+        } else if (pen_path_active_) {
+            if (pen_drag_point_index_ >= 0 && !pen_space_reposition_)
+                update_pen_drag(ev->pos(), ev->modifiers());
+            pen_drag_point_index_ = -1;
+            pen_alt_break_active_ = false;
+            pen_ctrl_unequal_active_ = false;
+            pen_space_reposition_ = false;
+            clear_snap_feedback();
+            snap_cursor_visible_ = false;
+            final_snap_cursor_visible_ = false;
+            update();
+        }
+        ev->accept();
+        return;
+    }
+
+    if (ev->button() == Qt::LeftButton && drag_mode_ == DragMode::PathMarquee && path_marquee_active_) {
+        finish_path_point_marquee(ev->pos(), ev->modifiers());
+        ev->accept();
+        return;
+    }
+
+    if (ev->button() == Qt::LeftButton &&
+        (drag_mode_ == DragMode::PathAnchor || drag_mode_ == DragMode::PathInHandle ||
+         drag_mode_ == DragMode::PathOutHandle)) {
+        apply_direct_path_drag(ev->pos(), ev->modifiers());
+        if (auto layer = selected_layer()) {
+            if (layer->shape_type == ShapeType::Path && layer->path_points.size() >= 2) {
+                const QRectF rect = layer_local_rect(*layer);
+                std::vector<QPointF> anchors, in_handles, out_handles;
+                std::vector<bool> has_in, has_out;
+                anchors.reserve(layer->path_points.size());
+                in_handles.reserve(layer->path_points.size());
+                out_handles.reserve(layer->path_points.size());
+                has_in.reserve(layer->path_points.size());
+                has_out.reserve(layer->path_points.size());
+                for (const auto &point : layer->path_points) {
+                    anchors.push_back(gsp::path_point_to_local(point, rect));
+                    in_handles.push_back(gsp::path_in_handle_to_local(point, rect));
+                    out_handles.push_back(gsp::path_out_handle_to_local(point, rect));
+                    has_in.push_back(point.has_in);
+                    has_out.push_back(point.has_out);
+                }
+                reframe_custom_path(*layer, anchors, in_handles, out_handles, has_in, has_out);
+            }
+        }
+        end_adaptive_interaction();
+        drag_mode_ = DragMode::None;
+        path_drag_point_index_ = -1;
+        path_alt_break_active_ = false;
+        path_drag_start_points_.clear();
+        clear_snap_feedback();
+        dirty_ = true;
+        invalidate_canvas_overlay_caches();
+        emit layer_geometry_changed();
+        update();
         ev->accept();
         return;
     }
@@ -4699,6 +6558,45 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         gradient_drag_ = GradientDragState{};
         drag_mode_ = DragMode::None;
         emit layer_geometry_changed();
+        ev->accept();
+        return;
+    }
+
+    if (drag_mode_ == DragMode::CornerRadius && corner_radius_drag_.active) {
+        const bool moved = corner_radius_drag_.moved;
+        const bool value_changed = corner_radius_drag_.value_changed;
+        const std::string primary_layer_id = corner_radius_drag_.primary_layer_id;
+        const int point_index = corner_radius_drag_.point_index;
+        if (!moved) {
+            if (ev->modifiers().testFlag(Qt::ShiftModifier) &&
+                selected_corner_layer_id_ == primary_layer_id) {
+                auto it = selected_corner_indices_.find(point_index);
+                if (it == selected_corner_indices_.end())
+                    selected_corner_indices_.insert(point_index);
+                else
+                    selected_corner_indices_.erase(it);
+                if (selected_corner_indices_.empty())
+                    selected_corner_layer_id_.clear();
+            } else {
+                selected_corner_layer_id_ = primary_layer_id;
+                selected_corner_indices_.clear();
+                selected_corner_indices_.insert(point_index);
+            }
+        } else {
+            clear_corner_selection(false);
+        }
+        drag_mode_ = DragMode::None;
+        drag_changed_ = false;
+        corner_radius_drag_ = CornerRadiusDragState{};
+        clear_snap_feedback();
+        unsetCursor();
+        if (moved)
+            end_adaptive_interaction();
+        if (value_changed)
+            emit layer_geometry_changed();
+        invalidate_canvas_overlay_caches();
+        notify_corner_context_changed();
+        update();
         ev->accept();
         return;
     }
@@ -4771,6 +6669,11 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 
 void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
 {
+    if (active_tool_ == CanvasTool::Pen && pen_path_active_) {
+        ev->accept();
+        return;
+    }
+
     bool x_axis = true;
     const int guide_index = guide_hit_test(ev->pos(), x_axis, true);
     if (guide_index < 0) {

@@ -70,6 +70,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <sstream>
+#include "path-geometry.h"
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -1133,74 +1134,51 @@ static void cairo_add_star(cairo_t *cr, double cx, double cy, double rx, double 
 
 static QPainterPath painter_layer_shape_path(const Layer &layer, double w, double h)
 {
-    QPainterPath path;
-    const ShapeType st = layer.type == LayerType::Shape ? layer.shape_type : ShapeType::RoundedRectangle;
-    switch (st) {
-    case ShapeType::Ellipse:
-        path.addEllipse(QRectF(0, 0, w, h)); break;
-    case ShapeType::Triangle:
-    case ShapeType::Polygon:
-    case ShapeType::Diamond: {
-        const int sides = st == ShapeType::Triangle ? 3 : (st == ShapeType::Diamond ? 4 : std::clamp(layer.shape_sides, 3, 64));
-        const double start = -kPi / 2.0;
-        for (int i = 0; i < sides; ++i) {
-            const double a = start + 2.0 * kPi * i / sides;
-            QPointF pt(w / 2.0 + std::cos(a) * w / 2.0, h / 2.0 + std::sin(a) * h / 2.0);
-            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
+    return gsp::layer_shape_path(layer, QRectF(0.0, 0.0, w, h));
+}
+
+static void cairo_append_qpainter_path(cairo_t *cr, const QPainterPath &path)
+{
+    if (!cr || path.isEmpty())
+        return;
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const QPainterPath::Element element = path.elementAt(i);
+        switch (element.type) {
+        case QPainterPath::MoveToElement:
+            cairo_move_to(cr, element.x, element.y);
+            break;
+        case QPainterPath::LineToElement:
+            cairo_line_to(cr, element.x, element.y);
+            break;
+        case QPainterPath::CurveToElement:
+            if (i + 2 < path.elementCount()) {
+                const QPainterPath::Element control2 = path.elementAt(i + 1);
+                const QPainterPath::Element endpoint = path.elementAt(i + 2);
+                cairo_curve_to(cr, element.x, element.y,
+                               control2.x, control2.y,
+                               endpoint.x, endpoint.y);
+                i += 2;
+            }
+            break;
+        case QPainterPath::CurveToDataElement:
+            /* Curve data is consumed together with CurveToElement above. */
+            break;
         }
-        path.closeSubpath(); break;
     }
-    case ShapeType::Star: {
-        const int points = std::clamp(layer.shape_points, 3, 64);
-        const double inner = std::clamp((double)layer.shape_inner_radius, 0.0, 1.0) * 2.0;
-        const double outer = std::clamp((double)layer.shape_outer_radius, 0.0, 1.0) * 2.0;
-        for (int i = 0; i < points * 2; ++i) {
-            const double factor = (i % 2 == 0) ? outer : inner;
-            const double a = -kPi / 2.0 + kPi * i / points;
-            QPointF pt(w / 2.0 + std::cos(a) * w / 2.0 * factor, h / 2.0 + std::sin(a) * h / 2.0 * factor);
-            if (i == 0) path.moveTo(pt); else path.lineTo(pt);
-        }
-        path.closeSubpath(); break;
-    }
-    case ShapeType::Line:
-        path.moveTo(0, h / 2.0); path.lineTo(w, h / 2.0); break;
-    case ShapeType::RoundedRectangle:
-        path = painter_layer_rounded_rect_path(layer, QRectF(0, 0, w, h)); break;
-    case ShapeType::Rectangle:
-    default:
-        path = painter_layer_rounded_rect_path(layer, QRectF(0, 0, w, h)); break;
-    }
-    return path;
 }
 
 static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, double h)
 {
-    switch (layer.type == LayerType::Shape ? layer.shape_type : ShapeType::RoundedRectangle) {
-    case ShapeType::Ellipse:
-        cairo_save(cr); cairo_translate(cr, w / 2.0, h / 2.0); cairo_scale(cr, w / 2.0, h / 2.0);
-        cairo_arc(cr, 0, 0, 1.0, 0, 2 * kPi); cairo_restore(cr); cairo_close_path(cr); break;
-    case ShapeType::Triangle:
-        cairo_add_regular_polygon(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0, 3, -kPi / 2.0); break;
-    case ShapeType::Star:
-        cairo_add_star(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0, layer.shape_points,
-                       layer.shape_inner_radius, layer.shape_outer_radius); break;
-    case ShapeType::Polygon:
-        cairo_add_regular_polygon(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0,
-                                  layer.shape_sides, -kPi / 2.0); break;
-    case ShapeType::Diamond:
-        cairo_add_regular_polygon(cr, w / 2.0, h / 2.0, w / 2.0, h / 2.0, 4, -kPi / 2.0); break;
-    case ShapeType::Line:
-        cairo_move_to(cr, 0, h / 2.0); cairo_line_to(cr, w, h / 2.0); break;
-    case ShapeType::RoundedRectangle:
-        cairo_add_rounded_rect_corners(cr, 0, 0, w, h, layer.corner_radius_tl, layer.corner_radius_tr,
-                                       layer.corner_radius_br, layer.corner_radius_bl,
-                                       layer.corner_type); break;
-    case ShapeType::Rectangle:
-    default:
-        cairo_add_rounded_rect_corners(cr, 0, 0, w, h, layer.corner_radius_tl, layer.corner_radius_tr,
-                                       layer.corner_radius_br, layer.corner_radius_bl,
-                                       layer.corner_type); break;
-    }
+    const QPainterPath path = painter_layer_shape_path(layer, w, h);
+    cairo_append_qpainter_path(cr, path);
+
+    const ShapeType shape_type = layer.type == LayerType::Shape
+        ? layer.shape_type
+        : ShapeType::RoundedRectangle;
+    const bool closed = shape_type != ShapeType::Line &&
+                        (shape_type != ShapeType::Path || layer.path_closed);
+    if (closed && !path.isEmpty())
+        cairo_close_path(cr);
 }
 
 static double eval_origin_x(const Layer &layer, double t)
@@ -2991,14 +2969,18 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
         }
         mp.drawPath(shape_path);
         mp.end();
-        const QString shape_key = QStringLiteral("rect|%1|%2x%3|%4|%5|%6|%7|%8|%9|%10")
+        const QString shape_key = QStringLiteral("rect|%1|%2x%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14")
             .arg((int)layer.shape_type).arg(mw).arg(mh)
             .arg(layer.corner_radius_tl, 0, 'f', 2)
             .arg(layer.corner_radius_tr, 0, 'f', 2)
             .arg(layer.corner_radius_br, 0, 'f', 2)
             .arg(layer.corner_radius_bl, 0, 'f', 2)
             .arg((int)layer.corner_type)
-            .arg(layer.shape_points).arg(layer.shape_sides);
+            .arg(layer.shape_points).arg(layer.shape_sides)
+            .arg(layer.shape_inner_radius, 0, 'f', 4)
+            .arg(layer.shape_outer_radius, 0, 'f', 4)
+            .arg(layer.shape_roundness, 0, 'f', 2)
+            .arg(layer.shape_inner_roundness, 0, 'f', 2) + QStringLiteral("|") + gsp::path_geometry_signature(layer);
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
         paint_qimage(cr, shadow.image, shadow.origin.x(), shadow.origin.y(), alpha);
     }

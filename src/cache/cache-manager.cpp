@@ -1037,9 +1037,16 @@ QString CacheManager::contentHash(const Title &title) const
         add_gradient_stops(layer->background_gradient_stops);
 
         add((int)layer->shape_type); add(layer->rect_width); add(layer->rect_height);
+        add(layer->path_closed); add((quint64)layer->path_points.size());
+        for (const auto &point : layer->path_points) {
+            add(point.x); add(point.y); add(point.in_x); add(point.in_y);
+            add(point.out_x); add(point.out_y); add(point.has_in);
+            add(point.has_out); add(point.smooth); add(point.corner_radius);
+        }
         add(layer->image_width); add(layer->image_height);
         add(layer->shape_points); add(layer->shape_sides);
         add(layer->shape_inner_radius); add(layer->shape_outer_radius); add(layer->shape_roundness);
+        add(layer->shape_inner_roundness);
         add(layer->corner_radius); add(layer->corner_radius_tl); add(layer->corner_radius_tr);
         add(layer->corner_radius_br); add(layer->corner_radius_bl); add((int)layer->corner_type);
         add(layer->scale_stroke_with_shape); add(layer->scale_corners_with_shape);

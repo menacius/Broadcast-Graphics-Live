@@ -1641,6 +1641,82 @@ void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPo
 }
 
 
+void TitleEditor::create_pen_path_layer_from_canvas(const std::vector<BezierPathPoint> &canvas_points, bool closed)
+{
+    if (!title_ || canvas_points.size() < 2)
+        return;
+
+    QPainterPath canvas_path;
+    canvas_path.moveTo(canvas_points.front().x, canvas_points.front().y);
+    const size_t segment_count = closed ? canvas_points.size() : canvas_points.size() - 1;
+    for (size_t i = 0; i < segment_count; ++i) {
+        const size_t next_index = (i + 1) % canvas_points.size();
+        const BezierPathPoint &from = canvas_points[i];
+        const BezierPathPoint &to = canvas_points[next_index];
+        const QPointF from_anchor(from.x, from.y);
+        const QPointF to_anchor(to.x, to.y);
+        const QPointF control1 = from.has_out ? QPointF(from.out_x, from.out_y) : from_anchor;
+        const QPointF control2 = to.has_in ? QPointF(to.in_x, to.in_y) : to_anchor;
+        if (from.has_out || to.has_in)
+            canvas_path.cubicTo(control1, control2, to_anchor);
+        else
+            canvas_path.lineTo(to_anchor);
+    }
+    if (closed)
+        canvas_path.closeSubpath();
+
+    QRectF bounds = canvas_path.boundingRect();
+    if (bounds.width() < 1.0) {
+        const double center_x = bounds.center().x();
+        bounds.setLeft(center_x - 0.5);
+        bounds.setWidth(1.0);
+    }
+    if (bounds.height() < 1.0) {
+        const double center_y = bounds.center().y();
+        bounds.setTop(center_y - 0.5);
+        bounds.setHeight(1.0);
+    }
+    const double width = bounds.width();
+    const double height = bounds.height();
+
+    auto layer = create_basic_layer(LayerType::Shape, obsgs_tr("OBSTitles.Path"));
+    if (!layer)
+        return;
+    layer->shape_type = ShapeType::Path;
+    layer->path_closed = closed;
+    layer->path_points = canvas_points;
+    layer->position.static_value.x = bounds.center().x();
+    layer->position.static_value.y = bounds.center().y();
+    layer->rect_width = (float)width;
+    layer->rect_height = (float)height;
+    layer->size.static_value.x = width;
+    layer->size.static_value.y = height;
+    layer->origin_x = 0.5f;
+    layer->origin_y = 0.5f;
+    layer->origin_prop.static_value = {0.5, 0.5};
+
+    auto normalize = [&](double x, double y) {
+        return QPointF((x - bounds.left()) / width,
+                       (y - bounds.top()) / height);
+    };
+    for (auto &point : layer->path_points) {
+        const QPointF anchor = normalize(point.x, point.y);
+        const QPointF in_handle = point.has_in ? normalize(point.in_x, point.in_y) : anchor;
+        const QPointF out_handle = point.has_out ? normalize(point.out_x, point.out_y) : anchor;
+        point.x = anchor.x(); point.y = anchor.y();
+        point.in_x = in_handle.x(); point.in_y = in_handle.y();
+        point.out_x = out_handle.x(); point.out_y = out_handle.y();
+    }
+
+    title_->add_layer(layer);
+    layers_->refresh();
+    timeline_->set_title(title_);
+    on_layer_selected(layer->id);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
+
 void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &canvas_pt)
 {
     if (!title_) return;
@@ -2846,6 +2922,8 @@ void TitleEditor::build_ui()
                         update_layer_panels(layer, playhead_);
                 }
             });
+    connect(canvas_, &CanvasPreview::corner_context_changed,
+            this, &TitleEditor::update_corner_toolbar);
     connect(canvas_, &CanvasPreview::text_edit_changed,
             this, [this](const std::string &layer_id) {
                 if (!title_) return;
@@ -2928,13 +3006,21 @@ void TitleEditor::build_ui()
             this, &TitleEditor::update_canvas_created_shape);
     connect(canvas_, &CanvasPreview::shape_drawing_finished,
             this, &TitleEditor::finish_canvas_created_shape);
+    connect(canvas_, &CanvasPreview::pen_path_finished,
+            this, &TitleEditor::create_pen_path_layer_from_canvas);
     if (tools_sidebar_) {
         connect(tools_sidebar_, &ToolsSidebar::selection_tool_requested, this, [this]() {
             if (canvas_) canvas_->set_selection_tool_active();
         });
+        connect(tools_sidebar_, &ToolsSidebar::direct_selection_tool_requested, this, [this]() {
+            if (canvas_) canvas_->set_direct_selection_tool_active();
+        });
         connect(tools_sidebar_, &ToolsSidebar::shape_tool_requested, this, [this](ShapeType shape_type) {
             if (tools_sidebar_) tools_sidebar_->set_selected_shape(shape_type);
             if (canvas_) canvas_->set_shape_tool_active(shape_type);
+        });
+        connect(tools_sidebar_, &ToolsSidebar::pen_tool_requested, this, [this]() {
+            if (canvas_) canvas_->set_pen_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::text_tool_requested, this, [this](LayerType type) {
             if (tools_sidebar_) tools_sidebar_->set_selected_text_layer_type(type);
@@ -3530,7 +3616,100 @@ void TitleEditor::build_toolbar()
         if (canvas_) canvas_->set_safe_guides_visible(visible);
     });
 
-    toolbar_->addSeparator();
+
+    /*
+     * Keep the context controls in one QWidgetAction.  QToolBar owns widgets
+     * through QWidgetAction; toggling only a child widget that was hidden when
+     * it was added can leave the toolbar action with a zero-sized geometry on
+     * Windows.  The action itself is therefore the single source of truth for
+     * visibility and layout recalculation.
+     */
+    dynamic_toolbar_widget_ = new QWidget(toolbar_);
+    dynamic_toolbar_widget_->setObjectName(QStringLiteral("canvasDynamicToolbar"));
+    dynamic_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto *dynamic_toolbar_layout = new QHBoxLayout(dynamic_toolbar_widget_);
+    dynamic_toolbar_layout->setContentsMargins(2, 0, 2, 0);
+    dynamic_toolbar_layout->setSpacing(2);
+
+    point_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
+    point_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto *point_toolbar_layout = new QHBoxLayout(point_toolbar_widget_);
+    point_toolbar_layout->setContentsMargins(2, 0, 2, 0);
+    point_toolbar_layout->setSpacing(3);
+    auto make_point_button = [this](const char *icon_name, const QString &tooltip) {
+        auto *button = new QToolButton(point_toolbar_widget_);
+        button->setIcon(obs_icon(icon_name));
+        button->setIconSize(toolbar_->iconSize());
+        button->setToolTip(tooltip);
+        button->setAutoRaise(true);
+        button->setCheckable(true);
+        button->setFixedSize(kEditorToolbarButtonExtent, kEditorToolbarButtonExtent);
+        return button;
+    };
+    point_toolbar_corner_ = make_point_button("draw-polygon.svg", obsgs_tr("OBSTitles.ConvertAnchorToCorner"));
+    point_toolbar_smooth_ = make_point_button("bezier-curve.svg", obsgs_tr("OBSTitles.ConvertAnchorToSmooth"));
+    point_toolbar_handles_ = make_point_button("eye.svg", obsgs_tr("OBSTitles.ShowSelectedPointHandles"));
+    point_toolbar_handles_->setChecked(true);
+
+    auto make_point_position = [this](const QString &prefix, const QString &tooltip) {
+        auto *spin = new QDoubleSpinBox(point_toolbar_widget_);
+        spin->setRange(-100000.0, 100000.0);
+        spin->setDecimals(1);
+        spin->setSingleStep(1.0);
+        spin->setPrefix(prefix);
+        spin->setSpecialValueText(QStringLiteral("—"));
+        spin->setToolTip(tooltip);
+        spin->setKeyboardTracking(false);
+        spin->setFixedWidth(78);
+        return spin;
+    };
+    point_toolbar_x_ = make_point_position(QStringLiteral("X: "), obsgs_tr("OBSTitles.PointXTooltip"));
+    point_toolbar_y_ = make_point_position(QStringLiteral("Y: "), obsgs_tr("OBSTitles.PointYTooltip"));
+    point_toolbar_layout->addWidget(point_toolbar_corner_);
+    point_toolbar_layout->addWidget(point_toolbar_smooth_);
+    point_toolbar_layout->addWidget(point_toolbar_handles_);
+    point_toolbar_layout->addWidget(point_toolbar_x_);
+    point_toolbar_layout->addWidget(point_toolbar_y_);
+    dynamic_toolbar_layout->addWidget(point_toolbar_widget_);
+
+    corner_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
+    corner_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto *corner_toolbar_layout = new QHBoxLayout(corner_toolbar_widget_);
+    corner_toolbar_layout->setContentsMargins(2, 0, 2, 0);
+    corner_toolbar_layout->setSpacing(5);
+    corner_toolbar_label_ = new QLabel(obsgs_tr("OBSTitles.Corners"), corner_toolbar_widget_);
+    corner_toolbar_type_ = new QComboBox(corner_toolbar_widget_);
+    corner_toolbar_type_->addItem(obsgs_tr("OBSTitles.Round"), (int)CornerType::Round);
+    corner_toolbar_type_->addItem(obsgs_tr("OBSTitles.InvertedRound"), (int)CornerType::Concave);
+    corner_toolbar_type_->addItem(obsgs_tr("OBSTitles.Chamfer"), (int)CornerType::Straight);
+    corner_toolbar_type_->setToolTip(obsgs_tr("OBSTitles.CornerType"));
+    corner_toolbar_type_->setFixedWidth(106);
+    corner_toolbar_radius_ = new QDoubleSpinBox(corner_toolbar_widget_);
+    corner_toolbar_radius_->setRange(-1.0, 9999.0);
+    corner_toolbar_radius_->setDecimals(1);
+    corner_toolbar_radius_->setSingleStep(1.0);
+    corner_toolbar_radius_->setSuffix(QStringLiteral(" px"));
+    corner_toolbar_radius_->setSpecialValueText(obsgs_tr("OBSTitles.MixedValues"));
+    corner_toolbar_radius_->setToolTip(obsgs_tr("OBSTitles.CornerRadius"));
+    corner_toolbar_radius_->setFixedWidth(82);
+    corner_toolbar_sync_ = new QCheckBox(obsgs_tr("OBSTitles.SyncCornerRadii"), corner_toolbar_widget_);
+    corner_toolbar_sync_->setTristate(true);
+    corner_toolbar_sync_->setToolTip(obsgs_tr("OBSTitles.SyncCornerRadiiTooltip"));
+    corner_toolbar_layout->addWidget(corner_toolbar_label_);
+    corner_toolbar_layout->addWidget(corner_toolbar_type_);
+    corner_toolbar_layout->addWidget(corner_toolbar_radius_);
+    corner_toolbar_layout->addWidget(corner_toolbar_sync_);
+    dynamic_toolbar_layout->addWidget(corner_toolbar_widget_);
+
+    /* Insert exactly between Rotate and Undo/Redo. */
+    dynamic_toolbar_action_ = toolbar_->addWidget(dynamic_toolbar_widget_);
+    dynamic_toolbar_action_->setPriority(QAction::HighPriority);
+    dynamic_toolbar_action_->setVisible(false);
+    point_toolbar_widget_->setVisible(false);
+    corner_toolbar_widget_->setVisible(false);
+
+    dynamic_toolbar_separator_ = toolbar_->addSeparator();
+    dynamic_toolbar_separator_->setVisible(false);
     toolbar_->addAction(act_undo_);
     toolbar_->addAction(act_redo_);
     update_undo_redo_actions();
@@ -3538,6 +3717,47 @@ void TitleEditor::build_toolbar()
     auto *toolbar_spacer = new QWidget(toolbar_);
     toolbar_spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar_->addWidget(toolbar_spacer);
+
+    connect(point_toolbar_corner_, &QToolButton::clicked, this, [this]() {
+        if (!updating_corner_toolbar_ && canvas_)
+            canvas_->convert_selected_points_to_corner();
+    });
+    connect(point_toolbar_smooth_, &QToolButton::clicked, this, [this]() {
+        if (!updating_corner_toolbar_ && canvas_)
+            canvas_->convert_selected_points_to_smooth();
+    });
+    connect(point_toolbar_handles_, &QToolButton::toggled, this, [this](bool checked) {
+        if (!updating_corner_toolbar_ && canvas_)
+            canvas_->set_point_control_show_handles(checked);
+    });
+    connect(point_toolbar_x_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value) {
+                if (updating_corner_toolbar_ || !canvas_ || value <= point_toolbar_x_->minimum()) return;
+                canvas_->set_point_control_x(value);
+            });
+    connect(point_toolbar_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value) {
+                if (updating_corner_toolbar_ || !canvas_ || value <= point_toolbar_y_->minimum()) return;
+                canvas_->set_point_control_y(value);
+            });
+
+    connect(corner_toolbar_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (updating_corner_toolbar_ || !canvas_ || index < 0) return;
+                const QVariant data = corner_toolbar_type_->itemData(index);
+                if (!data.isValid()) return;
+                canvas_->set_corner_control_type((CornerType)data.toInt());
+            });
+    connect(corner_toolbar_radius_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value) {
+                if (updating_corner_toolbar_ || !canvas_ || value < 0.0) return;
+                canvas_->set_corner_control_radius(value);
+            });
+    connect(corner_toolbar_sync_, &QCheckBox::stateChanged,
+            this, [this](int state) {
+                if (updating_corner_toolbar_ || !canvas_ || state == Qt::PartiallyChecked) return;
+                canvas_->set_corner_control_sync(state == Qt::Checked);
+            });
 
     act_live_editing_ = new QAction(obsgs_tr("OBSTitles.LiveEditing"), this);
     act_live_editing_->setCheckable(true);
@@ -3558,6 +3778,83 @@ void TitleEditor::build_toolbar()
              highlighted_text.name(QColor::HexRgb)));
     toolbar_->addWidget(live_editing_button);
 
+}
+
+void TitleEditor::update_corner_toolbar()
+{
+    if ((!corner_toolbar_widget_ && !point_toolbar_widget_) || !canvas_)
+        return;
+    QScopedValueRollback<bool> guard(updating_corner_toolbar_, true);
+
+    const bool point_available = canvas_->point_controls_available();
+    const bool corner_available = canvas_->corner_controls_available();
+    const bool context_available = point_available || corner_available;
+
+    if (point_toolbar_widget_)
+        point_toolbar_widget_->setVisible(point_available);
+    if (corner_toolbar_widget_)
+        corner_toolbar_widget_->setVisible(corner_available);
+
+    /*
+     * QWidgetAction visibility must be changed directly.  Showing only its
+     * default widget is not sufficient after the action has been laid out as
+     * hidden/zero-width by QToolBar, particularly with the Windows style.
+     */
+    if (dynamic_toolbar_action_)
+        dynamic_toolbar_action_->setVisible(context_available);
+    else if (dynamic_toolbar_widget_)
+        dynamic_toolbar_widget_->setVisible(context_available);
+    if (dynamic_toolbar_separator_)
+        dynamic_toolbar_separator_->setVisible(context_available);
+
+    if (context_available && dynamic_toolbar_widget_) {
+        dynamic_toolbar_widget_->adjustSize();
+        dynamic_toolbar_widget_->updateGeometry();
+    }
+    if (toolbar_) {
+        toolbar_->updateGeometry();
+        toolbar_->update();
+    }
+
+    if (point_available) {
+        bool x_mixed = false;
+        bool y_mixed = false;
+        const QPointF position = canvas_->point_control_position(&x_mixed, &y_mixed);
+        if (point_toolbar_x_)
+            point_toolbar_x_->setValue(x_mixed ? point_toolbar_x_->minimum() : position.x());
+        if (point_toolbar_y_)
+            point_toolbar_y_->setValue(y_mixed ? point_toolbar_y_->minimum() : position.y());
+        bool smooth_mixed = false;
+        const bool smooth = canvas_->point_control_smooth(&smooth_mixed);
+        if (point_toolbar_corner_)
+            point_toolbar_corner_->setChecked(!smooth_mixed && !smooth);
+        if (point_toolbar_smooth_)
+            point_toolbar_smooth_->setChecked(!smooth_mixed && smooth);
+        if (point_toolbar_handles_)
+            point_toolbar_handles_->setChecked(canvas_->point_control_show_handles());
+    }
+
+    if (!corner_available)
+        return;
+
+    bool radius_mixed = false;
+    const double radius = canvas_->corner_control_radius(&radius_mixed);
+    if (corner_toolbar_radius_)
+        corner_toolbar_radius_->setValue(radius_mixed ? -1.0 : radius);
+
+    bool sync_mixed = false;
+    const bool sync = canvas_->corner_control_sync(&sync_mixed);
+    if (corner_toolbar_sync_) {
+        corner_toolbar_sync_->setCheckState(sync_mixed ? Qt::PartiallyChecked
+                                                       : (sync ? Qt::Checked : Qt::Unchecked));
+    }
+
+    bool type_mixed = false;
+    const CornerType type = canvas_->corner_control_type(&type_mixed);
+    if (corner_toolbar_type_) {
+        const int index = type_mixed ? -1 : corner_toolbar_type_->findData((int)type);
+        corner_toolbar_type_->setCurrentIndex(index);
+    }
 }
 
 
@@ -5411,6 +5708,14 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
                 tools_sidebar_->activate_selection_tool();
                 key_event->accept();
                 return true;
+            case Qt::Key_A:
+                tools_sidebar_->activate_direct_selection_tool();
+                key_event->accept();
+                return true;
+            case Qt::Key_P:
+                tools_sidebar_->activate_pen_tool();
+                key_event->accept();
+                return true;
             case Qt::Key_M:
                 tools_sidebar_->activate_shape_tool(ShapeType::Rectangle);
                 key_event->accept();
@@ -5995,6 +6300,7 @@ void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playh
     if (props_) props_->set_layer(layer, playhead);
     update_sidebar_color_swatches(layer);
     if (effects_panel_) effects_panel_->set_layer(layer, playhead);
+    update_corner_toolbar();
 }
 
 void TitleEditor::on_layer_selected(const std::string &lid)

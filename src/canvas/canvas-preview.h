@@ -36,6 +36,8 @@
 #include <vector>
 #include <set>
 
+namespace gsp { struct LiveCornerGeometry; }
+
 class QEvent;
 class QMouseEvent;
 class QWheelEvent;
@@ -106,7 +108,9 @@ public:
     AdaptiveQualityMode adaptive_quality_mode() const { return adaptive_quality_mode_; }
     QString adaptive_quality_label() const;
     void set_selection_tool_active();
+    void set_direct_selection_tool_active();
     void set_shape_tool_active(ShapeType shape_type);
+    void set_pen_tool_active();
     void set_text_tool_active(LayerType type);
     void set_image_tool_active();
     void set_color_picker_tool_active();
@@ -115,6 +119,24 @@ public:
     void begin_text_edit_for_layer(const std::string &layer_id);
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     QPointF view_center_canvas_point() const;
+
+    bool corner_controls_available() const;
+    double corner_control_radius(bool *mixed = nullptr) const;
+    bool corner_control_sync(bool *mixed = nullptr) const;
+    CornerType corner_control_type(bool *mixed = nullptr) const;
+    void set_corner_control_radius(double radius);
+    void set_corner_control_sync(bool enabled);
+    void set_corner_control_type(CornerType type);
+
+    bool point_controls_available() const;
+    QPointF point_control_position(bool *x_mixed = nullptr, bool *y_mixed = nullptr) const;
+    bool point_control_smooth(bool *mixed = nullptr) const;
+    bool point_control_show_handles() const { return show_selected_path_handles_; }
+    void set_point_control_x(double x);
+    void set_point_control_y(double y);
+    void convert_selected_points_to_corner();
+    void convert_selected_points_to_smooth();
+    void set_point_control_show_handles(bool show);
 
 signals:
     void layer_clicked(const std::string &layer_id);
@@ -127,20 +149,24 @@ signals:
     void image_drawing_started(const QPointF &canvas_pt);
     void shape_drawing_changed(const QRectF &canvas_rect);
     void shape_drawing_finished(bool keep_layer);
+    void pen_path_finished(const std::vector<BezierPathPoint> &canvas_points, bool closed);
     void text_edit_changed(const std::string &layer_id);
     void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
     void color_picked(const QColor &color, bool foreground);
     void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
     void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
+    void corner_context_changed();
 
 protected:
+    bool event(QEvent *ev) override;
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
     void mouseDoubleClickEvent(QMouseEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
+    void keyReleaseEvent(QKeyEvent *ev) override;
     void dragEnterEvent(QDragEnterEvent *ev) override;
     void dragMoveEvent(QDragMoveEvent *ev) override;
     void dropEvent(QDropEvent *ev) override;
@@ -174,10 +200,20 @@ private:
         CornerRadiusTR,
         CornerRadiusBR,
         CornerRadiusBL,
+        CornerRadius,
+        PathAnchor,
+        PathInHandle,
+        PathOutHandle,
+        PathMarquee,
         GuideX,
         GuideY
     };
-    enum class CanvasTool { Selection, Shape, Text, Image, ColorPicker, Gradient };
+    enum class CanvasTool { Selection, DirectSelection, Shape, Pen, Text, Image, ColorPicker, Gradient };
+
+    struct PathHit {
+        DragMode mode = DragMode::None;
+        int point_index = -1;
+    };
 
     struct GradientHandleGeometry {
         bool valid = false;
@@ -208,11 +244,39 @@ private:
         QPolygonF outline;
     };
 
+    void finish_pen_path(bool closed, bool keep = true);
+    void cancel_pen_path();
+    void draw_pen_path_preview(QPainter &p);
+    void update_pen_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    void undo_pen_path_point();
+    void redo_pen_path_point();
+    QPointF constrain_path_direction(const QPointF &anchor, const QPointF &target,
+                                     Qt::KeyboardModifiers modifiers) const;
+    bool direct_selection_supported(const Layer &layer) const;
+    bool ensure_direct_selection_path(const std::shared_ptr<Layer> &layer);
+    PathHit hit_test_direct_path(const Layer &layer, const QPointF &view_pt) const;
+    void draw_direct_selection_path(QPainter &p, const Layer &layer);
+    bool begin_direct_selection(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    bool select_direct_object_at(const QPointF &view_pt);
+    void begin_path_point_marquee(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    void update_path_point_marquee(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    void finish_path_point_marquee(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    void apply_direct_path_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
+    void delete_selected_path_points();
+    bool nudge_selected_path_points(double dx, double dy);
+    void reframe_custom_path(Layer &layer, const std::vector<QPointF> &anchors_local,
+                             const std::vector<QPointF> &in_handles_local,
+                             const std::vector<QPointF> &out_handles_local,
+                             const std::vector<bool> &has_in,
+                             const std::vector<bool> &has_out);
+    QPointF path_normalized_to_canvas(const Layer &layer, double x, double y) const;
+    QPointF path_canvas_to_normalized(const Layer &layer, const QPointF &canvas_pt) const;
+    void clear_path_point_selection();
+
     void render_to_pixmap();
     void begin_adaptive_interaction();
     void end_adaptive_interaction();
     double adaptive_preview_scale() const;
-    void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     std::shared_ptr<Layer> selected_layer() const;
     std::vector<std::shared_ptr<Layer>> selected_layers() const;
     QRectF layer_local_rect(const Layer &layer) const;
@@ -236,10 +300,17 @@ private:
     bool apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool layer_supports_corner_radius_handles(const Layer &layer) const;
-    QPointF corner_radius_handle_local_pos(const Layer &layer, const QRectF &box, DragMode mode) const;
-    QPointF corner_radius_visual_offset_view(const Layer &layer, const QRectF &box, DragMode mode) const;
-    QPointF corner_radius_handle_view_pos(const Layer &layer, const QRectF &box, DragMode mode) const;
+    QPointF corner_radius_handle_view_pos(const Layer &layer, const gsp::LiveCornerGeometry &corner) const;
+    int hit_test_corner_radius_handle_index(const Layer &layer, const QPointF &view_pt) const;
+    std::shared_ptr<Layer> hit_test_selected_corner_layer(const QPointF &view_pt, int &point_index) const;
     DragMode hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const;
+    double corner_radius_value(const Layer &layer, int point_index) const;
+    void set_corner_radius_value(Layer &layer, int point_index, double radius, bool affect_group);
+    void clear_corner_selection(bool notify = true);
+    std::vector<int> corner_indices_for_layer(const Layer &layer, bool selected_only) const;
+    std::vector<int> mapped_corner_indices(const Layer &source, const Layer &target,
+                                           const std::vector<int> &source_indices) const;
+    void notify_corner_context_changed();
     void draw_corner_radius_handles(QPainter &p, const Layer &layer);
     void begin_corner_radius_drag(const Layer &layer);
     bool apply_corner_radius_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
@@ -362,6 +433,26 @@ private:
     CanvasTool active_tool_ = CanvasTool::Selection;
     ShapeType active_shape_type_ = ShapeType::Rectangle;
     LayerType active_text_layer_type_ = LayerType::Text;
+    std::vector<BezierPathPoint> pen_path_points_; /* canvas-space while drawing */
+    std::vector<BezierPathPoint> pen_redo_points_; /* local history for an unfinished path */
+    bool pen_path_active_ = false;
+    bool pen_close_pending_ = false;
+    int pen_drag_point_index_ = -1;
+    QPointF pen_press_canvas_;
+    QPointF pen_last_drag_canvas_;
+    bool pen_alt_break_active_ = false;
+    QPointF pen_alt_fixed_in_canvas_;
+    bool pen_ctrl_unequal_active_ = false;
+    double pen_ctrl_fixed_in_length_ = 0.0;
+    bool pen_space_reposition_ = false;
+    std::set<int> selected_path_point_indices_;
+    std::set<int> path_marquee_base_selection_;
+    std::string path_marquee_layer_id_;
+    bool path_marquee_active_ = false;
+    bool show_selected_path_handles_ = true;
+    int path_drag_point_index_ = -1;
+    bool path_alt_break_active_ = false;
+    std::vector<BezierPathPoint> path_drag_start_points_;
     bool drawing_shape_ = false;
     bool drawing_shape_changed_ = false;
     QTextEdit *inline_text_editor_ = nullptr;
@@ -440,16 +531,29 @@ private:
     };
     GradientDragState gradient_drag_;
     bool gradient_editor_active_ = false;
+    struct CornerPointDragState {
+        int point_index = -1;
+        double radius = 0.0;
+    };
+    struct CornerLayerDragState {
+        std::string id;
+        bool sync = true;
+        std::vector<CornerPointDragState> points;
+        std::vector<int> target_indices;
+    };
     struct CornerRadiusDragState {
         bool active = false;
-        QRectF local_rect;
-        float top_left = 0.0f;
-        float top_right = 0.0f;
-        float bottom_right = 0.0f;
-        float bottom_left = 0.0f;
-        bool locked = true;
+        std::string primary_layer_id;
+        int point_index = -1;
+        double primary_start_radius = 0.0;
+        bool isolated = false;
+        bool moved = false;
+        bool value_changed = false;
+        std::vector<CornerLayerDragState> layers;
     };
     CornerRadiusDragState corner_radius_drag_;
+    std::string selected_corner_layer_id_;
+    std::set<int> selected_corner_indices_;
     struct LayerDragState {
         std::string id;
         std::string resize_root_id;
@@ -465,6 +569,9 @@ private:
         float corner_radius_tr = 0.0f;
         float corner_radius_br = 0.0f;
         float corner_radius_bl = 0.0f;
+        float shape_roundness = 0.0f;
+        float shape_inner_roundness = 0.0f;
+        std::vector<double> path_corner_radii;
     };
     std::vector<LayerDragState> drag_layer_states_;
     std::vector<LayerDragState> drag_child_layer_states_;

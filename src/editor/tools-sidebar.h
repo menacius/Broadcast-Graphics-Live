@@ -98,7 +98,9 @@ public:
     void set_background_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
 
     void activate_selection_tool();
+    void activate_direct_selection_tool();
     void activate_shape_tool(ShapeType shape_type);
+    void activate_pen_tool();
     void activate_text_tool(LayerType type = LayerType::Text);
     void activate_image_tool();
     void activate_color_picker_tool();
@@ -106,7 +108,9 @@ public:
 
 signals:
     void selection_tool_requested();
+    void direct_selection_tool_requested();
     void shape_tool_requested(ShapeType shape_type);
+    void pen_tool_requested();
     void text_tool_requested(LayerType type);
     void image_tool_requested();
     void color_picker_tool_requested();
@@ -119,7 +123,9 @@ private:
     void rebuild_shape_menu();
     void rebuild_text_menu();
     QToolButton *selection_button_ = nullptr;
+    QToolButton *direct_selection_button_ = nullptr;
     QToolButton *shape_button_ = nullptr;
+    QToolButton *pen_button_ = nullptr;
     QToolButton *text_button_ = nullptr;
     QToolButton *image_button_ = nullptr;
     QToolButton *color_picker_button_ = nullptr;

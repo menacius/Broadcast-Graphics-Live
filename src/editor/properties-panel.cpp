@@ -1367,6 +1367,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_shape_type_->addItem("Star", (int)ShapeType::Star);
     cmb_shape_type_->addItem("Polygon", (int)ShapeType::Polygon);
     cmb_shape_type_->addItem("Diamond", (int)ShapeType::Diamond);
+    cmb_shape_type_->addItem(obsgs_tr("OBSTitles.Path"), (int)ShapeType::Path);
     cmb_shape_type_->addItem("Line", (int)ShapeType::Line);
     cmb_shape_type_->setFixedHeight(22);
     cmb_shape_type_->setStyleSheet(control_style);
@@ -3590,6 +3591,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             const float br = (float)std::clamp((double)layer_->corner_radius_br * factor, 0.0, 9999.0);
             const float bl = (float)std::clamp((double)layer_->corner_radius_bl * factor, 0.0, 9999.0);
             set_layer_corner_radii(*layer_, tl, tr, br, bl);
+            layer_->shape_roundness = (float)std::clamp((double)layer_->shape_roundness * factor, 0.0, 9999.0);
+            layer_->shape_inner_roundness = (float)std::clamp((double)layer_->shape_inner_roundness * factor, 0.0, 9999.0);
+            for (auto &point : layer_->path_points)
+                point.corner_radius = std::clamp(point.corner_radius * factor, 0.0, 9999.0);
             if (spn_rect_corner_tl_) { QSignalBlocker block(spn_rect_corner_tl_); spn_rect_corner_tl_->setValue(layer_->corner_radius_tl); }
             if (spn_rect_corner_tr_) { QSignalBlocker block(spn_rect_corner_tr_); spn_rect_corner_tr_->setValue(layer_->corner_radius_tr); }
             if (spn_rect_corner_br_) { QSignalBlocker block(spn_rect_corner_br_); spn_rect_corner_br_->setValue(layer_->corner_radius_br); }
@@ -3856,11 +3861,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (!can_edit()) return;
                 const ShapeType previous_shape = layer_->shape_type;
                 const ShapeType next_shape = (ShapeType)cmb_shape_type_->itemData(idx).toInt();
-                layer_->shape_type = next_shape;
+                if (next_shape == ShapeType::Path && previous_shape != ShapeType::Path) {
+                    if (!gsp::ensure_editable_path(*layer_)) {
+                        load_values();
+                        return;
+                    }
+                } else {
+                    layer_->shape_type = next_shape;
+                }
+                if (previous_shape == ShapeType::Path && next_shape != ShapeType::Path) {
+                    layer_->path_points.clear();
+                    layer_->path_closed = true;
+                }
                 if (next_shape == ShapeType::Rectangle) {
                     set_layer_all_corner_radii(*layer_, 0.0f);
                     layer_->corner_radius_locked = true;
                     layer_->shape_roundness = 0.0f;
+                    layer_->shape_inner_roundness = 0.0f;
                 } else if (next_shape == ShapeType::RoundedRectangle &&
                            previous_shape != ShapeType::Rectangle &&
                            previous_shape != ShapeType::RoundedRectangle &&
@@ -3868,6 +3885,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     set_layer_all_corner_radii(*layer_, 18.0f);
                     layer_->corner_radius_locked = true;
                     layer_->shape_roundness = layer_->corner_radius;
+                    layer_->shape_inner_roundness = layer_->shape_roundness;
+                } else if (next_shape == ShapeType::Star && previous_shape != ShapeType::Star) {
+                    layer_->shape_inner_roundness = layer_->shape_roundness;
                 }
                 load_values();
                 emit_change();
@@ -3956,6 +3976,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->shape_inner_radius = 0.20f;
                 layer_->shape_outer_radius = 0.5f;
                 layer_->shape_roundness = 0.0f;
+                layer_->shape_inner_roundness = 0.0f;
                 layer_->lock_aspect_ratio = false;
                 layer_->scale_stroke_with_shape = false;
                 layer_->scale_corners_with_shape = false;
@@ -3978,8 +3999,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                               (layer_->shape_type == ShapeType::Rectangle ||
                                                layer_->shape_type == ShapeType::RoundedRectangle));
                 layer_->shape_roundness = (float)v;
-                if (rectangle_shape)
+                if (layer_->type == LayerType::Shape && layer_->shape_type == ShapeType::Star)
+                    layer_->shape_inner_roundness = (float)v;
+                if (rectangle_shape) {
                     set_layer_all_corner_radii(*layer_, (float)v);
+                } else if (layer_->type == LayerType::Shape && layer_->shape_type == ShapeType::Path) {
+                    for (auto &point : layer_->path_points)
+                        point.corner_radius = std::max(0.0, v);
+                }
                 emit_change();
             });
     connect(btn_fill_color_, &QPushButton::clicked,
@@ -5028,7 +5055,11 @@ void PropertiesPanel::load_values()
                                       current_shape == ShapeType::RoundedRectangle));
     const bool show_star_controls = is_shape_layer && current_shape == ShapeType::Star;
     const bool show_polygon_controls = is_shape_layer && current_shape == ShapeType::Polygon;
-    const bool show_roundness = false;
+    const bool show_roundness = is_shape_layer &&
+                                current_shape != ShapeType::Ellipse &&
+                                current_shape != ShapeType::Line &&
+                                current_shape != ShapeType::Rectangle &&
+                                current_shape != ShapeType::RoundedRectangle;
     const bool show_transform_scale = !is_shape_layer;
     const bool show_transform_size = is_shape_layer;
     const bool show_shape_panel_size = !is_shape_layer && (is_text_like || is_image);
@@ -5234,7 +5265,10 @@ void PropertiesPanel::load_values()
     if (spn_shape_roundness_) {
         const bool rectangle_roundness = current_shape == ShapeType::Rectangle ||
                                          current_shape == ShapeType::RoundedRectangle;
-        spn_shape_roundness_->setValue(rectangle_roundness ? layer_->corner_radius : layer_->shape_roundness);
+        double roundness = rectangle_roundness ? layer_->corner_radius : layer_->shape_roundness;
+        if (current_shape == ShapeType::Path && !layer_->path_points.empty())
+            roundness = layer_->path_points.front().corner_radius;
+        spn_shape_roundness_->setValue(roundness);
     }
     edit_image_path_->setText(QString::fromStdString(layer_->image_path));
     set_image_preview_label(lbl_image_preview_, QString::fromStdString(layer_->image_path));

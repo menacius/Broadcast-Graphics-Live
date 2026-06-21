@@ -842,6 +842,54 @@ static std::vector<GradientStop> gradient_stops_from_json(const json &j)
     return stops;
 }
 
+static json bezier_path_points_to_json(const std::vector<BezierPathPoint> &points)
+{
+    json arr = json::array();
+    for (const auto &point : points) {
+        arr.push_back({{"x", point.x}, {"y", point.y},
+                       {"in_x", point.in_x}, {"in_y", point.in_y},
+                       {"out_x", point.out_x}, {"out_y", point.out_y},
+                       {"has_in", point.has_in}, {"has_out", point.has_out},
+                       {"smooth", point.smooth}, {"corner_radius", point.corner_radius}});
+    }
+    return arr;
+}
+
+static std::vector<BezierPathPoint> bezier_path_points_from_json(const json &j)
+{
+    constexpr size_t kMaxPathPoints = 4096;
+    constexpr double kMaxNormalizedCoordinate = 1024.0;
+    std::vector<BezierPathPoint> points;
+    if (!j.is_array()) return points;
+    points.reserve(std::min(j.size(), kMaxPathPoints));
+    for (size_t i = 0; i < j.size() && points.size() < kMaxPathPoints; ++i) {
+        const auto &item = j[i];
+        if (!item.is_object()) continue;
+        BezierPathPoint point;
+        point.x = std::clamp(finite_or(json_double(item, "x", 0.0), 0.0),
+                             -kMaxNormalizedCoordinate, kMaxNormalizedCoordinate);
+        point.y = std::clamp(finite_or(json_double(item, "y", 0.0), 0.0),
+                             -kMaxNormalizedCoordinate, kMaxNormalizedCoordinate);
+        point.in_x = std::clamp(finite_or(json_double(item, "in_x", point.x), point.x),
+                                -kMaxNormalizedCoordinate, kMaxNormalizedCoordinate);
+        point.in_y = std::clamp(finite_or(json_double(item, "in_y", point.y), point.y),
+                                -kMaxNormalizedCoordinate, kMaxNormalizedCoordinate);
+        point.out_x = std::clamp(finite_or(json_double(item, "out_x", point.x), point.x),
+                                 -kMaxNormalizedCoordinate, kMaxNormalizedCoordinate);
+        point.out_y = std::clamp(finite_or(json_double(item, "out_y", point.y), point.y),
+                                 -kMaxNormalizedCoordinate, kMaxNormalizedCoordinate);
+        point.has_in = json_bool(item, "has_in", false);
+        point.has_out = json_bool(item, "has_out", false);
+        point.smooth = json_bool(item, "smooth", false);
+        point.corner_radius = std::clamp(finite_or(json_double(item, "corner_radius", 0.0), 0.0),
+                                         0.0, (double)kMaxCanvasDimension);
+        if (!point.has_in) { point.in_x = point.x; point.in_y = point.y; }
+        if (!point.has_out) { point.out_x = point.x; point.out_y = point.y; }
+        points.push_back(point);
+    }
+    return points;
+}
+
 static json rich_fill_to_json(const RichTextFill &f)
 {
     return {{"type", f.type}, {"color", f.color}, {"gradient_type", f.gradient_type},
@@ -1378,11 +1426,14 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["corner_radius_locked"] = l.corner_radius_locked;
     j["corner_type"] = (int)l.corner_type;
     j["shape_type"] = (int)l.shape_type;
+    j["path_points"] = bezier_path_points_to_json(l.path_points);
+    j["path_closed"] = l.path_closed;
     j["shape_points"] = l.shape_points;
     j["shape_sides"] = l.shape_sides;
     j["shape_inner_radius"] = l.shape_inner_radius;
     j["shape_outer_radius"] = l.shape_outer_radius;
     j["shape_roundness"] = l.shape_roundness;
+    j["shape_inner_roundness"] = l.shape_inner_roundness;
     j["scale_stroke_with_shape"] = l.scale_stroke_with_shape;
     j["scale_corners_with_shape"] = l.scale_corners_with_shape;
     j["size"]          = vec2_aprop_to_json(l.size);
@@ -1820,12 +1871,20 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                                         l->corner_radius_tl == l->corner_radius_br &&
                                         l->corner_radius_tl == l->corner_radius_bl);
     l->corner_type = (CornerType)std::clamp(json_int(j, "corner_type", 0), 0, (int)CornerType::Cutout);
-    l->shape_type = (ShapeType)std::clamp(json_int(j, "shape_type", 0), 0, (int)ShapeType::Line);
+    l->shape_type = (ShapeType)std::clamp(json_int(j, "shape_type", 0), 0, (int)ShapeType::Path);
+    l->path_points = bezier_path_points_from_json(j.value("path_points", json::array()));
+    l->path_closed = json_bool(j, "path_closed", true);
+    if (l->shape_type == ShapeType::Path && l->path_points.size() < 2) {
+        l->shape_type = ShapeType::Rectangle;
+        l->path_points.clear();
+        l->path_closed = true;
+    }
     l->shape_points = std::clamp(json_int(j, "shape_points", 5), 3, 64);
     l->shape_sides = std::clamp(json_int(j, "shape_sides", 6), 3, 64);
     l->shape_inner_radius = (float)std::clamp(finite_or(json_double(j, "shape_inner_radius", 0.20), 0.20), 0.0, 1.0);
     l->shape_outer_radius = (float)std::clamp(finite_or(json_double(j, "shape_outer_radius", 0.5), 0.5), 0.0, 1.0);
-    l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, 1.0);
+    l->shape_roundness = (float)std::clamp(finite_or(json_double(j, "shape_roundness", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
+    l->shape_inner_roundness = (float)std::clamp(finite_or(json_double(j, "shape_inner_roundness", l->shape_roundness), l->shape_roundness), 0.0, (double)kMaxCanvasDimension);
     l->scale_stroke_with_shape = json_bool(j, "scale_stroke_with_shape", false);
     l->scale_corners_with_shape = json_bool(j, "scale_corners_with_shape", false);
     l->size.static_value.x = l->rect_width;
