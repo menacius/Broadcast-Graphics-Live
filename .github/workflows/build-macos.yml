@@ -25,6 +25,13 @@ jobs:
           ref: ${{ env.OBS_TEMPLATE_REF }}
           path: .ci/obs-plugintemplate
           show-progress: false
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          brew install pkg-config cairo pango lz4
+          brew_prefix="$(brew --prefix)"
+          echo "PKG_CONFIG_PATH=${brew_prefix}/lib/pkgconfig:${brew_prefix}/share/pkgconfig" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${brew_prefix}" >> "$GITHUB_ENV"
       - name: Prepare OBS SDK
         shell: bash
         run: |
@@ -44,13 +51,14 @@ jobs:
         shell: bash
         run: |
           set +e
+          combined_prefix_path="$CMAKE_PREFIX_PATH;$OBS_GSP_PREFIX_PATH"
           cmake -S . -B build-macos -G Xcode \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -DOBS_SDK_DIR="$OBS_GSP_DEPS_ROOT" \
             -Dlibobs_DIR="$OBS_GSP_LIBOBS_DIR" \
             -DCMAKE_MODULE_PATH="$OBS_GSP_CMAKE_MODULE_PATH" \
-            -DCMAKE_PREFIX_PATH="$OBS_GSP_PREFIX_PATH" \
+            -DCMAKE_PREFIX_PATH="$combined_prefix_path" \
             -DOBS_GSP_BUILD_TESTS=ON > macos-configure.log 2>&1
           status=$?
           cat macos-configure.log
