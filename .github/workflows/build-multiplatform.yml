@@ -1,0 +1,26 @@
+name: Build OBS Graphics Studio Pro
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build pkg-config build-essential libobs-dev obs-studio qt6-base-dev qt6-svg-dev libcairo2-dev libpango1.0-dev liblz4-dev
+      - name: Configure
+        run: cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOBS_GSP_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build-linux --parallel
+      - name: Test
+        run: ctest --test-dir build-linux --output-on-failure
