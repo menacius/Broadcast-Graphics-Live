@@ -146,6 +146,9 @@ private:
     void distribute_selected_layers(bool horizontal);
     void flip_selected_layers(bool horizontal);
     void rotate_selected_layers(double degrees);
+    enum class BooleanShapeOperation { Union, SubtractFront, Intersect, Exclude };
+    bool boolean_shape_selection_available() const;
+    void apply_boolean_shape_operation(BooleanShapeOperation operation);
     std::shared_ptr<Title> clone_title(const Title &title) const;
     std::shared_ptr<Layer> clone_layer_for_insert(const Layer &layer, bool suffix_name) const;
     std::string unique_layer_name(const std::string &base_name,
@@ -297,6 +300,11 @@ private:
     QWidget         *dynamic_toolbar_widget_ = nullptr;
     QAction         *dynamic_toolbar_action_ = nullptr;
     QAction         *dynamic_toolbar_separator_ = nullptr;
+    QWidget         *boolean_toolbar_widget_ = nullptr;
+    QToolButton     *boolean_union_button_ = nullptr;
+    QToolButton     *boolean_subtract_button_ = nullptr;
+    QToolButton     *boolean_intersect_button_ = nullptr;
+    QToolButton     *boolean_exclude_button_ = nullptr;
     QWidget         *corner_toolbar_widget_ = nullptr;
     QLabel          *corner_toolbar_label_ = nullptr;
     QComboBox       *corner_toolbar_type_ = nullptr;

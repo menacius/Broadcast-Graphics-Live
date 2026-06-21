@@ -1137,15 +1137,20 @@ static QPainterPath painter_layer_shape_path(const Layer &layer, double w, doubl
     return gsp::layer_shape_path(layer, QRectF(0.0, 0.0, w, h));
 }
 
-static void cairo_append_qpainter_path(cairo_t *cr, const QPainterPath &path)
+static void cairo_append_qpainter_path(cairo_t *cr, const QPainterPath &path,
+                                         bool close_subpaths)
 {
     if (!cr || path.isEmpty())
         return;
+    bool have_subpath = false;
     for (int i = 0; i < path.elementCount(); ++i) {
         const QPainterPath::Element element = path.elementAt(i);
         switch (element.type) {
         case QPainterPath::MoveToElement:
+            if (have_subpath && close_subpaths)
+                cairo_close_path(cr);
             cairo_move_to(cr, element.x, element.y);
+            have_subpath = true;
             break;
         case QPainterPath::LineToElement:
             cairo_line_to(cr, element.x, element.y);
@@ -1165,20 +1170,20 @@ static void cairo_append_qpainter_path(cairo_t *cr, const QPainterPath &path)
             break;
         }
     }
+    if (have_subpath && close_subpaths)
+        cairo_close_path(cr);
 }
 
 static void cairo_add_layer_shape(cairo_t *cr, const Layer &layer, double w, double h)
 {
     const QPainterPath path = painter_layer_shape_path(layer, w, h);
-    cairo_append_qpainter_path(cr, path);
-
     const ShapeType shape_type = layer.type == LayerType::Shape
         ? layer.shape_type
         : ShapeType::RoundedRectangle;
     const bool closed = shape_type != ShapeType::Line &&
                         (shape_type != ShapeType::Path || layer.path_closed);
-    if (closed && !path.isEmpty())
-        cairo_close_path(cr);
+    cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+    cairo_append_qpainter_path(cr, path, closed);
 }
 
 static double eval_origin_x(const Layer &layer, double t)

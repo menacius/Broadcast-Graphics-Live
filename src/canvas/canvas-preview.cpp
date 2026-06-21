@@ -1697,19 +1697,27 @@ void CanvasPreview::reframe_custom_path(Layer &layer, const std::vector<QPointF>
         has_in.size() != anchors_local.size() || has_out.size() != anchors_local.size())
         return;
     QPainterPath geometry;
-    geometry.moveTo(anchors_local.front());
-    const size_t segment_count = layer.path_closed ? anchors_local.size() : anchors_local.size() - 1;
-    for (size_t i = 0; i < segment_count; ++i) {
-        const size_t next_index = (i + 1) % anchors_local.size();
-        const QPointF control1 = has_out[i] ? out_handles_local[i] : anchors_local[i];
-        const QPointF control2 = has_in[next_index] ? in_handles_local[next_index] : anchors_local[next_index];
-        if (has_out[i] || has_in[next_index])
-            geometry.cubicTo(control1, control2, anchors_local[next_index]);
-        else
-            geometry.lineTo(anchors_local[next_index]);
+    geometry.setFillRule(Qt::OddEvenFill);
+    const auto subpaths = gsp::path_subpath_ranges(layer);
+    for (const auto &[start, end] : subpaths) {
+        if (end <= start)
+            continue;
+        geometry.moveTo(anchors_local[start]);
+        const size_t point_count = end - start;
+        const size_t segment_count = layer.path_closed ? point_count : point_count - 1;
+        for (size_t local_index = 0; local_index < segment_count; ++local_index) {
+            const size_t i = start + local_index;
+            const size_t next_index = start + ((local_index + 1) % point_count);
+            const QPointF control1 = has_out[i] ? out_handles_local[i] : anchors_local[i];
+            const QPointF control2 = has_in[next_index] ? in_handles_local[next_index] : anchors_local[next_index];
+            if (has_out[i] || has_in[next_index])
+                geometry.cubicTo(control1, control2, anchors_local[next_index]);
+            else
+                geometry.lineTo(anchors_local[next_index]);
+        }
+        if (layer.path_closed)
+            geometry.closeSubpath();
     }
-    if (layer.path_closed)
-        geometry.closeSubpath();
 
     QRectF bounds = geometry.boundingRect();
     if (bounds.width() < 1.0) {
@@ -1810,14 +1818,25 @@ void CanvasPreview::delete_selected_path_points()
     auto layer = selected_layer();
     if (!layer || layer->shape_type != ShapeType::Path || selected_path_point_indices_.empty())
         return;
+
     std::vector<BezierPathPoint> remaining;
     remaining.reserve(layer->path_points.size());
-    for (size_t i = 0; i < layer->path_points.size(); ++i) {
-        if (selected_path_point_indices_.find((int)i) == selected_path_point_indices_.end())
-            remaining.push_back(layer->path_points[i]);
-    }
     const size_t minimum = layer->path_closed ? 3 : 2;
-    if (remaining.size() < minimum) {
+    for (const auto &[start, end] : gsp::path_subpath_ranges(*layer)) {
+        const size_t contour_start = remaining.size();
+        for (size_t i = start; i < end; ++i) {
+            if (selected_path_point_indices_.find((int)i) == selected_path_point_indices_.end())
+                remaining.push_back(layer->path_points[i]);
+        }
+        const size_t contour_size = remaining.size() - contour_start;
+        if (contour_size < minimum) {
+            remaining.resize(contour_start);
+            continue;
+        }
+        remaining[contour_start].starts_subpath = contour_start != 0;
+    }
+
+    if (remaining.empty()) {
         const std::string id = layer->id;
         title_->remove_layer(id);
         selected_layer_ids_.clear();
@@ -2905,24 +2924,35 @@ void CanvasPreview::convert_selected_points_to_smooth()
     if (!point_controls_available() || !layer || layer->path_points.size() < 2)
         return;
     const QRectF rect = layer_local_rect(*layer);
-    const size_t count = layer->path_points.size();
+    const auto subpaths = gsp::path_subpath_ranges(*layer);
     for (int selected : selected_path_point_indices_) {
-        if (selected < 0 || (size_t)selected >= count) continue;
+        if (selected < 0 || (size_t)selected >= layer->path_points.size()) continue;
         const size_t i = (size_t)selected;
+        auto range_it = std::find_if(subpaths.begin(), subpaths.end(), [i](const auto &range) {
+            return i >= range.first && i < range.second;
+        });
+        if (range_it == subpaths.end())
+            continue;
+        const size_t start_index = range_it->first;
+        const size_t end_index = range_it->second;
+        const size_t count = end_index - start_index;
+        if (count < 2)
+            continue;
+        const size_t local_index = i - start_index;
         BezierPathPoint &point = layer->path_points[i];
-        const bool has_previous = layer->path_closed || i > 0;
-        const bool has_next = layer->path_closed || i + 1 < count;
+        const bool has_previous = layer->path_closed || local_index > 0;
+        const bool has_next = layer->path_closed || local_index + 1 < count;
+        const size_t previous = start_index + ((local_index + count - 1) % count);
+        const size_t next = start_index + ((local_index + 1) % count);
         const QPointF anchor = gsp::path_point_to_local(point, rect);
         QPointF direction;
         if (has_previous && has_next) {
-            const size_t previous = (i + count - 1) % count;
-            const size_t next = (i + 1) % count;
             direction = gsp::path_point_to_local(layer->path_points[next], rect) -
                         gsp::path_point_to_local(layer->path_points[previous], rect);
         } else if (has_next) {
-            direction = gsp::path_point_to_local(layer->path_points[i + 1], rect) - anchor;
+            direction = gsp::path_point_to_local(layer->path_points[next], rect) - anchor;
         } else if (has_previous) {
-            direction = anchor - gsp::path_point_to_local(layer->path_points[i - 1], rect);
+            direction = anchor - gsp::path_point_to_local(layer->path_points[previous], rect);
         }
         const double direction_length = std::hypot(direction.x(), direction.y());
         if (direction_length <= 1e-9)
@@ -2930,14 +2960,10 @@ void CanvasPreview::convert_selected_points_to_smooth()
         const QPointF unit = direction / direction_length;
         double in_length = point.has_in ? QLineF(anchor, gsp::path_in_handle_to_local(point, rect)).length() : 0.0;
         double out_length = point.has_out ? QLineF(anchor, gsp::path_out_handle_to_local(point, rect)).length() : 0.0;
-        if (has_previous && in_length <= 1e-6) {
-            const size_t previous = (i + count - 1) % count;
+        if (has_previous && in_length <= 1e-6)
             in_length = QLineF(anchor, gsp::path_point_to_local(layer->path_points[previous], rect)).length() / 3.0;
-        }
-        if (has_next && out_length <= 1e-6) {
-            const size_t next = (i + 1) % count;
+        if (has_next && out_length <= 1e-6)
             out_length = QLineF(anchor, gsp::path_point_to_local(layer->path_points[next], rect)).length() / 3.0;
-        }
         auto normalize = [&](const QPointF &local) {
             return QPointF((local.x() - rect.left()) / std::max(1e-9, rect.width()),
                            (local.y() - rect.top()) / std::max(1e-9, rect.height()));

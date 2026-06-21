@@ -880,7 +880,8 @@ static json bezier_path_points_to_json(const std::vector<BezierPathPoint> &point
                        {"in_x", point.in_x}, {"in_y", point.in_y},
                        {"out_x", point.out_x}, {"out_y", point.out_y},
                        {"has_in", point.has_in}, {"has_out", point.has_out},
-                       {"smooth", point.smooth}, {"corner_radius", point.corner_radius}});
+                       {"smooth", point.smooth}, {"starts_subpath", point.starts_subpath},
+                       {"corner_radius", point.corner_radius}});
     }
     return arr;
 }
@@ -911,6 +912,7 @@ static std::vector<BezierPathPoint> bezier_path_points_from_json(const json &j)
         point.has_in = json_bool(item, "has_in", false);
         point.has_out = json_bool(item, "has_out", false);
         point.smooth = json_bool(item, "smooth", false);
+        point.starts_subpath = !points.empty() && json_bool(item, "starts_subpath", false);
         point.corner_radius = std::clamp(finite_or(json_double(item, "corner_radius", 0.0), 0.0),
                                          0.0, (double)kMaxCanvasDimension);
         if (!point.has_in) { point.in_x = point.x; point.in_y = point.y; }

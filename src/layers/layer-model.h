@@ -79,6 +79,10 @@ struct BezierPathPoint {
     bool has_in = false;
     bool has_out = false;
     bool smooth = false;
+    /* True on the first anchor of every additional contour in a compound
+     * path. The first point is always treated as a contour start for backward
+     * compatibility, even when this flag is false. */
+    bool starts_subpath = false;
     /* Illustrator-style live-corner radius in layer-local pixels. */
     double corner_radius = 0.0;
 };

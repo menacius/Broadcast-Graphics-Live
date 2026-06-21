@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
 
 namespace gsp {
 namespace {
@@ -222,6 +224,26 @@ QPainterPath primitive_shape_path(const Layer &layer, const QRectF &rect)
     return path;
 }
 
+std::vector<std::pair<size_t, size_t>> subpath_ranges_for_points(
+    const std::vector<BezierPathPoint> &points)
+{
+    std::vector<std::pair<size_t, size_t>> ranges;
+    if (points.empty())
+        return ranges;
+
+    size_t start = 0;
+    for (size_t i = 1; i < points.size(); ++i) {
+        if (!points[i].starts_subpath)
+            continue;
+        if (i > start)
+            ranges.emplace_back(start, i);
+        start = i;
+    }
+    if (start < points.size())
+        ranges.emplace_back(start, points.size());
+    return ranges;
+}
+
 std::vector<BezierPathPoint> painter_path_to_points(const QPainterPath &path,
                                                     const QRectF &rect,
                                                     bool closed)
@@ -231,18 +253,33 @@ std::vector<BezierPathPoint> painter_path_to_points(const QPainterPath &path,
         return points;
 
     QPointF current;
+    QPointF subpath_first;
+    size_t subpath_first_index = 0;
+    bool have_subpath = false;
+
+    auto start_subpath = [&](const QPointF &point) {
+        BezierPathPoint anchor = normalized_point(point, rect);
+        anchor.starts_subpath = !points.empty();
+        points.push_back(anchor);
+        subpath_first_index = points.size() - 1;
+        subpath_first = point;
+        current = point;
+        have_subpath = true;
+    };
+
     for (int i = 0; i < path.elementCount(); ++i) {
         const QPainterPath::Element element = path.elementAt(i);
         const QPointF point(element.x, element.y);
         if (element.isMoveTo()) {
-            points.push_back(normalized_point(point, rect));
-            current = point;
+            start_subpath(point);
             continue;
         }
+        if (!have_subpath)
+            start_subpath(current);
+
         if (element.isLineTo()) {
-            if (closed && !points.empty() && same_point(point, QPointF(path.elementAt(0).x, path.elementAt(0).y)))
-                continue;
-            points.push_back(normalized_point(point, rect));
+            if (!(closed && same_point(point, subpath_first)))
+                points.push_back(normalized_point(point, rect));
             current = point;
             continue;
         }
@@ -253,7 +290,7 @@ std::vector<BezierPathPoint> painter_path_to_points(const QPainterPath &path,
             const QPointF control2(control2_element.x, control2_element.y);
             const QPointF end(end_element.x, end_element.y);
             if (points.empty())
-                points.push_back(normalized_point(current, rect));
+                start_subpath(current);
 
             BezierPathPoint &start = points.back();
             const BezierPathPoint normalized_control1 = normalized_point(control1, rect);
@@ -261,11 +298,10 @@ std::vector<BezierPathPoint> painter_path_to_points(const QPainterPath &path,
             start.out_x = normalized_control1.x;
             start.out_y = normalized_control1.y;
 
-            const bool closes_to_first = closed && !points.empty() &&
-                same_point(end, QPointF(path.elementAt(0).x, path.elementAt(0).y));
+            const bool closes_to_first = closed && same_point(end, subpath_first);
             BezierPathPoint *destination = nullptr;
-            if (closes_to_first) {
-                destination = &points.front();
+            if (closes_to_first && subpath_first_index < points.size()) {
+                destination = &points[subpath_first_index];
             } else {
                 points.push_back(normalized_point(end, rect));
                 destination = &points.back();
@@ -365,6 +401,289 @@ CubicSegment cubic_subsegment(const CubicSegment &segment, double t0, double t1)
     CubicSegment after_end;
     split_cubic(from_start, relative_end, selected, after_end);
     return selected;
+}
+
+struct ParsedPathContour {
+    QPointF start;
+    std::vector<CubicSegment> segments;
+    bool closed = false;
+};
+
+std::vector<ParsedPathContour> parse_painter_path(const QPainterPath &path)
+{
+    std::vector<ParsedPathContour> contours;
+    ParsedPathContour current_contour;
+    QPointF current_point;
+    bool have_contour = false;
+
+    auto flush_contour = [&]() {
+        if (!have_contour)
+            return;
+        if (!current_contour.segments.empty()) {
+            const QPointF end = current_contour.segments.back().p3;
+            current_contour.closed = same_point(end, current_contour.start);
+            contours.push_back(std::move(current_contour));
+        }
+        current_contour = ParsedPathContour{};
+        have_contour = false;
+    };
+
+    for (int i = 0; i < path.elementCount(); ++i) {
+        const QPainterPath::Element element = path.elementAt(i);
+        const QPointF point(element.x, element.y);
+        if (element.isMoveTo()) {
+            flush_contour();
+            current_contour.start = point;
+            current_point = point;
+            have_contour = true;
+            continue;
+        }
+
+        if (!have_contour) {
+            current_contour.start = current_point;
+            have_contour = true;
+        }
+
+        if (element.isLineTo()) {
+            current_contour.segments.push_back(
+                {current_point, current_point, point, point, false});
+            current_point = point;
+            continue;
+        }
+
+        if (element.type == QPainterPath::CurveToElement && i + 2 < path.elementCount()) {
+            const QPointF control1(element.x, element.y);
+            const QPainterPath::Element control2_element = path.elementAt(i + 1);
+            const QPainterPath::Element end_element = path.elementAt(i + 2);
+            const QPointF control2(control2_element.x, control2_element.y);
+            const QPointF end(end_element.x, end_element.y);
+            current_contour.segments.push_back(
+                {current_point, control1, control2, end, true});
+            current_point = end;
+            i += 2;
+        }
+    }
+    flush_contour();
+    return contours;
+}
+
+std::vector<CubicSegment> curved_segments_from_sources(
+    const std::vector<QPainterPath> &source_paths)
+{
+    std::vector<CubicSegment> curves;
+    for (const QPainterPath &source : source_paths) {
+        const auto contours = parse_painter_path(source);
+        for (const ParsedPathContour &contour : contours) {
+            for (const CubicSegment &segment : contour.segments) {
+                if (segment.curved)
+                    curves.push_back(segment);
+            }
+        }
+    }
+    return curves;
+}
+
+struct CubicProjection {
+    double t = 0.0;
+    double distance = std::numeric_limits<double>::infinity();
+};
+
+QRectF cubic_control_bounds(const CubicSegment &segment)
+{
+    const double left = std::min({segment.p0.x(), segment.p1.x(), segment.p2.x(), segment.p3.x()});
+    const double right = std::max({segment.p0.x(), segment.p1.x(), segment.p2.x(), segment.p3.x()});
+    const double top = std::min({segment.p0.y(), segment.p1.y(), segment.p2.y(), segment.p3.y()});
+    const double bottom = std::max({segment.p0.y(), segment.p1.y(), segment.p2.y(), segment.p3.y()});
+    return QRectF(QPointF(left, top), QPointF(right, bottom));
+}
+
+CubicProjection project_to_cubic(const CubicSegment &segment, const QPointF &point)
+{
+    constexpr int kSamples = 64;
+    int best_index = 0;
+    double best_distance_sq = std::numeric_limits<double>::infinity();
+    for (int i = 0; i <= kSamples; ++i) {
+        const double t = (double)i / kSamples;
+        const QPointF candidate = cubic_point(segment, t);
+        const double dx = candidate.x() - point.x();
+        const double dy = candidate.y() - point.y();
+        const double distance_sq = dx * dx + dy * dy;
+        if (distance_sq < best_distance_sq) {
+            best_distance_sq = distance_sq;
+            best_index = i;
+        }
+    }
+
+    double left = std::max(0.0, (double)(best_index - 1) / kSamples);
+    double right = std::min(1.0, (double)(best_index + 1) / kSamples);
+    for (int iteration = 0; iteration < 18; ++iteration) {
+        const double t1 = left + (right - left) / 3.0;
+        const double t2 = right - (right - left) / 3.0;
+        const QPointF p1 = cubic_point(segment, t1);
+        const QPointF p2 = cubic_point(segment, t2);
+        const double d1x = p1.x() - point.x();
+        const double d1y = p1.y() - point.y();
+        const double d2x = p2.x() - point.x();
+        const double d2y = p2.y() - point.y();
+        const double d1 = d1x * d1x + d1y * d1y;
+        const double d2 = d2x * d2x + d2y * d2y;
+        if (d1 <= d2)
+            right = t2;
+        else
+            left = t1;
+    }
+
+    const double t = (left + right) * 0.5;
+    return {t, QLineF(cubic_point(segment, t), point).length()};
+}
+
+struct CurveRunMatch {
+    int curve_index = -1;
+    size_t last_segment = 0;
+    double start_t = 0.0;
+    double end_t = 0.0;
+};
+
+CurveRunMatch match_flattened_curve_run(const std::vector<CubicSegment> &segments,
+                                        size_t first_segment,
+                                        const std::vector<CubicSegment> &source_curves,
+                                        double tolerance)
+{
+    CurveRunMatch best;
+    if (first_segment + 1 >= segments.size() ||
+        segments[first_segment].curved || segments[first_segment + 1].curved)
+        return best;
+
+    const QPointF first = segments[first_segment].p0;
+    const QPointF second = segments[first_segment].p3;
+    const QPointF third = segments[first_segment + 1].p3;
+    double best_score = std::numeric_limits<double>::infinity();
+
+    for (size_t curve_index = 0; curve_index < source_curves.size(); ++curve_index) {
+        const QRectF candidate_bounds =
+            cubic_control_bounds(source_curves[curve_index]).adjusted(-tolerance, -tolerance,
+                                                                      tolerance, tolerance);
+        if (!candidate_bounds.contains(first) || !candidate_bounds.contains(second) ||
+            !candidate_bounds.contains(third))
+            continue;
+        const CubicProjection p0 = project_to_cubic(source_curves[curve_index], first);
+        const CubicProjection p1 = project_to_cubic(source_curves[curve_index], second);
+        const CubicProjection p2 = project_to_cubic(source_curves[curve_index], third);
+        if (p0.distance > tolerance || p1.distance > tolerance || p2.distance > tolerance)
+            continue;
+
+        const double direction = p2.t - p0.t;
+        if (std::abs(direction) < 1e-4)
+            continue;
+        const bool forward = direction > 0.0;
+        if ((forward && !(p0.t <= p1.t + 1e-4 && p1.t <= p2.t + 1e-4)) ||
+            (!forward && !(p0.t >= p1.t - 1e-4 && p1.t >= p2.t - 1e-4)))
+            continue;
+
+        size_t last = first_segment + 1;
+        double previous_t = p2.t;
+        double end_t = p2.t;
+        double score = p0.distance + p1.distance + p2.distance;
+        for (size_t i = first_segment + 2; i < segments.size(); ++i) {
+            if (segments[i].curved)
+                break;
+            const CubicProjection projected =
+                project_to_cubic(source_curves[curve_index], segments[i].p3);
+            if (projected.distance > tolerance)
+                break;
+            if ((forward && projected.t + 1e-4 < previous_t) ||
+                (!forward && projected.t - 1e-4 > previous_t))
+                break;
+            previous_t = projected.t;
+            end_t = projected.t;
+            score += projected.distance;
+            last = i;
+        }
+
+        const double span = std::abs(end_t - p0.t);
+        if (last <= first_segment || span < 1e-3)
+            continue;
+        score /= (double)(last - first_segment + 2);
+        if (score < best_score) {
+            best_score = score;
+            best.curve_index = (int)curve_index;
+            best.last_segment = last;
+            best.start_t = p0.t;
+            best.end_t = end_t;
+        }
+    }
+    return best;
+}
+
+CubicSegment oriented_cubic_subsegment(const CubicSegment &source,
+                                       double start_t, double end_t,
+                                       const QPointF &exact_start,
+                                       const QPointF &exact_end)
+{
+    const bool forward = end_t >= start_t;
+    CubicSegment result = forward
+        ? cubic_subsegment(source, start_t, end_t)
+        : cubic_subsegment(source, end_t, start_t);
+    if (!forward) {
+        std::swap(result.p0, result.p3);
+        std::swap(result.p1, result.p2);
+    }
+
+    const QPointF start_delta = exact_start - result.p0;
+    const QPointF end_delta = exact_end - result.p3;
+    result.p0 = exact_start;
+    result.p1 += start_delta;
+    result.p2 += end_delta;
+    result.p3 = exact_end;
+    result.curved = true;
+    return result;
+}
+
+QPainterPath rebuild_with_restored_curves(
+    const QPainterPath &path,
+    const std::vector<CubicSegment> &source_curves)
+{
+    if (source_curves.empty())
+        return path;
+
+    const QRectF bounds = path.boundingRect();
+    const double tolerance = std::max(0.35, std::hypot(bounds.width(), bounds.height()) * 1e-5);
+    const auto contours = parse_painter_path(path);
+    QPainterPath rebuilt;
+    rebuilt.setFillRule(path.fillRule());
+
+    for (const ParsedPathContour &contour : contours) {
+        if (contour.segments.empty())
+            continue;
+        rebuilt.moveTo(contour.start);
+        for (size_t i = 0; i < contour.segments.size();) {
+            const CubicSegment &segment = contour.segments[i];
+            if (segment.curved) {
+                rebuilt.cubicTo(segment.p1, segment.p2, segment.p3);
+                ++i;
+                continue;
+            }
+
+            const CurveRunMatch match =
+                match_flattened_curve_run(contour.segments, i, source_curves, tolerance);
+            if (match.curve_index >= 0) {
+                const QPointF exact_start = contour.segments[i].p0;
+                const QPointF exact_end = contour.segments[match.last_segment].p3;
+                const CubicSegment restored = oriented_cubic_subsegment(
+                    source_curves[(size_t)match.curve_index], match.start_t, match.end_t,
+                    exact_start, exact_end);
+                rebuilt.cubicTo(restored.p1, restored.p2, restored.p3);
+                i = match.last_segment + 1;
+                continue;
+            }
+
+            rebuilt.lineTo(segment.p3);
+            ++i;
+        }
+        if (contour.closed)
+            rebuilt.closeSubpath();
+    }
+    return rebuilt;
 }
 
 double cubic_length_between(const CubicSegment &segment, double t0, double t1)
@@ -559,7 +878,7 @@ void append_trimmed_segment(QPainterPath &path, const CubicSegment &segment,
         path.lineTo(trimmed.p3);
 }
 
-QPainterPath editable_path(const Layer &layer, const QRectF &rect)
+QPainterPath editable_single_path(const Layer &layer, const QRectF &rect)
 {
     QPainterPath path;
     const auto &points = layer.path_points;
@@ -597,6 +916,27 @@ QPainterPath editable_path(const Layer &layer, const QRectF &rect)
     }
     path.closeSubpath();
     return path;
+}
+
+QPainterPath editable_path(const Layer &layer, const QRectF &rect)
+{
+    const auto ranges = subpath_ranges_for_points(layer.path_points);
+    if (ranges.size() <= 1)
+        return editable_single_path(layer, rect);
+
+    QPainterPath result;
+    result.setFillRule(Qt::OddEvenFill);
+    for (const auto &[start, end] : ranges) {
+        if (end <= start + 1)
+            continue;
+        Layer contour = layer;
+        contour.path_points.assign(layer.path_points.begin() + static_cast<std::ptrdiff_t>(start),
+                                   layer.path_points.begin() + static_cast<std::ptrdiff_t>(end));
+        if (!contour.path_points.empty())
+            contour.path_points.front().starts_subpath = false;
+        result.addPath(editable_single_path(contour, rect));
+    }
+    return result;
 }
 
 } // namespace
@@ -644,15 +984,43 @@ std::vector<LiveCornerGeometry> layer_live_corners(const Layer &layer, const QRe
         return result;
     }
 
-    const std::vector<EditableCornerData> corners = editable_path_corner_data(layer, rect);
-    for (size_t i = 0; i < corners.size(); ++i) {
-        if (!corners[i].eligible)
+    const auto ranges = subpath_ranges_for_points(layer.path_points);
+    for (const auto &[start, end] : ranges) {
+        if (end <= start + 1)
             continue;
-        const CornerData &corner = corners[i].corner;
-        result.push_back({(int)i, corner.previous, corner.anchor, corner.next,
-                          corner.radius, corner.max_radius});
+        Layer contour = layer;
+        contour.path_points.assign(layer.path_points.begin() + static_cast<std::ptrdiff_t>(start),
+                                   layer.path_points.begin() + static_cast<std::ptrdiff_t>(end));
+        if (!contour.path_points.empty())
+            contour.path_points.front().starts_subpath = false;
+        const std::vector<EditableCornerData> corners = editable_path_corner_data(contour, rect);
+        for (size_t i = 0; i < corners.size(); ++i) {
+            if (!corners[i].eligible)
+                continue;
+            const CornerData &corner = corners[i].corner;
+            result.push_back({(int)(start + i), corner.previous, corner.anchor, corner.next,
+                              corner.radius, corner.max_radius});
+        }
     }
     return result;
+}
+
+std::vector<std::pair<size_t, size_t>> path_subpath_ranges(const Layer &layer)
+{
+    return subpath_ranges_for_points(layer.path_points);
+}
+
+std::vector<BezierPathPoint> painter_path_to_bezier_points(const QPainterPath &path,
+                                                            const QRectF &rect,
+                                                            bool closed)
+{
+    return painter_path_to_points(path, rect, closed);
+}
+
+QPainterPath restore_boolean_path_curves(const QPainterPath &path,
+                                         const std::vector<QPainterPath> &source_paths)
+{
+    return rebuild_with_restored_curves(path, curved_segments_from_sources(source_paths));
 }
 
 bool ensure_editable_path(Layer &layer)
@@ -698,7 +1066,7 @@ QString path_geometry_signature(const Layer &layer)
     bytes.reserve((int)layer.path_points.size() * 96 + 8);
     bytes.append(layer.path_closed ? '1' : '0');
     for (const BezierPathPoint &point : layer.path_points) {
-        const QString row = QStringLiteral("|%1,%2,%3,%4,%5,%6,%7,%8,%9,%10")
+        const QString row = QStringLiteral("|%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11")
             .arg(point.x, 0, 'g', 12)
             .arg(point.y, 0, 'g', 12)
             .arg(point.in_x, 0, 'g', 12)
@@ -708,6 +1076,7 @@ QString path_geometry_signature(const Layer &layer)
             .arg(point.has_in ? 1 : 0)
             .arg(point.has_out ? 1 : 0)
             .arg(point.smooth ? 1 : 0)
+            .arg(point.starts_subpath ? 1 : 0)
             .arg(point.corner_radius, 0, 'g', 12);
         bytes.append(row.toUtf8());
     }

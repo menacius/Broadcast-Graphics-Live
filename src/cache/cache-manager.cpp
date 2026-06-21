@@ -1042,7 +1042,8 @@ QString CacheManager::contentHash(const Title &title) const
         for (const auto &point : layer->path_points) {
             add(point.x); add(point.y); add(point.in_x); add(point.in_y);
             add(point.out_x); add(point.out_y); add(point.has_in);
-            add(point.has_out); add(point.smooth); add(point.corner_radius);
+            add(point.has_out); add(point.smooth); add(point.starts_subpath);
+            add(point.corner_radius);
         }
         add(layer->image_width); add(layer->image_height);
         add(layer->shape_points); add(layer->shape_sides);

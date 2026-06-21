@@ -215,6 +215,144 @@ QTransform editor_layer_world_transform_for_parenting(const std::shared_ptr<Titl
     return xf;
 }
 
+bool editor_paths_geometrically_equal(const QPainterPath &a, const QPainterPath &b)
+{
+    if (a.isEmpty() || b.isEmpty())
+        return a.isEmpty() && b.isEmpty();
+
+    QPainterPath only_a = a.subtracted(b);
+    QPainterPath only_b = b.subtracted(a);
+    only_a.setFillRule(Qt::OddEvenFill);
+    only_b.setFillRule(Qt::OddEvenFill);
+    return only_a.isEmpty() && only_b.isEmpty();
+}
+
+int editor_boolean_gradient_type(int gradient_type)
+{
+    switch (std::clamp(gradient_type, 0, 4)) {
+    case 1: return 1;
+    case 2: return 2;
+    case 4: return 1;
+    case 0:
+    case 3:
+    default: return 0;
+    }
+}
+
+double editor_normalized_degrees(double degrees)
+{
+    degrees = std::fmod(degrees, 360.0);
+    return degrees < 0.0 ? degrees + 360.0 : degrees;
+}
+
+void editor_remap_gradient_to_canvas_bounds(int gradient_type,
+                                            const QRectF &source_box,
+                                            const QTransform &source_world,
+                                            const QRectF &result_canvas_bounds,
+                                            float &center_x, float &center_y,
+                                            float &focal_x, float &focal_y,
+                                            float &scale, float &angle_degrees)
+{
+    if (source_box.width() <= 1e-9 || source_box.height() <= 1e-9 ||
+        result_canvas_bounds.width() <= 1e-9 || result_canvas_bounds.height() <= 1e-9)
+        return;
+
+    const QPointF source_center(source_box.left() + (double)center_x * source_box.width(),
+                                source_box.top() + (double)center_y * source_box.height());
+    const QPointF source_focal(source_box.left() + (double)focal_x * source_box.width(),
+                               source_box.top() + (double)focal_y * source_box.height());
+    const double source_angle = (double)angle_degrees * std::acos(-1.0) / 180.0;
+    const QPointF source_axis(std::cos(source_angle), std::sin(source_angle));
+
+    const QPointF world_center = source_world.map(source_center);
+    const QPointF world_focal = source_world.map(source_focal);
+    auto normalize_result_point = [&](const QPointF &point) {
+        return QPointF((point.x() - result_canvas_bounds.left()) / result_canvas_bounds.width(),
+                       (point.y() - result_canvas_bounds.top()) / result_canvas_bounds.height());
+    };
+
+    const QPointF normalized_center = normalize_result_point(world_center);
+    const QPointF normalized_focal = normalize_result_point(world_focal);
+    center_x = (float)std::clamp(normalized_center.x(), -100.0, 100.0);
+    center_y = (float)std::clamp(normalized_center.y(), -100.0, 100.0);
+    focal_x = (float)std::clamp(normalized_focal.x(), -100.0, 100.0);
+    focal_y = (float)std::clamp(normalized_focal.y(), -100.0, 100.0);
+
+    const int type = editor_boolean_gradient_type(gradient_type);
+    double source_extent = 1.0;
+    double result_base = 1.0;
+    if (type == 1) {
+        source_extent = std::max(1.0, std::max(source_box.width(), source_box.height()) *
+                                      0.5 * std::clamp((double)scale, 0.01, 100.0));
+        result_base = std::max(1.0, std::max(result_canvas_bounds.width(),
+                                             result_canvas_bounds.height()) * 0.5);
+    } else {
+        source_extent = std::max(1.0, std::hypot(source_box.width(), source_box.height()) *
+                                      0.5 * std::clamp((double)scale, 0.01, 100.0));
+        result_base = std::max(1.0, std::hypot(result_canvas_bounds.width(),
+                                               result_canvas_bounds.height()) * 0.5);
+    }
+
+    /* Conical gradients have no radius in the renderer, but mapping a stable
+     * reference vector still preserves their canvas-space orientation. */
+    if (type == 2)
+        source_extent = std::max(1.0, std::hypot(source_box.width(), source_box.height()) * 0.5);
+
+    const QPointF world_axis_point = source_world.map(source_center + source_axis * source_extent);
+    const QPointF world_axis = world_axis_point - world_center;
+    const double world_extent = std::hypot(world_axis.x(), world_axis.y());
+    if (world_extent > 1e-9) {
+        angle_degrees = (float)editor_normalized_degrees(
+            std::atan2(world_axis.y(), world_axis.x()) * 180.0 / std::acos(-1.0));
+        if (type != 2)
+            scale = (float)std::clamp(world_extent / result_base, 0.01, 100.0);
+    }
+}
+
+QString editor_font_awesome_family()
+{
+    static const QString family = []() {
+        const QStringList preferred = {
+            QStringLiteral("Font Awesome 6 Free"),
+            QStringLiteral("Font Awesome 5 Free"),
+            QStringLiteral("FontAwesome")
+        };
+        const QStringList available = QFontDatabase().families();
+        for (const QString &candidate : preferred) {
+            if (available.contains(candidate, Qt::CaseInsensitive))
+                return candidate;
+        }
+        return QString();
+    }();
+    return family;
+}
+
+QIcon editor_font_awesome_icon(ushort codepoint, const QString &fallback, QWidget *widget)
+{
+    const int extent = 30;
+    QPixmap pixmap(extent, extent);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    QFont font;
+    const QString family = editor_font_awesome_family();
+    QString glyph = fallback;
+    if (!family.isEmpty()) {
+        font.setFamily(family);
+        font.setWeight(QFont::Black);
+        glyph = QString(QChar(codepoint));
+    } else {
+        font.setBold(true);
+    }
+    font.setPixelSize(std::max(11, extent - 9));
+    painter.setFont(font);
+    painter.setPen((widget ? widget->palette() : qApp->palette()).color(QPalette::ButtonText));
+    painter.drawText(pixmap.rect(), Qt::AlignCenter, glyph);
+    return QIcon(pixmap);
+}
+
 bool editor_parenting_would_cycle(const std::shared_ptr<Title> &title,
                                   const std::string &layer_id,
                                   const std::string &parent_id)
@@ -3714,6 +3852,34 @@ void TitleEditor::build_toolbar()
     dynamic_toolbar_layout->setContentsMargins(2, 0, 2, 0);
     dynamic_toolbar_layout->setSpacing(2);
 
+    boolean_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
+    boolean_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto *boolean_toolbar_layout = new QHBoxLayout(boolean_toolbar_widget_);
+    boolean_toolbar_layout->setContentsMargins(2, 0, 2, 0);
+    boolean_toolbar_layout->setSpacing(2);
+    auto make_boolean_button = [this](ushort glyph, const QString &fallback, const QString &tooltip) {
+        auto *button = new QToolButton(boolean_toolbar_widget_);
+        button->setIcon(editor_font_awesome_icon(glyph, fallback, button));
+        button->setIconSize(toolbar_->iconSize());
+        button->setToolTip(tooltip);
+        button->setAutoRaise(true);
+        button->setFixedSize(kEditorToolbarButtonExtent, kEditorToolbarButtonExtent);
+        return button;
+    };
+    boolean_union_button_ = make_boolean_button(0xf247, QStringLiteral("∪"),
+                                                obsgs_tr("OBSTitles.BooleanUnionTooltip"));
+    boolean_subtract_button_ = make_boolean_button(0xf146, QStringLiteral("−"),
+                                                   obsgs_tr("OBSTitles.BooleanSubtractFrontTooltip"));
+    boolean_intersect_button_ = make_boolean_button(0xf066, QStringLiteral("∩"),
+                                                    obsgs_tr("OBSTitles.BooleanIntersectTooltip"));
+    boolean_exclude_button_ = make_boolean_button(0xf248, QStringLiteral("⊕"),
+                                                  obsgs_tr("OBSTitles.BooleanExcludeTooltip"));
+    boolean_toolbar_layout->addWidget(boolean_union_button_);
+    boolean_toolbar_layout->addWidget(boolean_subtract_button_);
+    boolean_toolbar_layout->addWidget(boolean_intersect_button_);
+    boolean_toolbar_layout->addWidget(boolean_exclude_button_);
+    dynamic_toolbar_layout->addWidget(boolean_toolbar_widget_);
+
     point_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
     point_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     auto *point_toolbar_layout = new QHBoxLayout(point_toolbar_widget_);
@@ -3788,6 +3954,7 @@ void TitleEditor::build_toolbar()
     dynamic_toolbar_action_ = toolbar_->addWidget(dynamic_toolbar_widget_);
     dynamic_toolbar_action_->setPriority(QAction::HighPriority);
     dynamic_toolbar_action_->setVisible(false);
+    boolean_toolbar_widget_->setVisible(false);
     point_toolbar_widget_->setVisible(false);
     corner_toolbar_widget_->setVisible(false);
 
@@ -3800,6 +3967,19 @@ void TitleEditor::build_toolbar()
     auto *toolbar_spacer = new QWidget(toolbar_);
     toolbar_spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar_->addWidget(toolbar_spacer);
+
+    connect(boolean_union_button_, &QToolButton::clicked, this, [this]() {
+        apply_boolean_shape_operation(BooleanShapeOperation::Union);
+    });
+    connect(boolean_subtract_button_, &QToolButton::clicked, this, [this]() {
+        apply_boolean_shape_operation(BooleanShapeOperation::SubtractFront);
+    });
+    connect(boolean_intersect_button_, &QToolButton::clicked, this, [this]() {
+        apply_boolean_shape_operation(BooleanShapeOperation::Intersect);
+    });
+    connect(boolean_exclude_button_, &QToolButton::clicked, this, [this]() {
+        apply_boolean_shape_operation(BooleanShapeOperation::Exclude);
+    });
 
     connect(point_toolbar_corner_, &QToolButton::clicked, this, [this]() {
         if (!updating_corner_toolbar_ && canvas_)
@@ -3865,14 +4045,32 @@ void TitleEditor::build_toolbar()
 
 void TitleEditor::update_corner_toolbar()
 {
-    if ((!corner_toolbar_widget_ && !point_toolbar_widget_) || !canvas_)
+    if ((!boolean_toolbar_widget_ && !corner_toolbar_widget_ && !point_toolbar_widget_) || !canvas_)
         return;
     QScopedValueRollback<bool> guard(updating_corner_toolbar_, true);
 
+    const bool boolean_available = boolean_shape_selection_available();
+    bool boolean_enabled = boolean_available;
+    if (boolean_enabled && title_) {
+        for (const auto &id : selected_layer_ids_for_operation()) {
+            const auto layer = title_->find_layer(id);
+            if (!layer || layer->locked || layer->shape_type == ShapeType::Line ||
+                (layer->shape_type == ShapeType::Path && !layer->path_closed)) {
+                boolean_enabled = false;
+                break;
+            }
+        }
+    }
     const bool point_available = canvas_->point_controls_available();
     const bool corner_available = canvas_->corner_controls_available();
-    const bool context_available = point_available || corner_available;
+    const bool context_available = boolean_available || point_available || corner_available;
 
+    if (boolean_toolbar_widget_)
+        boolean_toolbar_widget_->setVisible(boolean_available);
+    if (boolean_union_button_) boolean_union_button_->setEnabled(boolean_enabled);
+    if (boolean_subtract_button_) boolean_subtract_button_->setEnabled(boolean_enabled);
+    if (boolean_intersect_button_) boolean_intersect_button_->setEnabled(boolean_enabled);
+    if (boolean_exclude_button_) boolean_exclude_button_->setEnabled(boolean_enabled);
     if (point_toolbar_widget_)
         point_toolbar_widget_->setVisible(point_available);
     if (corner_toolbar_widget_)
@@ -4442,6 +4640,263 @@ std::vector<std::string> TitleEditor::selected_layer_ids_for_operation() const
             ordered_ids.push_back(layer->id);
     }
     return ordered_ids;
+}
+
+bool TitleEditor::boolean_shape_selection_available() const
+{
+    const auto ids = selected_layer_ids_for_operation();
+    if (!title_ || ids.size() < 2)
+        return false;
+    for (const auto &id : ids) {
+        const auto layer = title_->find_layer(id);
+        if (!layer || layer->type != LayerType::Shape)
+            return false;
+    }
+    return true;
+}
+
+void TitleEditor::apply_boolean_shape_operation(BooleanShapeOperation operation)
+{
+    if (!title_ || !boolean_shape_selection_available())
+        return;
+
+    const auto ids = selected_layer_ids_for_operation();
+    std::set<std::string> selected_ids(ids.begin(), ids.end());
+    std::vector<std::shared_ptr<Layer>> shapes;
+    shapes.reserve(ids.size());
+    for (const auto &layer : title_->layers) {
+        if (!layer || selected_ids.find(layer->id) == selected_ids.end())
+            continue;
+        if (layer->locked || layer->shape_type == ShapeType::Line ||
+            (layer->shape_type == ShapeType::Path && !layer->path_closed))
+            return;
+        shapes.push_back(layer);
+    }
+    if (shapes.size() < 2)
+        return;
+
+    std::vector<QPainterPath> canvas_paths;
+    std::vector<QRectF> local_rects;
+    std::vector<QTransform> world_transforms;
+    canvas_paths.reserve(shapes.size());
+    local_rects.reserve(shapes.size());
+    world_transforms.reserve(shapes.size());
+    for (const auto &layer : shapes) {
+        const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
+                                             std::max(0.0, layer->out_time - layer->in_time));
+        const double width = std::max(1e-6, eval_box_width(*layer, local_time));
+        const double height = std::max(1e-6, eval_box_height(*layer, local_time));
+        const double origin_x = eval_origin_x(*layer, local_time);
+        const double origin_y = eval_origin_y(*layer, local_time);
+        const QRectF local_rect(-origin_x * width, -origin_y * height, width, height);
+        const QTransform world_transform =
+            editor_layer_world_transform_for_parenting(title_, *layer, playhead_);
+        QPainterPath path = gsp::layer_shape_path(*layer, local_rect);
+        path.setFillRule(Qt::OddEvenFill);
+        path = world_transform.map(path);
+        path.setFillRule(Qt::OddEvenFill);
+        if (path.isEmpty())
+            return;
+        canvas_paths.push_back(path);
+        local_rects.push_back(local_rect);
+        world_transforms.push_back(world_transform);
+    }
+
+    QPainterPath result = canvas_paths.front();
+    switch (operation) {
+    case BooleanShapeOperation::Union:
+        for (size_t i = 1; i < canvas_paths.size(); ++i)
+            result = result.united(canvas_paths[i]);
+        break;
+    case BooleanShapeOperation::SubtractFront: {
+        QPainterPath front = canvas_paths[1];
+        for (size_t i = 2; i < canvas_paths.size(); ++i)
+            front = front.united(canvas_paths[i]);
+        result = result.subtracted(front);
+        break;
+    }
+    case BooleanShapeOperation::Intersect:
+        for (size_t i = 1; i < canvas_paths.size(); ++i)
+            result = result.intersected(canvas_paths[i]);
+        break;
+    case BooleanShapeOperation::Exclude:
+        for (size_t i = 1; i < canvas_paths.size(); ++i) {
+            const QPainterPath overlap = result.intersected(canvas_paths[i]);
+            result = result.united(canvas_paths[i]).subtracted(overlap);
+        }
+        break;
+    }
+    /* Do not call QPainterPath::simplified() here. It explicitly flattens
+     * Bézier curves, which destroys rounded corners produced by primitive
+     * shapes. The boolean result is already a valid filled path. */
+    result = gsp::restore_boolean_path_curves(result, canvas_paths);
+    result.setFillRule(Qt::OddEvenFill);
+
+    const size_t style_source_index = operation == BooleanShapeOperation::SubtractFront
+        ? 0
+        : shapes.size() - 1;
+    const auto style_source = shapes[style_source_index];
+    const QRectF style_source_rect = local_rects[style_source_index];
+    const QTransform style_source_world = world_transforms[style_source_index];
+    const std::string result_id = TitleDataStore::make_uuid();
+    std::shared_ptr<Layer> result_layer;
+
+    QString operation_name;
+    switch (operation) {
+    case BooleanShapeOperation::Union:
+        operation_name = obsgs_tr("OBSTitles.BooleanUnion");
+        break;
+    case BooleanShapeOperation::SubtractFront:
+        operation_name = obsgs_tr("OBSTitles.BooleanSubtractFront");
+        break;
+    case BooleanShapeOperation::Intersect:
+        operation_name = obsgs_tr("OBSTitles.BooleanIntersect");
+        break;
+    case BooleanShapeOperation::Exclude:
+        operation_name = obsgs_tr("OBSTitles.BooleanExclude");
+        break;
+    }
+
+    if (!result.isEmpty()) {
+        const bool source_dependencies_survive =
+            selected_ids.find(style_source->parent_id) == selected_ids.end() &&
+            selected_ids.find(style_source->mask_source_id) == selected_ids.end();
+        const bool preserve_source_geometry = source_dependencies_survive &&
+            editor_paths_geometrically_equal(result, canvas_paths[style_source_index]);
+
+        if (preserve_source_geometry) {
+            /* When the operation leaves the appearance-source shape unchanged
+             * (for example, union with a fully contained shape), keep its
+             * parametric corner radii and transform instead of baking it. */
+            result_layer = std::make_shared<Layer>(*style_source);
+            result_layer->id = result_id;
+            result_layer->name = unique_layer_name(operation_name.toStdString(), selected_ids);
+        }
+
+        QRectF bounds = result.boundingRect();
+        if (bounds.width() < 1.0) {
+            const double center = bounds.center().x();
+            bounds.setLeft(center - 0.5);
+            bounds.setWidth(1.0);
+        }
+        if (bounds.height() < 1.0) {
+            const double center = bounds.center().y();
+            bounds.setTop(center - 0.5);
+            bounds.setHeight(1.0);
+        }
+
+        std::vector<BezierPathPoint> points;
+        if (!result_layer)
+            points = gsp::painter_path_to_bezier_points(result, bounds, true);
+        if (!result_layer && points.size() >= 3) {
+            result_layer = std::make_shared<Layer>(*style_source);
+            result_layer->id = result_id;
+            result_layer->name = unique_layer_name(operation_name.toStdString(), selected_ids);
+            result_layer->type = LayerType::Shape;
+            result_layer->shape_type = ShapeType::Path;
+            result_layer->path_points = std::move(points);
+            result_layer->path_closed = true;
+            result_layer->parent_id.clear();
+            result_layer->mask_source_id.clear();
+            result_layer->mask_mode = MaskMode::None;
+            result_layer->position = AnimatedVec2Property{
+                "position", {bounds.center().x(), bounds.center().y()}, {}};
+            result_layer->scale = AnimatedVec2Property{"scale", {1.0, 1.0}, {}};
+            result_layer->rotation = AnimatedProperty{"rotation", 0.0, {}};
+            result_layer->size = AnimatedVec2Property{
+                "size", {bounds.width(), bounds.height()}, {}};
+            result_layer->rect_width = (float)bounds.width();
+            result_layer->rect_height = (float)bounds.height();
+            result_layer->origin_x = 0.5f;
+            result_layer->origin_y = 0.5f;
+            result_layer->origin_prop = AnimatedVec2Property{"origin", {0.5, 0.5}, {}};
+            result_layer->corner_radius = 0.0f;
+            result_layer->corner_radius_tl = 0.0f;
+            result_layer->corner_radius_tr = 0.0f;
+            result_layer->corner_radius_br = 0.0f;
+            result_layer->corner_radius_bl = 0.0f;
+            result_layer->shape_roundness = 0.0f;
+            result_layer->shape_inner_roundness = 0.0f;
+
+            if (result_layer->fill_type == 1) {
+                editor_remap_gradient_to_canvas_bounds(
+                    result_layer->gradient_type, style_source_rect, style_source_world, bounds,
+                    result_layer->gradient_center_x, result_layer->gradient_center_y,
+                    result_layer->gradient_focal_x, result_layer->gradient_focal_y,
+                    result_layer->gradient_scale, result_layer->gradient_angle);
+            }
+            if (result_layer->stroke_fill_type == 2) {
+                editor_remap_gradient_to_canvas_bounds(
+                    result_layer->stroke_gradient_type, style_source_rect, style_source_world, bounds,
+                    result_layer->stroke_gradient_center_x, result_layer->stroke_gradient_center_y,
+                    result_layer->stroke_gradient_focal_x, result_layer->stroke_gradient_focal_y,
+                    result_layer->stroke_gradient_scale, result_layer->stroke_gradient_angle);
+            }
+            if (result_layer->background_fill_type == 1) {
+                editor_remap_gradient_to_canvas_bounds(
+                    result_layer->background_gradient_type, style_source_rect, style_source_world, bounds,
+                    result_layer->background_gradient_center_x, result_layer->background_gradient_center_y,
+                    result_layer->background_gradient_focal_x, result_layer->background_gradient_focal_y,
+                    result_layer->background_gradient_scale, result_layer->background_gradient_angle);
+            }
+            for (LayerEffect &effect : result_layer->effects) {
+                const bool uses_gradient =
+                    (effect.type == LayerEffectType::BackgroundColor && effect.effect_fill_type == 1) ||
+                    (effect.type == LayerEffectType::Outline && effect.effect_fill_type == 2);
+                if (!effect.effect_owned_style_loaded || !uses_gradient)
+                    continue;
+                editor_remap_gradient_to_canvas_bounds(
+                    effect.effect_gradient_type, style_source_rect, style_source_world, bounds,
+                    effect.effect_gradient_center_x, effect.effect_gradient_center_y,
+                    effect.effect_gradient_focal_x, effect.effect_gradient_focal_y,
+                    effect.effect_gradient_scale, effect.effect_gradient_angle);
+            }
+        }
+    }
+
+    std::vector<std::shared_ptr<Layer>> next_layers;
+    next_layers.reserve(title_->layers.size() - shapes.size() + (result_layer ? 1 : 0));
+    const std::string topmost_selected_id = shapes.back()->id;
+    for (const auto &layer : title_->layers) {
+        if (!layer)
+            continue;
+        if (selected_ids.find(layer->id) == selected_ids.end()) {
+            next_layers.push_back(layer);
+            continue;
+        }
+        if (result_layer && layer->id == topmost_selected_id)
+            next_layers.push_back(result_layer);
+    }
+    title_->layers = std::move(next_layers);
+
+    for (const auto &layer : title_->layers) {
+        if (!layer)
+            continue;
+        if (selected_ids.find(layer->parent_id) != selected_ids.end())
+            layer->parent_id = result_layer ? result_layer->id : std::string();
+        if (selected_ids.find(layer->mask_source_id) != selected_ids.end()) {
+            layer->mask_source_id = result_layer ? result_layer->id : std::string();
+            if (!result_layer)
+                layer->mask_mode = MaskMode::None;
+        }
+    }
+
+    const std::vector<std::string> selection = result_layer
+        ? std::vector<std::string>{result_layer->id}
+        : std::vector<std::string>{};
+    sel_layer_id_ = result_layer ? result_layer->id : std::string();
+    layers_->refresh();
+    layers_->set_selected_layers(selection);
+    canvas_->set_title(title_, true);
+    canvas_->set_selected_layers(selection);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layers(selection);
+    if (result_layer)
+        update_layer_panels(result_layer, playhead_);
+    else
+        update_layer_panels(nullptr, playhead_);
+    force_next_title_visual_update();
+    on_title_modified();
 }
 
 std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const std::vector<std::shared_ptr<Layer>> &layers,
