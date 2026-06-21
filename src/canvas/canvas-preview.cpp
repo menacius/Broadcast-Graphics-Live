@@ -156,6 +156,8 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     setMinimumSize(400, 225);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setAutoFillBackground(false);
+    setAttribute(Qt::WA_OpaquePaintEvent, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAcceptDrops(true);
@@ -603,6 +605,17 @@ void CanvasPreview::begin_adaptive_interaction()
         adaptive_full_quality_timer_->start();
 }
 
+void CanvasPreview::end_adaptive_interaction()
+{
+    if (adaptive_full_quality_timer_)
+        adaptive_full_quality_timer_->stop();
+
+    const bool was_reduced_quality = frame_pixmap_preview_scale_ < 0.999;
+    adaptive_interaction_active_ = false;
+    if (adaptive_rendering_enabled_ && adaptive_quality_mode_ == AdaptiveQualityMode::Auto && was_reduced_quality)
+        force_live_full_quality_render_ = true;
+}
+
 double CanvasPreview::adaptive_preview_scale() const
 {
     if (!adaptive_rendering_enabled_)
@@ -618,12 +631,36 @@ double CanvasPreview::adaptive_preview_scale() const
     }
     if (!adaptive_interaction_active_)
         return 1.0;
+
+    double scale = 1.0;
     // Stay at full quality for titles already capable of interactive rendering.
-    if (last_full_quality_render_cost_ms_ <= 18) return 1.0;
-    if (last_full_quality_render_cost_ms_ <= 28) return 0.75;
-    if (last_full_quality_render_cost_ms_ <= 45) return 0.5;
-    if (last_full_quality_render_cost_ms_ <= 75) return 0.375;
-    return 0.25;
+    if (last_full_quality_render_cost_ms_ > 75) scale = 0.25;
+    else if (last_full_quality_render_cost_ms_ > 45) scale = 0.375;
+    else if (last_full_quality_render_cost_ms_ > 28) scale = 0.5;
+    else if (last_full_quality_render_cost_ms_ > 18) scale = 0.75;
+
+    const bool geometry_drag =
+        drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
+        drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY;
+    if (geometry_drag && title_) {
+        const double canvas_area = std::max(1.0, (double)title_->width * (double)title_->height);
+        double manipulated_area = drag_start_selection_bounds_.isValid()
+            ? drag_start_selection_bounds_.width() * drag_start_selection_bounds_.height()
+            : canvas_area;
+        if (!std::isfinite(manipulated_area) || manipulated_area <= 0.0)
+            manipulated_area = canvas_area;
+        const double coverage = std::clamp(manipulated_area / canvas_area, 0.0, 1.0);
+        if (manipulated_area >= 6000000.0 || canvas_area >= 8300000.0 || coverage >= 0.70)
+            scale = std::min(scale, 0.25);
+        else if (manipulated_area >= 3500000.0 || canvas_area >= 5000000.0 || coverage >= 0.45)
+            scale = std::min(scale, 0.375);
+        else if (manipulated_area >= 1600000.0 || canvas_area >= 2500000.0 || coverage >= 0.25)
+            scale = std::min(scale, 0.5);
+        else if (manipulated_area >= 900000.0 || coverage >= 0.15)
+            scale = std::min(scale, 0.75);
+    }
+
+    return scale;
 }
 
 void CanvasPreview::set_snap_enabled(bool enabled)
@@ -1372,6 +1409,7 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         assign_axis(gradient_drag_.start, local);
     }
 
+    begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
     drag_current_view_ = view_pt;
@@ -1399,6 +1437,7 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
     const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
     gradient_tool_dragging_ = true;
     gradient_tool_start_local_ = local;
+    drag_start_selection_bounds_ = selected_canvas_bounds();
     drag_mode_ = (layer->gradient_type == 1 || layer->gradient_type == 4) ? DragMode::GradientRadius : DragMode::GradientEnd;
 
     auto normalized = [&](const QPointF &pt) {
@@ -1414,6 +1453,7 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
     layer->gradient_angle = modifiers.testFlag(Qt::ShiftModifier) ? 0.0f : layer->gradient_angle;
 
     begin_gradient_drag(*layer);
+    begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
     invalidate_canvas_overlay_caches();
@@ -1650,6 +1690,7 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
     }
 
     clear_snap_feedback();
+    begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
     drag_current_view_ = view_pt;
@@ -2225,6 +2266,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
     auto layers = selected_layers();
     if (layers.empty() || drag_mode_ == DragMode::None) return;
 
+    begin_adaptive_interaction();
     drag_current_view_ = view_pt;
     QPointF canvas = view_to_canvas(view_pt);
     QPointF delta = canvas - drag_start_canvas_;
@@ -2598,7 +2640,6 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
     }
 
-    begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
     invalidate_canvas_overlay_caches();
@@ -2717,9 +2758,10 @@ void CanvasPreview::render_to_pixmap()
     // Adapt the presentation cadence to actual render cost. Fast titles remain
     // 60 fps; complex titles are capped so input and OBS never starve.
     // During direct manipulation prioritize input latency over reproducing each
-    // intermediate frame. Coalescing keeps at most one pending render, while a
-    // fixed 60 Hz presentation target avoids the sluggish cost-derived cadence.
-    render_interval_ms_ = adaptive_interaction_active_ ? 16
+    // intermediate frame. Coalescing keeps at most one pending render; the next
+    // live render is delayed by the actual render cost so large layers cannot
+    // monopolize the GUI thread with back-to-back uncached frames.
+    render_interval_ms_ = adaptive_interaction_active_ ? std::clamp(cost_ms + 4, 16, 100)
                                                        : std::clamp(cost_ms + 2, 16, 50);
     last_render_clock_.restart();
     render_in_progress_ = false;
@@ -3004,7 +3046,12 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     if (!drawing_shape_ && title_has_dynamic_text_layer(title_)) dirty_ = true;
     if (dirty_) {
         const qint64 elapsed = last_render_clock_.isValid() ? last_render_clock_.elapsed() : render_interval_ms_;
-        if (!render_in_progress_ && (frame_pixmap_.isNull() || elapsed >= render_interval_ms_)) {
+        const bool direct_canvas_manipulation =
+            adaptive_interaction_active_ || force_live_full_quality_render_ ||
+            (drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
+             drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY);
+        if (!render_in_progress_ &&
+            (frame_pixmap_.isNull() || direct_canvas_manipulation || elapsed >= render_interval_ms_)) {
             render_to_pixmap();
         } else if (render_coalesce_timer_ && !render_coalesce_timer_->isActive()) {
             render_coalesce_timer_->start(std::max(1, render_interval_ms_ - (int)elapsed));
@@ -3034,7 +3081,12 @@ void CanvasPreview::paintEvent(QPaintEvent *)
             ? frame_pixmap_.height() / frame_pixmap_preview_scale_ : frame_pixmap_.height();
         const int pix_w = static_cast<int>(std::round(logical_pix_w * scale));
         const int pix_h = static_cast<int>(std::round(logical_pix_h * scale));
+        const bool scaled_artwork = pix_w != frame_pixmap_.width() || pix_h != frame_pixmap_.height();
+        const bool adaptive_motion = adaptive_rendering_enabled_ && adaptive_interaction_active_;
+        p.save();
+        p.setRenderHint(QPainter::SmoothPixmapTransform, scaled_artwork && !adaptive_motion);
         p.drawPixmap(pix_x, pix_y, pix_w, pix_h, frame_pixmap_);
+        p.restore();
     }
 
     p.save();
@@ -3899,11 +3951,10 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
     if (rulers_visible_) {
         QRect ruler_dirty = ruler_top_rect().toAlignedRect().united(ruler_left_rect().toAlignedRect());
         if (!ruler_dirty.isEmpty()) {
-            // Keep cursor indicators visually locked to the mouse.  update() is
-            // intentionally asynchronous and can lag a few milliseconds behind
-            // high-frequency mouse move events, so force an immediate repaint of
-            // only the lightweight ruler strip.
-            repaint(ruler_dirty.adjusted(-2, -2, 2, 2));
+            // Keep ruler cursor indicators in the same backing-store batch as
+            // the canvas. Synchronous repaint() can flush a strip before the
+            // drag frame and shows up as tearing during fast manipulation.
+            update(ruler_dirty.adjusted(-2, -2, 2, 2));
         } else if (!hover_changed) {
             update();
         }
@@ -4021,6 +4072,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                 drag_start_view_ = ev->pos();
                 drag_current_view_ = ev->pos();
                 drag_start_canvas_ = view_to_canvas(ev->pos());
+                drag_start_selection_bounds_ = selected_canvas_bounds();
                 drag_layer_states_.clear();
                 gradient_drag_ = GradientDragState{};
                 corner_radius_drag_ = CornerRadiusDragState{};
@@ -4642,6 +4694,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 
     if (gradient_tool_dragging_) {
         apply_gradient_drag(ev->pos(), ev->modifiers());
+        end_adaptive_interaction();
         gradient_tool_dragging_ = false;
         gradient_drag_ = GradientDragState{};
         drag_mode_ = DragMode::None;
@@ -4707,8 +4760,10 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
     drag_layer_states_.clear();
     clear_snap_feedback();
     unsetCursor();
-    if (changed)
+    if (changed) {
+        end_adaptive_interaction();
         emit layer_geometry_changed();
+    }
     ev->accept();
 }
 

@@ -222,8 +222,38 @@ void TitlePropertiesPanel::apply_theme_style()
 
 void TitlePropertiesPanel::set_title(std::shared_ptr<Title> t)
 {
+    const bool same_title = title_ && t && title_.get() == t.get();
     title_ = t;
     setTitle(QString());
+
+    if (same_title && !loading_values_) {
+        const double duration = title_ ? title_->duration : 5.0;
+        const double loop_start = title_ ? title_->loop_start : 1.0;
+        const double loop_end = title_ ? title_->loop_end : 4.0;
+        const int playback_mode = title_ ? std::clamp(title_->playback_mode, 0, 2) : 0;
+        const int loop_type = title_ ? std::clamp(title_->loop_type, 0, 1) : 0;
+        const int cue_end_behavior = title_ ? std::clamp(title_->cue_end_behavior, 0, 2) : 0;
+        const int playback_selection = playback_mode == 1 ? (loop_type == 1 ? 2 : 1)
+                                                           : (playback_mode == 2 ? 3 : 0);
+        const double clamped_loop_start = std::clamp(loop_start, 0.0, duration);
+        const double clamped_loop_end = std::clamp(loop_end, clamped_loop_start, duration);
+        const double pause_time = title_ ? std::clamp(title_->pause_time, 0.0, duration) : 0.0;
+        const int cue_index = cmb_cue_end_behavior_ ? cmb_cue_end_behavior_->findData(cue_end_behavior) : -1;
+        auto same_value = [](QDoubleSpinBox *spin, double value) {
+            return spin && std::abs(spin->value() - value) < 0.000001;
+        };
+
+        if (same_value(spn_duration_, duration) &&
+            same_value(spn_loop_start_, clamped_loop_start) &&
+            same_value(spn_loop_end_, clamped_loop_end) &&
+            same_value(spn_pause_frame_, pause_time) &&
+            (!grp_playback_mode_ || grp_playback_mode_->checkedId() == playback_selection) &&
+            (!cmb_cue_end_behavior_ ||
+             cmb_cue_end_behavior_->currentIndex() == (cue_index >= 0 ? cue_index : 0))) {
+            return;
+        }
+    }
+
     load_values();
 }
 
@@ -267,4 +297,3 @@ void TitlePropertiesPanel::load_values()
 /* ══════════════════════════════════════════════════════════════════
  *  PropertiesPanel
  * ══════════════════════════════════════════════════════════════════ */
-

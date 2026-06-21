@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QFile>
 #include <QDir>
+#include <QScopedValueRollback>
 #include <QStandardPaths>
 
 static QString auto_style_marker_label(const std::string &marker, size_t offset, const std::string &custom_chars)
@@ -4510,6 +4511,194 @@ void PropertiesPanel::set_layer(std::shared_ptr<Layer> layer, double t)
     layer_    = layer;
     playhead_ = t;
     load_values();
+}
+
+void PropertiesPanel::update_playhead(double t)
+{
+    playhead_ = t;
+    if (!layer_ || loading_values_)
+        return;
+
+    QScopedValueRollback<bool> loading_guard(loading_values_, true);
+    const double lt = std::clamp(playhead_ - layer_->in_time, 0.0,
+                                 std::max(0.0, layer_->out_time - layer_->in_time));
+    const bool is_text = layer_->type == LayerType::Text;
+    const bool is_clock = layer_->type == LayerType::Clock;
+    const bool is_ticker = layer_->type == LayerType::Ticker;
+    const bool is_text_like = is_text || is_clock || is_ticker;
+    const bool is_image = layer_->type == LayerType::Image;
+    const bool is_rect = layer_->type == LayerType::SolidRect || layer_->type == LayerType::Shape;
+
+    auto set_double = [](QDoubleSpinBox *spin, double value) {
+        if (!spin || !std::isfinite(value))
+            return;
+        if (std::abs(spin->value() - value) < 0.000001)
+            return;
+        QSignalBlocker blocker(spin);
+        spin->setValue(value);
+    };
+    auto set_int = [](QSpinBox *spin, int value) {
+        if (!spin)
+            return;
+        if (spin->value() == value)
+            return;
+        QSignalBlocker blocker(spin);
+        spin->setValue(value);
+    };
+    auto set_color_button = [](QPushButton *button, uint32_t argb) {
+        if (!button)
+            return;
+        if (button->property("buttonFillKind").toString() == QStringLiteral("color") &&
+            button->property("argb").isValid() && button->property("argb").toUInt() == argb)
+            return;
+        style_color_button(button, argb);
+        button->setProperty("buttonFillKind", QStringLiteral("color"));
+        button->setProperty("argb", argb);
+    };
+    auto set_gradient_button = [](QPushButton *button, uint32_t start_argb,
+                                  uint32_t end_argb, int gradient_type) {
+        if (!button)
+            return;
+        if (button->property("buttonFillKind").toString() == QStringLiteral("gradient") &&
+            button->property("gradientStartArgb").isValid() &&
+            button->property("gradientStartArgb").toUInt() == start_argb &&
+            button->property("gradientEndArgb").toUInt() == end_argb &&
+            button->property("gradientType").toInt() == gradient_type)
+            return;
+        style_gradient_button(button, start_argb, end_argb, gradient_type);
+        button->setProperty("buttonFillKind", QStringLiteral("gradient"));
+        button->setProperty("gradientStartArgb", start_argb);
+        button->setProperty("gradientEndArgb", end_argb);
+        button->setProperty("gradientType", gradient_type);
+    };
+    auto set_kf_icon = [](QPushButton *button, bool active, bool has_keyframes) {
+        if (!button)
+            return;
+        const bool outlined = has_keyframes && !active;
+        if (button->property("active").isValid() &&
+            button->property("active").toBool() == active &&
+            button->property("outlined").toBool() == outlined)
+            return;
+        button->setIcon(keyframe_diamond_icon(active, outlined));
+        button->setProperty("active", active);
+        button->setProperty("outlined", outlined);
+        button->style()->unpolish(button);
+        button->style()->polish(button);
+    };
+    auto set_prop_kf_icon = [&](QPushButton *button, const AnimatedProperty &prop) {
+        set_kf_icon(button, keyframe_at_time(prop, lt), prop.is_animated());
+    };
+    auto set_group_kf_icon = [&](QPushButton *button, std::initializer_list<const AnimatedProperty *> props) {
+        set_kf_icon(button, any_keyframe_at_time(props, lt), any_keyframes(props));
+    };
+    auto set_vec_kf_icon = [&](QPushButton *button, const AnimatedVec2Property &prop) {
+        set_kf_icon(button, keyframe_at_time(prop, lt), prop.is_animated());
+    };
+
+    const Vec2Value position = layer_->position.evaluate(lt);
+    const Vec2Value scale = layer_->scale.evaluate(lt);
+    set_double(spn_px_, position.x);
+    set_double(spn_py_, position.y);
+    set_double(spn_scale_x_, scale.x * 100.0);
+    set_double(spn_scale_y_, scale.y * 100.0);
+    set_double(spn_transform_size_w_, eval_box_width(*layer_, lt));
+    set_double(spn_transform_size_h_, eval_box_height(*layer_, lt));
+    set_double(spn_rot_, layer_->rotation.evaluate(lt));
+    set_double(spn_opacity_, layer_->opacity.evaluate(lt));
+    if (spn_appearance_opacity_)
+        set_double(spn_appearance_opacity_, layer_->opacity.evaluate(lt) * 100.0);
+    set_double(spn_origin_x_, eval_origin_x(*layer_, lt));
+    set_double(spn_origin_y_, eval_origin_y(*layer_, lt));
+
+    if (is_image) {
+        double raw_w = eval_image_width(*layer_, lt);
+        double raw_h = eval_image_height(*layer_, lt);
+        if (raw_w <= 0.0 || raw_h <= 0.0) {
+            const QSize intrinsic = editor_image_intrinsic_size(QString::fromStdString(layer_->image_path));
+            if (intrinsic.isValid() && !intrinsic.isEmpty()) {
+                raw_w = intrinsic.width();
+                raw_h = intrinsic.height();
+            }
+        }
+        const gsp::ImageDisplaySize display = gsp::calculate_image_display_size(
+            layer_->image_box_mode, layer_->image_size_auto_fit,
+            eval_box_width(*layer_, lt), eval_box_height(*layer_, lt), raw_w, raw_h);
+        set_double(spn_layer_w_, display.width);
+        set_double(spn_layer_h_, display.height);
+    } else {
+        set_double(spn_layer_w_, eval_box_width(*layer_, lt));
+        set_double(spn_layer_h_, eval_box_height(*layer_, lt));
+    }
+    set_double(spn_image_box_w_, eval_box_width(*layer_, lt));
+    set_double(spn_image_box_h_, eval_box_height(*layer_, lt));
+
+    set_color_button(btn_text_color_, eval_text_color(*layer_, lt));
+    set_color_button(btn_fill_color_, eval_fill_color(*layer_, lt));
+    if (btn_appearance_fill_color_) {
+        if (layer_->fill_type == 1)
+            set_gradient_button(btn_appearance_fill_color_,
+                                layer_->gradient_start_color,
+                                layer_->gradient_end_color,
+                                layer_->gradient_type);
+        else
+            set_color_button(btn_appearance_fill_color_,
+                             is_text_like ? eval_text_color(*layer_, lt) : eval_fill_color(*layer_, lt));
+        btn_appearance_fill_color_->setText(QString());
+    }
+
+    if (is_text_like) {
+        set_int(spn_size_, (int)std::clamp(std::round(layer_->font_size_prop.evaluate(lt)), 1.0, 512.0));
+        set_double(spn_char_tracking_, layer_->char_tracking_prop.evaluate(lt));
+        set_double(spn_char_scale_x_, layer_->char_scale_x_prop.evaluate(lt) * 100.0);
+        set_double(spn_char_scale_y_, layer_->char_scale_y_prop.evaluate(lt) * 100.0);
+        set_double(spn_baseline_shift_, layer_->baseline_shift_prop.evaluate(lt));
+        set_double(spn_paragraph_indent_left_, eval_paragraph_indent_left(*layer_, lt));
+        set_double(spn_paragraph_indent_right_, eval_paragraph_indent_right(*layer_, lt));
+        set_double(spn_paragraph_indent_first_line_, eval_paragraph_indent_first_line(*layer_, lt));
+        set_double(spn_paragraph_space_before_, layer_->paragraph_space_before_prop.evaluate(lt));
+        set_double(spn_paragraph_space_after_, layer_->paragraph_space_after_prop.evaluate(lt));
+
+        if (lbl_text_fit_scale_ && layer_->text_overflow_mode == 2 && !is_ticker) {
+            QFont preview_font = font_for_layer(*layer_);
+            QRectF preview_rect(0, 0, eval_box_width(*layer_, lt), eval_box_height(*layer_, lt));
+            double fit_scale = horizontal_fit_scale(preview_font, preview_rect,
+                                                    display_text_for_style(*layer_), *layer_, lt);
+            lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat")
+                                             .arg((int)std::round(fit_scale * 100.0)));
+        }
+    }
+
+    set_vec_kf_icon(btn_kf_pos_x_, layer_->position);
+    set_vec_kf_icon(btn_kf_pos_y_, layer_->position);
+    set_vec_kf_icon(btn_kf_scale_x_, layer_->scale);
+    set_vec_kf_icon(btn_kf_scale_y_, layer_->scale);
+    set_vec_kf_icon(btn_kf_transform_size_, layer_->size);
+    set_prop_kf_icon(btn_kf_rotation_, layer_->rotation);
+    set_prop_kf_icon(btn_kf_opacity_, layer_->opacity);
+    set_vec_kf_icon(btn_kf_origin_x_, layer_->origin_prop);
+    set_vec_kf_icon(btn_kf_origin_y_, layer_->origin_prop);
+    set_prop_kf_icon(btn_kf_paragraph_indent_left_, layer_->paragraph_indent_left_prop);
+    set_prop_kf_icon(btn_kf_paragraph_indent_right_, layer_->paragraph_indent_right_prop);
+    set_prop_kf_icon(btn_kf_paragraph_indent_first_line_, layer_->paragraph_indent_first_line_prop);
+    set_prop_kf_icon(btn_kf_font_size_, layer_->font_size_prop);
+    set_prop_kf_icon(btn_kf_char_scale_x_, layer_->char_scale_x_prop);
+    set_prop_kf_icon(btn_kf_char_scale_y_, layer_->char_scale_y_prop);
+    set_prop_kf_icon(btn_kf_char_tracking_, layer_->char_tracking_prop);
+    set_prop_kf_icon(btn_kf_baseline_shift_, layer_->baseline_shift_prop);
+    set_prop_kf_icon(btn_kf_paragraph_space_before_, layer_->paragraph_space_before_prop);
+    set_prop_kf_icon(btn_kf_paragraph_space_after_, layer_->paragraph_space_after_prop);
+    set_vec_kf_icon(btn_kf_width_, is_image ? layer_->image_size : layer_->size);
+    set_vec_kf_icon(btn_kf_image_box_size_, layer_->size);
+    set_group_kf_icon(btn_kf_text_color_, {&layer_->text_color_a, &layer_->text_color_r,
+                                           &layer_->text_color_g, &layer_->text_color_b});
+    set_group_kf_icon(btn_kf_fill_color_, {&layer_->fill_color_a, &layer_->fill_color_r,
+                                           &layer_->fill_color_g, &layer_->fill_color_b});
+    if (is_text_like)
+        set_group_kf_icon(btn_kf_appearance_fill_, {&layer_->text_color_a, &layer_->text_color_r,
+                                                    &layer_->text_color_g, &layer_->text_color_b});
+    else if (is_rect)
+        set_group_kf_icon(btn_kf_appearance_fill_, {&layer_->fill_color_a, &layer_->fill_color_r,
+                                                    &layer_->fill_color_g, &layer_->fill_color_b});
 }
 
 void PropertiesPanel::load_values()

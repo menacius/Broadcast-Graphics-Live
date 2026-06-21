@@ -130,6 +130,19 @@ QString editor_color_libraries_path()
     return dir.filePath(QStringLiteral("palettes/user-color-libraries.palette.json"));
 }
 
+QString obsgs_load_selected_color_library_slug()
+{
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Color"));
+    return settings.value(QStringLiteral("selectedColorLibrarySlug")).toString();
+}
+
+void obsgs_save_selected_color_library_slug(const QString &slug)
+{
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Color"));
+    settings.setValue(QStringLiteral("selectedColorLibrarySlug"), slug);
+    settings.sync();
+}
+
 class LongPressToolButton final : public QToolButton {
 public:
     explicit LongPressToolButton(QWidget *parent = nullptr) : QToolButton(parent)
@@ -656,6 +669,7 @@ QWidget *TitleEditor::create_color_swatches_panel()
         if (index < 0 || index >= (int)color_libraries_.size())
             return;
         selected_color_library_index_ = index;
+        persist_selected_color_library();
         refresh_color_library_controls();
     });
     connect(color_library_add_button_, &QToolButton::clicked, this, &TitleEditor::create_color_library);
@@ -800,6 +814,7 @@ void TitleEditor::load_color_libraries()
         }
     }
 
+    restore_selected_color_library();
     selected_color_library_index_ = std::clamp(selected_color_library_index_, 0, (int)color_libraries_.size() - 1);
 }
 
@@ -830,6 +845,29 @@ void TitleEditor::save_color_libraries() const
     QFile file(editor_color_libraries_path());
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+void TitleEditor::restore_selected_color_library()
+{
+    const QString saved_slug = obsgs_load_selected_color_library_slug().trimmed();
+    if (saved_slug.isEmpty())
+        return;
+
+    for (int i = 0; i < (int)color_libraries_.size(); ++i) {
+        if (color_libraries_[i].slug.compare(saved_slug, Qt::CaseInsensitive) == 0) {
+            selected_color_library_index_ = i;
+            return;
+        }
+    }
+}
+
+void TitleEditor::persist_selected_color_library() const
+{
+    if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
+        return;
+    const QString slug = color_libraries_[selected_color_library_index_].slug.trimmed();
+    if (!slug.isEmpty())
+        obsgs_save_selected_color_library_slug(slug);
 }
 
 void TitleEditor::refresh_color_library_controls()
@@ -926,6 +964,7 @@ int TitleEditor::prompt_create_color_library()
     color_libraries_.push_back(library);
     selected_color_library_index_ = (int)color_libraries_.size() - 1;
     save_color_libraries();
+    persist_selected_color_library();
     refresh_color_library_controls();
     return selected_color_library_index_;
 }
@@ -945,8 +984,22 @@ void TitleEditor::rename_current_color_library()
     if (!ok || name.isEmpty())
         return;
     library.name = name;
-    library.slug = editor_slugify(name);
+    const QString base_slug = editor_slugify(name);
+    library.slug = base_slug;
+    int suffix = 2;
+    auto slug_exists = [&]() {
+        for (int i = 0; i < (int)color_libraries_.size(); ++i) {
+            if (i == selected_color_library_index_)
+                continue;
+            if (color_libraries_[i].slug.compare(library.slug, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+        return false;
+    };
+    while (slug_exists())
+        library.slug = QStringLiteral("%1-%2").arg(base_slug).arg(suffix++);
     save_color_libraries();
+    persist_selected_color_library();
     refresh_color_library_controls();
 }
 
@@ -963,6 +1016,7 @@ void TitleEditor::delete_current_color_library()
     color_libraries_.erase(color_libraries_.begin() + selected_color_library_index_);
     selected_color_library_index_ = std::clamp(selected_color_library_index_, 0, std::max(0, (int)color_libraries_.size() - 1));
     save_color_libraries();
+    persist_selected_color_library();
     refresh_color_library_controls();
 }
 
@@ -1040,6 +1094,7 @@ bool TitleEditor::show_add_color_to_library_dialog(const QColor &color)
 
     add_color_to_library(library_index, color, name_edit->text().trimmed());
     selected_color_library_index_ = library_index;
+    persist_selected_color_library();
     refresh_color_library_controls();
     return true;
 }
@@ -5960,14 +6015,16 @@ void TitleEditor::on_playhead_changed(double t)
         cache_reprioritize_clock_.restart();
     }
 
-    // Property/effect widgets are substantially heavier than canvas presentation.
-    // Keep them responsive, but do not rebuild their controls at 120/144/240 Hz.
-    const int panel_refresh_interval_ms = playing_ ? editor_playback_ui_timer_interval_ms() : 33;
-    if ((!playing_ || !panel_refresh_clock_.isValid() || panel_refresh_clock_.elapsed() >= panel_refresh_interval_ms) &&
-        !sel_layer_id_.empty() && title_) {
+    if (!sel_layer_id_.empty() && title_) {
         auto l = title_->find_layer(sel_layer_id_);
-        if (l) update_layer_panels(l, t);
-        panel_refresh_clock_.restart();
+        if (l) {
+            QScopedValueRollback<bool> panel_update_guard(updating_layer_panels_, true);
+            if (props_)
+                props_->update_playhead(t);
+            if (effects_panel_)
+                effects_panel_->update_playhead(t);
+            update_sidebar_color_swatches(l);
+        }
     }
 
     if (time_lbl_)

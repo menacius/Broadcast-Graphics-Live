@@ -50,6 +50,7 @@ public:
     explicit PropertiesPanel(QWidget *parent = nullptr);
 
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
+    void update_playhead(double playhead);
     void set_title(std::shared_ptr<Title> t);
     void set_active_text_edit_layer(const std::string &layer_id);
 

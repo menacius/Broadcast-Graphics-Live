@@ -28,6 +28,8 @@
 #include <QColor>
 #include <QPixmap>
 #include <QElapsedTimer>
+#include <QPointer>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +54,7 @@ class EffectsPanel : public QWidget {
 public:
     explicit EffectsPanel(QWidget *parent = nullptr);
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
+    void update_playhead(double playhead);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
@@ -66,12 +69,24 @@ private:
     void emit_effect_changed();
     bool settings_editor_has_focus() const;
     void apply_effect_list_order_from_items();
+    void update_bound_controls();
+
+    struct NumericBinding {
+        QPointer<QDoubleSpinBox> spin;
+        std::function<double(const LayerEffect &, double)> value;
+    };
+    struct ColorBinding {
+        QPointer<QPushButton> button;
+        std::function<uint32_t(const LayerEffect &, double)> value;
+    };
 
     std::shared_ptr<Layer> layer_;
     double playhead_ = 0.0;
     bool loading_values_ = false;
     bool numeric_label_dragging_ = false;
     int selected_index_ = -1;
+    std::vector<NumericBinding> numeric_bindings_;
+    std::vector<ColorBinding> color_bindings_;
 
     QListWidget *effect_list_ = nullptr;
     QWidget *settings_container_ = nullptr;

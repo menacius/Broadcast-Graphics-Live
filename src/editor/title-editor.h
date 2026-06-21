@@ -185,6 +185,8 @@ private:
     void refresh_color_swatches_panel();
     void load_color_libraries();
     void save_color_libraries() const;
+    void restore_selected_color_library();
+    void persist_selected_color_library() const;
     void refresh_color_library_controls();
     void refresh_color_library_swatches();
     void create_color_library();
@@ -233,7 +235,6 @@ private:
     QTimer                *cache_invalidation_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
     QElapsedTimer          cache_reprioritize_clock_;
-    QElapsedTimer          panel_refresh_clock_;
     double                 display_refresh_hz_ = 60.0;
     bool                   dock_layout_transition_ = false;
 

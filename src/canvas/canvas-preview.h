@@ -210,6 +210,7 @@ private:
 
     void render_to_pixmap();
     void begin_adaptive_interaction();
+    void end_adaptive_interaction();
     double adaptive_preview_scale() const;
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
     std::shared_ptr<Layer> selected_layer() const;
