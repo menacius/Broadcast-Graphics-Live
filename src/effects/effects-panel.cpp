@@ -1,9 +1,64 @@
 #include "title-editor-internal.h"
+#include "effect-preset-catalog.h"
 
 #include <QAbstractItemModel>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QScopedValueRollback>
 #include <cmath>
+#include <functional>
 #include <utility>
+
+namespace {
+
+class EffectsStackListWidget final : public QListWidget {
+public:
+    using QListWidget::QListWidget;
+    std::function<bool(const QString &)> external_drop_handler;
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (event && gsp::effects::mime_has_effect_preset(event->mimeData())) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+            return;
+        }
+        QListWidget::dragEnterEvent(event);
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (event && gsp::effects::mime_has_effect_preset(event->mimeData())) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+            return;
+        }
+        QListWidget::dragMoveEvent(event);
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        if (event && gsp::effects::mime_has_effect_preset(event->mimeData())) {
+            const QString path = gsp::effects::effect_preset_path_from_mime(event->mimeData());
+            if (external_drop_handler && external_drop_handler(path)) {
+                event->setDropAction(Qt::CopyAction);
+                event->accept();
+            } else {
+                // This is an external preset payload, not an internal list
+                // reorder. Never pass a failed preset drop to QListWidget,
+                // which may try to interpret it as model data.
+                event->ignore();
+            }
+            return;
+        }
+        QListWidget::dropEvent(event);
+    }
+};
+
+} // namespace
 
 static QString obsgs_effects_panel_style()
 {
@@ -121,6 +176,7 @@ static void set_effect_stroke_color_channels_at(LayerEffect &effect, double time
 EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsPanel"));
+    setAcceptDrops(true);
     setStyleSheet(obsgs_effects_panel_style());
 
     auto *layout = new QVBoxLayout(this);
@@ -133,7 +189,11 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     hint->setFont(hint_font);
     layout->addWidget(hint);
 
-    effect_list_ = new QListWidget(this);
+    auto *effect_stack_list = new EffectsStackListWidget(this);
+    effect_stack_list->external_drop_handler = [this](const QString &file_path) {
+        return add_effect_from_preset_file(file_path);
+    };
+    effect_list_ = effect_stack_list;
     effect_list_->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsList"));
     effect_list_->setSelectionMode(QAbstractItemView::SingleSelection);
     effect_list_->setAlternatingRowColors(true);
@@ -228,102 +288,8 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         add_action(obsgs_tr("OBSTitles.Emboss"), LayerEffectType::Emboss);
         QAction *chosen = menu.exec(btn_add->mapToGlobal(QPoint(0, btn_add->height())));
         if (!chosen) return;
-        LayerEffect effect;
-        effect.type = (LayerEffectType)chosen->data().toInt();
-        effect.enabled = true;
-        switch (effect.type) {
-        case LayerEffectType::BackgroundColor:
-            effect.effect_color = 0xFF000000;
-            effect.effect_opacity = 0.35f;
-            effect.opacity_prop.static_value = effect.effect_opacity;
-            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
-            break;
-        case LayerEffectType::Outline:
-            effect.effect_fill_type = 1;
-            effect.effect_color = 0xFF000000;
-            effect.effect_size = 4.0f;
-            effect.effect_opacity = 1.0f;
-            effect.size_prop.static_value = effect.effect_size;
-            effect.opacity_prop.static_value = effect.effect_opacity;
-            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
-            break;
-        case LayerEffectType::DropShadow:
-        case LayerEffectType::InnerShadow:
-            effect.blend_mode = EffectBlendMode::Multiply;
-            effect.effect_color = 0x99000000;
-            effect.effect_opacity = 0.6f;
-            effect.effect_size = 4.0f;
-            effect.opacity_prop.static_value = effect.effect_opacity;
-            effect.size_prop.static_value = effect.effect_size;
-            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
-            break;
-        case LayerEffectType::LongShadow:
-            effect.blend_mode = EffectBlendMode::Multiply;
-            effect.effect_color = 0x99000000;
-            effect.effect_distance = 120.0f;
-            effect.effect_angle = 135.0f;
-            effect.effect_size = 0.0f;
-            effect.effect_opacity = 0.45f;
-            effect.opacity_prop.static_value = effect.effect_opacity;
-            effect.distance_prop.static_value = effect.effect_distance;
-            effect.angle_prop.static_value = effect.effect_angle;
-            effect.size_prop.static_value = effect.effect_size;
-            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
-            break;
-        case LayerEffectType::ColorOverlay:
-            effect.blend_mode = EffectBlendMode::Color;
-            effect.effect_color = effect.tint_color;
-            effect.effect_opacity = effect.tint_amount;
-            break;
-        case LayerEffectType::Glow:
-        case LayerEffectType::InnerGlow:
-            effect.blend_mode = EffectBlendMode::Additive;
-            effect.effect_color = 0xFFFFFFFF;
-            effect.effect_opacity = 0.75f;
-            break;
-        case LayerEffectType::Blur:
-            effect.effect_size = 12.0f;
-            effect.effect_opacity = 1.0f;
-            effect.effect_blur_type = (int)ShadowBlurType::Gaussian;
-            break;
-        case LayerEffectType::Bloom:
-            effect.blend_mode = EffectBlendMode::Screen;
-            effect.effect_color = 0xFFFFFFFF;
-            effect.effect_opacity = 0.8f;
-            effect.effect_size = 24.0f;
-            effect.effect_spread = 0.65f; /* luminance threshold */
-            effect.effect_falloff = 1.0f; /* intensity */
-            effect.effect_blur_type = (int)ShadowBlurType::DualKawase;
-            effect.opacity_prop.static_value = effect.effect_opacity;
-            effect.size_prop.static_value = effect.effect_size;
-            effect.spread_prop.static_value = effect.effect_spread;
-            effect.falloff_prop.static_value = effect.effect_falloff;
-            set_effect_color_channels_at(effect, 0.0, effect.effect_color);
-            break;
-        case LayerEffectType::Emboss:
-            effect.effect_size = 2.0f; /* depth */
-            effect.effect_distance = 2.0f; /* relief height */
-            effect.effect_angle = 135.0f;
-            effect.effect_opacity = 0.8f;
-            effect.effect_spread = 0.5f; /* softness */
-            effect.blend_mode = EffectBlendMode::Overlay;
-            effect.opacity_prop.static_value = effect.effect_opacity;
-            effect.size_prop.static_value = effect.effect_size;
-            effect.distance_prop.static_value = effect.effect_distance;
-            effect.angle_prop.static_value = effect.effect_angle;
-            effect.spread_prop.static_value = effect.effect_spread;
-            break;
-        case LayerEffectType::MotionBlur:
-            effect.effect_size = 180.0f;
-            effect.effect_angle = 0.0f;
-            effect.effect_opacity = 1.0f;
-            effect.effect_samples = 8;
-            effect.effect_centered = true;
-            break;
-        default:
-            break;
-        }
-        effect.enabled_prop.static_value = 1.0;
+        LayerEffect effect = gsp::effects::make_default_layer_effect(
+            static_cast<LayerEffectType>(chosen->data().toInt()));
         layer_->effects.push_back(effect);
         selected_index_ = (int)layer_->effects.size() - 1;
         rebuild_stack();
@@ -373,6 +339,62 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
     });
 
     rebuild_stack();
+}
+
+
+void EffectsPanel::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event && gsp::effects::mime_has_effect_preset(event->mimeData())) {
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+        return;
+    }
+    QWidget::dragEnterEvent(event);
+}
+
+void EffectsPanel::dragMoveEvent(QDragMoveEvent *event)
+{
+    if (event && gsp::effects::mime_has_effect_preset(event->mimeData())) {
+        if (layer_ && !layer_->locked) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        } else {
+            event->ignore();
+        }
+        return;
+    }
+    QWidget::dragMoveEvent(event);
+}
+
+void EffectsPanel::dropEvent(QDropEvent *event)
+{
+    if (event && gsp::effects::mime_has_effect_preset(event->mimeData())) {
+        const QString path = gsp::effects::effect_preset_path_from_mime(event->mimeData());
+        if (add_effect_from_preset_file(path)) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        } else {
+            event->ignore();
+        }
+        return;
+    }
+    QWidget::dropEvent(event);
+}
+
+bool EffectsPanel::add_effect_from_preset_file(const QString &file_path)
+{
+    if (!layer_ || layer_->locked)
+        return false;
+
+    gsp::effects::EffectPresetDescriptor descriptor;
+    if (!gsp::effects::load_effect_preset_file(file_path, &descriptor))
+        return false;
+
+    layer_->effects.push_back(descriptor.effect);
+    selected_index_ = static_cast<int>(layer_->effects.size()) - 1;
+    rebuild_stack();
+    emit_effect_changed();
+    return true;
 }
 
 void EffectsPanel::set_layer(std::shared_ptr<Layer> layer, double playhead)

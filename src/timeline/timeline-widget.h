@@ -35,6 +35,10 @@
 
 class QEvent;
 class QMouseEvent;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDragLeaveEvent;
+class QDropEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QContextMenuEvent;
@@ -66,6 +70,15 @@ public:
     bool cut_keyframe_selection();
     bool delete_keyframe_selection();
     bool paste_keyframes_at_playhead();
+    bool has_transition_target_selection() const;
+    bool has_selected_transition() const;
+    bool has_transition_clipboard() const;
+    bool can_paste_transition_to_selection() const;
+    bool copy_transition_selection();
+    bool cut_transition_selection();
+    bool delete_transition_selection();
+    bool paste_transition_to_selection();
+    void clear_transition_target_selection();
 
 signals:
     void playhead_changed(double t);
@@ -78,12 +91,21 @@ signals:
     void zoom_percent_changed(int percent);
     void layer_selected(const std::string &layer_id);
     void layers_selected(const std::vector<std::string> &layer_ids);
+    void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
+    void transition_preset_dropped(const QString &file_path, const std::string &layer_id, int edge);
+    void transition_edit_requested(const std::string &layer_id, int edge);
+    void transition_modified();
 
 protected:
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void mouseDoubleClickEvent(QMouseEvent *ev) override;
+    void dragEnterEvent(QDragEnterEvent *ev) override;
+    void dragMoveEvent(QDragMoveEvent *ev) override;
+    void dragLeaveEvent(QDragLeaveEvent *ev) override;
+    void dropEvent(QDropEvent *ev) override;
     void keyPressEvent(QKeyEvent *ev) override;
     void contextMenuEvent(QContextMenuEvent *ev) override;
     void wheelEvent(QWheelEvent *ev) override;
@@ -129,7 +151,13 @@ private:
         double start_out = 0.0;
         std::vector<KeyframeTime> keyframes;
     };
-    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, LoopStart, LoopEnd, PauseMarker };
+    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, LoopStart, LoopEnd, PauseMarker };
+    struct TransitionHit {
+        std::shared_ptr<Layer> layer;
+        LayerTransitionEdge edge = LayerTransitionEdge::In;
+        QRect rect;
+        bool duration_handle = false;
+    };
 
     void   clear_keyframe_selection();
     void   prune_keyframe_selection();
@@ -149,6 +177,22 @@ private:
     void   select_layer_from_mouse(const std::string &layer_id, Qt::KeyboardModifiers modifiers);
     void   begin_layer_strip_drag(const std::string &layer_id, DragMode mode, double start_time);
     QRect  playhead_dirty_rect(int playhead_x) const;
+    std::shared_ptr<Layer> layer_strip_at_pos(const QPoint &pos) const;
+    bool transition_hit_at_pos(const QPoint &pos, TransitionHit *hit) const;
+    bool transition_drop_target_at_pos(const QPoint &pos, std::shared_ptr<Layer> *layer,
+                                       LayerTransitionEdge *edge) const;
+    bool transition_edge_target_at_pos(const QPoint &pos, std::shared_ptr<Layer> *layer,
+                                       LayerTransitionEdge *edge) const;
+    QRect transition_rect(const Layer &layer, const LayerTransition &transition, int row_y) const;
+    QRect transition_edge_target_rect(const Layer &layer, LayerTransitionEdge edge, int row_y) const;
+    void normalize_transition_durations(Layer &layer);
+    void clear_transition_drop_preview();
+    void select_transition_target(const std::string &layer_id, LayerTransitionEdge edge);
+    void clear_transition_selection();
+    std::shared_ptr<Layer> selected_transition_layer() const;
+    const LayerTransition *selected_transition() const;
+    LayerTransition *selected_transition();
+    bool layer_accepts_transition(const Layer &layer, const LayerTransition &transition) const;
 
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
@@ -163,6 +207,7 @@ private:
     double drag_start_time_ = 0.0;
     double drag_start_in_ = 0.0;
     double drag_start_out_ = 0.0;
+    LayerTransitionEdge drag_transition_edge_ = LayerTransitionEdge::In;
     std::set<KeyframeRef> selected_keyframes_;
     std::vector<DraggedKeyframe> dragged_keyframes_;
     std::vector<DraggedLayerStrip> dragged_layer_strips_;
@@ -174,4 +219,11 @@ private:
     double pixels_per_sec_ = 80.0;
     int    scroll_x_       = 0;
     int    scroll_y_       = 0;
+    std::string transition_drop_preview_layer_id_;
+    LayerTransitionEdge transition_drop_preview_edge_ = LayerTransitionEdge::In;
+    bool transition_target_selected_ = false;
+    std::string selected_transition_layer_id_;
+    LayerTransitionEdge selected_transition_edge_ = LayerTransitionEdge::In;
+    bool transition_clipboard_valid_ = false;
+    LayerTransition transition_clipboard_;
 };

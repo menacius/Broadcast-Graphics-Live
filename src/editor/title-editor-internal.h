@@ -8,6 +8,8 @@
 #include "timeline-widget.h"
 #include "title-properties-panel.h"
 #include "effects-panel.h"
+#include "effects-presets-panel.h"
+#include "effect-preset-catalog.h"
 #include "properties-panel.h"
 
 #include "title-data.h"
@@ -140,6 +142,7 @@ constexpr const char *kEditorSafeGuidesVisibleKey = "safeGuidesVisible";
 constexpr const char *kGraphicPropertiesDockObjectName = "OBSGraphicsStudioProGraphicPropertiesDock";
 constexpr const char *kLayerPropertiesDockObjectName = "OBSGraphicsStudioProLayerPropertiesDock";
 constexpr const char *kEffectsDockObjectName = "OBSGraphicsStudioProEffectsDock";
+constexpr const char *kEffectsPresetsDockObjectName = "OBSGraphicsStudioProEffectsPresetsDock";
 constexpr const char *kStylesDockObjectName = "OBSGraphicsStudioProStylesDock";
 constexpr const char *kColorSwatchesDockObjectName = "OBSGraphicsStudioProColorSwatchesDock";
 constexpr const char *kTimelineDockObjectName = "OBSGraphicsStudioProTimelineDock";

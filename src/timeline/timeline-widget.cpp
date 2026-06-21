@@ -1,5 +1,12 @@
 #include "title-editor-internal.h"
 #include "cache-manager.h"
+#include "effect-preset-catalog.h"
+#include "transition-preset-catalog.h"
+
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QDragLeaveEvent>
 
 TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
 {
@@ -8,6 +15,7 @@ TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
     setAutoFillBackground(false);
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+    setAcceptDrops(true);
 }
 
 void TimelineWidget::set_title(std::shared_ptr<Title> t)
@@ -18,6 +26,8 @@ void TimelineWidget::set_title(std::shared_ptr<Title> t)
         scroll_x_ = 0;
         fit_on_next_resize_ = true;
         selected_keyframes_.clear();
+        transition_target_selected_ = false;
+        selected_transition_layer_id_.clear();
     } else {
         prune_keyframe_selection();
     }
@@ -42,6 +52,8 @@ void TimelineWidget::set_selected_layers(const std::vector<std::string> &layer_i
     selected_layer_ids_.clear();
     if (!title_) {
         sel_layer_id_.clear();
+        transition_target_selected_ = false;
+        selected_transition_layer_id_.clear();
         update();
         return;
     }
@@ -57,6 +69,11 @@ void TimelineWidget::set_selected_layers(const std::vector<std::string> &layer_i
         selection_anchor_layer_id_ = sel_layer_id_;
     else
         selection_anchor_layer_id_.clear();
+    if (transition_target_selected_ &&
+        std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), selected_transition_layer_id_) == selected_layer_ids_.end()) {
+        transition_target_selected_ = false;
+        selected_transition_layer_id_.clear();
+    }
     update();
 }
 
@@ -154,6 +171,150 @@ bool TimelineWidget::paste_keyframes_at_playhead()
 {
     if (!paste_keyframes_at(playhead_)) return false;
     emit keyframe_easing_changed();
+    return true;
+}
+
+bool TimelineWidget::has_transition_target_selection() const
+{
+    return transition_target_selected_ && selected_transition_layer() != nullptr;
+}
+
+bool TimelineWidget::has_selected_transition() const
+{
+    return selected_transition() != nullptr;
+}
+
+bool TimelineWidget::has_transition_clipboard() const
+{
+    return transition_clipboard_valid_;
+}
+
+bool TimelineWidget::layer_accepts_transition(const Layer &layer,
+                                               const LayerTransition &transition) const
+{
+    if (!layer_transition_type_is_text(transition.type))
+        return true;
+    return layer.type == LayerType::Text ||
+           layer.type == LayerType::Clock ||
+           layer.type == LayerType::Ticker;
+}
+
+bool TimelineWidget::can_paste_transition_to_selection() const
+{
+    const auto layer = selected_transition_layer();
+    return transition_clipboard_valid_ && layer && !layer->locked &&
+           layer_accepts_transition(*layer, transition_clipboard_);
+}
+
+std::shared_ptr<Layer> TimelineWidget::selected_transition_layer() const
+{
+    if (!title_ || !transition_target_selected_ || selected_transition_layer_id_.empty())
+        return nullptr;
+    return title_->find_layer(selected_transition_layer_id_);
+}
+
+const LayerTransition *TimelineWidget::selected_transition() const
+{
+    const auto layer = selected_transition_layer();
+    return layer ? find_layer_transition(layer->transitions, selected_transition_edge_) : nullptr;
+}
+
+LayerTransition *TimelineWidget::selected_transition()
+{
+    auto layer = selected_transition_layer();
+    return layer ? find_layer_transition(layer->transitions, selected_transition_edge_) : nullptr;
+}
+
+void TimelineWidget::select_transition_target(const std::string &layer_id,
+                                               LayerTransitionEdge edge)
+{
+    transition_target_selected_ = !layer_id.empty();
+    selected_transition_layer_id_ = layer_id;
+    selected_transition_edge_ = edge;
+    selected_keyframes_.clear();
+    update();
+}
+
+void TimelineWidget::clear_transition_selection()
+{
+    if (!transition_target_selected_ && selected_transition_layer_id_.empty())
+        return;
+    transition_target_selected_ = false;
+    selected_transition_layer_id_.clear();
+    update();
+}
+
+bool TimelineWidget::copy_transition_selection()
+{
+    const LayerTransition *transition = selected_transition();
+    if (!transition)
+        return false;
+    transition_clipboard_ = *transition;
+    transition_clipboard_valid_ = true;
+    return true;
+}
+
+bool TimelineWidget::delete_transition_selection()
+{
+    auto layer = selected_transition_layer();
+    if (!layer || layer->locked || !selected_transition())
+        return false;
+    auto &transitions = layer->transitions;
+    transitions.erase(std::remove_if(transitions.begin(), transitions.end(),
+                                     [&](const LayerTransition &transition) {
+                                         return transition.edge == selected_transition_edge_;
+                                     }), transitions.end());
+    update();
+    emit transition_modified();
+    return true;
+}
+
+bool TimelineWidget::cut_transition_selection()
+{
+    // Keyboard shortcuts reach this path even when the context-menu action is
+    // disabled. Validate mutability before changing the clipboard so Ctrl+X
+    // on a locked layer cannot behave like an unexpected Copy operation.
+    const auto layer = selected_transition_layer();
+    if (!layer || layer->locked || !selected_transition())
+        return false;
+    if (!copy_transition_selection())
+        return false;
+    return delete_transition_selection();
+}
+
+void TimelineWidget::clear_transition_target_selection()
+{
+    clear_transition_selection();
+}
+
+bool TimelineWidget::paste_transition_to_selection()
+{
+    auto layer = selected_transition_layer();
+    if (!transition_clipboard_valid_ || !layer || layer->locked ||
+        !layer_accepts_transition(*layer, transition_clipboard_))
+        return false;
+
+    LayerTransition pasted = transition_clipboard_;
+    pasted.id = TitleDataStore::make_uuid();
+    pasted.edge = selected_transition_edge_;
+    pasted.kind = layer_transition_type_is_text(pasted.type)
+        ? LayerTransitionKind::Text : LayerTransitionKind::General;
+
+    const double frame = obs_frame_duration();
+    const double layer_duration = std::max(frame, layer->out_time - layer->in_time);
+    const LayerTransitionEdge other_edge = selected_transition_edge_ == LayerTransitionEdge::In
+        ? LayerTransitionEdge::Out : LayerTransitionEdge::In;
+    const LayerTransition *other = find_layer_transition(layer->transitions, other_edge);
+    const double maximum_duration = std::max(frame, layer_duration - (other ? other->duration : 0.0));
+    pasted.duration = std::clamp(pasted.duration, frame, maximum_duration);
+
+    if (LayerTransition *existing = find_layer_transition(layer->transitions, selected_transition_edge_))
+        *existing = pasted;
+    else
+        layer->transitions.push_back(std::move(pasted));
+
+    update();
+    emit transition_modified();
     return true;
 }
 
@@ -262,6 +423,8 @@ bool TimelineWidget::is_keyframe_selected(const std::string &layer_id, const std
 void TimelineWidget::select_keyframe(const std::string &layer_id, const std::string &prop_name,
                                      int kf_idx, bool additive, bool toggle)
 {
+    transition_target_selected_ = false;
+    selected_transition_layer_id_.clear();
     KeyframeRef ref{layer_id, prop_name, kf_idx};
     if (!additive)
         selected_keyframes_.clear();
@@ -851,12 +1014,8 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 p.setPen(dark);
                 p.drawRect(strip_rect);
 
-                /* Trim handles for mouse resizing of unlocked layer in/out. */
-                if (!layer->locked) {
-                    p.fillRect(x0, y + 3, 4, rowh - 6, handle_color);
-                    p.fillRect(x1 - 4, y + 3, 4, rowh - 6, handle_color);
-                }
-
+                /* Draw the normal layer label first so transition strips remain
+                 * visually on top, like dedicated Premiere timeline items. */
                 p.setPen(layer->visible ? text : disabled_text);
                 const QString switches = title_ ? timeline_layer_switches_text(*title_, *layer) : QString();
                 const QString layer_label = switches.isEmpty()
@@ -864,6 +1023,73 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                     : QStringLiteral("%1    [%2]").arg(QString::fromStdString(layer->name), switches);
                 p.drawText(std::max(strip_rect.left(), 0) + 6, y, std::max(1, strip_rect.width() - 12), rowh,
                            Qt::AlignVCenter, layer_label);
+
+                /* Premiere-style transition overlays live inside the layer
+                 * strip. Their inner edge is the duration resize handle. */
+                for (const auto &transition : layer->transitions) {
+                    const QRect transition_bounds = transition_rect(*layer, transition, y);
+                    const bool transition_selected = transition_target_selected_ &&
+                        selected_transition_layer_id_ == layer->id &&
+                        selected_transition_edge_ == transition.edge;
+                    QColor transition_color = transition.kind == LayerTransitionKind::Text
+                        ? QColor(112, 76, 156) : QColor(54, 111, 151);
+                    if (!transition.enabled)
+                        transition_color = transition_color.darker(155);
+                    p.fillRect(transition_bounds, with_alpha(transition_color, 220));
+                    p.save();
+                    p.setClipRect(transition_bounds);
+                    p.setPen(QPen(with_alpha(Qt::white, 45), 1));
+                    for (int hx = transition_bounds.left() - transition_bounds.height();
+                         hx < transition_bounds.right() + transition_bounds.height(); hx += 7)
+                        p.drawLine(hx, transition_bounds.bottom(), hx + transition_bounds.height(), transition_bounds.top());
+                    p.restore();
+                    p.setPen(QPen(transition_selected ? highlighted_text : transition_color.lighter(170),
+                                  transition_selected ? 2 : 1));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawRect(transition_bounds.adjusted(0, 0, -1, -1));
+                    if (!layer->locked) {
+                        const int handle_x = transition.edge == LayerTransitionEdge::In
+                            ? transition_bounds.right() - 2 : transition_bounds.left();
+                        p.fillRect(handle_x, transition_bounds.top(), 3, transition_bounds.height(),
+                                   with_alpha(Qt::white, 170));
+                    }
+                    if (transition_bounds.width() >= 56) {
+                        p.setPen(Qt::white);
+                        const QString transition_name = QString::fromStdString(transition.display_name);
+                        p.drawText(transition_bounds.adjusted(5, 0, -5, 0),
+                                   Qt::AlignVCenter | Qt::AlignHCenter,
+                                   p.fontMetrics().elidedText(transition_name, Qt::ElideRight,
+                                                              std::max(1, transition_bounds.width() - 10)));
+                    }
+                }
+
+                if (transition_target_selected_ && selected_transition_layer_id_ == layer->id &&
+                    !find_layer_transition(layer->transitions, selected_transition_edge_)) {
+                    const QRect target_bounds = transition_edge_target_rect(*layer, selected_transition_edge_, y);
+                    p.fillRect(target_bounds, with_alpha(highlight, 55));
+                    p.setPen(QPen(highlighted_text, 2, Qt::DashLine));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawRect(target_bounds.adjusted(1, 1, -2, -2));
+                }
+
+                if (transition_drop_preview_layer_id_ == layer->id) {
+                    LayerTransition preview;
+                    preview.edge = transition_drop_preview_edge_;
+                    preview.duration = std::min(0.6, std::max(obs_frame_duration(),
+                                                             (layer->out_time - layer->in_time) * 0.35));
+                    const QRect preview_bounds = transition_rect(*layer, preview, y);
+                    p.fillRect(preview_bounds, with_alpha(highlight, 80));
+                    p.setPen(QPen(highlight, 2, Qt::DashLine));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawRect(preview_bounds.adjusted(1, 1, -2, -2));
+                }
+
+                /* Trim handles for mouse resizing of unlocked layer in/out. */
+                if (!layer->locked) {
+                    p.fillRect(x0, y + 3, 4, rowh - 6, handle_color);
+                    p.fillRect(x1 - 4, y + 3, 4, rowh - 6, handle_color);
+                }
+
             } else {
                 p.fillRect(x0, y + rowh / 2 - 1, x1 - x0, 2, border);
                 p.setPen(disabled_text.isValid() ? disabled_text : with_alpha(text, 150));
@@ -971,6 +1197,55 @@ bool TimelineWidget::hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *hit
 void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
 {
     if (!title_) return;
+
+    auto show_transition_menu = [&](const std::shared_ptr<Layer> &layer,
+                                    LayerTransitionEdge edge) {
+        if (!layer)
+            return;
+        select_layer_from_mouse(layer->id, Qt::NoModifier);
+        select_transition_target(layer->id, edge);
+        const bool has_transition = selected_transition() != nullptr;
+        const bool editable = has_transition && !layer->locked;
+
+        QMenu transition_menu(this);
+        QAction *edit_action = transition_menu.addAction(obsgs_tr("OBSTitles.EditTransition"));
+        transition_menu.addSeparator();
+        QAction *copy_action = transition_menu.addAction(obsgs_tr("OBSTitles.Copy"));
+        QAction *cut_action = transition_menu.addAction(obsgs_tr("OBSTitles.Cut"));
+        QAction *paste_action = transition_menu.addAction(obsgs_tr("OBSTitles.Paste"));
+        QAction *delete_action = transition_menu.addAction(obsgs_tr("OBSTitles.Delete"));
+        edit_action->setEnabled(editable);
+        copy_action->setEnabled(has_transition);
+        cut_action->setEnabled(editable);
+        paste_action->setEnabled(can_paste_transition_to_selection());
+        delete_action->setEnabled(editable);
+
+        QAction *picked = transition_menu.exec(ev->globalPos());
+        if (picked == edit_action) {
+            emit transition_edit_requested(layer->id, static_cast<int>(edge));
+        } else if (picked == copy_action) {
+            copy_transition_selection();
+        } else if (picked == cut_action) {
+            cut_transition_selection();
+        } else if (picked == paste_action) {
+            paste_transition_to_selection();
+        } else if (picked == delete_action) {
+            delete_transition_selection();
+        }
+    };
+
+    TransitionHit transition_hit;
+    if (transition_hit_at_pos(ev->pos(), &transition_hit)) {
+        show_transition_menu(transition_hit.layer, transition_hit.edge);
+        return;
+    }
+
+    std::shared_ptr<Layer> transition_target_layer;
+    LayerTransitionEdge transition_target_edge = LayerTransitionEdge::In;
+    if (transition_edge_target_at_pos(ev->pos(), &transition_target_layer, &transition_target_edge)) {
+        show_transition_menu(transition_target_layer, transition_target_edge);
+        return;
+    }
 
     std::shared_ptr<Layer> layer;
     TimelinePropertyRef hit_prop;
@@ -1176,6 +1451,29 @@ void TimelineWidget::keyPressEvent(QKeyEvent *ev)
         return;
     }
 
+    if (has_transition_target_selection()) {
+        if (ev->matches(QKeySequence::Copy)) {
+            copy_transition_selection();
+            ev->accept();
+            return;
+        }
+        if (ev->matches(QKeySequence::Cut)) {
+            cut_transition_selection();
+            ev->accept();
+            return;
+        }
+        if (ev->matches(QKeySequence::Paste)) {
+            paste_transition_to_selection();
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_Delete || ev->key() == Qt::Key_Backspace) {
+            delete_transition_selection();
+            ev->accept();
+            return;
+        }
+    }
+
     if (ev->matches(QKeySequence::Copy) && has_selected_keyframes()) {
         copy_keyframe_selection();
         ev->accept();
@@ -1200,6 +1498,275 @@ void TimelineWidget::keyPressEvent(QKeyEvent *ev)
     QWidget::keyPressEvent(ev);
 }
 
+std::shared_ptr<Layer> TimelineWidget::layer_strip_at_pos(const QPoint &pos) const
+{
+    if (!title_ || pos.y() < ruler_height())
+        return nullptr;
+
+    const auto rows = timeline_rows(title_);
+    const int row = (pos.y() - ruler_height() + scroll_y_) / row_height();
+    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property)
+        return nullptr;
+
+    const auto layer = rows[row].layer;
+    if (!layer || layer->locked)
+        return nullptr;
+
+    const int x0 = time_to_x(layer->in_time);
+    const int x1 = time_to_x(layer->out_time);
+    if (pos.x() < std::min(x0, x1) || pos.x() > std::max(x0, x1))
+        return nullptr;
+    return layer;
+}
+
+
+QRect TimelineWidget::transition_rect(const Layer &layer, const LayerTransition &transition, int row_y) const
+{
+    const double layer_duration = std::max(0.0, layer.out_time - layer.in_time);
+    const double duration = std::clamp(transition.duration, 0.0, layer_duration);
+    const double start = transition.edge == LayerTransitionEdge::In
+        ? layer.in_time : layer.out_time - duration;
+    const double end = transition.edge == LayerTransitionEdge::In
+        ? layer.in_time + duration : layer.out_time;
+    const int x0 = time_to_x(start);
+    const int x1 = time_to_x(end);
+    return QRect(std::min(x0, x1), row_y + 3, std::max(1, std::abs(x1 - x0)), row_height() - 6);
+}
+
+QRect TimelineWidget::transition_edge_target_rect(const Layer &layer,
+                                                      LayerTransitionEdge edge,
+                                                      int row_y) const
+{
+    const int x0 = time_to_x(layer.in_time);
+    const int x1 = time_to_x(layer.out_time);
+    const int left = std::min(x0, x1);
+    const int right = std::max(x0, x1);
+    const int strip_width = std::max(1, right - left);
+    const int zone = std::min(strip_width, std::clamp(strip_width / 5, 14, 24));
+    const int trim_reserve = std::min(7, std::max(0, zone - 1));
+    const int target_width = std::max(1, zone - trim_reserve);
+    const int x = edge == LayerTransitionEdge::In
+        ? left + trim_reserve : right - zone;
+    return QRect(x, row_y + 3, target_width, row_height() - 6);
+}
+
+bool TimelineWidget::transition_edge_target_at_pos(const QPoint &pos,
+                                                  std::shared_ptr<Layer> *layer_out,
+                                                  LayerTransitionEdge *edge_out) const
+{
+    if (!title_ || pos.y() < ruler_height())
+        return false;
+    const auto rows = timeline_rows(title_);
+    const int row = (pos.y() - ruler_height() + scroll_y_) / row_height();
+    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property)
+        return false;
+    const auto layer = rows[row].layer;
+    if (!layer)
+        return false;
+    const int row_y = ruler_height() + row * row_height() - scroll_y_;
+    const QRect in_rect = transition_edge_target_rect(*layer, LayerTransitionEdge::In, row_y);
+    const QRect out_rect = transition_edge_target_rect(*layer, LayerTransitionEdge::Out, row_y);
+    if (!in_rect.contains(pos) && !out_rect.contains(pos))
+        return false;
+
+    LayerTransitionEdge edge = LayerTransitionEdge::In;
+    if (in_rect.contains(pos) && out_rect.contains(pos)) {
+        const int in_distance = std::abs(pos.x() - in_rect.left());
+        const int out_distance = std::abs(pos.x() - out_rect.right());
+        edge = out_distance < in_distance ? LayerTransitionEdge::Out : LayerTransitionEdge::In;
+    } else if (out_rect.contains(pos)) {
+        edge = LayerTransitionEdge::Out;
+    }
+    if (layer_out) *layer_out = layer;
+    if (edge_out) *edge_out = edge;
+    return true;
+}
+
+bool TimelineWidget::transition_hit_at_pos(const QPoint &pos, TransitionHit *hit) const
+{
+    if (!title_ || pos.y() < ruler_height())
+        return false;
+    const auto rows = timeline_rows(title_);
+    const int row = (pos.y() - ruler_height() + scroll_y_) / row_height();
+    if (row < 0 || row >= static_cast<int>(rows.size()) || rows[row].is_property)
+        return false;
+    const auto layer = rows[row].layer;
+    if (!layer)
+        return false;
+    const int row_y = ruler_height() + row * row_height() - scroll_y_;
+    for (const auto &transition : layer->transitions) {
+        const QRect rect = transition_rect(*layer, transition, row_y);
+        if (!rect.adjusted(-2, 0, 2, 0).contains(pos))
+            continue;
+        const int handle_x = transition.edge == LayerTransitionEdge::In ? rect.right() : rect.left();
+        if (hit) {
+            hit->layer = layer;
+            hit->edge = transition.edge;
+            hit->rect = rect;
+            hit->duration_handle = std::abs(pos.x() - handle_x) <= 7;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool TimelineWidget::transition_drop_target_at_pos(const QPoint &pos,
+                                                   std::shared_ptr<Layer> *layer_out,
+                                                   LayerTransitionEdge *edge_out) const
+{
+    const auto layer = layer_strip_at_pos(pos);
+    if (!layer || layer->locked)
+        return false;
+    const int x0 = time_to_x(layer->in_time);
+    const int x1 = time_to_x(layer->out_time);
+    const int left = std::min(x0, x1);
+    const int right = std::max(x0, x1);
+    const int strip_width = std::max(1, right - left);
+    const int zone = std::clamp(strip_width / 3, 18, 110);
+    LayerTransitionEdge edge;
+    if (pos.x() <= left + zone)
+        edge = LayerTransitionEdge::In;
+    else if (pos.x() >= right - zone)
+        edge = LayerTransitionEdge::Out;
+    else
+        return false;
+    if (layer_out) *layer_out = layer;
+    if (edge_out) *edge_out = edge;
+    return true;
+}
+
+void TimelineWidget::normalize_transition_durations(Layer &layer)
+{
+    const double frame = obs_frame_duration();
+    const double layer_duration = std::max(frame, layer.out_time - layer.in_time);
+    LayerTransition *in_transition = find_layer_transition(layer.transitions, LayerTransitionEdge::In);
+    LayerTransition *out_transition = find_layer_transition(layer.transitions, LayerTransitionEdge::Out);
+    if (in_transition)
+        in_transition->duration = std::clamp(in_transition->duration, frame, layer_duration);
+    if (out_transition)
+        out_transition->duration = std::clamp(out_transition->duration, frame, layer_duration);
+    if (in_transition && out_transition && in_transition->duration + out_transition->duration > layer_duration) {
+        if (drag_mode_ == DragMode::TransitionDuration && drag_transition_edge_ == LayerTransitionEdge::Out)
+            out_transition->duration = std::max(frame, layer_duration - in_transition->duration);
+        else
+            in_transition->duration = std::max(frame, layer_duration - out_transition->duration);
+    }
+}
+
+void TimelineWidget::clear_transition_drop_preview()
+{
+    if (transition_drop_preview_layer_id_.empty())
+        return;
+    transition_drop_preview_layer_id_.clear();
+    update();
+}
+
+void TimelineWidget::dragEnterEvent(QDragEnterEvent *ev)
+{
+    if (ev && gsp::transitions::mime_has_transition_preset(ev->mimeData())) {
+        ev->setDropAction(Qt::CopyAction);
+        ev->accept();
+        return;
+    }
+    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+        ev->setDropAction(Qt::CopyAction);
+        ev->accept();
+        return;
+    }
+    QWidget::dragEnterEvent(ev);
+}
+
+void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
+{
+    if (ev && gsp::transitions::mime_has_transition_preset(ev->mimeData())) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint pos = ev->position().toPoint();
+#else
+        const QPoint pos = ev->pos();
+#endif
+        std::shared_ptr<Layer> layer;
+        LayerTransitionEdge edge = LayerTransitionEdge::In;
+        if (transition_drop_target_at_pos(pos, &layer, &edge)) {
+            const bool changed = transition_drop_preview_layer_id_ != layer->id ||
+                                 transition_drop_preview_edge_ != edge;
+            transition_drop_preview_layer_id_ = layer->id;
+            transition_drop_preview_edge_ = edge;
+            if (changed) update();
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+        } else {
+            clear_transition_drop_preview();
+            ev->ignore();
+        }
+        return;
+    }
+    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint pos = ev->position().toPoint();
+#else
+        const QPoint pos = ev->pos();
+#endif
+        if (layer_strip_at_pos(pos)) {
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+        } else {
+            ev->ignore();
+        }
+        return;
+    }
+    QWidget::dragMoveEvent(ev);
+}
+
+void TimelineWidget::dropEvent(QDropEvent *ev)
+{
+    if (ev && gsp::transitions::mime_has_transition_preset(ev->mimeData())) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint pos = ev->position().toPoint();
+#else
+        const QPoint pos = ev->pos();
+#endif
+        std::shared_ptr<Layer> layer;
+        LayerTransitionEdge edge = LayerTransitionEdge::In;
+        const QString file_path = gsp::transitions::transition_preset_path_from_mime(ev->mimeData());
+        if (transition_drop_target_at_pos(pos, &layer, &edge) && !file_path.isEmpty()) {
+            clear_transition_drop_preview();
+            select_layer_from_mouse(layer->id, Qt::NoModifier);
+            select_transition_target(layer->id, edge);
+            emit transition_preset_dropped(file_path, layer->id, static_cast<int>(edge));
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+            return;
+        }
+        clear_transition_drop_preview();
+        ev->ignore();
+        return;
+    }
+    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint pos = ev->position().toPoint();
+#else
+        const QPoint pos = ev->pos();
+#endif
+        const auto layer = layer_strip_at_pos(pos);
+        const QString file_path = gsp::effects::effect_preset_path_from_mime(ev->mimeData());
+        if (layer && !file_path.isEmpty()) {
+            emit effect_preset_dropped(file_path, layer->id);
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+            return;
+        }
+        ev->ignore();
+        return;
+    }
+    QWidget::dropEvent(ev);
+}
+
+void TimelineWidget::dragLeaveEvent(QDragLeaveEvent *ev)
+{
+    clear_transition_drop_preview();
+    QWidget::dragLeaveEvent(ev);
+}
+
 void TimelineWidget::mousePressEvent(QMouseEvent *ev)
 {
     setFocus(Qt::MouseFocusReason);
@@ -1215,7 +1782,38 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     dragged_layer_strips_.clear();
     marquee_moved_ = false;
 
+    TransitionHit transition_hit;
+    if (ev->button() == Qt::LeftButton && transition_hit_at_pos(ev->pos(), &transition_hit)) {
+        if (!transition_hit.layer) {
+            ev->accept();
+            return;
+        }
+        select_layer_from_mouse(transition_hit.layer->id, ev->modifiers());
+        select_transition_target(transition_hit.layer->id, transition_hit.edge);
+        if (transition_hit.layer->locked) {
+            ev->accept();
+            return;
+        }
+        if (transition_hit.duration_handle) {
+            const LayerTransition *transition = find_layer_transition(transition_hit.layer->transitions,
+                                                                      transition_hit.edge);
+            if (transition) {
+                drag_mode_ = DragMode::TransitionDuration;
+                drag_layer_id_ = transition_hit.layer->id;
+                drag_transition_edge_ = transition_hit.edge;
+                setCursor(Qt::SizeHorCursor);
+                ev->accept();
+                return;
+            }
+        }
+        /* The transition overlay is its own timeline item. A normal click
+         * selects it/layer but must not fall through into moving the layer strip. */
+        ev->accept();
+        return;
+    }
+
     if (ev->pos().y() < ruler_height()) {
+        clear_transition_selection();
         if (title_->playback_mode == 2) {
             int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, title_->duration));
             if (std::abs(ev->pos().x() - pause_x) <= 8) {
@@ -1252,6 +1850,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     TimelinePropertyRef hit_prop;
     int hit_idx = -1;
     if (hit_keyframe(ev->pos(), &hit_layer, &hit_prop, &hit_idx, nullptr)) {
+        clear_transition_selection();
         if (hit_layer && hit_layer->locked) {
             ev->accept();
             return;
@@ -1283,13 +1882,36 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         int x0 = time_to_x(layer->in_time);
         int x1 = time_to_x(layer->out_time);
         constexpr int kTrimHit = 7;
+        std::shared_ptr<Layer> edge_layer;
+        LayerTransitionEdge edge = LayerTransitionEdge::In;
+        if (ev->button() == Qt::LeftButton &&
+            transition_edge_target_at_pos(ev->pos(), &edge_layer, &edge) && edge_layer == layer) {
+            select_layer_from_mouse(layer->id, ev->modifiers());
+            select_transition_target(layer->id, edge);
+            if (layer->locked) {
+                ev->accept();
+                return;
+            }
+            if (std::abs(ev->pos().x() - x0) <= kTrimHit) {
+                begin_layer_strip_drag(layer->id, DragMode::TrimIn, x_to_time(ev->pos().x()));
+                setCursor(Qt::SizeHorCursor);
+            } else if (std::abs(ev->pos().x() - x1) <= kTrimHit) {
+                begin_layer_strip_drag(layer->id, DragMode::TrimOut, x_to_time(ev->pos().x()));
+                setCursor(Qt::SizeHorCursor);
+            }
+            ev->accept();
+            return;
+        }
         const bool hit_strip = ev->pos().x() >= std::min(x0, x1) - kTrimHit &&
                                ev->pos().x() <= std::max(x0, x1) + kTrimHit;
         if (layer->locked && hit_strip) {
             ev->accept();
             return;
         }
-        if (hit_strip) select_layer_from_mouse(layer->id, ev->modifiers());
+        if (hit_strip) {
+            clear_transition_selection();
+            select_layer_from_mouse(layer->id, ev->modifiers());
+        }
         if (std::abs(ev->pos().x() - x0) <= kTrimHit) {
             begin_layer_strip_drag(layer->id, DragMode::TrimIn, x_to_time(ev->pos().x()));
             setCursor(Qt::SizeHorCursor);
@@ -1311,6 +1933,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     }
 
     if (ev->button() == Qt::LeftButton && ev->pos().y() >= ruler_height()) {
+        clear_transition_selection();
         if (!selected_layer_ids_.empty()) {
             set_selected_layers({});
             emit layers_selected({});
@@ -1327,6 +1950,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
+    clear_transition_selection();
     set_selected_layers({});
     emit layers_selected({});
     ev->accept();
@@ -1375,6 +1999,20 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
+    if (drag_mode_ == DragMode::TransitionDuration) {
+        if (auto layer = title_->find_layer(drag_layer_id_)) {
+            if (!layer->locked) {
+                if (auto *transition = find_layer_transition(layer->transitions, drag_transition_edge_)) {
+                    transition->duration = drag_transition_edge_ == LayerTransitionEdge::In
+                        ? t - layer->in_time : layer->out_time - t;
+                    normalize_transition_durations(*layer);
+                    update();
+                }
+            }
+        }
+        return;
+    }
+
     if (drag_mode_ == DragMode::Marquee) {
         marquee_current_ = ev->pos();
         if ((marquee_current_ - marquee_start_).manhattanLength() >= 3)
@@ -1417,11 +2055,13 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
                                                       0.0,
                                                       std::max(0.0, layer->out_time - layer->in_time)));
                 }
+                normalize_transition_durations(*layer);
             } else {
                 layer->in_time = dragged.start_in;
                 layer->out_time = std::clamp(dragged.start_out + delta,
                                              dragged.start_in + obs_frame_duration(),
                                              title_->duration);
+                normalize_transition_durations(*layer);
             }
         }
         update();
@@ -1465,6 +2105,21 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
     auto rows = timeline_rows(title_);
     int row = (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
+        TransitionHit transition_hit;
+        if (transition_hit_at_pos(ev->pos(), &transition_hit) && transition_hit.layer) {
+            if (!transition_hit.layer->locked && transition_hit.duration_handle)
+                setCursor(Qt::SizeHorCursor);
+            else
+                setCursor(Qt::ArrowCursor);
+            return;
+        }
+        std::shared_ptr<Layer> transition_target_layer;
+        LayerTransitionEdge transition_target_edge = LayerTransitionEdge::In;
+        if (transition_edge_target_at_pos(ev->pos(), &transition_target_layer,
+                                          &transition_target_edge)) {
+            setCursor(Qt::ArrowCursor);
+            return;
+        }
         if (!rows[row].layer || rows[row].layer->locked) {
             unsetCursor();
             return;
@@ -1488,6 +2143,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
                    drag_mode_ == DragMode::TrimIn ||
                    drag_mode_ == DragMode::TrimOut ||
                    drag_mode_ == DragMode::Layer ||
+                   drag_mode_ == DragMode::TransitionDuration ||
                    drag_mode_ == DragMode::LoopStart ||
                    drag_mode_ == DragMode::LoopEnd ||
                    drag_mode_ == DragMode::PauseMarker;
@@ -1546,6 +2202,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
         selected_keyframes_ = std::move(remapped);
     }
 
+    const bool transition_changed = drag_mode_ == DragMode::TransitionDuration;
     drag_mode_ = DragMode::None;
     drag_layer_id_.clear();
     drag_prop_name_.clear();
@@ -1559,7 +2216,21 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
     marquee_moved_ = false;
     unsetCursor();
     update();
-    if (changed) emit keyframe_easing_changed();
+    if (transition_changed)
+        emit transition_modified();
+    else if (changed)
+        emit keyframe_easing_changed();
+}
+
+void TimelineWidget::mouseDoubleClickEvent(QMouseEvent *ev)
+{
+    TransitionHit hit;
+    if (ev && transition_hit_at_pos(ev->pos(), &hit) && hit.layer && !hit.layer->locked) {
+        emit transition_edit_requested(hit.layer->id, static_cast<int>(hit.edge));
+        ev->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(ev);
 }
 
 /* ══════════════════════════════════════════════════════════════════

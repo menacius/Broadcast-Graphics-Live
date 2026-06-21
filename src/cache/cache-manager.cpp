@@ -1081,6 +1081,22 @@ QString CacheManager::contentHash(const Title &title) const
 
         add((quint64)layer->effects.size());
         for (const auto &effect : layer->effects) add_effect(effect);
+        const quint64 enabled_transition_count = static_cast<quint64>(std::count_if(
+            layer->transitions.begin(), layer->transitions.end(),
+            [](const LayerTransition &transition) { return transition.enabled; }));
+        add(enabled_transition_count);
+        for (const auto &transition : layer->transitions) {
+            if (!transition.enabled)
+                continue;
+            // IDs, preset names and display labels are editor metadata and do
+            // not affect pixels. Hashing them invalidated every cached frame
+            // after copy/paste or a simple rename.
+            add((int)transition.kind); add((int)transition.type);
+            add((int)transition.edge); add((int)transition.unit); add((int)transition.direction);
+            add((int)transition.easing); add(transition.duration); add(transition.blur_amount);
+            add(transition.scale_from); add(transition.offset); add(transition.stagger);
+            add(transition.softness); add(transition.reverse_order);
+        }
     }
     return QString::fromLatin1(hash.result().toHex());
 }
@@ -1155,6 +1171,11 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
         add_anim(layer->shadow_spread_prop); add_anim(layer->shadow_color_a);
         add_anim(layer->shadow_color_r); add_anim(layer->shadow_color_g); add_anim(layer->shadow_color_b);
         for (const auto &effect : layer->effects) add_effect(effect);
+        for (const auto &transition : layer->transitions) {
+            if (!transition.enabled)
+                continue;
+            add(layer_transition_progress(transition, layer->in_time, layer->out_time, time));
+        }
     }
     return QString::fromLatin1(hash.result().toHex());
 }
@@ -1267,6 +1288,11 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(layer->shadow_color_g, 1.0 / 255.0);
         add_anim(layer->shadow_color_b, 1.0 / 255.0);
         for (const auto &effect : layer->effects) add_effect(effect);
+        for (const auto &transition : layer->transitions) {
+            if (!transition.enabled)
+                continue;
+            add(quant(layer_transition_progress(transition, layer->in_time, layer->out_time, time), 0.002));
+        }
     }
     return QString::fromLatin1(hash.result().toHex());
 }
@@ -1323,6 +1349,9 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
     for (const auto &layer : title.layers) {
         if (!layer) continue;
         if (layer->type == LayerType::Clock || layer->type == LayerType::Ticker)
+            return true;
+        if (std::any_of(layer->transitions.begin(), layer->transitions.end(),
+                        [](const LayerTransition &transition) { return transition.enabled; }))
             return true;
         auto animated = [](const auto &prop) { return !prop.keyframes.empty(); };
         if (animated(layer->position) || animated(layer->scale) || animated(layer->rotation) ||

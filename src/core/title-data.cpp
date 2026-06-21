@@ -1283,6 +1283,29 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"stroke_color_b", aprop_to_json(effect.stroke_color_b)}});
     }
     j["effects"] = effects;
+    json transitions = json::array();
+    for (const auto &transition : l.transitions) {
+        transitions.push_back({
+            {"id", transition.id},
+            {"preset_id", transition.preset_id},
+            {"display_name", transition.display_name},
+            {"enabled", transition.enabled},
+            {"kind", (int)transition.kind},
+            {"type", (int)transition.type},
+            {"edge", (int)transition.edge},
+            {"unit", (int)transition.unit},
+            {"direction", (int)transition.direction},
+            {"easing", (int)transition.easing},
+            {"duration", transition.duration},
+            {"blur_amount", transition.blur_amount},
+            {"scale_from", transition.scale_from},
+            {"offset", transition.offset},
+            {"stagger", transition.stagger},
+            {"softness", transition.softness},
+            {"reverse_order", transition.reverse_order},
+        });
+    }
+    j["transitions"] = transitions;
     j["in_time"]  = l.in_time;
     j["out_time"] = l.out_time;
 
@@ -1693,6 +1716,53 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     }
     l->in_time  = std::clamp(finite_or(json_double(j, "in_time", 0.0), 0.0), 0.0, kMaxDuration);
     l->out_time = std::clamp(finite_or(json_double(j, "out_time", 5.0), 5.0), l->in_time, kMaxDuration);
+    l->transitions.clear();
+    if (j.contains("transitions") && j["transitions"].is_array()) {
+        bool edge_seen[2] = {false, false};
+        size_t accepted_count = 0;
+        // Scan a small bounded prefix rather than only the first two entries.
+        // Older or hand-edited files can contain a duplicate edge before a
+        // valid transition for the other edge; stopping at index 2 silently
+        // discarded that valid transition.
+        const size_t count = std::min(j["transitions"].size(), (size_t)32);
+        for (size_t i = 0; i < count && accepted_count < 2; ++i) {
+            const auto &transition_json = j["transitions"][i];
+            if (!transition_json.is_object()) continue;
+            LayerTransition transition;
+            transition.id = bounded_string(transition_json, "id", "", kMaxNameLength);
+            transition.preset_id = bounded_string(transition_json, "preset_id", "", kMaxNameLength);
+            transition.display_name = bounded_string(transition_json, "display_name", "Transition", kMaxNameLength);
+            transition.enabled = json_bool(transition_json, "enabled", true);
+            transition.kind = (LayerTransitionKind)std::clamp(json_int(transition_json, "kind", 0),
+                (int)LayerTransitionKind::General, (int)LayerTransitionKind::Text);
+            transition.type = (LayerTransitionType)std::clamp(json_int(transition_json, "type", 0),
+                (int)LayerTransitionType::Dissolve, (int)LayerTransitionType::TextBlurSlide);
+            transition.edge = (LayerTransitionEdge)std::clamp(json_int(transition_json, "edge", 0),
+                (int)LayerTransitionEdge::In, (int)LayerTransitionEdge::Out);
+            transition.unit = (LayerTransitionUnit)std::clamp(json_int(transition_json, "unit", 0),
+                (int)LayerTransitionUnit::Character, (int)LayerTransitionUnit::Sentence);
+            transition.direction = (LayerTransitionDirection)std::clamp(json_int(transition_json, "direction", 0),
+                (int)LayerTransitionDirection::None, (int)LayerTransitionDirection::Down);
+            transition.easing = (EasingType)std::clamp(json_int(transition_json, "easing", (int)EasingType::EaseInOut),
+                (int)EasingType::Linear, (int)EasingType::Hold);
+            const double layer_duration = std::max(1.0 / 240.0, l->out_time - l->in_time);
+            transition.duration = std::clamp(finite_or(json_double(transition_json, "duration", 0.5), 0.5),
+                                             1.0 / 240.0, layer_duration);
+            transition.blur_amount = std::clamp(finite_or(json_double(transition_json, "blur_amount", 18.0), 18.0), 0.0, 256.0);
+            transition.scale_from = std::clamp(finite_or(json_double(transition_json, "scale_from", 0.82), 0.82), -10.0, 10.0);
+            transition.offset = std::clamp(finite_or(json_double(transition_json, "offset", 80.0), 80.0), 0.0, 10000.0);
+            transition.stagger = std::clamp(finite_or(json_double(transition_json, "stagger", 0.35), 0.35), 0.0, 0.95);
+            transition.softness = std::clamp(finite_or(json_double(transition_json, "softness", 0.0), 0.0), 0.0, 1.0);
+            transition.reverse_order = json_bool(transition_json, "reverse_order", false);
+            const bool text_type = layer_transition_type_is_text(transition.type);
+            transition.kind = text_type ? LayerTransitionKind::Text : LayerTransitionKind::General;
+            const int edge_index = transition.edge == LayerTransitionEdge::Out ? 1 : 0;
+            if (edge_seen[edge_index]) continue;
+            edge_seen[edge_index] = true;
+            l->transitions.push_back(std::move(transition));
+            ++accepted_count;
+        }
+    }
 
     if (j.contains("position")) vec2_aprop_from_json(j["position"], l->position);
     if (j.contains("scale"))    vec2_aprop_from_json(j["scale"], l->scale);

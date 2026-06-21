@@ -46,8 +46,11 @@
 #include <QFontDatabase>
 #include <QTextLayout>
 #include <QTextDocument>
+#include <QTextBlock>
+#include <QAbstractTextDocumentLayout>
 #include <QTextOption>
 #include <QTextCursor>
+#include <QTextBoundaryFinder>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QTransform>
@@ -57,6 +60,7 @@
 #include <QConicalGradient>
 #include <QCryptographicHash>
 #include <QByteArray>
+#include <QRegularExpression>
 
 #include <memory>
 #include <string>
@@ -259,6 +263,10 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
     return loaded;
 }
 }
+
+// Forward declaration must live in the same (global) scope as the definition below.
+// Keeping it inside the anonymous namespace creates a second overload on MSVC.
+static void box_blur_pixels(std::vector<uint8_t> &pixels, int w, int h, int radius);
 
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
@@ -950,9 +958,13 @@ static void apply_layer_world_transform(cairo_t *cr, const Title &title, const L
             apply_layer_world_transform(cr, title, *parent, title_time, depth + 1);
     }
     const double lt = std::max(0.0, title_time - layer.in_time);
-    cairo_translate(cr, layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    cairo_translate(cr, layer.position.evaluate(lt).x + transition.translate_x,
+                    layer.position.evaluate(lt).y + transition.translate_y);
     cairo_rotate(cr, layer.rotation.evaluate(lt) * kPi / 180.0);
-    cairo_scale(cr, layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
+    cairo_scale(cr, layer.scale.evaluate(lt).x * transition.scale,
+                layer.scale.evaluate(lt).y * transition.scale);
 }
 
 static double layer_chain_opacity(const Title &title, const Layer &layer, double title_time, int depth = 0)
@@ -960,12 +972,50 @@ static double layer_chain_opacity(const Title &title, const Layer &layer, double
     if (depth > 64)
         return 1.0;
     const double lt = std::max(0.0, title_time - layer.in_time);
-    double opacity = layer.opacity.evaluate(lt);
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    double opacity = layer.opacity.evaluate(lt) * transition.opacity;
     if (!layer.parent_id.empty()) {
         if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
             opacity *= layer_chain_opacity(title, *parent, title_time, depth + 1);
     }
     return opacity;
+}
+
+static void apply_layer_transition_clip(cairo_t *cr, const Layer &layer, double title_time,
+                                        double x, double y, double width, double height)
+{
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    if (!transition.active || transition.wipe >= 0.999999 ||
+        transition.wipe_softness > 0.000001 || width <= 0.0 || height <= 0.0)
+        return;
+
+    double clip_x = x;
+    double clip_y = y;
+    double clip_w = width;
+    double clip_h = height;
+    const double reveal = std::clamp(transition.wipe, 0.0, 1.0);
+    switch (transition.wipe_direction) {
+    case LayerTransitionDirection::Right:
+        clip_w = width * reveal;
+        clip_x = x + width - clip_w;
+        break;
+    case LayerTransitionDirection::Up:
+        clip_h = height * reveal;
+        clip_y = y + height - clip_h;
+        break;
+    case LayerTransitionDirection::Down:
+        clip_h = height * reveal;
+        break;
+    case LayerTransitionDirection::Left:
+    case LayerTransitionDirection::None:
+    default:
+        clip_w = width * reveal;
+        break;
+    }
+    cairo_rectangle(cr, clip_x, clip_y, std::max(0.0, clip_w), std::max(0.0, clip_h));
+    cairo_clip(cr);
 }
 
 static void cairo_add_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r)
@@ -1817,6 +1867,7 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, CachedShadowEntry> cache;
     static uint64_t cache_tick = 0;
+    static qsizetype cache_bytes = 0;
     const QString key = shadow_param_key(layer, p, shape_key);
     const std::string skey = key.toStdString();
     {
@@ -1893,15 +1944,35 @@ static CachedShadowImage build_shadow_image(const Layer &layer, const ShadowRend
         }
     }
     CachedShadowImage out{image, QPointF(min_x, min_y)};
+    constexpr qsizetype kMaxShadowCacheBytes = 128 * 1024 * 1024;
+    // A single pathological shadow surface must not become a permanent static
+    // allocation. It can still be returned for the current frame, but is not
+    // retained in the process-wide cache.
+    if (out.image.sizeInBytes() > kMaxShadowCacheBytes)
+        return out;
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        cache[skey] = CachedShadowEntry{out, ++cache_tick};
-        if (cache.size() > 128) {
-            auto oldest = cache.begin();
+        if (auto existing = cache.find(skey); existing != cache.end()) {
+            cache_bytes -= existing->second.image.image.sizeInBytes();
+            cache.erase(existing);
+        }
+        cache.emplace(skey, CachedShadowEntry{out, ++cache_tick});
+        cache_bytes += out.image.sizeInBytes();
+
+        constexpr size_t kMaxShadowCacheEntries = 128;
+        while ((cache.size() > kMaxShadowCacheEntries ||
+                cache_bytes > kMaxShadowCacheBytes) &&
+               cache.size() > 1) {
+            auto oldest = cache.end();
             for (auto it = cache.begin(); it != cache.end(); ++it) {
-                if (it->second.last_used < oldest->second.last_used)
+                if (it->first == skey)
+                    continue;
+                if (oldest == cache.end() || it->second.last_used < oldest->second.last_used)
                     oldest = it;
             }
+            if (oldest == cache.end())
+                break;
+            cache_bytes -= oldest->second.image.image.sizeInBytes();
             cache.erase(oldest);
         }
     }
@@ -2655,10 +2726,10 @@ static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const
     QTextCursor all(&doc);
     all.select(QTextCursor::Document);
     all.mergeCharFormat(text_format_from_rich_format(model.default_format, font, text_rect));
+    const QString qplain = QString::fromStdString(model.plain_text);
     for (const auto &range : model.ranges) {
         if (range.length == 0 || range.start >= model.plain_text.size()) continue;
         QTextCursor cursor(&doc);
-        const QString qplain = QString::fromStdString(model.plain_text);
         const int qstart = qtext_position_from_rich_byte_offset_source(qplain, range.start);
         const int qend = qtext_position_from_rich_byte_offset_source(qplain, range.start + range.length);
         cursor.setPosition(std::clamp(qstart, 0, static_cast<int>(qplain.size())));
@@ -2667,8 +2738,43 @@ static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const
     }
 }
 
+struct TextTransitionUnitRange {
+    int start = 0;
+    int length = 0;
+};
+
+static void hide_rich_text_outside_range(QTextDocument &doc,
+                                         const TextTransitionUnitRange *visible_range)
+{
+    if (!visible_range)
+        return;
+
+    const int text_length = std::max(0, doc.characterCount() - 1);
+    const int start = std::clamp(visible_range->start, 0, text_length);
+    const int end = std::clamp(start + std::max(0, visible_range->length), start, text_length);
+
+    QTextCharFormat hidden;
+    hidden.setForeground(QBrush(Qt::transparent));
+    hidden.setTextOutline(QPen(Qt::NoPen));
+    hidden.setFontUnderline(false);
+    hidden.setFontStrikeOut(false);
+
+    auto hide_range = [&](int from, int to) {
+        if (to <= from)
+            return;
+        QTextCursor cursor(&doc);
+        cursor.setPosition(from);
+        cursor.setPosition(to, QTextCursor::KeepAnchor);
+        cursor.mergeCharFormat(hidden);
+    };
+
+    hide_range(0, start);
+    hide_range(end, text_length);
+}
+
 static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &layer, const QFont &font,
-                                                  const QRectF &text_rect, double t)
+                                                  const QRectF &text_rect, double t,
+                                                  const TextTransitionUnitRange *visible_range = nullptr)
 {
     auto doc = std::make_unique<QTextDocument>();
     doc->setDocumentMargin(0.0);
@@ -2699,19 +2805,207 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
         apply_rich_text_ranges(*doc, canonical, font, QRectF(0.0, 0.0, text_rect.width(), text_rect.height()));
     }
 
+    hide_rich_text_outside_range(*doc, visible_range);
     return doc;
+}
+
+static QPointF rich_text_document_cursor_position(const QTextDocument &doc,
+                                                  const Layer &layer,
+                                                  const QRectF &text_rect,
+                                                  double t,
+                                                  int document_position)
+{
+    const QAbstractTextDocumentLayout *document_layout = doc.documentLayout();
+    if (!document_layout)
+        return text_rect.topLeft();
+
+    const int text_length = std::max(0, doc.characterCount() - 1);
+    const int clamped_position = std::clamp(document_position, 0, text_length);
+    QTextBlock block = doc.findBlock(clamped_position);
+    if (!block.isValid())
+        block = doc.lastBlock();
+    if (!block.isValid() || !block.layout())
+        return text_rect.topLeft();
+
+    const QTextLayout *layout = block.layout();
+    const int relative_position = std::clamp(
+        clamped_position - block.position(), 0, std::max(0, block.length() - 1));
+    QTextLine line = layout->lineForTextPosition(relative_position);
+    if (!line.isValid() && layout->lineCount() > 0)
+        line = layout->lineAt(layout->lineCount() - 1);
+    if (!line.isValid())
+        return text_rect.topLeft();
+
+    const QRectF block_rect = document_layout->blockBoundingRect(block);
+    QPointF local(block_rect.left() + line.cursorToX(relative_position),
+                  block_rect.top() + line.y());
+
+    const QSizeF document_size = doc.size();
+    QPointF origin = text_rect.topLeft();
+    if (layer.align_v == 1)
+        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
+    else if (layer.align_v == 2)
+        origin.setY(text_rect.bottom() - document_size.height());
+    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
+        origin.setY(origin.y() - eval_baseline_shift(layer, t));
+
+    double horizontal_scale = 1.0;
+    if (layer.text_overflow_mode == 2 && document_size.width() > text_rect.width()) {
+        horizontal_scale = std::clamp(
+            text_rect.width() / std::max(1.0, document_size.width()),
+            std::clamp(static_cast<double>(layer.text_fit_min_scale), 0.05, 1.0), 1.0);
+    }
+    local.setX(local.x() * horizontal_scale);
+    return origin + local;
+}
+
+static QRectF rich_text_document_range_bounds(const QTextDocument &doc,
+                                               const Layer &layer,
+                                               const QRectF &text_rect,
+                                               double t,
+                                               const TextTransitionUnitRange &range)
+{
+    const QAbstractTextDocumentLayout *document_layout = doc.documentLayout();
+    if (!document_layout)
+        return {};
+
+    const int text_length = std::max(0, doc.characterCount() - 1);
+    const int range_start = std::clamp(range.start, 0, text_length);
+    const int range_end = std::clamp(range_start + std::max(0, range.length),
+                                     range_start, text_length);
+    if (range_end <= range_start)
+        return {};
+
+    QRectF local_bounds;
+    bool has_bounds = false;
+    for (QTextBlock block = doc.findBlock(range_start);
+         block.isValid() && block.position() < range_end;
+         block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        if (!layout)
+            continue;
+        const QRectF block_rect = document_layout->blockBoundingRect(block);
+        for (int line_index = 0; line_index < layout->lineCount(); ++line_index) {
+            const QTextLine line = layout->lineAt(line_index);
+            if (!line.isValid())
+                continue;
+            const int line_start = block.position() + line.textStart();
+            const int line_end = line_start + line.textLength();
+            const int overlap_start = std::max(range_start, line_start);
+            const int overlap_end = std::min(range_end, line_end);
+            if (overlap_end <= overlap_start)
+                continue;
+
+            const int relative_start = overlap_start - block.position();
+            const int relative_end = overlap_end - block.position();
+            const qreal x1 = line.cursorToX(relative_start);
+            const qreal x2 = line.cursorToX(relative_end);
+            const QRectF line_bounds(
+                block_rect.left() + std::min(x1, x2),
+                block_rect.top() + line.y(),
+                std::max<qreal>(1.0, std::abs(x2 - x1)),
+                std::max<qreal>(1.0, line.height()));
+            local_bounds = has_bounds ? local_bounds.united(line_bounds) : line_bounds;
+            has_bounds = true;
+        }
+    }
+    if (!has_bounds)
+        return {};
+
+    const QSizeF document_size = doc.size();
+    QPointF origin = text_rect.topLeft();
+    if (layer.align_v == 1)
+        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
+    else if (layer.align_v == 2)
+        origin.setY(text_rect.bottom() - document_size.height());
+    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
+        origin.setY(origin.y() - eval_baseline_shift(layer, t));
+
+    double horizontal_scale = 1.0;
+    if (layer.text_overflow_mode == 2 && document_size.width() > text_rect.width()) {
+        horizontal_scale = std::clamp(
+            text_rect.width() / std::max(1.0, document_size.width()),
+            std::clamp(static_cast<double>(layer.text_fit_min_scale), 0.05, 1.0), 1.0);
+    }
+    const qreal scaled_left = local_bounds.left() * horizontal_scale;
+    const qreal scaled_width = local_bounds.width() * horizontal_scale;
+    local_bounds.setRect(scaled_left, local_bounds.top(),
+                         scaled_width, local_bounds.height());
+    return local_bounds.translated(origin);
+}
+
+static QRect text_transition_unit_render_bounds(const QTextDocument &shaped_document,
+                                                const Layer &layer,
+                                                const QRectF &text_rect,
+                                                double t,
+                                                const TextTransitionUnitRange &range,
+                                                const ShadowRenderParams &shadow_params,
+                                                bool render_shadow,
+                                                const QRect &image_bounds)
+{
+    QRectF bounds = rich_text_document_range_bounds(
+        shaped_document, layer, text_rect, t, range);
+    if (bounds.isEmpty())
+        bounds = text_rect;
+
+    // QTextLine bounds describe advances, not all italic/outline/shadow pixel
+    // overhang. Expand from the actual line height, then include the complete
+    // shadow envelope. This remains much smaller than a full layer surface.
+    double pad = std::max(8.0, bounds.height() * 0.5) +
+                 std::max(0.0, eval_outline_width(layer, t)) * 2.0 + 3.0;
+    if (render_shadow) {
+        const double drop_extent = std::max(std::abs(shadow_params.dx),
+                                            std::abs(shadow_params.dy)) +
+                                   shadow_params.blur * 3.0 +
+                                   std::max(0.0, shadow_params.spread);
+        const double long_extent = std::max(0.0, shadow_params.long_length) +
+                                   std::max(0.0, shadow_params.long_blur) * 3.0;
+        pad += std::max(drop_extent, long_extent);
+    }
+
+    QRect result = bounds.adjusted(-pad, -pad, pad, pad).toAlignedRect();
+    result = result.intersected(image_bounds);
+    return result;
+}
+
+static QPointF rich_text_transition_unit_kerning_offset(const QTextDocument &shaped_document,
+                                                        const QTextDocument &isolated_document,
+                                                        const Layer &layer,
+                                                        const QRectF &text_rect,
+                                                        double t,
+                                                        const TextTransitionUnitRange &range)
+{
+    // Hiding the surrounding characters creates QText format-run boundaries.
+    // Qt can no longer apply kerning across those boundaries, even though the
+    // hidden characters still reserve their normal advance. Compare the caret
+    // position in the fully shaped document with the isolated document and
+    // move the independently rendered unit back to its original shaped origin.
+    const QPointF shaped = rich_text_document_cursor_position(
+        shaped_document, layer, text_rect, t, range.start);
+    const QPointF isolated = rich_text_document_cursor_position(
+        isolated_document, layer, text_rect, t, range.start);
+    return shaped - isolated;
 }
 
 static void draw_rich_text_document(QPainter &painter, const Layer &layer, const QFont &font,
                                     const QRectF &text_rect, double t,
                                     const QPen *text_outline = nullptr,
                                     bool outline_only = false,
-                                    bool alpha_mask_only = false)
+                                    bool alpha_mask_only = false,
+                                    const TextTransitionUnitRange *visible_range = nullptr)
 {
-    auto doc = rich_text_document_for_layer(layer, font, text_rect, t);
+    auto doc = rich_text_document_for_layer(layer, font, text_rect, t, visible_range);
     if (text_outline || alpha_mask_only) {
         QTextCursor cursor(doc.get());
-        cursor.select(QTextCursor::Document);
+        if (visible_range) {
+            const int text_length = std::max(0, doc->characterCount() - 1);
+            const int start = std::clamp(visible_range->start, 0, text_length);
+            const int end = std::clamp(start + std::max(0, visible_range->length), start, text_length);
+            cursor.setPosition(start);
+            cursor.setPosition(end, QTextCursor::KeepAnchor);
+        } else {
+            cursor.select(QTextCursor::Document);
+        }
         QTextCharFormat format;
         if (text_outline)
             format.setTextOutline(*text_outline);
@@ -2750,13 +3044,963 @@ static void draw_rich_text_document(QPainter &painter, const Layer &layer, const
     painter.restore();
 }
 
+static void draw_prepared_rich_text_document(QPainter &painter,
+                                                const QTextDocument &source_document,
+                                                const Layer &layer,
+                                                const QRectF &text_rect,
+                                                double t,
+                                                const TextTransitionUnitRange &visible_range,
+                                                const QPen *text_outline = nullptr,
+                                                bool outline_only = false,
+                                                bool alpha_mask_only = false)
+{
+    std::unique_ptr<QTextDocument> modified_document;
+    QTextDocument *document = const_cast<QTextDocument *>(&source_document);
+    if (text_outline || alpha_mask_only) {
+        modified_document.reset(source_document.clone());
+        document = modified_document.get();
+        const int text_length = std::max(0, document->characterCount() - 1);
+        const int start = std::clamp(visible_range.start, 0, text_length);
+        const int end = std::clamp(start + std::max(0, visible_range.length), start, text_length);
+        QTextCursor cursor(document);
+        cursor.setPosition(start);
+        cursor.setPosition(end, QTextCursor::KeepAnchor);
+        QTextCharFormat format;
+        if (text_outline)
+            format.setTextOutline(*text_outline);
+        if (outline_only)
+            format.setForeground(QBrush(Qt::transparent));
+        else if (alpha_mask_only) {
+            format.setForeground(QBrush(Qt::white));
+            format.setTextOutline(QPen(Qt::NoPen));
+        }
+        cursor.mergeCharFormat(format);
+    }
+
+    const QSizeF document_size = document->size();
+    QPointF origin = text_rect.topLeft();
+    if (layer.align_v == 1)
+        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
+    else if (layer.align_v == 2)
+        origin.setY(text_rect.bottom() - document_size.height());
+    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
+        origin.setY(origin.y() - eval_baseline_shift(layer, t));
+
+    if (layer.text_overflow_mode == 2 && document_size.width() > text_rect.width()) {
+        const double scale = std::clamp(
+            text_rect.width() / std::max(1.0, document_size.width()),
+            std::clamp((double)layer.text_fit_min_scale, 0.05, 1.0), 1.0);
+        painter.save();
+        painter.translate(origin);
+        painter.scale(scale, 1.0);
+        document->drawContents(&painter, QRectF(QPointF(0, 0), document_size));
+        painter.restore();
+        return;
+    }
+
+    painter.save();
+    painter.translate(origin);
+    document->drawContents(&painter, QRectF(QPointF(0, 0), document_size));
+    painter.restore();
+}
+
+static const LayerTransition *active_text_layer_transition(const Layer &layer, double title_time)
+{
+    const LayerTransition *active = nullptr;
+    double lowest_progress = 2.0;
+    for (const auto &transition : layer.transitions) {
+        if (!transition.enabled || transition.kind != LayerTransitionKind::Text)
+            continue;
+        const bool within = transition.edge == LayerTransitionEdge::In
+            ? title_time <= layer.in_time + transition.duration
+            : title_time >= layer.out_time - transition.duration;
+        if (!within)
+            continue;
+        const double progress = layer_transition_progress(
+            transition, layer.in_time, layer.out_time, title_time);
+        if (progress < lowest_progress) {
+            lowest_progress = progress;
+            active = &transition;
+        }
+    }
+    return active;
+}
+
+static QVector<TextTransitionUnitRange> text_transition_unit_ranges(
+    const QString &text, LayerTransitionUnit unit)
+{
+    QVector<TextTransitionUnitRange> ranges;
+
+    auto append_range = [&](int start, int length) {
+        if (length <= 0 || start < 0 || start >= static_cast<int>(text.size()))
+            return;
+        const int clamped_length = std::min(length, static_cast<int>(text.size()) - start);
+        if (clamped_length <= 0 || text.mid(start, clamped_length).trimmed().isEmpty())
+            return;
+        ranges.push_back(TextTransitionUnitRange{start, clamped_length});
+    };
+
+    if (unit == LayerTransitionUnit::Character) {
+        QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme, text);
+        finder.toStart();
+        int start = finder.position();
+        while (start >= 0) {
+            const int end = finder.toNextBoundary();
+            if (end < 0)
+                break;
+            append_range(start, end - start);
+            start = end;
+        }
+        return ranges;
+    }
+
+    if (unit == LayerTransitionUnit::Word) {
+        static const QRegularExpression word_pattern(QStringLiteral("\\S+"));
+        QRegularExpressionMatchIterator matches = word_pattern.globalMatch(text);
+        while (matches.hasNext()) {
+            const QRegularExpressionMatch match = matches.next();
+            append_range(static_cast<int>(match.capturedStart()),
+                         static_cast<int>(match.capturedLength()));
+        }
+        return ranges;
+    }
+
+    static const QRegularExpression sentence_pattern(
+        QStringLiteral("[^.!?\\n]+[.!?]*"));
+    QRegularExpressionMatchIterator matches = sentence_pattern.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch match = matches.next();
+        append_range(static_cast<int>(match.capturedStart()),
+                     static_cast<int>(match.capturedLength()));
+    }
+    if (ranges.isEmpty())
+        append_range(0, static_cast<int>(text.size()));
+    return ranges;
+}
+
+static QVector<QRectF> text_transition_unit_rects(const QString &text,
+                                                   const QFont &font,
+                                                   const QRectF &text_rect,
+                                                   const Layer &layer,
+                                                   LayerTransitionUnit unit)
+{
+    QVector<QRectF> result;
+    const QFontMetricsF metrics(font);
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    const qreal line_height = std::max<qreal>(1.0, metrics.height());
+    const qreal total_height = line_height * std::max(1, static_cast<int>(lines.size()));
+    qreal y = text_rect.top();
+    if (layer.align_v == 1)
+        y = text_rect.center().y() - total_height / 2.0;
+    else if (layer.align_v == 2)
+        y = text_rect.bottom() - total_height;
+
+    for (const QString &line : lines) {
+        const qreal line_width = metrics.horizontalAdvance(line);
+        qreal line_x = text_rect.left();
+        if (layer.align_h == 1)
+            line_x = text_rect.center().x() - line_width / 2.0;
+        else if (layer.align_h == 2)
+            line_x = text_rect.right() - line_width;
+
+        auto append_range = [&](int start, int length) {
+            if (length <= 0)
+                return;
+            const QString fragment = line.mid(start, length);
+            if (fragment.trimmed().isEmpty())
+                return;
+            const qreal x = line_x + metrics.horizontalAdvance(line.left(start));
+            const qreal width = std::max<qreal>(1.0, metrics.horizontalAdvance(fragment));
+            result.push_back(QRectF(x, y, width, line_height));
+        };
+
+        if (unit == LayerTransitionUnit::Character) {
+            for (int i = 0; i < static_cast<int>(line.size()); ++i)
+                append_range(i, 1);
+        } else if (unit == LayerTransitionUnit::Word) {
+            static const QRegularExpression word_pattern(QStringLiteral("\\S+"));
+            QRegularExpressionMatchIterator matches = word_pattern.globalMatch(line);
+            while (matches.hasNext()) {
+                const QRegularExpressionMatch match = matches.next();
+                append_range(static_cast<int>(match.capturedStart()),
+                             static_cast<int>(match.capturedLength()));
+            }
+        } else {
+            static const QRegularExpression sentence_pattern(
+                QStringLiteral("[^.!?]+[.!?]*"));
+            QRegularExpressionMatchIterator matches = sentence_pattern.globalMatch(line);
+            bool matched = false;
+            while (matches.hasNext()) {
+                const QRegularExpressionMatch match = matches.next();
+                append_range(static_cast<int>(match.capturedStart()),
+                             static_cast<int>(match.capturedLength()));
+                matched = true;
+            }
+            if (!matched)
+                append_range(0, static_cast<int>(line.size()));
+        }
+        y += line_height;
+    }
+    return result;
+}
+
+static QImage blurred_transition_image(const QImage &source, int radius)
+{
+    if (source.isNull() || radius <= 0)
+        return source;
+    QImage blurred = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const int width = blurred.width();
+    const int height = blurred.height();
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4);
+    for (int y = 0; y < height; ++y)
+        std::memcpy(pixels.data() + static_cast<size_t>(y) * width * 4,
+                    blurred.constScanLine(y), static_cast<size_t>(width) * 4);
+    box_blur_pixels(pixels, width, height, std::clamp(radius, 1, 64));
+    for (int y = 0; y < height; ++y)
+        std::memcpy(blurred.scanLine(y),
+                    pixels.data() + static_cast<size_t>(y) * width * 4,
+                    static_cast<size_t>(width) * 4);
+    return blurred;
+}
+
+static int animated_text_blur_radius(double maximum_radius, double unit_progress)
+{
+    const int max_radius = std::clamp(
+        static_cast<int>(std::lround(std::max(0.0, maximum_radius))), 0, 64);
+    if (max_radius <= 0)
+        return 0;
+
+    // A small blur pyramid avoids recalculating dozens of nearly identical
+    // radii per glyph while still making the blur visibly contract to zero.
+    constexpr int kBlurRadiusSteps = 12;
+    const double hidden = std::clamp(1.0 - unit_progress, 0.0, 1.0);
+    const int step = std::clamp(
+        static_cast<int>(std::lround(hidden * kBlurRadiusSteps)),
+        0, kBlurRadiusSteps);
+    return std::clamp(
+        static_cast<int>(std::lround(
+            static_cast<double>(max_radius) * step / kBlurRadiusSteps)),
+        0, max_radius);
+}
+
+static QRect transition_image_alpha_bounds(const QImage &image)
+{
+    if (image.isNull())
+        return QRect();
+
+    int min_x = image.width();
+    int min_y = image.height();
+    int max_x = -1;
+    int max_y = -1;
+    for (int y = 0; y < image.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            if (qAlpha(line[x]) == 0)
+                continue;
+            min_x = std::min(min_x, x);
+            min_y = std::min(min_y, y);
+            max_x = std::max(max_x, x);
+            max_y = std::max(max_y, y);
+        }
+    }
+    if (max_x < min_x || max_y < min_y)
+        return QRect();
+    return QRect(QPoint(min_x, min_y), QPoint(max_x, max_y));
+}
+
+static QImage render_rich_text_transition_unit(const QTextDocument &isolated_document,
+                                               const Layer &layer,
+                                               double t,
+                                               const QFont &font,
+                                               const QRectF &text_rect,
+                                               const QRect &render_bounds,
+                                               const ShadowRenderParams &shadow_params,
+                                               bool render_shadow,
+                                               const TextTransitionUnitRange &range)
+{
+    if (render_bounds.isEmpty())
+        return {};
+
+    QImage unit_image(render_bounds.size(), QImage::Format_ARGB32_Premultiplied);
+    unit_image.fill(Qt::transparent);
+
+    QPainter painter(&unit_image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    painter.setFont(font);
+    painter.translate(-render_bounds.x(), -render_bounds.y());
+
+    const double text_outline_clip_pad = std::max(0.0, eval_outline_width(layer, t)) + 2.0;
+    painter.save();
+    painter.setClipRect(text_rect.adjusted(-text_outline_clip_pad, -text_outline_clip_pad,
+                                           text_outline_clip_pad, text_outline_clip_pad));
+
+    if (render_shadow) {
+        QImage shadow_mask(render_bounds.size(), QImage::Format_ARGB32_Premultiplied);
+        shadow_mask.fill(Qt::transparent);
+        QPainter mask_painter(&shadow_mask);
+        mask_painter.setRenderHint(QPainter::Antialiasing, true);
+        mask_painter.setRenderHint(QPainter::TextAntialiasing, true);
+        mask_painter.setPen(Qt::NoPen);
+        mask_painter.setBrush(Qt::white);
+        mask_painter.translate(-render_bounds.x(), -render_bounds.y());
+        draw_prepared_rich_text_document(mask_painter, isolated_document,
+                                         layer, text_rect, t, range);
+        mask_painter.end();
+        const QString shape_key = QStringLiteral("text-transition|%1,%2,%3x%4|%5")
+            .arg(render_bounds.x()).arg(render_bounds.y())
+            .arg(render_bounds.width()).arg(render_bounds.height())
+            .arg(image_content_hash(shadow_mask));
+        CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, shadow_mask);
+        painter.save();
+        painter.setClipping(false);
+        painter.drawImage(QPointF(render_bounds.topLeft()) + shadow.origin, shadow.image);
+        painter.restore();
+    }
+
+    const double outline_width = eval_outline_width(layer, t);
+    QColor outline = color_from_argb(eval_outline_color(layer, t));
+    outline.setAlphaF(std::clamp((double)outline.alphaF() * eval_outline_opacity(layer, t), 0.0, 1.0));
+    QColor fill = color_from_argb(eval_text_color(layer, t));
+    fill.setAlphaF(std::clamp((double)fill.alphaF(), 0.0, 1.0));
+
+    auto draw_text_fill = [&]() {
+        painter.save();
+        painter.setOpacity(fill.alphaF());
+        draw_prepared_rich_text_document(painter, isolated_document,
+                                         layer, text_rect, t, range);
+        painter.restore();
+    };
+
+    auto draw_text_outline = [&]() {
+        if (outline_width <= 0.0)
+            return;
+        if (layer.stroke_fill_type == 1 && outline.alpha() <= 0)
+            return;
+
+        const int alignment = eval_outline_alignment(layer, t);
+        const qreal painted_width = alignment == 1 ? outline_width : outline_width * 2.0;
+        const QBrush stroke_brush = layer.stroke_fill_type == 2
+            ? stroke_gradient_fill_brush(layer, text_rect, eval_outline_opacity(layer, t))
+            : QBrush(outline);
+        QPen outline_pen(stroke_brush, painted_width, Qt::SolidLine, Qt::RoundCap,
+                         outline_pen_join_style(layer));
+
+        QImage stroke_layer(render_bounds.size(), QImage::Format_ARGB32_Premultiplied);
+        stroke_layer.fill(Qt::transparent);
+        QPainter stroke_painter(&stroke_layer);
+        stroke_painter.setRenderHint(QPainter::Antialiasing, eval_outline_antialias(layer, t));
+        stroke_painter.setRenderHint(QPainter::TextAntialiasing, true);
+        stroke_painter.translate(-render_bounds.x(), -render_bounds.y());
+        stroke_painter.setClipRect(text_rect.adjusted(-text_outline_clip_pad, -text_outline_clip_pad,
+                                                       text_outline_clip_pad, text_outline_clip_pad));
+        draw_prepared_rich_text_document(stroke_painter, isolated_document,
+                                         layer, text_rect, t, range,
+                                         &outline_pen, true, false);
+        stroke_painter.end();
+
+        if (alignment != 1) {
+            QImage glyph_mask(render_bounds.size(), QImage::Format_ARGB32_Premultiplied);
+            glyph_mask.fill(Qt::transparent);
+            QPainter mask_painter(&glyph_mask);
+            mask_painter.setRenderHint(QPainter::Antialiasing, true);
+            mask_painter.setRenderHint(QPainter::TextAntialiasing, true);
+            mask_painter.setPen(Qt::NoPen);
+            mask_painter.setBrush(Qt::white);
+            mask_painter.translate(-render_bounds.x(), -render_bounds.y());
+            draw_prepared_rich_text_document(mask_painter, isolated_document,
+                                             layer, text_rect, t, range,
+                                             nullptr, false, true);
+            mask_painter.end();
+
+            QPainter isolate(&stroke_layer);
+            isolate.setCompositionMode(alignment == 0
+                ? QPainter::CompositionMode_DestinationOut
+                : QPainter::CompositionMode_DestinationIn);
+            isolate.drawImage(QPointF(0.0, 0.0), glyph_mask);
+            isolate.end();
+        }
+
+        painter.drawImage(QPointF(render_bounds.topLeft()), stroke_layer);
+    };
+
+    const int text_stroke_alignment = eval_outline_alignment(layer, t);
+    if (!eval_outline_on_front(layer, t) && text_stroke_alignment != 2)
+        draw_text_outline();
+    draw_text_fill();
+    if (eval_outline_on_front(layer, t) || text_stroke_alignment == 2)
+        draw_text_outline();
+
+    painter.restore();
+    painter.end();
+    return unit_image;
+}
+
+static bool layer_has_non_transform_animation(const Layer &layer);
+
+struct IsolatedTextUnitCache {
+    struct BlurredVariant {
+        int radius = 0;
+        QImage crop;
+        QRect bounds;
+    };
+
+    QString key;
+    QString rejected_key;
+    // Store only each unit's non-transparent crop. Keeping full layer-sized
+    // images per character can retain hundreds of megabytes.
+    QVector<TextTransitionUnitRange> ranges;
+    QVector<QImage> source_crops;
+    QVector<QRect> source_bounds;
+    QVector<QPointF> placement_offsets;
+    QVector<QVector<BlurredVariant>> blurred_variants;
+    qsizetype source_bytes = 0;
+    qsizetype blurred_bytes = 0;
+    BlurredVariant scratch_variant;
+    uint64_t last_used = 0;
+};
+
+static double source_frame_duration();
+
+struct IsolatedTextUnitCachePool {
+    std::unordered_map<std::string, IsolatedTextUnitCache> entries;
+    uint64_t tick = 0;
+};
+
+static qsizetype isolated_text_unit_cache_bytes(const IsolatedTextUnitCache &cache)
+{
+    return cache.source_bytes + cache.blurred_bytes + cache.scratch_variant.crop.sizeInBytes();
+}
+
+static void evict_isolated_text_unit_caches(IsolatedTextUnitCachePool &pool,
+                                             const std::string &protected_cache_id)
+{
+    constexpr size_t kMaxCachedTextLayers = 8;
+    constexpr qsizetype kMaxTextTransitionCacheBytes = 128 * 1024 * 1024;
+    qsizetype total_bytes = 0;
+    for (const auto &entry : pool.entries)
+        total_bytes += isolated_text_unit_cache_bytes(entry.second);
+
+    while ((pool.entries.size() > kMaxCachedTextLayers ||
+            total_bytes > kMaxTextTransitionCacheBytes) &&
+           pool.entries.size() > 1) {
+        auto oldest = pool.entries.end();
+        for (auto it = pool.entries.begin(); it != pool.entries.end(); ++it) {
+            if (it->first == protected_cache_id)
+                continue;
+            if (oldest == pool.entries.end() ||
+                it->second.last_used < oldest->second.last_used)
+                oldest = it;
+        }
+        if (oldest == pool.entries.end())
+            break;
+        total_bytes -= isolated_text_unit_cache_bytes(oldest->second);
+        pool.entries.erase(oldest);
+    }
+}
+
+static bool apply_isolated_text_layer_transition(QImage &image,
+                                                 const QImage &static_background,
+                                                 const Layer &layer,
+                                                 double title_time,
+                                                 const QString &text,
+                                                 const QFont &font,
+                                                 const QRectF &text_rect,
+                                                 double t,
+                                                 const ShadowRenderParams &shadow_params,
+                                                 bool render_shadow)
+{
+    const LayerTransition *transition = active_text_layer_transition(layer, title_time);
+    if (!transition || image.isNull() || layer.type == LayerType::Ticker)
+        return false;
+
+    // A single thread-local cache caused simultaneous text transitions on two
+    // layers to evict each other every draw and rebuild all glyph surfaces on
+    // every frame. Keep a small byte-bounded LRU pool keyed by layer id.
+    static thread_local IsolatedTextUnitCachePool cache_pool;
+    const std::string cache_id = layer.id.empty()
+        ? std::string("__anonymous_text_transition") : layer.id;
+    auto [cache_it, inserted] = cache_pool.entries.try_emplace(cache_id);
+    (void)inserted;
+    IsolatedTextUnitCache &cache = cache_it->second;
+    cache.last_used = ++cache_pool.tick;
+    // Oversized variants are scratch-only and must not remain resident after a
+    // completed frame.
+    cache.scratch_variant = {};
+    evict_isolated_text_unit_caches(cache_pool, cache_id);
+
+    // Hashing the complete layer-sized QImage on every transition frame was a
+    // major memory-bandwidth regression (several MB per layer per frame). The
+    // store revision invalidates static style changes, while the evaluated
+    // time component covers animated text/style properties. Text and layout
+    // values keep live-cue changes independent from unrelated store updates.
+    const bool time_varying_source = layer_has_non_transform_animation(layer);
+    const double frame_duration = std::max(1.0 / 240.0, source_frame_duration());
+    const qlonglong evaluated_frame = time_varying_source
+        ? static_cast<qlonglong>(std::llround(t / frame_duration)) : 0;
+    const QByteArray text_digest = QCryptographicHash::hash(
+        text.toUtf8(), QCryptographicHash::Sha1).toHex();
+    const QString cache_key = QStringLiteral("%1|rev=%2|unit=%3|%4x%5|text=%6|font=%7|rect=%8,%9,%10,%11|shadow=%12|frame=%13")
+        .arg(QString::fromStdString(layer.id))
+        .arg(static_cast<qulonglong>(TitleDataStore::instance().revision()))
+        .arg(static_cast<int>(transition->unit))
+        .arg(image.width())
+        .arg(image.height())
+        .arg(QString::fromLatin1(text_digest))
+        .arg(font.toString())
+        .arg(text_rect.x(), 0, 'f', 3)
+        .arg(text_rect.y(), 0, 'f', 3)
+        .arg(text_rect.width(), 0, 'f', 3)
+        .arg(text_rect.height(), 0, 'f', 3)
+        .arg(render_shadow ? 1 : 0)
+        .arg(evaluated_frame);
+
+    constexpr qsizetype kMaxIsolatedTextUnits = 512;
+    constexpr qsizetype kMaxSourceCropBytes = 48 * 1024 * 1024;
+    if (cache.rejected_key == cache_key)
+        return false;
+
+    if (cache.key != cache_key || cache.source_crops.size() != cache.ranges.size()) {
+        cache.key.clear();
+        cache.ranges = text_transition_unit_ranges(text, transition->unit);
+        cache.source_crops.clear();
+        cache.source_bounds.clear();
+        cache.placement_offsets.clear();
+        cache.blurred_variants.clear();
+        cache.source_bytes = 0;
+        cache.blurred_bytes = 0;
+        if (cache.ranges.isEmpty() || cache.ranges.size() > kMaxIsolatedTextUnits) {
+            cache.ranges.clear();
+            cache.rejected_key = cache_key;
+            evict_isolated_text_unit_caches(cache_pool, cache_id);
+            return false;
+        }
+
+        cache.source_crops.reserve(cache.ranges.size());
+        cache.source_bounds.reserve(cache.ranges.size());
+        cache.placement_offsets.reserve(cache.ranges.size());
+
+        const std::unique_ptr<QTextDocument> shaped_document =
+            rich_text_document_for_layer(layer, font, text_rect, t, nullptr);
+        qsizetype source_crop_bytes = 0;
+        for (const TextTransitionUnitRange &range : cache.ranges) {
+            const std::unique_ptr<QTextDocument> isolated_document =
+                rich_text_document_for_layer(layer, font, text_rect, t, &range);
+            const QPointF placement_offset = shaped_document && isolated_document
+                ? rich_text_transition_unit_kerning_offset(
+                      *shaped_document, *isolated_document, layer, text_rect, t, range)
+                : QPointF();
+            const QRect render_bounds = shaped_document
+                ? text_transition_unit_render_bounds(
+                      *shaped_document, layer, text_rect, t, range,
+                      shadow_params, render_shadow, image.rect())
+                : image.rect();
+            QImage unit_image = isolated_document
+                ? render_rich_text_transition_unit(
+                      *isolated_document, layer, t, font, text_rect, render_bounds,
+                      shadow_params, render_shadow, range)
+                : QImage();
+            const QRect local_bounds = transition_image_alpha_bounds(unit_image)
+                .intersected(unit_image.rect());
+            const QRect bounds = local_bounds.isEmpty()
+                ? QRect()
+                : local_bounds.translated(render_bounds.topLeft());
+            QImage source_crop = local_bounds.isEmpty()
+                ? QImage() : unit_image.copy(local_bounds);
+            source_crop_bytes += source_crop.sizeInBytes();
+            if (source_crop_bytes > kMaxSourceCropBytes) {
+                cache.key.clear();
+                cache.rejected_key = cache_key;
+                cache.ranges.clear();
+                cache.source_crops.clear();
+                cache.source_bounds.clear();
+                cache.placement_offsets.clear();
+                cache.blurred_variants.clear();
+                cache.source_bytes = 0;
+                cache.blurred_bytes = 0;
+                evict_isolated_text_unit_caches(cache_pool, cache_id);
+                return false;
+            }
+            cache.source_bounds.push_back(bounds);
+            cache.placement_offsets.push_back(placement_offset);
+            cache.source_crops.push_back(std::move(source_crop));
+        }
+        cache.source_bytes = source_crop_bytes;
+        cache.key = cache_key;
+        cache.rejected_key.clear();
+        cache.blurred_variants.clear();
+        cache.blurred_variants.resize(cache.ranges.size());
+        cache.blurred_bytes = 0;
+        cache.scratch_variant = {};
+        evict_isolated_text_unit_caches(cache_pool, cache_id);
+    }
+
+    const QVector<TextTransitionUnitRange> &ranges = cache.ranges;
+    if (ranges.isEmpty())
+        return false;
+
+    const bool blur_transition =
+        transition->type == LayerTransitionType::TextBlur ||
+        transition->type == LayerTransitionType::TextBlurSlide;
+
+    auto blurred_variant_for = [&image, &cache, &cache_id](int index, int radius)
+        -> const IsolatedTextUnitCache::BlurredVariant * {
+        if (radius <= 0 || index < 0 || index >= cache.source_crops.size())
+            return nullptr;
+
+        QVector<IsolatedTextUnitCache::BlurredVariant> &variants =
+            cache.blurred_variants[index];
+        for (const auto &variant : variants) {
+            if (variant.radius == radius)
+                return &variant;
+        }
+
+        const QImage &source_crop = cache.source_crops[index];
+        const QRect source_bounds = cache.source_bounds[index];
+        if (source_crop.isNull() || source_bounds.isEmpty())
+            return nullptr;
+
+        // Blur only the current unit and expand its temporary image by the
+        // current radius. The radius changes from blur_amount to zero as the
+        // unit progresses, so the glyph itself becomes progressively sharper.
+        const int blur_pad = radius * 3 + 2;
+        QImage padded(source_crop.width() + blur_pad * 2,
+                      source_crop.height() + blur_pad * 2,
+                      QImage::Format_ARGB32_Premultiplied);
+        padded.fill(Qt::transparent);
+        {
+            QPainter padded_painter(&padded);
+            padded_painter.drawImage(QPoint(blur_pad, blur_pad), source_crop);
+        }
+
+        QImage blurred = blurred_transition_image(padded, radius);
+        const QRect local_bounds = transition_image_alpha_bounds(blurred);
+        if (local_bounds.isEmpty())
+            return nullptr;
+
+        const QPoint padded_origin = source_bounds.topLeft() - QPoint(blur_pad, blur_pad);
+        const QRect global_bounds(padded_origin + local_bounds.topLeft(),
+                                  local_bounds.size());
+        const QRect clipped_bounds = global_bounds.intersected(image.rect());
+        if (clipped_bounds.isEmpty())
+            return nullptr;
+
+        const QRect local_clip(clipped_bounds.topLeft() - global_bounds.topLeft(),
+                               clipped_bounds.size());
+        const QRect blurred_crop_rect(
+            local_bounds.topLeft() + local_clip.topLeft(), local_clip.size());
+
+        QImage cropped_blur = blurred.copy(blurred_crop_rect);
+        const qsizetype variant_bytes = cropped_blur.sizeInBytes();
+
+        // A per-unit count alone still allowed long strings to retain hundreds
+        // of MB. Bound both the number of radii per unit and the total cache.
+        constexpr int kMaxBlurVariantsPerUnit = 4;
+        constexpr qsizetype kMaxBlurCacheBytes = 48 * 1024 * 1024;
+        if (variant_bytes > kMaxBlurCacheBytes) {
+            cache.scratch_variant = {radius, std::move(cropped_blur), clipped_bounds};
+            return &cache.scratch_variant;
+        }
+        if (cache.blurred_bytes + variant_bytes > kMaxBlurCacheBytes) {
+            for (auto &unit_variants : cache.blurred_variants)
+                unit_variants.clear();
+            cache.blurred_bytes = 0;
+        }
+        while (variants.size() >= kMaxBlurVariantsPerUnit) {
+            cache.blurred_bytes -= variants.front().crop.sizeInBytes();
+            variants.removeAt(0);
+        }
+        variants.push_back({radius, std::move(cropped_blur), clipped_bounds});
+        cache.blurred_bytes += variants.back().crop.sizeInBytes();
+        evict_isolated_text_unit_caches(cache_pool, cache_id);
+        return &variants.back();
+    };
+
+    if (static_background.isNull())
+        image.fill(Qt::transparent);
+    else
+        image = static_background.copy();
+    const double global_progress = layer_transition_progress(
+        *transition, layer.in_time, layer.out_time, title_time);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+    const int count = static_cast<int>(ranges.size());
+    for (int index = 0; index < count; ++index) {
+        const int order = transition->reverse_order ? count - 1 - index : index;
+        const double delay = count <= 1 ? 0.0
+            : transition->stagger * static_cast<double>(order) / static_cast<double>(count - 1);
+        const double span = std::max(0.05, 1.0 - transition->stagger);
+        double local = 1.0;
+        if (transition->edge == LayerTransitionEdge::In)
+            local = std::clamp((global_progress - delay) / span, 0.0, 1.0);
+        else {
+            const double out_phase = 1.0 - global_progress;
+            local = 1.0 - std::clamp((out_phase - delay) / span, 0.0, 1.0);
+        }
+        local = layer_transition_ease(local, transition->easing);
+        if (local <= 0.0001)
+            continue;
+
+        const QImage &unit_crop = cache.source_crops[index];
+        const QRect source_bounds = cache.source_bounds[index];
+        const QPointF placement_offset = cache.placement_offsets.value(index);
+        if (source_bounds.isEmpty() || unit_crop.isNull())
+            continue;
+
+        const QPointF source_origin = QPointF(source_bounds.topLeft()) + placement_offset;
+        const QRectF unit_bounds(source_origin, QSizeF(source_bounds.size()));
+        const QPointF center = unit_bounds.center();
+
+        double dx = 0.0;
+        double dy = 0.0;
+        if (transition->type == LayerTransitionType::TextSlide ||
+            transition->type == LayerTransitionType::TextBlurSlide) {
+            const double hidden = 1.0 - local;
+            switch (transition->direction) {
+            case LayerTransitionDirection::Right: dx = transition->offset * hidden; break;
+            case LayerTransitionDirection::Up: dy = -transition->offset * hidden; break;
+            case LayerTransitionDirection::Down: dy = transition->offset * hidden; break;
+            case LayerTransitionDirection::Left:
+            case LayerTransitionDirection::None:
+            default: dx = -transition->offset * hidden; break;
+            }
+        }
+        const double scale = transition->type == LayerTransitionType::TextScale
+            ? transition->scale_from + (1.0 - transition->scale_from) * local : 1.0;
+
+        QRectF visible = unit_bounds;
+        if (transition->type == LayerTransitionType::TextWipe) {
+            switch (transition->direction) {
+            case LayerTransitionDirection::Right:
+                visible.setLeft(unit_bounds.right() - unit_bounds.width() * local);
+                break;
+            case LayerTransitionDirection::Up:
+                visible.setTop(unit_bounds.bottom() - unit_bounds.height() * local);
+                break;
+            case LayerTransitionDirection::Down:
+                visible.setHeight(unit_bounds.height() * local);
+                break;
+            case LayerTransitionDirection::Left:
+            case LayerTransitionDirection::None:
+            default:
+                visible.setWidth(unit_bounds.width() * local);
+                break;
+            }
+        }
+
+        painter.save();
+        painter.translate(center.x() + dx, center.y() + dy);
+        painter.scale(scale, scale);
+        painter.translate(-center.x(), -center.y());
+        if (transition->type == LayerTransitionType::TextWipe)
+            painter.setClipRect(visible);
+        const int current_blur_radius = blur_transition
+            ? animated_text_blur_radius(transition->blur_amount, local)
+            : 0;
+        const IsolatedTextUnitCache::BlurredVariant *blurred_variant =
+            blurred_variant_for(index, current_blur_radius);
+
+        // Draw one representation of the glyph: blurred while radius > 0,
+        // sharp only when the radius reaches zero. Drawing both simultaneously
+        // produces a sharp core with a halo, i.e. a glow rather than blur.
+        painter.setOpacity(local);
+        if (blurred_variant && !blurred_variant->crop.isNull()) {
+            painter.drawImage(QPointF(blurred_variant->bounds.topLeft()) + placement_offset,
+                              blurred_variant->crop);
+        } else {
+            painter.drawImage(source_origin, unit_crop);
+        }
+        painter.restore();
+    }
+
+    painter.end();
+    cache.scratch_variant = {};
+    return true;
+}
+
+static void apply_text_layer_transition(QImage &image,
+                                        const Layer &layer,
+                                        double title_time,
+                                        const QString &text,
+                                        const QFont &font,
+                                        const QRectF &text_rect)
+{
+    const LayerTransition *transition = active_text_layer_transition(layer, title_time);
+    if (!transition || image.isNull())
+        return;
+
+    QVector<QRectF> raw_units = text_transition_unit_rects(
+        text, font, text_rect, layer, transition->unit);
+    // The precise isolated path is bounded to 512 units. When it declines a
+    // pathological text block, progressively coarsen the fallback grouping
+    // rather than issuing thousands of full-surface draw calls in one frame.
+    constexpr int kMaxFlattenedTransitionUnits = 512;
+    if (raw_units.size() > kMaxFlattenedTransitionUnits) {
+        raw_units = text_transition_unit_rects(
+            text, font, text_rect, layer, LayerTransitionUnit::Word);
+        if (raw_units.size() > kMaxFlattenedTransitionUnits)
+            raw_units = text_transition_unit_rects(
+                text, font, text_rect, layer, LayerTransitionUnit::Sentence);
+        if (raw_units.size() > kMaxFlattenedTransitionUnits)
+            raw_units = {text_rect};
+    }
+    if (raw_units.isEmpty())
+        return;
+
+    const double global_progress = layer_transition_progress(
+        *transition, layer.in_time, layer.out_time, title_time);
+    const bool blur_transition =
+        transition->type == LayerTransitionType::TextBlur ||
+        transition->type == LayerTransitionType::TextBlurSlide;
+    const QImage source = image.copy();
+    QVector<int> cached_blur_radii;
+    QVector<QImage> cached_blur_images;
+    const qsizetype source_bytes = source.sizeInBytes();
+    constexpr qsizetype kMaxFlattenedBlurWorkingSet = 64 * 1024 * 1024;
+    const bool use_single_flattened_blur =
+        blur_transition && source_bytes > kMaxFlattenedBlurWorkingSet / 4;
+    const int single_flattened_blur_radius = use_single_flattened_blur
+        ? animated_text_blur_radius(transition->blur_amount, global_progress) : 0;
+    QImage single_flattened_blur;
+    if (use_single_flattened_blur && source_bytes <= kMaxFlattenedBlurWorkingSet)
+        single_flattened_blur = blurred_transition_image(source, single_flattened_blur_radius);
+
+    auto image_for_blur_radius = [&source, &cached_blur_radii, &cached_blur_images,
+                                  &single_flattened_blur, use_single_flattened_blur](int radius)
+        -> const QImage & {
+        if (use_single_flattened_blur)
+            return single_flattened_blur.isNull() ? source : single_flattened_blur;
+        for (int i = 0; i < cached_blur_radii.size(); ++i) {
+            if (cached_blur_radii.at(i) == radius)
+                return cached_blur_images.at(i);
+        }
+        // The precise fallback is used only for modest surfaces. Still cap the
+        // number of retained full-size blur levels to avoid a 12x image cache.
+        constexpr int kMaxFlattenedBlurLevels = 3;
+        if (cached_blur_images.size() >= kMaxFlattenedBlurLevels) {
+            cached_blur_radii.removeFirst();
+            cached_blur_images.removeFirst();
+        }
+        cached_blur_radii.push_back(radius);
+        cached_blur_images.push_back(blurred_transition_image(source, radius));
+        return cached_blur_images.back();
+    };
+    const QRectF image_bounds(QPointF(0.0, 0.0), QSizeF(image.size()));
+    // Keep a little glyph-bearing/antialiasing slack around each logical unit.
+    // The clip itself is moved below together with slide transitions; keeping it
+    // at the final unit position is what used to crop horizontally moving glyphs.
+    const qreal margin = 1.5;
+
+    QVector<QRectF> units;
+    units.reserve(raw_units.size());
+    for (const QRectF &unit : raw_units) {
+        const QRectF expanded = unit.adjusted(-margin, -margin, margin, margin).intersected(image_bounds);
+        if (!expanded.isEmpty())
+            units.push_back(expanded);
+    }
+    if (units.isEmpty())
+        return;
+
+    QPainter clear_painter(&image);
+    clear_painter.setCompositionMode(QPainter::CompositionMode_Clear);
+    for (const QRectF &unit : units)
+        clear_painter.fillRect(unit, Qt::transparent);
+    clear_painter.end();
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    const int count = static_cast<int>(units.size());
+    for (int index = 0; index < count; ++index) {
+        const int order = transition->reverse_order ? count - 1 - index : index;
+        const double delay = count <= 1 ? 0.0
+            : transition->stagger * static_cast<double>(order) / static_cast<double>(count - 1);
+        const double span = std::max(0.05, 1.0 - transition->stagger);
+        double local = 1.0;
+        if (transition->edge == LayerTransitionEdge::In)
+            local = std::clamp((global_progress - delay) / span, 0.0, 1.0);
+        else {
+            const double out_phase = 1.0 - global_progress;
+            local = 1.0 - std::clamp((out_phase - delay) / span, 0.0, 1.0);
+        }
+        local = layer_transition_ease(local, transition->easing);
+        if (local <= 0.0001)
+            continue;
+
+        const QRectF unit = units[index];
+        double dx = 0.0;
+        double dy = 0.0;
+        if (transition->type == LayerTransitionType::TextSlide ||
+            transition->type == LayerTransitionType::TextBlurSlide) {
+            const double hidden = 1.0 - local;
+            switch (transition->direction) {
+            case LayerTransitionDirection::Right: dx = transition->offset * hidden; break;
+            case LayerTransitionDirection::Up: dy = -transition->offset * hidden; break;
+            case LayerTransitionDirection::Down: dy = transition->offset * hidden; break;
+            case LayerTransitionDirection::Left:
+            case LayerTransitionDirection::None:
+            default: dx = -transition->offset * hidden; break;
+            }
+        }
+        const double scale = transition->type == LayerTransitionType::TextScale
+            ? transition->scale_from + (1.0 - transition->scale_from) * local : 1.0;
+
+        QRectF visible = unit;
+        if (transition->type == LayerTransitionType::TextWipe) {
+            switch (transition->direction) {
+            case LayerTransitionDirection::Right:
+                visible.setLeft(unit.right() - unit.width() * local);
+                break;
+            case LayerTransitionDirection::Up:
+                visible.setTop(unit.bottom() - unit.height() * local);
+                break;
+            case LayerTransitionDirection::Down:
+                visible.setHeight(unit.height() * local);
+                break;
+            case LayerTransitionDirection::Left:
+            case LayerTransitionDirection::None:
+            default:
+                visible.setWidth(unit.width() * local);
+                break;
+            }
+        }
+
+        painter.save();
+        const QPointF center = unit.center();
+        painter.translate(center.x() + dx, center.y() + dy);
+        painter.scale(scale, scale);
+        painter.translate(-center.x(), -center.y());
+        // Establish the unit clip after the transition transform.  QPainter
+        // resolves a clip using the world transform active at setClipRect(), so
+        // this makes the clip travel/scale with the glyph instead of remaining
+        // at its final position and slicing horizontal slide-ins.
+        painter.setClipRect(visible.intersected(image_bounds));
+        const int current_blur_radius = blur_transition
+            ? animated_text_blur_radius(transition->blur_amount, local)
+            : 0;
+        painter.setOpacity(local);
+        if (current_blur_radius > 0) {
+            painter.drawImage(QPointF(0.0, 0.0),
+                              image_for_blur_radius(current_blur_radius));
+        } else {
+            painter.drawImage(QPointF(0.0, 0.0), source);
+        }
+        painter.restore();
+    }
+    painter.end();
+}
+
 static void render_layer_text(cairo_t *cr, const Title &title, const Layer &layer, double title_time,
                                int canvas_w, int canvas_h)
 {
-    (void)canvas_w;
-    (void)canvas_h;
-
     const double t = std::max(0.0, title_time - layer.in_time);
+    const LayerTransition *active_text_transition =
+        active_text_layer_transition(layer, title_time);
+    const bool use_isolated_text_transition =
+        active_text_transition && layer.type != LayerType::Ticker;
     double alpha = layer_chain_opacity(title, layer, title_time);
     double box_w = eval_box_width(layer, t);
     double box_h = eval_box_height(layer, t);
@@ -2764,20 +4008,79 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
 
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     const bool render_shadow = shadow_params.drop_enabled || shadow_params.long_enabled;
-    int pad = render_shadow
+    int base_pad = render_shadow
         ? (int)std::ceil(std::max({std::abs(shadow_params.dx), std::abs(shadow_params.dy), shadow_params.long_length}) + shadow_params.blur * 3.0 + shadow_params.spread + 4.0)
         : 0;
     // Text outlines extend beyond the glyph and text box. Keep enough offscreen
     // padding so rich-text and plain-text strokes are not cropped at the layer edges.
-    pad = std::max(pad, (int)std::ceil(std::max(0.0, eval_outline_width(layer, t)) + 2.0));
+    base_pad = std::max(base_pad, (int)std::ceil(std::max(0.0, eval_outline_width(layer, t)) + 2.0));
     if (eval_background_enabled(layer, t))
-        pad += (int)std::ceil(std::max({std::abs(eval_background_padding_left(layer, t)),
-                                        std::abs(eval_background_padding_right(layer, t)),
-                                        std::abs(eval_background_padding_top(layer, t)),
-                                        std::abs(eval_background_padding_bottom(layer, t)),
-                                        eval_background_stroke_width(layer, t)}));
-    int img_w = std::max(1, (int)std::ceil(box_w) + pad * 2);
-    int img_h = std::max(1, (int)std::ceil(box_h) + pad * 2);
+        base_pad += (int)std::ceil(std::max({std::abs(eval_background_padding_left(layer, t)),
+                                             std::abs(eval_background_padding_right(layer, t)),
+                                             std::abs(eval_background_padding_top(layer, t)),
+                                             std::abs(eval_background_padding_bottom(layer, t)),
+                                             eval_background_stroke_width(layer, t)}));
+
+    int pad_left = base_pad;
+    int pad_right = base_pad;
+    int pad_top = base_pad;
+    int pad_bottom = base_pad;
+    if (active_text_transition) {
+        // Blur is clamped to 64 px by the renderer; reserve only the pixels that
+        // can actually be generated, rather than the unchecked preset value.
+        const bool blur_transition =
+            active_text_transition->type == LayerTransitionType::TextBlur ||
+            active_text_transition->type == LayerTransitionType::TextBlurSlide;
+        const int blur_pad = blur_transition
+            ? std::clamp((int)std::ceil(std::max(0.0, active_text_transition->blur_amount)), 0, 64) * 3 + 3
+            : 0;
+        pad_left += blur_pad;
+        pad_right += blur_pad;
+        pad_top += blur_pad;
+        pad_bottom += blur_pad;
+
+        if (active_text_transition->type == LayerTransitionType::TextSlide ||
+            active_text_transition->type == LayerTransitionType::TextBlurSlide) {
+            // Travel beyond the canvas plus the layer size is guaranteed to be
+            // invisible. Capping at that visible envelope prevents a 10,000 px
+            // offset from creating a multi-gigabyte temporary QImage.
+            const bool horizontal = active_text_transition->direction != LayerTransitionDirection::Up &&
+                                    active_text_transition->direction != LayerTransitionDirection::Down;
+            const double visible_limit = horizontal
+                ? std::max(1.0, (double)canvas_w) + box_w
+                : std::max(1.0, (double)canvas_h) + box_h;
+            const int travel = (int)std::ceil(std::min(
+                std::abs(active_text_transition->offset), visible_limit));
+            switch (active_text_transition->direction) {
+            case LayerTransitionDirection::Right: pad_right += travel; break;
+            case LayerTransitionDirection::Up: pad_top += travel; break;
+            case LayerTransitionDirection::Down: pad_bottom += travel; break;
+            case LayerTransitionDirection::Left:
+            case LayerTransitionDirection::None:
+            default: pad_left += travel; break;
+            }
+        }
+
+        if (active_text_transition->type == LayerTransitionType::TextScale) {
+            const double maximum_scale = std::max(1.0, std::abs(active_text_transition->scale_from));
+            const int extra_x = (int)std::ceil((maximum_scale - 1.0) * box_w * 0.5);
+            const int extra_y = (int)std::ceil((maximum_scale - 1.0) * box_h * 0.5);
+            const int visible_x = std::max(1, canvas_w) + (int)std::ceil(box_w);
+            const int visible_y = std::max(1, canvas_h) + (int)std::ceil(box_h);
+            pad_left += std::min(extra_x, visible_x);
+            pad_right += std::min(extra_x, visible_x);
+            pad_top += std::min(extra_y, visible_y);
+            pad_bottom += std::min(extra_y, visible_y);
+        }
+    }
+
+    const qint64 requested_width = std::max<qint64>(1, (qint64)std::ceil(box_w) + pad_left + pad_right);
+    const qint64 requested_height = std::max<qint64>(1, (qint64)std::ceil(box_h) + pad_top + pad_bottom);
+    if (requested_width > std::numeric_limits<int>::max() ||
+        requested_height > std::numeric_limits<int>::max())
+        return;
+    int img_w = static_cast<int>(requested_width);
+    int img_h = static_cast<int>(requested_height);
     QImage text_image(img_w, img_h, QImage::Format_ARGB32_Premultiplied);
     text_image.fill(Qt::transparent);
 
@@ -2790,7 +4093,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     QFont font = font_for_layer(layer, t);
     painter.setFont(font);
 
-    QRectF base_rect(pad, pad, box_w, box_h);
+    QRectF base_rect(pad_left, pad_top, box_w, box_h);
     if (eval_background_enabled(layer, t)) {
         const auto *background_effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
         const bool background_gradient = background_effect && background_effect->effect_fill_type == 1;
@@ -2824,6 +4127,19 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
             }
         }
     }
+
+    // The isolated per-unit compositor needs a copy of the non-text content,
+    // but a full QImage::copy() on every rendered text layer is prohibitively
+    // expensive during cue changes and prerendering. Keep the normal path
+    // allocation-free and take the snapshot only while a rich-text transition
+    // is actually active.
+    QImage static_text_background;
+    // Without a text-box background the compositor can clear and reuse the
+    // existing surface, avoiding another full layer-sized allocation per
+    // transition frame. Preserve a snapshot only when there is actual static
+    // content behind the animated glyph units.
+    if (use_isolated_text_transition && eval_background_enabled(layer, t))
+        static_text_background = text_image.copy();
 
     QRectF text_rect = text_rect_for_style(base_rect, layer);
     QString text = display_text_for_style(layer);
@@ -2968,12 +4284,26 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     painter.restore();
     painter.end();
 
+    if (use_isolated_text_transition) {
+        if (!apply_isolated_text_layer_transition(text_image, static_text_background,
+                                                   layer, title_time, text, font, text_rect,
+                                                   t, shadow_params, render_shadow)) {
+            apply_text_layer_transition(text_image, layer, title_time, text, font, text_rect);
+        }
+    } else if (active_text_transition) {
+        // Ticker text still uses the existing flattened transition path.
+        apply_text_layer_transition(text_image, layer, title_time, text, font, text_rect);
+    }
+
     auto text_surface = make_image_surface_for_qimage(text_image);
     if (!text_surface) return;
 
     cairo_save(cr);
     apply_layer_world_transform(cr, title, layer, title_time);
-    cairo_set_source_surface(cr, text_surface.get(), -eval_origin_x(layer, t) * box_w - pad, -eval_origin_y(layer, t) * box_h - pad);
+    const double local_x = -eval_origin_x(layer, t) * box_w - pad_left;
+    const double local_y = -eval_origin_y(layer, t) * box_h - pad_top;
+    apply_layer_transition_clip(cr, layer, title_time, local_x, local_y, img_w, img_h);
+    cairo_set_source_surface(cr, text_surface.get(), local_x, local_y);
     cairo_paint_with_alpha(cr, alpha);
     cairo_restore(cr);
 }
@@ -2998,6 +4328,7 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
 
     cairo_save(cr);
     apply_layer_world_transform(cr, title, layer, title_time);
+    apply_layer_transition_clip(cr, layer, title_time, x, y, w, h);
     cairo_translate(cr, x, y);
 
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
@@ -3275,6 +4606,7 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     const double origin_y = eval_origin_y(layer, t);
     const double box_x = -origin_x * w;
     const double box_y = -origin_y * h;
+    apply_layer_transition_clip(cr, layer, title_time, box_x, box_y, w, h);
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     if (shadow_params.drop_enabled || shadow_params.long_enabled) {
         QImage mask = image_box_shadow_mask(argb, layer, w, h, image_layout);
@@ -3357,8 +4689,8 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
 }
 
 
-static void render_layer_unmasked(cairo_t *cr, const Title &title, const Layer &layer,
-                                  double title_time, int canvas_w, int canvas_h)
+static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Layer &layer,
+                                      double title_time, int canvas_w, int canvas_h)
 {
     switch (layer.type) {
     case LayerType::Text:
@@ -3376,6 +4708,102 @@ static void render_layer_unmasked(cairo_t *cr, const Title &title, const Layer &
     default:
         break;
     }
+}
+
+static void paint_soft_wipe_mask(cairo_t *cr, const Title &title, const Layer &layer,
+                                 double title_time, int canvas_w, int canvas_h,
+                                 const LayerTransitionVisualState &transition)
+{
+    const double t = std::max(0.0, title_time - layer.in_time);
+    const double width = std::max(1.0, eval_box_width(layer, t));
+    const double height = std::max(1.0, eval_box_height(layer, t));
+    const double x = -eval_origin_x(layer, t) * width;
+    const double y = -eval_origin_y(layer, t) * height;
+    const double reveal = std::clamp(transition.wipe, 0.0, 1.0);
+    if (reveal <= 0.000001)
+        return;
+
+    const double softness = std::clamp(transition.wipe_softness, 0.0, 1.0);
+    const double extent = std::max({width, height, (double)std::max(1, canvas_w),
+                                    (double)std::max(1, canvas_h)}) * 4.0 + 64.0;
+    cairo_pattern_t *gradient = nullptr;
+    switch (transition.wipe_direction) {
+    case LayerTransitionDirection::Right: {
+        const double boundary = x + width * (1.0 - reveal);
+        const double feather = std::max(0.5, width * softness);
+        gradient = cairo_pattern_create_linear(boundary, 0.0, boundary + feather, 0.0);
+        cairo_pattern_add_color_stop_rgba(gradient, 0.0, 1.0, 1.0, 1.0, 0.0);
+        cairo_pattern_add_color_stop_rgba(gradient, 1.0, 1.0, 1.0, 1.0, 1.0);
+        break;
+    }
+    case LayerTransitionDirection::Up: {
+        const double boundary = y + height * (1.0 - reveal);
+        const double feather = std::max(0.5, height * softness);
+        gradient = cairo_pattern_create_linear(0.0, boundary, 0.0, boundary + feather);
+        cairo_pattern_add_color_stop_rgba(gradient, 0.0, 1.0, 1.0, 1.0, 0.0);
+        cairo_pattern_add_color_stop_rgba(gradient, 1.0, 1.0, 1.0, 1.0, 1.0);
+        break;
+    }
+    case LayerTransitionDirection::Down: {
+        const double boundary = y + height * reveal;
+        const double feather = std::max(0.5, height * softness);
+        gradient = cairo_pattern_create_linear(0.0, boundary - feather, 0.0, boundary);
+        cairo_pattern_add_color_stop_rgba(gradient, 0.0, 1.0, 1.0, 1.0, 1.0);
+        cairo_pattern_add_color_stop_rgba(gradient, 1.0, 1.0, 1.0, 1.0, 0.0);
+        break;
+    }
+    case LayerTransitionDirection::Left:
+    case LayerTransitionDirection::None:
+    default: {
+        const double boundary = x + width * reveal;
+        const double feather = std::max(0.5, width * softness);
+        gradient = cairo_pattern_create_linear(boundary - feather, 0.0, boundary, 0.0);
+        cairo_pattern_add_color_stop_rgba(gradient, 0.0, 1.0, 1.0, 1.0, 1.0);
+        cairo_pattern_add_color_stop_rgba(gradient, 1.0, 1.0, 1.0, 1.0, 0.0);
+        break;
+    }
+    }
+    if (!gradient || cairo_pattern_status(gradient) != CAIRO_STATUS_SUCCESS) {
+        if (gradient) cairo_pattern_destroy(gradient);
+        return;
+    }
+    cairo_pattern_set_extend(gradient, CAIRO_EXTEND_PAD);
+    cairo_save(cr);
+    apply_layer_world_transform(cr, title, layer, title_time);
+    cairo_rectangle(cr, x - extent, y - extent, width + extent * 2.0, height + extent * 2.0);
+    cairo_set_source(cr, gradient);
+    cairo_fill(cr);
+    cairo_restore(cr);
+    cairo_pattern_destroy(gradient);
+}
+
+static void render_layer_unmasked(cairo_t *cr, const Title &title, const Layer &layer,
+                                  double title_time, int canvas_w, int canvas_h)
+{
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    const bool soft_wipe = transition.active && transition.wipe < 0.999999 &&
+                           transition.wipe_softness > 0.000001;
+    if (!soft_wipe) {
+        render_layer_unmasked_raw(cr, title, layer, title_time, canvas_w, canvas_h);
+        return;
+    }
+
+    cairo_push_group(cr);
+    render_layer_unmasked_raw(cr, title, layer, title_time, canvas_w, canvas_h);
+    cairo_pattern_t *content = cairo_pop_group(cr);
+
+    cairo_push_group(cr);
+    paint_soft_wipe_mask(cr, title, layer, title_time, canvas_w, canvas_h, transition);
+    cairo_pattern_t *mask = cairo_pop_group(cr);
+
+    if (content && mask && cairo_pattern_status(content) == CAIRO_STATUS_SUCCESS &&
+        cairo_pattern_status(mask) == CAIRO_STATUS_SUCCESS) {
+        cairo_set_source(cr, content);
+        cairo_mask(cr, mask);
+    }
+    if (content) cairo_pattern_destroy(content);
+    if (mask) cairo_pattern_destroy(mask);
 }
 
 
@@ -4358,22 +5786,40 @@ static QRect clipped_effect_surface_rect(const Layer &layer, double t, int canva
         .intersected(QRect(-max_w, -max_h, max_w * 3, max_h * 3));
 }
 
-static void evict_effect_layer_cache_if_needed(TitleSourceData *data)
+static void evict_effect_layer_cache_if_needed(TitleSourceData *data,
+                                                const std::string &protected_cache_id)
 {
-    if (!data || data->effect_layer_cache.size() <= 128)
+    if (!data)
         return;
 
-    auto oldest = data->effect_layer_cache.begin();
-    for (auto it = data->effect_layer_cache.begin(); it != data->effect_layer_cache.end(); ++it) {
-        if (it->second.last_used < oldest->second.last_used)
-            oldest = it;
+    constexpr size_t kMaxEffectLayerCacheEntries = 128;
+    constexpr qsizetype kMaxEffectLayerCacheBytes = 256 * 1024 * 1024;
+    qsizetype cached_bytes = 0;
+    for (const auto &entry : data->effect_layer_cache)
+        cached_bytes += entry.second.image.sizeInBytes();
+
+    while ((data->effect_layer_cache.size() > kMaxEffectLayerCacheEntries ||
+            cached_bytes > kMaxEffectLayerCacheBytes) &&
+           data->effect_layer_cache.size() > 1) {
+        auto oldest = data->effect_layer_cache.end();
+        for (auto it = data->effect_layer_cache.begin(); it != data->effect_layer_cache.end(); ++it) {
+            if (it->first == protected_cache_id)
+                continue;
+            if (oldest == data->effect_layer_cache.end() ||
+                it->second.last_used < oldest->second.last_used)
+                oldest = it;
+        }
+        if (oldest == data->effect_layer_cache.end())
+            break;
+        cached_bytes -= oldest->second.image.sizeInBytes();
+        data->effect_layer_cache.erase(oldest);
     }
-    data->effect_layer_cache.erase(oldest);
 }
 
 static std::string effect_layer_cache_key(const TitleSourceData *data, const Title &title, const Layer &layer,
                                           double title_time, int canvas_w, int canvas_h,
-                                          bool force_time_key = false)
+                                          bool force_time_key = false,
+                                          bool ignore_general_transitions = false)
 {
     const double t = std::max(0.0, title_time - layer.in_time);
     std::ostringstream key;
@@ -4384,7 +5830,12 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
         << "|origin=" << eval_origin_x(layer, t) << ',' << eval_origin_y(layer, t)
         << "|stack=" << layer.effects.size();
 
-    if (force_time_key || layer_has_non_transform_animation(layer) || layer.type == LayerType::Ticker)
+    const bool transition_active =
+        (!ignore_general_transitions && evaluate_layer_general_transitions(
+            layer.transitions, layer.in_time, layer.out_time, title_time).active) ||
+        active_text_layer_transition(layer, title_time) != nullptr;
+    if (force_time_key || layer_has_non_transform_animation(layer) || layer.type == LayerType::Ticker ||
+        transition_active)
         key << "|time=" << (int64_t)std::llround(t * 1000.0);
 
     ShadowRenderParams shadow = evaluated_shadow_params(layer, t);
@@ -4421,13 +5872,16 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
 static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
     TitleSourceData *data, const Title &title, const Layer &layer, double title_time,
     int canvas_w, int canvas_h, const std::string &cache_suffix = std::string(),
-    bool force_time_key = false, bool allow_plain_layer = false)
+    bool force_time_key = false, bool allow_plain_layer = false,
+    bool strip_general_transitions = false)
 {
     if (!data || layer.type == LayerType::Clock || (!allow_plain_layer && !layer_has_stackable_pixel_effects(layer)))
         return nullptr;
 
     const std::string cache_id = (layer.id.empty() ? std::string("__anonymous_effect_layer") : layer.id) + cache_suffix;
-    const std::string key = effect_layer_cache_key(data, title, layer, title_time, canvas_w, canvas_h, force_time_key);
+    const std::string key = effect_layer_cache_key(
+        data, title, layer, title_time, canvas_w, canvas_h,
+        force_time_key, strip_general_transitions);
     auto it = data->effect_layer_cache.find(cache_id);
     if (it == data->effect_layer_cache.end() || it->second.key != key) {
         const double t = std::max(0.0, title_time - layer.in_time);
@@ -4448,6 +5902,14 @@ static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
         cairo_translate(layer_cr.get(), -surface_rect.x(), -surface_rect.y());
 
         Layer base_layer = layer_without_stackable_pixel_effects(layer);
+        if (strip_general_transitions) {
+            base_layer.transitions.erase(
+                std::remove_if(base_layer.transitions.begin(), base_layer.transitions.end(),
+                               [](const LayerTransition &transition) {
+                                   return transition.kind == LayerTransitionKind::General;
+                               }),
+                base_layer.transitions.end());
+        }
         neutralize_layer_transform_for_effect_cache(base_layer, 1.0, 0.0, 0.0);
 
         render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
@@ -4469,22 +5931,34 @@ static const TitleSourceData::CachedEffectLayer *ensure_cached_effect_layer(
             cached.image = canvas.copy(bounds);
             cached.origin = QPointF(surface_rect.x() + bounds.x(), surface_rect.y() + bounds.y());
         }
+        // Do not let a single pathological 8K/large-blur surface defeat the
+        // byte cap by becoming the only protected entry in the per-source LRU.
+        // Returning null makes the caller use the normal uncached render path
+        // for that frame instead of retaining hundreds of megabytes.
+        constexpr qsizetype kMaxRetainedEffectLayerBytes = 256 * 1024 * 1024;
+        if (cached.image.sizeInBytes() > kMaxRetainedEffectLayerBytes)
+            return nullptr;
+
         cached.last_used = ++data->effect_layer_cache_tick;
-        it = data->effect_layer_cache.insert_or_assign(cache_id, std::move(cached)).first;
-        evict_effect_layer_cache_if_needed(data);
+        data->effect_layer_cache.insert_or_assign(cache_id, std::move(cached));
+        evict_effect_layer_cache_if_needed(data, cache_id);
+        // Reacquire after eviction instead of assuming the selected entry
+        // survived every future cache-policy change.
+        it = data->effect_layer_cache.find(cache_id);
+        if (it == data->effect_layer_cache.end())
+            return nullptr;
     }
     it->second.last_used = ++data->effect_layer_cache_tick;
 
     return &it->second;
 }
 
-static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
-                                       double title_time, int canvas_w, int canvas_h)
+static bool paint_cached_effect_layer(cairo_t *cr,
+                                      const Title &title,
+                                      const Layer &paint_layer,
+                                      double title_time,
+                                      const TitleSourceData::CachedEffectLayer *cached)
 {
-    if (!data || !layer_has_stackable_pixel_effects(layer) || layer.type == LayerType::Clock)
-        return false;
-
-    const auto *cached = ensure_cached_effect_layer(data, title, layer, title_time, canvas_w, canvas_h);
     if (!cached)
         return false;
     if (cached->image.isNull())
@@ -4494,11 +5968,21 @@ static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const
     if (!cached_surface)
         return false;
     cairo_save(cr);
-    apply_layer_world_transform(cr, title, layer, title_time);
+    apply_layer_world_transform(cr, title, paint_layer, title_time);
     cairo_set_source_surface(cr, cached_surface.get(), cached->origin.x(), cached->origin.y());
-    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, paint_layer, title_time), 0.0, 1.0));
     cairo_restore(cr);
     return true;
+}
+
+static bool render_cached_effect_layer(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
+                                       double title_time, int canvas_w, int canvas_h)
+{
+    if (!data || !layer_has_stackable_pixel_effects(layer) || layer.type == LayerType::Clock)
+        return false;
+
+    const auto *cached = ensure_cached_effect_layer(data, title, layer, title_time, canvas_w, canvas_h);
+    return paint_cached_effect_layer(cr, title, layer, title_time, cached);
 }
 
 static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourceData *data, const Title &title,
@@ -4687,27 +6171,72 @@ static bool render_motion_blurred_layer(cairo_t *cr, TitleSourceData *data, cons
 static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourceData *data, const Title &title, const Layer &layer,
                                                          double title_time, int canvas_w, int canvas_h)
 {
-    if (layer_has_motion_blur(layer) &&
-        render_motion_blurred_layer(cr, data, title, layer, title_time, canvas_w, canvas_h))
+    const LayerTransitionVisualState transition_state = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    Layer transition_layer;
+    const Layer *effective_layer = &layer;
+    if (transition_state.active && transition_state.blur > 0.01) {
+        transition_layer = layer;
+        LayerEffect blur;
+        blur.type = LayerEffectType::Blur;
+        blur.enabled = true;
+        blur.effect_size = static_cast<float>(transition_state.blur);
+        blur.effect_opacity = 1.0f;
+        blur.effect_blur_type = static_cast<int>(ShadowBlurType::StackFast);
+        transition_layer.effects.push_back(std::move(blur));
+        effective_layer = &transition_layer;
+    }
+    const Layer &render_layer = *effective_layer;
+
+    if (layer_has_motion_blur(render_layer) &&
+        render_motion_blurred_layer(cr, data, title, render_layer, title_time, canvas_w, canvas_h))
         return;
 
-    if (gpu_effects_requested_for_source(data)) {
-        Layer base_layer = layer_without_stackable_pixel_effects(layer);
+    if (!transition_state.active && gpu_effects_requested_for_source(data)) {
+        Layer base_layer = layer_without_stackable_pixel_effects(render_layer);
         render_layer_unmasked(cr, title, base_layer, title_time, canvas_w, canvas_h);
         return;
     }
 
-    if (render_cached_effect_layer(cr, data, title, layer, title_time, canvas_w, canvas_h))
+    const bool transition_requires_dynamic_surface = transition_state.active &&
+        (transition_state.blur > 0.01 || transition_state.wipe < 0.999999);
+
+    if (!transition_state.active &&
+        render_cached_effect_layer(cr, data, title, render_layer, title_time, canvas_w, canvas_h))
         return;
 
-    if (!layer_has_stackable_pixel_effects(layer)) {
-        render_layer_unmasked(cr, title, layer, title_time, canvas_w, canvas_h);
+    // Opacity, scale and slide transitions only affect the final transform or
+    // alpha. Cache the expensive pixel-effect result without general
+    // transitions, then apply the active transition while painting it. The old
+    // path disabled the cache for every transition and reran the full CPU
+    // effect stack on every frame.
+    if (transition_state.active && !transition_requires_dynamic_surface && data &&
+        layer_has_stackable_pixel_effects(render_layer) && render_layer.type != LayerType::Clock) {
+        // Do not deep-copy the complete layer graph on every transition frame.
+        // The cache helper strips general transitions only when a cache miss
+        // actually requires a base raster to be rendered.
+        const auto *cached = ensure_cached_effect_layer(
+            data, title, render_layer, title_time, canvas_w, canvas_h,
+            "|general-transition-base", false, false, true);
+        if (paint_cached_effect_layer(cr, title, render_layer, title_time, cached))
+            return;
+    }
+
+    if (!layer_has_stackable_pixel_effects(render_layer)) {
+        render_layer_unmasked(cr, title, render_layer, title_time, canvas_w, canvas_h);
         return;
     }
 
-    Layer base_layer = layer_without_stackable_pixel_effects(layer);
-    const double t = std::max(0.0, title_time - layer.in_time);
-    const QRect surface_rect = clipped_effect_surface_rect(layer, t, canvas_w, canvas_h);
+    Layer base_layer = layer_without_stackable_pixel_effects(render_layer);
+    base_layer.transitions.erase(
+        std::remove_if(base_layer.transitions.begin(), base_layer.transitions.end(),
+                       [](const LayerTransition &transition) {
+                           return transition.kind == LayerTransitionKind::General &&
+                                  transition.type != LayerTransitionType::Wipe;
+                       }),
+        base_layer.transitions.end());
+    const double t = std::max(0.0, title_time - render_layer.in_time);
+    const QRect surface_rect = clipped_effect_surface_rect(render_layer, t, canvas_w, canvas_h);
     if (!surface_rect.isValid() || surface_rect.isEmpty())
         return;
 
@@ -4724,12 +6253,12 @@ static void render_layer_unmasked_with_stackable_effects(cairo_t *cr, TitleSourc
     render_layer_unmasked(layer_cr.get(), title, base_layer, title_time, canvas_w, canvas_h);
     layer_cr.reset();
 
-    apply_stackable_pixel_effects_to_surface(layer_surface.get(), layer, t,
+    apply_stackable_pixel_effects_to_surface(layer_surface.get(), render_layer, t,
                                              -surface_rect.x(), -surface_rect.y());
     cairo_save(cr);
-    apply_layer_world_transform(cr, title, layer, title_time);
+    apply_layer_world_transform(cr, title, render_layer, title_time);
     cairo_set_source_surface(cr, layer_surface.get(), surface_rect.x(), surface_rect.y());
-    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+    cairo_paint_with_alpha(cr, std::clamp(layer_chain_opacity(title, render_layer, title_time), 0.0, 1.0));
     cairo_restore(cr);
 }
 
@@ -6017,9 +7546,13 @@ static void apply_layer_world_transform_gs(const Title &title, const Layer &laye
             apply_layer_world_transform_gs(title, *parent, title_time, depth + 1);
     }
     const double lt = std::max(0.0, title_time - layer.in_time);
-    gs_matrix_translate3f((float)layer.position.evaluate(lt).x, (float)layer.position.evaluate(lt).y, 0.0f);
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    gs_matrix_translate3f((float)(layer.position.evaluate(lt).x + transition.translate_x),
+                          (float)(layer.position.evaluate(lt).y + transition.translate_y), 0.0f);
     gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, (float)(layer.rotation.evaluate(lt) * kPi / 180.0));
-    gs_matrix_scale3f((float)layer.scale.evaluate(lt).x, (float)layer.scale.evaluate(lt).y, 1.0f);
+    gs_matrix_scale3f((float)(layer.scale.evaluate(lt).x * transition.scale),
+                      (float)(layer.scale.evaluate(lt).y * transition.scale), 1.0f);
 }
 
 static const TitleSourceData::SceneMaskConfig *scene_mask_config_for_layer(

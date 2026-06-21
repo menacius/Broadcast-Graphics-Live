@@ -1,4 +1,5 @@
 #include "title-editor-internal.h"
+#include "effect-preset-catalog.h"
 #include "title-localization.h"
 #include "cache-manager.h"
 #include "title-source.h"
@@ -6268,6 +6269,11 @@ bool CanvasPreview::handle_external_canvas_mime(const QMimeData *mime, const QPo
 
 void CanvasPreview::dragEnterEvent(QDragEnterEvent *ev)
 {
+    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+        ev->setDropAction(Qt::CopyAction);
+        ev->accept();
+        return;
+    }
     if (mime_has_external_canvas_content(ev ? ev->mimeData() : nullptr)) {
         ev->acceptProposedAction();
         return;
@@ -6277,6 +6283,22 @@ void CanvasPreview::dragEnterEvent(QDragEnterEvent *ev)
 
 void CanvasPreview::dragMoveEvent(QDragMoveEvent *ev)
 {
+    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPointF view_pt = ev->position();
+#else
+        const QPointF view_pt = ev->pos();
+#endif
+        const auto layer = layer_at_view_pos(view_pt);
+        if (layer && !layer->locked) {
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+            update_hover_layer(view_pt);
+            return;
+        }
+        ev->ignore();
+        return;
+    }
     if (mime_has_external_canvas_content(ev ? ev->mimeData() : nullptr)) {
         ev->acceptProposedAction();
         return;
@@ -6295,6 +6317,19 @@ void CanvasPreview::dropEvent(QDropEvent *ev)
 #else
     const QPointF view_pt = ev->pos();
 #endif
+    if (gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+        const auto layer = layer_at_view_pos(view_pt);
+        const QString file_path = gsp::effects::effect_preset_path_from_mime(ev->mimeData());
+        if (layer && !layer->locked && !file_path.isEmpty()) {
+            emit effect_preset_dropped(file_path, layer->id);
+            ev->setDropAction(Qt::CopyAction);
+            ev->accept();
+            setFocus(Qt::MouseFocusReason);
+            return;
+        }
+        ev->ignore();
+        return;
+    }
     if (handle_external_canvas_mime(ev->mimeData(), view_to_canvas(view_pt))) {
         ev->acceptProposedAction();
         setFocus(Qt::MouseFocusReason);

@@ -37,6 +37,9 @@
 
 class QEvent;
 class QMouseEvent;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
 class QWheelEvent;
 class QKeyEvent;
 class QContextMenuEvent;
@@ -55,9 +58,15 @@ public:
     explicit EffectsPanel(QWidget *parent = nullptr);
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
     void update_playhead(double playhead);
+    bool add_effect_from_preset_file(const QString &file_path);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragMoveEvent(QDragMoveEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private:
     void rebuild_stack();

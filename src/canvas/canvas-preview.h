@@ -156,6 +156,7 @@ signals:
     void color_picked(const QColor &color, bool foreground);
     void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
     void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
+    void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
     void corner_context_changed();
 
 protected:

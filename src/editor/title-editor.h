@@ -57,6 +57,7 @@ class LayerStack;
 class TimelineWidget;
 class PropertiesPanel;
 class EffectsPanel;
+class EffectsPresetsPanel;
 class ToolsSidebar;
 class TitlePropertiesPanel;
 class PrerenderDock;
@@ -182,6 +183,7 @@ private:
     QDockWidget *create_editor_dock(const QString &object_name, const QString &title, QWidget *panel);
     QWidget *create_prerender_panel();
     QWidget *create_effects_panel();
+    QWidget *create_effects_presets_panel();
     QWidget *create_styles_panel();
     QWidget *create_color_swatches_panel();
     void remember_recent_color(const QColor &color);
@@ -203,6 +205,9 @@ private:
     void add_color_to_library(int library_index, const QColor &color, const QString &name);
     void remove_color_from_current_library(int index);
     void update_layer_panels(std::shared_ptr<Layer> layer, double playhead);
+    void apply_effect_preset_to_layer(const QString &file_path, const std::string &layer_id);
+    void apply_transition_preset_to_layer(const QString &file_path, const std::string &layer_id, int edge);
+    void edit_layer_transition(const std::string &layer_id, int edge);
     void update_sidebar_color_swatches(std::shared_ptr<Layer> layer);
     void set_default_sidebar_colors_from_layer(const Layer &layer);
     void load_sidebar_default_colors();
@@ -252,10 +257,12 @@ private:
     TimelineWidget  *timeline_  = nullptr;
     PropertiesPanel *props_     = nullptr;
     EffectsPanel    *effects_panel_ = nullptr;
+    EffectsPresetsPanel *effects_presets_panel_ = nullptr;
     TitlePropertiesPanel *title_props_ = nullptr;
     QDockWidget     *layer_props_dock_ = nullptr;
     QDockWidget     *graphic_props_dock_ = nullptr;
     QDockWidget     *effects_dock_ = nullptr;
+    QDockWidget     *effects_presets_dock_ = nullptr;
     QDockWidget     *styles_dock_ = nullptr;
     QDockWidget     *color_swatches_dock_ = nullptr;
     QDockWidget     *timeline_dock_ = nullptr;
@@ -339,6 +346,7 @@ private:
     QAction         *act_layer_props_visible_ = nullptr;
     QAction         *act_graphic_props_visible_ = nullptr;
     QAction         *act_effects_visible_ = nullptr;
+    QAction         *act_effects_presets_visible_ = nullptr;
     QAction         *act_styles_visible_ = nullptr;
     QAction         *act_color_swatches_visible_ = nullptr;
     QAction         *act_timeline_visible_ = nullptr;

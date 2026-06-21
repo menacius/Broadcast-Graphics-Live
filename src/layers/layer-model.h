@@ -7,6 +7,7 @@
 #include "layer-effects.h"
 #include "animation.h"
 #include "title-rich-text.h"
+#include "layer-transition.h"
 
 /* ══════════════════════════════════════════════════════════════════
  *  Layer type
@@ -110,6 +111,9 @@ struct Layer {
     bool        use_as_scene_mask = false;
     bool        effect_stack_respects_masks = false; /* When true, stackable effects are applied after the layer track matte/mask. */
     std::vector<LayerEffect> effects;
+    /* Premiere-style intro/outro transitions. At most one transition is kept
+     * for each edge; presets replace the existing transition on that edge. */
+    std::vector<LayerTransition> transitions;
 
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;

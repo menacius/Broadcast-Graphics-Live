@@ -1,6 +1,8 @@
 #include "title-editor-internal.h"
 #include "title-logger.h"
 #include "style-presets.h"
+#include "transition-editor-dialog.h"
+#include "transition-preset-catalog.h"
 
 #include <QClipboard>
 #include <QScopedValueRollback>
@@ -502,6 +504,16 @@ QWidget *TitleEditor::create_effects_panel()
                 if (layers_) layers_->refresh();
             });
     return effects_panel_;
+}
+
+QWidget *TitleEditor::create_effects_presets_panel()
+{
+    effects_presets_panel_ = new EffectsPresetsPanel(this);
+    connect(effects_presets_panel_, &EffectsPresetsPanel::effect_preset_activated,
+            this, [this](const QString &file_path) {
+                apply_effect_preset_to_layer(file_path, sel_layer_id_);
+            });
+    return effects_presets_panel_;
 }
 
 QWidget *TitleEditor::create_prerender_panel()
@@ -1404,6 +1416,13 @@ void TitleEditor::create_docked_panel_menu(QMenuBar *menu_bar)
         if (effects_dock_) effects_dock_->setVisible(visible);
     });
 
+    act_effects_presets_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.EffectsAndPresets"));
+    act_effects_presets_visible_->setCheckable(true);
+    act_effects_presets_visible_->setChecked(true);
+    connect(act_effects_presets_visible_, &QAction::triggered, this, [this](bool visible) {
+        if (effects_presets_dock_) effects_presets_dock_->setVisible(visible);
+    });
+
     act_styles_visible_ = windows_menu->addAction(obsgs_tr("OBSTitles.Styles"));
     act_styles_visible_->setCheckable(true);
     act_styles_visible_->setChecked(true);
@@ -1456,6 +1475,8 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
         visibility_action = act_layer_props_visible_;
     else if (object_name == QString::fromUtf8(kEffectsDockObjectName))
         visibility_action = act_effects_visible_;
+    else if (object_name == QString::fromUtf8(kEffectsPresetsDockObjectName))
+        visibility_action = act_effects_presets_visible_;
     else if (object_name == QString::fromUtf8(kStylesDockObjectName))
         visibility_action = act_styles_visible_;
     else if (object_name == QString::fromUtf8(kColorSwatchesDockObjectName))
@@ -1519,6 +1540,10 @@ void TitleEditor::load_editor_layout()
         QSignalBlocker blocker(act_effects_visible_);
         act_effects_visible_->setChecked(!effects_dock_->isHidden());
     }
+    if (act_effects_presets_visible_ && effects_presets_dock_) {
+        QSignalBlocker blocker(act_effects_presets_visible_);
+        act_effects_presets_visible_->setChecked(!effects_presets_dock_->isHidden());
+    }
     if (act_styles_visible_ && styles_dock_) {
         QSignalBlocker blocker(act_styles_visible_);
         act_styles_visible_->setChecked(!styles_dock_->isHidden());
@@ -1562,7 +1587,7 @@ void TitleEditor::reset_default_layout()
         QDockWidget::DockWidgetClosable |
         QDockWidget::DockWidgetMovable |
         QDockWidget::DockWidgetFloatable;
-    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_, timeline_dock_, prerender_dock_}) {
+    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, effects_presets_dock_, styles_dock_, color_swatches_dock_, timeline_dock_, prerender_dock_}) {
         if (!dock) continue;
         dock->setMaximumWidth(dock == tools_dock_ ? 64 : QWIDGETSIZE_MAX);
         dock->setMinimumWidth(dock == tools_dock_ ? 46 : (dock->widget() ? dock->widget()->minimumWidth() : 220));
@@ -1607,6 +1632,13 @@ void TitleEditor::reset_default_layout()
         addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
         if (layer_props_dock_) splitDockWidget(layer_props_dock_, effects_dock_, Qt::Horizontal);
     }
+    if (effects_presets_dock_) {
+        effects_presets_dock_->setFloating(false);
+        effects_presets_dock_->show();
+        addDockWidget(Qt::LeftDockWidgetArea, effects_presets_dock_);
+        if (styles_dock_) tabifyDockWidget(styles_dock_, effects_presets_dock_);
+        else if (graphic_props_dock_) splitDockWidget(graphic_props_dock_, effects_presets_dock_, Qt::Horizontal);
+    }
     if (timeline_dock_) {
         timeline_dock_->setFloating(false);
         timeline_dock_->show();
@@ -1638,6 +1670,10 @@ void TitleEditor::reset_default_layout()
     if (act_effects_visible_) {
         QSignalBlocker blocker(act_effects_visible_);
         act_effects_visible_->setChecked(true);
+    }
+    if (act_effects_presets_visible_) {
+        QSignalBlocker blocker(act_effects_presets_visible_);
+        act_effects_presets_visible_->setChecked(true);
     }
     if (act_styles_visible_) {
         QSignalBlocker blocker(act_styles_visible_);
@@ -1677,7 +1713,7 @@ void TitleEditor::update_panel_lock_state()
         QDockWidget::DockWidgetFloatable;
     const QDockWidget::DockWidgetFeatures locked_features = QDockWidget::DockWidgetClosable;
 
-    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, styles_dock_, color_swatches_dock_, timeline_dock_, prerender_dock_}) {
+    for (auto *dock : {tools_dock_, graphic_props_dock_, layer_props_dock_, effects_dock_, effects_presets_dock_, styles_dock_, color_swatches_dock_, timeline_dock_, prerender_dock_}) {
         if (!dock) continue;
         dock->setFeatures(panels_locked_ ? locked_features : unlocked_features);
         dock->setAllowedAreas(panels_locked_ ? Qt::NoDockWidgetArea
@@ -2182,6 +2218,10 @@ void TitleEditor::build_ui()
     copy_action->setShortcut(QKeySequence::Copy);
     connect(copy_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
+        if (timeline_ && timeline_->has_transition_target_selection()) {
+            timeline_->copy_transition_selection();
+            return;
+        }
         if (timeline_ && timeline_->has_selected_keyframes()) {
             timeline_->copy_keyframe_selection();
             return;
@@ -2192,6 +2232,10 @@ void TitleEditor::build_ui()
     cut_action->setShortcut(QKeySequence::Cut);
     connect(cut_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
+        if (timeline_ && timeline_->has_transition_target_selection()) {
+            timeline_->cut_transition_selection();
+            return;
+        }
         if (timeline_ && timeline_->has_selected_keyframes()) {
             timeline_->cut_keyframe_selection();
             return;
@@ -2202,6 +2246,10 @@ void TitleEditor::build_ui()
     paste_action->setShortcut(QKeySequence::Paste);
     connect(paste_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
+        if (timeline_ && timeline_->has_transition_target_selection()) {
+            timeline_->paste_transition_to_selection();
+            return;
+        }
         if (timeline_ && timeline_->has_keyframe_clipboard()) {
             timeline_->paste_keyframes_at_playhead();
             return;
@@ -2215,6 +2263,10 @@ void TitleEditor::build_ui()
     delete_action->setShortcut(QKeySequence::Delete);
     connect(delete_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
+        if (timeline_ && timeline_->has_transition_target_selection()) {
+            timeline_->delete_transition_selection();
+            return;
+        }
         if (timeline_ && timeline_->has_selected_keyframes()) {
             timeline_->delete_keyframe_selection();
             return;
@@ -2619,6 +2671,9 @@ void TitleEditor::build_ui()
     effects_dock_ = create_editor_dock(QString::fromUtf8(kEffectsDockObjectName),
                                        obsgs_tr("OBSTitles.Effects"),
                                        create_effects_panel());
+    effects_presets_dock_ = create_editor_dock(QString::fromUtf8(kEffectsPresetsDockObjectName),
+                                               obsgs_tr("OBSTitles.EffectsAndPresets"),
+                                               create_effects_presets_panel());
     styles_dock_ = create_editor_dock(QString::fromUtf8(kStylesDockObjectName),
                                       obsgs_tr("OBSTitles.Styles"),
                                       create_styles_panel());
@@ -2640,6 +2695,8 @@ void TitleEditor::build_ui()
     splitDockWidget(tools_dock_, layer_props_dock_, Qt::Horizontal);
     addDockWidget(Qt::LeftDockWidgetArea, styles_dock_);
     splitDockWidget(graphic_props_dock_, styles_dock_, Qt::Horizontal);
+    addDockWidget(Qt::LeftDockWidgetArea, effects_presets_dock_);
+    tabifyDockWidget(styles_dock_, effects_presets_dock_);
     addDockWidget(Qt::LeftDockWidgetArea, color_swatches_dock_);
     tabifyDockWidget(styles_dock_, color_swatches_dock_);
     addDockWidget(Qt::RightDockWidgetArea, effects_dock_);
@@ -2825,11 +2882,15 @@ void TitleEditor::build_ui()
 
     /* ── Connect sub-widget signals ── */
     connect(layers_, &LayerStack::layer_selected,
-            this, &TitleEditor::on_layer_selected);
+            this, [this](const std::string &id) {
+                if (timeline_) timeline_->clear_transition_target_selection();
+                on_layer_selected(id);
+            });
     connect(layers_, &LayerStack::layers_selected,
             this, [this](const std::vector<std::string> &ids) {
                 sel_layer_id_ = ids.size() == 1 ? ids.back() : std::string();
                 canvas_->set_selected_layers(ids);
+                timeline_->clear_transition_target_selection();
                 timeline_->set_selected_layers(ids);
                 if (!title_ || ids.size() != 1) {
                     update_layer_panels(nullptr, playhead_);
@@ -3048,6 +3109,18 @@ void TitleEditor::build_ui()
                 auto layer = title_->find_layer(sel_layer_id_);
                 update_layer_panels(layer, playhead_);
             });
+    connect(timeline_, &TimelineWidget::effect_preset_dropped,
+            this, &TitleEditor::apply_effect_preset_to_layer);
+    connect(timeline_, &TimelineWidget::transition_preset_dropped,
+            this, &TitleEditor::apply_transition_preset_to_layer);
+    connect(timeline_, &TimelineWidget::transition_edit_requested,
+            this, &TitleEditor::edit_layer_transition);
+    connect(timeline_, &TimelineWidget::transition_modified,
+            this, [this]() {
+                force_next_title_visual_update();
+                on_title_modified();
+                if (timeline_) timeline_->update();
+            });
     connect(timeline_, &TimelineWidget::keyframe_easing_changed,
             this, [this]() { on_title_modified(); });
 
@@ -3111,12 +3184,16 @@ void TitleEditor::build_ui()
             });
 
     connect(canvas_, &CanvasPreview::layer_clicked,
-            this, &TitleEditor::on_layer_selected);
+            this, [this](const std::string &id) {
+                if (timeline_) timeline_->clear_transition_target_selection();
+                on_layer_selected(id);
+            });
     connect(canvas_, &CanvasPreview::layers_selected,
             this, [this](const std::vector<std::string> &ids) {
                 sel_layer_id_ = ids.size() == 1 ? ids.back() : std::string();
                 layers_->set_selected_layers(ids);
                 canvas_->set_selected_layers(ids);
+                timeline_->clear_transition_target_selection();
                 timeline_->set_selected_layers(ids);
                 if (!title_ || ids.size() != 1) {
                     update_layer_panels(nullptr, playhead_);
@@ -3215,6 +3292,8 @@ void TitleEditor::build_ui()
             this, &TitleEditor::create_image_layer_from_external_source);
     connect(canvas_, &CanvasPreview::external_text_layer_requested,
             this, &TitleEditor::create_text_layer_from_external_source);
+    connect(canvas_, &CanvasPreview::effect_preset_dropped,
+            this, &TitleEditor::apply_effect_preset_to_layer);
     connect(canvas_, &CanvasPreview::shape_drawing_changed,
             this, &TitleEditor::update_canvas_created_shape);
     connect(canvas_, &CanvasPreview::shape_drawing_finished,
@@ -6319,6 +6398,28 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         ev->accept();
         return;
     }
+    if (!editing_value && timeline_ && timeline_->has_transition_target_selection()) {
+        if (ev->matches(QKeySequence::Copy)) {
+            timeline_->copy_transition_selection();
+            ev->accept();
+            return;
+        }
+        if (ev->matches(QKeySequence::Cut)) {
+            timeline_->cut_transition_selection();
+            ev->accept();
+            return;
+        }
+        if (ev->matches(QKeySequence::Paste)) {
+            timeline_->paste_transition_to_selection();
+            ev->accept();
+            return;
+        }
+        if (ev->key() == Qt::Key_Delete || ev->key() == Qt::Key_Backspace) {
+            timeline_->delete_transition_selection();
+            ev->accept();
+            return;
+        }
+    }
     if (!editing_value && timeline_ && ev->matches(QKeySequence::Copy) &&
         timeline_->has_selected_keyframes()) {
         timeline_->copy_keyframe_selection();
@@ -6828,6 +6929,109 @@ void TitleEditor::open_default_sidebar_color_popup(bool foreground)
     const QPoint desired_pos(cursor_pos.x() + 14, cursor_pos.y() - popup.height() / 2);
     popup.move(clamp_popup_position_to_screen(desired_pos, popup.size(), this));
     popup.exec();
+}
+
+void TitleEditor::apply_effect_preset_to_layer(const QString &file_path, const std::string &layer_id)
+{
+    if (!title_ || !effects_panel_ || layer_id.empty())
+        return;
+
+    const auto layer = title_->find_layer(layer_id);
+    if (!layer || layer->locked)
+        return;
+
+    on_layer_selected(layer_id);
+    effects_panel_->add_effect_from_preset_file(file_path);
+}
+
+void TitleEditor::apply_transition_preset_to_layer(const QString &file_path,
+                                                   const std::string &layer_id,
+                                                   int edge_value)
+{
+    if (!title_ || layer_id.empty())
+        return;
+
+    auto layer = title_->find_layer(layer_id);
+    if (!layer || layer->locked)
+        return;
+
+    gsp::transitions::TransitionPresetDescriptor descriptor;
+    QString error;
+    if (!gsp::transitions::load_transition_preset_file(file_path, &descriptor, &error)) {
+        QMessageBox::warning(this, obsgs_tr("OBSTitles.Transitions"), error);
+        return;
+    }
+
+    const bool text_layer = layer->type == LayerType::Text ||
+                            layer->type == LayerType::Clock ||
+                            layer->type == LayerType::Ticker;
+    if (descriptor.transition.kind == LayerTransitionKind::Text && !text_layer) {
+        QMessageBox::information(this, obsgs_tr("OBSTitles.Transitions"),
+                                 obsgs_tr("OBSTitles.TextTransitionRequiresText"));
+        return;
+    }
+
+    const LayerTransitionEdge edge = edge_value == static_cast<int>(LayerTransitionEdge::Out)
+        ? LayerTransitionEdge::Out : LayerTransitionEdge::In;
+    LayerTransition transition = descriptor.transition;
+    transition.id = TitleDataStore::make_uuid();
+    transition.edge = edge;
+
+    const double frame = obs_frame_duration();
+    const double layer_duration = std::max(frame, layer->out_time - layer->in_time);
+    const LayerTransition *other = find_layer_transition(
+        layer->transitions,
+        edge == LayerTransitionEdge::In ? LayerTransitionEdge::Out : LayerTransitionEdge::In);
+    const double maximum_duration = std::max(frame, layer_duration - (other ? other->duration : 0.0));
+    transition.duration = std::clamp(transition.duration, frame, maximum_duration);
+
+    if (LayerTransition *existing = find_layer_transition(layer->transitions, edge))
+        *existing = transition;
+    else
+        layer->transitions.push_back(std::move(transition));
+
+    on_layer_selected(layer_id);
+    force_next_title_visual_update();
+    on_title_modified();
+    if (timeline_) timeline_->update();
+}
+
+void TitleEditor::edit_layer_transition(const std::string &layer_id, int edge_value)
+{
+    if (!title_ || layer_id.empty())
+        return;
+    auto layer = title_->find_layer(layer_id);
+    if (!layer || layer->locked)
+        return;
+
+    const LayerTransitionEdge edge = edge_value == static_cast<int>(LayerTransitionEdge::Out)
+        ? LayerTransitionEdge::Out : LayerTransitionEdge::In;
+    LayerTransition *transition = find_layer_transition(layer->transitions, edge);
+    if (!transition)
+        return;
+
+    const double frame = obs_frame_duration();
+    const double layer_duration = std::max(frame, layer->out_time - layer->in_time);
+    const LayerTransition *other = find_layer_transition(
+        layer->transitions,
+        edge == LayerTransitionEdge::In ? LayerTransitionEdge::Out : LayerTransitionEdge::In);
+    const double maximum_duration = std::max(frame, layer_duration - (other ? other->duration : 0.0));
+
+    TransitionEditorDialog dialog(*transition, maximum_duration, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    LayerTransition edited = dialog.transition();
+    edited.id = transition->id;
+    edited.preset_id = transition->preset_id;
+    edited.edge = edge;
+    edited.duration = std::clamp(edited.duration, frame, maximum_duration);
+    *transition = std::move(edited);
+
+    on_layer_selected(layer_id);
+    force_next_title_visual_update();
+    on_title_modified();
+    if (timeline_) timeline_->update();
 }
 
 void TitleEditor::update_layer_panels(std::shared_ptr<Layer> layer, double playhead)

@@ -4,10 +4,10 @@
 
 **OBS Graphics Studio Pro** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.0-alpha`**
+**Current development version: `v0.8.1-alpha`**
 
 > [!WARNING]
-> `v0.8.0-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+> `v0.8.1-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
 
 OBS Graphics Studio Pro is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
 
@@ -101,6 +101,26 @@ Stackable effects currently represented by the editor and renderer include:
 
 Supported layer/effect blend modes include Normal, Multiply, Additive, Screen, Overlay, and Color.
 
+The editor also includes an **Effects & Presets** dock with an After Effects-style virtual folder tree and instant search. All `.ogseffect`, `.osgtranst`, and `.osgtransg` files live together in one physical library directory; each file declares its visible category path in its own slash-separated `category` metadata. The browser builds nested virtual folders from those paths and omits empty branches, so presets can be reorganized without moving files on disk.
+
+Effects can be applied by drag-and-drop onto a timeline layer strip, directly onto a canvas layer, or into the Effects stack for the selected layer. A common effect factory keeps button-based and drag-and-drop creation consistent.
+
+### Transitions
+
+- Independent **In** and **Out** transition slots on every compatible layer.
+- Premiere-style transition overlays at the beginning and end of timeline strips.
+- Drag-and-drop from **Effects & Presets** directly onto either strip edge.
+- Timeline resizing controls the transition duration.
+- Double-click opens a transition editor with duration, easing, direction, offset, scale, blur radius, wipe softness, text-unit, stagger, and reverse-order controls where applicable.
+- Animated previews use an **A → B** demonstration for general transitions and **Abc De** for text transitions.
+- Transition overlays and empty In/Out targets are selectable timeline items with Copy, Cut, Paste, Delete, context-menu, and keyboard support.
+- Pasting or dropping onto an occupied slot replaces the existing transition while preserving the copied preset's complete configuration.
+- Text transitions can animate by grapheme/character, word, or sentence while preserving text shaping, kerning, tracking, ligatures, outlines, shadows, and overlapping glyph bounds.
+- Text blur transitions animate the actual blur radius down to zero rather than compositing a sharp glyph over a blurred halo.
+- General transition primitives include dissolve/fade, opacity and blur, scale change, directional slide, blur slide, wipe with feathering, and zoom blur.
+- Text transition primitives include fade, slide, blur slide, blur, scale, and wipe, with configurable grouping and direction instead of duplicated directional/unit presets.
+- `.osgtranst` is reserved for text transitions and `.osgtransg` for general transitions; category metadata is validated against the file type.
+
 ### Timeline and animation
 
 - Layer-based timeline with in/out ranges, playhead, transport controls, switches, parenting, masks, and cache state display.
@@ -167,6 +187,10 @@ OBS Graphics Studio Pro includes a background frame-cache system intended to kee
 - Per-frame states for queued, rendering, RAM-resident, disk-resident, stale, and disabled content.
 - Content hashes, frame-state tracking, invalidation, payload sharing, and sparse alpha-bounded cached frames.
 - Cache data can persist between editor sessions when the underlying title state remains valid.
+- Transition rendering avoids work entirely for layers without an active transition.
+- Per-character/word/sentence transition surfaces are cropped to their actual visual bounds instead of allocating full-layer images per unit.
+- Blur variants and other transition caches are bounded by entry count and memory size to prevent unbounded growth during live cueing or prerendering.
+- Preset scanning, MIME payload handling, preview refresh, and filesystem watching include validation and workload limits to avoid UI stalls and malformed-input regressions.
 
 ### Clock and ticker titles
 
@@ -186,7 +210,7 @@ The current implementation uses one cached prefix rather than multiple independe
 
 ## Current status and limitations
 
-- The current release line is **`v0.8.0-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
+- The current release line is **`v0.8.1-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
 - Remaining pre-beta work includes the final planned features, UI consistency and visual polish, broader workflow validation, performance verification, and focused bug hunting across editor, dock, cache, and OBS playback paths.
 - The primary cross-platform composition and text-rendering path uses Cairo, Pango, and PangoCairo.
 - GPU effect-pipeline infrastructure exists, but the migration of all rendering and effects to a fully GPU-native path is not complete.
@@ -194,6 +218,7 @@ The current implementation uses one cached prefix rather than multiple independe
 - Complex rich text, masks, effects, motion blur, large images, and high-resolution timelines can still require significant CPU, RAM, GPU, and disk resources.
 - Template and title schemas may evolve before a stable release.
 - Automated coverage currently focuses on selected model behavior rather than the complete OBS/editor integration surface.
+- The Effects & Presets and transition implementation has undergone a baseline-comparison audit for ownership, bounded caching, per-frame work, serialization, drag-and-drop conflicts, clipboard behavior, and UI refresh paths; complete in-OBS regression testing is still required for release builds.
 
 ---
 

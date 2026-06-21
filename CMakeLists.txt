@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-graphics-studio-pro VERSION 0.8.0)
+project(obs-graphics-studio-pro VERSION 0.8.1)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -365,11 +365,15 @@ set(OBS_GSP_LAYER_SOURCES
 
 set(OBS_GSP_EFFECT_HEADERS
     src/effects/layer-effects.h
+    src/effects/effect-preset-catalog.h
     src/effects/effects-panel.h
+    src/effects/effects-presets-panel.h
 )
 
 set(OBS_GSP_EFFECT_SOURCES
+    src/effects/effect-preset-catalog.cpp
     src/effects/effects-panel.cpp
+    src/effects/effects-presets-panel.cpp
 )
 
 set(OBS_GSP_TIMELINE_SOURCES
@@ -379,6 +383,16 @@ set(OBS_GSP_TIMELINE_SOURCES
 set(OBS_GSP_TIMELINE_HEADERS
     src/timeline/animation.h
     src/timeline/timeline-widget.h
+)
+
+set(OBS_GSP_TRANSITION_SOURCES
+    src/transitions/transition-preset-catalog.cpp
+    src/transitions/transition-editor-dialog.cpp
+)
+set(OBS_GSP_TRANSITION_HEADERS
+    src/transitions/layer-transition.h
+    src/transitions/transition-preset-catalog.h
+    src/transitions/transition-editor-dialog.h
 )
 
 set(OBS_GSP_TEXT_SOURCES
@@ -456,6 +470,7 @@ set(PLUGIN_SOURCES
     ${OBS_GSP_LAYER_SOURCES}
     ${OBS_GSP_EFFECT_SOURCES}
     ${OBS_GSP_TIMELINE_SOURCES}
+    ${OBS_GSP_TRANSITION_SOURCES}
     ${OBS_GSP_TEXT_SOURCES}
     ${OBS_GSP_RENDERING_SOURCES}
     ${OBS_GSP_CACHE_SOURCES}
@@ -469,6 +484,7 @@ set(PLUGIN_HEADERS
     ${OBS_GSP_LAYER_HEADERS}
     ${OBS_GSP_EFFECT_HEADERS}
     ${OBS_GSP_TIMELINE_HEADERS}
+    ${OBS_GSP_TRANSITION_HEADERS}
     ${OBS_GSP_TEXT_HEADERS}
     ${OBS_GSP_RENDERING_HEADERS}
     ${OBS_GSP_CACHE_HEADERS}
@@ -533,6 +549,7 @@ target_include_directories(obs-graphics-studio-pro PRIVATE
     src/layers
     src/effects
     src/timeline
+    src/transitions
     src/text
     src/rendering
     src/cache
@@ -603,6 +620,9 @@ add_custom_command(TARGET obs-graphics-studio-pro POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/data/effects"
             "${OBS_TITLES_PACKAGE_DIR}/data/effects"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/data/effects-and-presets"
+            "${OBS_TITLES_PACKAGE_DIR}/data/effects-and-presets"
     COMMENT "Staging OBS plugin data files")
 
 if(WIN32)
@@ -669,6 +689,8 @@ install(DIRECTORY data/icons
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 install(DIRECTORY data/effects
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
+install(DIRECTORY data/effects-and-presets
+        DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────
 message(STATUS "OBS Graphics Studio Pro: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
@@ -688,4 +710,9 @@ if(OBS_GSP_BUILD_TESTS)
       src/timeline/animation.cpp)
   target_include_directories(animation_model_test PRIVATE src/timeline)
   add_test(NAME animation_model_test COMMAND animation_model_test)
+
+  add_executable(transition_model_test
+      tests/transition_model_test.cpp)
+  target_include_directories(transition_model_test PRIVATE src/transitions src/timeline)
+  add_test(NAME transition_model_test COMMAND transition_model_test)
 endif()
