@@ -40,5 +40,15 @@ for directory in "${DEPS_ROOT}"/obs-deps-*; do
   fi
 done
 
+LIBOBS_CONFIG="$(find "${DEPS_ROOT}" -type f \( -name 'libobsConfig.cmake' -o -name 'libobs-config.cmake' \) -print -quit)"
+if [[ -z "${LIBOBS_CONFIG}" ]]; then
+  echo "No generated libobs CMake package was found under ${DEPS_ROOT}" >&2
+  find "${DEPS_ROOT}" -maxdepth 6 -type f -path '*/cmake/*' -print | sort >&2
+  exit 1
+fi
+LIBOBS_DIR="$(dirname "${LIBOBS_CONFIG}")"
+
+echo "Resolved libobs package: ${LIBOBS_CONFIG}"
 printf '%s\n' "OBS_GSP_DEPS_ROOT=${DEPS_ROOT}" >> "${GITHUB_ENV}"
 printf '%s\n' "OBS_GSP_PREFIX_PATH=${PREFIX_PATH}" >> "${GITHUB_ENV}"
+printf '%s\n' "OBS_GSP_LIBOBS_DIR=${LIBOBS_DIR}" >> "${GITHUB_ENV}"
