@@ -1050,7 +1050,7 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->shape_inner_radius); add(layer->shape_outer_radius); add(layer->shape_roundness);
         add(layer->shape_inner_roundness);
         add(layer->corner_radius); add(layer->corner_radius_tl); add(layer->corner_radius_tr);
-        add(layer->corner_radius_br); add(layer->corner_radius_bl); add((int)layer->corner_type);
+        add(layer->corner_radius_br); add(layer->corner_radius_bl); add(layer->corner_bevel_roundness);
         add(layer->scale_stroke_with_shape); add(layer->scale_corners_with_shape);
 
         /* Legacy shadow fields are still consumed when older projects have not

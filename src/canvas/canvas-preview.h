@@ -123,10 +123,10 @@ public:
     bool corner_controls_available() const;
     double corner_control_radius(bool *mixed = nullptr) const;
     bool corner_control_sync(bool *mixed = nullptr) const;
-    CornerType corner_control_type(bool *mixed = nullptr) const;
+    double corner_control_bevel_roundness(bool *mixed = nullptr) const;
     void set_corner_control_radius(double radius);
     void set_corner_control_sync(bool enabled);
-    void set_corner_control_type(CornerType type);
+    void set_corner_control_bevel_roundness(double roundness);
 
     bool point_controls_available() const;
     QPointF point_control_position(bool *x_mixed = nullptr, bool *y_mixed = nullptr) const;

@@ -1498,6 +1498,7 @@ QDockWidget *TitleEditor::create_editor_dock(const QString &object_name, const Q
     connect(dock, &QDockWidget::topLevelChanged, this, [this]() { save_editor_layout(); });
     connect(dock, &QDockWidget::dockLocationChanged, this, [this]() { save_editor_layout(); });
     connect(dock, &QDockWidget::visibilityChanged, this, [this]() { save_editor_layout(); });
+    dock->installEventFilter(this);
     return dock;
 }
 
@@ -4006,12 +4007,14 @@ void TitleEditor::build_toolbar()
     corner_toolbar_layout->setContentsMargins(2, 0, 2, 0);
     corner_toolbar_layout->setSpacing(5);
     corner_toolbar_label_ = new QLabel(obsgs_tr("OBSTitles.Corners"), corner_toolbar_widget_);
-    corner_toolbar_type_ = new QComboBox(corner_toolbar_widget_);
-    corner_toolbar_type_->addItem(obsgs_tr("OBSTitles.Round"), (int)CornerType::Round);
-    corner_toolbar_type_->addItem(obsgs_tr("OBSTitles.InvertedRound"), (int)CornerType::Concave);
-    corner_toolbar_type_->addItem(obsgs_tr("OBSTitles.Chamfer"), (int)CornerType::Straight);
-    corner_toolbar_type_->setToolTip(obsgs_tr("OBSTitles.CornerType"));
-    corner_toolbar_type_->setFixedWidth(106);
+    corner_toolbar_roundness_ = new QDoubleSpinBox(corner_toolbar_widget_);
+    corner_toolbar_roundness_->setRange(-101.0, 100.0);
+    corner_toolbar_roundness_->setDecimals(0);
+    corner_toolbar_roundness_->setSingleStep(1.0);
+    corner_toolbar_roundness_->setSuffix(QStringLiteral("%"));
+    corner_toolbar_roundness_->setSpecialValueText(obsgs_tr("OBSTitles.MixedValues"));
+    corner_toolbar_roundness_->setToolTip(QStringLiteral("100 = round, 0 = flat bevel, -100 = inverted round"));
+    corner_toolbar_roundness_->setFixedWidth(82);
     corner_toolbar_radius_ = new QDoubleSpinBox(corner_toolbar_widget_);
     corner_toolbar_radius_->setRange(-1.0, 9999.0);
     corner_toolbar_radius_->setDecimals(1);
@@ -4024,8 +4027,8 @@ void TitleEditor::build_toolbar()
     corner_toolbar_sync_->setTristate(true);
     corner_toolbar_sync_->setToolTip(obsgs_tr("OBSTitles.SyncCornerRadiiTooltip"));
     corner_toolbar_layout->addWidget(corner_toolbar_label_);
-    corner_toolbar_layout->addWidget(corner_toolbar_type_);
     corner_toolbar_layout->addWidget(corner_toolbar_radius_);
+    corner_toolbar_layout->addWidget(corner_toolbar_roundness_);
     corner_toolbar_layout->addWidget(corner_toolbar_sync_);
     dynamic_toolbar_layout->addWidget(corner_toolbar_widget_);
 
@@ -4083,17 +4086,15 @@ void TitleEditor::build_toolbar()
                 canvas_->set_point_control_y(value);
             });
 
-    connect(corner_toolbar_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-                if (updating_corner_toolbar_ || !canvas_ || index < 0) return;
-                const QVariant data = corner_toolbar_type_->itemData(index);
-                if (!data.isValid()) return;
-                canvas_->set_corner_control_type((CornerType)data.toInt());
-            });
     connect(corner_toolbar_radius_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double value) {
                 if (updating_corner_toolbar_ || !canvas_ || value < 0.0) return;
                 canvas_->set_corner_control_radius(value);
+            });
+    connect(corner_toolbar_roundness_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value) {
+                if (updating_corner_toolbar_ || !canvas_ || value < -100.0) return;
+                canvas_->set_corner_control_bevel_roundness(value);
             });
     connect(corner_toolbar_sync_, &QCheckBox::stateChanged,
             this, [this](int state) {
@@ -4209,12 +4210,10 @@ void TitleEditor::update_corner_toolbar()
                                                        : (sync ? Qt::Checked : Qt::Unchecked));
     }
 
-    bool type_mixed = false;
-    const CornerType type = canvas_->corner_control_type(&type_mixed);
-    if (corner_toolbar_type_) {
-        const int index = type_mixed ? -1 : corner_toolbar_type_->findData((int)type);
-        corner_toolbar_type_->setCurrentIndex(index);
-    }
+    bool roundness_mixed = false;
+    const double roundness = canvas_->corner_control_bevel_roundness(&roundness_mixed);
+    if (corner_toolbar_roundness_)
+        corner_toolbar_roundness_->setValue(roundness_mixed ? -101.0 : roundness);
 }
 
 
@@ -6232,6 +6231,10 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
         dock_layout_transition_ = true;
         if (layout_settle_timer_)
             layout_settle_timer_->start();
+    }
+    if (qobject_cast<QDockWidget *>(watched) &&
+        (event->type() == QEvent::Move || event->type() == QEvent::Resize)) {
+        QTimer::singleShot(0, this, [this]() { save_editor_layout(); });
     }
 
     if (watched == this && (event->type() == QEvent::Show || event->type() == QEvent::Move ||

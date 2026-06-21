@@ -15,13 +15,16 @@
 #include "cache-manager.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <QByteArray>
 #include <QMainWindow>
 #include <QAction>
 #include <QDockWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QString>
+#include <QTimer>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -33,11 +36,40 @@ static void on_frontend_event(obs_frontend_event event, void *priv);
 static TitleDock *g_dock = nullptr;
 static QAction *g_dock_menu_action = nullptr;
 static bool g_frontend_ready = false;
+constexpr int kObsDockLayoutStateVersion = 1;
+constexpr const char *kObsDockLayoutSettingsGroup = "ObsDockLayout";
+constexpr const char *kObsMainWindowStateKey = "mainWindowState";
 
 static void open_preferences_from_tools_menu(void *)
 {
     QMainWindow *main = static_cast<QMainWindow *>(obs_frontend_get_main_window());
     TitleEditor::show_global_preferences(main);
+}
+
+static void save_obs_dock_layout(QMainWindow *main)
+{
+    if (!main || !g_dock)
+        return;
+
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QString::fromUtf8(kObsDockLayoutSettingsGroup));
+    settings.setValue(QString::fromUtf8(kObsMainWindowStateKey),
+                      main->saveState(kObsDockLayoutStateVersion));
+    settings.endGroup();
+    settings.sync();
+}
+
+static void restore_obs_dock_layout(QMainWindow *main)
+{
+    if (!main || !g_dock)
+        return;
+
+    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    settings.beginGroup(QString::fromUtf8(kObsDockLayoutSettingsGroup));
+    const QByteArray state = settings.value(QString::fromUtf8(kObsMainWindowStateKey)).toByteArray();
+    settings.endGroup();
+    if (!state.isEmpty())
+        main->restoreState(state, kObsDockLayoutStateVersion);
 }
 
 
@@ -55,6 +87,11 @@ static QMenu *find_docks_menu(QMainWindow *main)
 
 static void destroy_dock_ui()
 {
+    if (g_dock) {
+        if (auto *main = qobject_cast<QMainWindow *>(g_dock->parentWidget()))
+            save_obs_dock_layout(main);
+    }
+
     if (g_dock_menu_action) {
         QObject::disconnect(g_dock_menu_action, nullptr, nullptr, nullptr);
         if (QWidget *owner = qobject_cast<QWidget *>(g_dock_menu_action->parent()))
@@ -148,6 +185,13 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         g_dock->setWindowTitle(obsgs_tr("OBSTitles.DockName"));
 
         obs_frontend_add_custom_qdock("obs-graphics-studio-pro-dock", g_dock);
+        QTimer::singleShot(0, g_dock, [main]() { restore_obs_dock_layout(main); });
+        QObject::connect(g_dock, &QDockWidget::topLevelChanged, g_dock,
+                         [main]() { save_obs_dock_layout(main); });
+        QObject::connect(g_dock, &QDockWidget::dockLocationChanged, g_dock,
+                         [main]() { save_obs_dock_layout(main); });
+        QObject::connect(g_dock, &QDockWidget::visibilityChanged, g_dock,
+                         [main]() { save_obs_dock_layout(main); });
         add_docks_menu_entry(main);
         g_frontend_ready = true;
         title_hotkeys_register();

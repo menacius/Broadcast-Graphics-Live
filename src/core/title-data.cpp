@@ -1014,7 +1014,7 @@ static RichTextParagraphFormat rich_paragraph_format_from_json(const json &j, co
     RichTextParagraphFormat f = fallback;
     if (!j.is_object()) return f;
     f.align_h = std::clamp(json_int(j, "align_h", f.align_h), 0, 6);
-    f.align_v = std::clamp(json_int(j, "align_v", f.align_v), 0, 2);
+    f.align_v = std::clamp(json_int(j, "align_v", f.align_v), 0, 3);
     f.indent_left = (float)std::clamp(finite_or(json_double(j, "indent_left", f.indent_left), f.indent_left), 0.0, 10000.0);
     f.indent_right = (float)std::clamp(finite_or(json_double(j, "indent_right", f.indent_right), f.indent_right), 0.0, 10000.0);
     f.indent_first_line = (float)std::clamp(finite_or(json_double(j, "indent_first_line", f.indent_first_line), f.indent_first_line), -10000.0, 10000.0);
@@ -1485,7 +1485,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["corner_radius_br"] = l.corner_radius_br;
     j["corner_radius_bl"] = l.corner_radius_bl;
     j["corner_radius_locked"] = l.corner_radius_locked;
-    j["corner_type"] = (int)l.corner_type;
+    j["corner_bevel_roundness"] = l.corner_bevel_roundness;
     j["shape_type"] = (int)l.shape_type;
     j["path_points"] = bezier_path_points_to_json(l.path_points);
     j["path_closed"] = l.path_closed;
@@ -1854,7 +1854,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->stroke_gradient_focal_y = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_focal_y", l->stroke_gradient_center_y), l->stroke_gradient_center_y), -100.0, 100.0);
     l->stroke_gradient_stops = gradient_stops_from_json(j.value("stroke_gradient_stops", json::array()));
     l->align_h       = std::clamp(json_int(j, "align_h", 1), 0, 6);
-    l->align_v       = std::clamp(json_int(j, "align_v", 1), 0, 2);
+    l->align_v       = std::clamp(json_int(j, "align_v", 1), 0, 3);
     l->paragraph_indent_left = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_left", 0.0), 0.0), -10000.0, 10000.0);
     l->paragraph_indent_right = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_right", 0.0), 0.0), -10000.0, 10000.0);
     l->paragraph_indent_first_line = (float)std::clamp(finite_or(json_double(j, "paragraph_indent_first_line", 0.0), 0.0), -10000.0, 10000.0);
@@ -1988,7 +1988,24 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                                         l->corner_radius_tl == l->corner_radius_tr &&
                                         l->corner_radius_tl == l->corner_radius_br &&
                                         l->corner_radius_tl == l->corner_radius_bl);
-    l->corner_type = (CornerType)std::clamp(json_int(j, "corner_type", 0), 0, (int)CornerType::Cutout);
+    const int legacy_corner_type = std::clamp(json_int(j, "corner_type", 0), 0, (int)CornerType::Cutout);
+    auto legacy_corner_roundness = [](int type) {
+        switch ((CornerType)type) {
+        case CornerType::Straight:
+        case CornerType::Cutout:
+            return 0.0;
+        case CornerType::Concave:
+            return -100.0;
+        case CornerType::Round:
+        default:
+            return 100.0;
+        }
+    };
+    l->corner_bevel_roundness =
+        (float)std::clamp(finite_or(json_double(j, "corner_bevel_roundness",
+                                                legacy_corner_roundness(legacy_corner_type)),
+                                    legacy_corner_roundness(legacy_corner_type)),
+                          -100.0, 100.0);
     l->shape_type = (ShapeType)std::clamp(json_int(j, "shape_type", 0), 0, (int)ShapeType::Path);
     l->path_points = bezier_path_points_from_json(j.value("path_points", json::array()));
     l->path_closed = json_bool(j, "path_closed", true);

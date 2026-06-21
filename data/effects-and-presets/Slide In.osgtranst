@@ -2,7 +2,7 @@
   "format": "obs-graphics-studio-pro-text-transition",
   "version": 1,
   "id": "text.slide-in",
-  "name": "Slide In",
+  "name": "Slide In/Out",
   "type": "text-slide",
   "easing": "ease-in-out",
   "duration": 0.9,

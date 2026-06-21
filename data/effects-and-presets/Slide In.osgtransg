@@ -2,7 +2,7 @@
   "format": "obs-graphics-studio-pro-general-transition",
   "version": 1,
   "id": "general.slide-in",
-  "name": "Slide In",
+  "name": "Slide In/Out",
   "type": "slide",
   "easing": "ease-in-out",
   "duration": 0.55,

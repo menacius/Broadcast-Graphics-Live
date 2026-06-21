@@ -120,6 +120,11 @@ struct CornerData {
     bool rounded = false;
 };
 
+double corner_bevel_roundness_factor(const Layer &layer)
+{
+    return std::clamp((double)layer.corner_bevel_roundness, -100.0, 100.0) / 100.0;
+}
+
 CornerData make_corner(const QPointF &previous, const QPointF &anchor, const QPointF &next,
                        double requested, bool eligible)
 {
@@ -140,41 +145,45 @@ CornerData make_corner(const QPointF &previous, const QPointF &anchor, const QPo
     return corner;
 }
 
-void add_corner_transition(QPainterPath &path, const CornerData &corner, CornerType type)
+void add_corner_transition(QPainterPath &path, const CornerData &corner, double roundness_factor)
 {
     if (!corner.rounded) {
         path.lineTo(corner.anchor);
         return;
     }
-    switch (type) {
-    case CornerType::Straight:
+
+    const double factor = std::clamp(roundness_factor, -1.0, 1.0);
+    if (std::abs(factor) <= 1e-6) {
         path.lineTo(corner.outgoing);
-        break;
-    case CornerType::Concave: {
-        const QPointF bisector = normalized_vector((corner.previous - corner.anchor) +
-                                                    (corner.next - corner.anchor));
-        const QPointF notch = corner.anchor + bisector * corner.radius;
-        path.quadTo(notch, corner.outgoing);
-        break;
+        return;
     }
-    case CornerType::Cutout: {
-        const QPointF bisector = normalized_vector((corner.previous - corner.anchor) +
-                                                    (corner.next - corner.anchor));
-        const QPointF notch = corner.anchor + bisector * corner.radius;
-        path.lineTo(notch);
-        path.lineTo(corner.outgoing);
-        break;
-    }
-    case CornerType::Round:
-    default:
-        path.quadTo(corner.anchor, corner.outgoing);
-        break;
+
+    const QPointF to_anchor = normalized_vector(corner.anchor - corner.incoming);
+    const QPointF to_next = normalized_vector(corner.next - corner.anchor);
+    const double dot = std::clamp(QPointF::dotProduct(to_anchor, to_next), -1.0, 1.0);
+    const double angle = std::acos(dot);
+    const double handle = corner.radius * 4.0 / 3.0 * std::tan(std::max(0.001, angle) / 4.0);
+
+    if (factor > 0.0) {
+        const QPointF c1 = corner.incoming + to_anchor * handle * factor;
+        const QPointF c2 = corner.outgoing - to_next * handle * factor;
+        path.cubicTo(c1, c2, corner.outgoing);
+    } else {
+        const double inverted = -factor;
+        const QPointF chord = corner.outgoing - corner.incoming;
+        const QPointF flat_c1 = corner.incoming + chord / 3.0;
+        const QPointF flat_c2 = corner.incoming + chord * (2.0 / 3.0);
+        const QPointF arc_c1 = corner.incoming + to_next * handle;
+        const QPointF arc_c2 = corner.outgoing - to_anchor * handle;
+        path.cubicTo(flat_c1 + (arc_c1 - flat_c1) * inverted,
+                     flat_c2 + (arc_c2 - flat_c2) * inverted,
+                     corner.outgoing);
     }
 }
 
 QPainterPath rounded_vertices_path(const std::vector<QPointF> &vertices,
                                    const std::vector<double> &requested_radii,
-                                   CornerType type)
+                                   double roundness_factor)
 {
     QPainterPath path;
     if (vertices.size() < 3)
@@ -192,7 +201,7 @@ QPainterPath rounded_vertices_path(const std::vector<QPointF> &vertices,
     for (size_t i = 0; i < corners.size(); ++i) {
         const size_t next = (i + 1) % corners.size();
         path.lineTo(corners[next].incoming);
-        add_corner_transition(path, corners[next], type);
+        add_corner_transition(path, corners[next], roundness_factor);
     }
     path.closeSubpath();
     return path;
@@ -216,7 +225,8 @@ QPainterPath primitive_shape_path(const Layer &layer, const QRectF &rect)
     case ShapeType::Polygon:
     case ShapeType::Diamond: {
         const std::vector<QPointF> vertices = primitive_vertices(layer, rect);
-        return rounded_vertices_path(vertices, primitive_corner_radii(layer, vertices.size()), layer.corner_type);
+        return rounded_vertices_path(vertices, primitive_corner_radii(layer, vertices.size()),
+                                     corner_bevel_roundness_factor(layer));
     }
     case ShapeType::Path:
         return path;
@@ -898,7 +908,7 @@ QPainterPath editable_single_path(const Layer &layer, const QRectF &rect)
             const double end_t = corners[next].corner.rounded ? corners[next].incoming_t : 1.0;
             append_trimmed_segment(path, segments[i], start_t, end_t);
             if (corners[next].corner.rounded)
-                add_corner_transition(path, corners[next].corner, layer.corner_type);
+                add_corner_transition(path, corners[next].corner, corner_bevel_roundness_factor(layer));
         }
         return path;
     }
@@ -912,7 +922,7 @@ QPainterPath editable_single_path(const Layer &layer, const QRectF &rect)
         const double end_t = corners[next].corner.rounded ? corners[next].incoming_t : 1.0;
         append_trimmed_segment(path, segments[i], start_t, end_t);
         if (corners[next].corner.rounded)
-            add_corner_transition(path, corners[next].corner, layer.corner_type);
+            add_corner_transition(path, corners[next].corner, corner_bevel_roundness_factor(layer));
     }
     path.closeSubpath();
     return path;
@@ -1060,11 +1070,12 @@ bool ensure_editable_path(Layer &layer)
 QString path_geometry_signature(const Layer &layer)
 {
     if (layer.shape_type != ShapeType::Path)
-        return QString::number((int)layer.shape_type);
+        return QStringLiteral("%1|%2").arg((int)layer.shape_type).arg(layer.corner_bevel_roundness, 0, 'g', 12);
 
     QByteArray bytes;
     bytes.reserve((int)layer.path_points.size() * 96 + 8);
     bytes.append(layer.path_closed ? '1' : '0');
+    bytes.append(QStringLiteral("|r%1").arg(layer.corner_bevel_roundness, 0, 'g', 12).toUtf8());
     for (const BezierPathPoint &point : layer.path_points) {
         const QString row = QStringLiteral("|%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11")
             .arg(point.x, 0, 'g', 12)

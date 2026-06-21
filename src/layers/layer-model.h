@@ -213,7 +213,7 @@ struct Layer {
     std::vector<GradientStop> stroke_gradient_stops; /* additional intermediate gradient stops between start/end */
 
     int         align_h       = 1;  /* 0=left 1=center 2=right 3=justify last left 4=justify last center 5=justify last right 6=justify all */
-    int         align_v       = 1;  /* 0=top  1=middle 2=bottom */
+    int         align_v       = 1;  /* 0=top  1=middle 2=bottom 3=distribute lines */
     float       paragraph_indent_left = 0.0f;
     float       paragraph_indent_right = 0.0f;
     float       paragraph_indent_first_line = 0.0f;
@@ -315,7 +315,7 @@ struct Layer {
     float       corner_radius_br = 0.0f;
     float       corner_radius_bl = 0.0f;
     bool        corner_radius_locked = true;
-    CornerType  corner_type = CornerType::Round;
+    float       corner_bevel_roundness = 100.0f; /* -100=inverted round, 0=flat bevel, 100=round */
     ShapeType   shape_type = ShapeType::Rectangle;
     std::vector<BezierPathPoint> path_points;
     bool        path_closed = true;

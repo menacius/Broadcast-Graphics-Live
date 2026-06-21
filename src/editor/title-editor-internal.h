@@ -2375,8 +2375,9 @@ static QPainterPath editor_scene_mask_shape_path(const Layer &layer, const QRect
 }
 
 static QPainterPath editor_corner_rect_path(const QRectF &rect, double top_left, double top_right,
-                                            double bottom_right, double bottom_left, CornerType corner_type)
+                                            double bottom_right, double bottom_left, double bevel_roundness)
 {
+    constexpr double kCubicCircle = 0.5522847498307933984;
     const double max_radius = std::max(0.0, std::min(rect.width(), rect.height()) / 2.0);
     const double tl = std::clamp(top_left, 0.0, max_radius);
     const double tr = std::clamp(top_right, 0.0, max_radius);
@@ -2387,42 +2388,62 @@ static QPainterPath editor_corner_rect_path(const QRectF &rect, double top_left,
         path.addRect(rect);
         return path;
     }
+    const double roundness = std::clamp(bevel_roundness, -100.0, 100.0) / 100.0;
     auto add_corner = [&](const QPointF &corner, const QPointF &from, const QPointF &to,
                           const QPointF &cutout, double radius) {
         if (radius <= 0.0) {
             path.lineTo(corner);
             return;
         }
-        switch (corner_type) {
-        case CornerType::Straight:
+        if (std::abs(roundness) <= 1e-6) {
             path.lineTo(to);
-            break;
-        case CornerType::Cutout:
-            path.lineTo(cutout);
-            path.lineTo(to);
-            break;
-        case CornerType::Concave:
-            path.cubicTo(cutout, cutout, to);
-            break;
-        case CornerType::Round:
-        default:
-            path.quadTo(corner, to);
-            break;
+        } else if (roundness < 0.0) {
+            const double inverted = -roundness;
+            const QPointF flat_c1 = from + (to - from) / 3.0;
+            const QPointF flat_c2 = from + (to - from) * (2.0 / 3.0);
+            const QPointF arc_c1 = from + (cutout - to) * kCubicCircle;
+            const QPointF arc_c2 = to - (corner - from) * kCubicCircle;
+            path.cubicTo(flat_c1 + (arc_c1 - flat_c1) * inverted,
+                         flat_c2 + (arc_c2 - flat_c2) * inverted,
+                         to);
+        } else {
+            const QPointF control = corner + (cutout - corner) * (1.0 - roundness);
+            path.cubicTo(control, control, to);
         }
     };
     path.moveTo(rect.left() + tl, rect.top());
     path.lineTo(rect.right() - tr, rect.top());
-    add_corner(rect.topRight(), QPointF(rect.right() - tr, rect.top()), QPointF(rect.right(), rect.top() + tr),
-               QPointF(rect.right() - tr, rect.top() + tr), tr);
+    if (tr > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.right() - 2.0 * tr, rect.top(), 2.0 * tr, 2.0 * tr), 90.0, -90.0);
+    else if (tr > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.right() - tr, rect.top() - tr, 2.0 * tr, 2.0 * tr), 180.0, 90.0);
+    else
+        add_corner(rect.topRight(), QPointF(rect.right() - tr, rect.top()), QPointF(rect.right(), rect.top() + tr),
+                   QPointF(rect.right() - tr, rect.top() + tr), tr);
     path.lineTo(rect.right(), rect.bottom() - br);
-    add_corner(rect.bottomRight(), QPointF(rect.right(), rect.bottom() - br), QPointF(rect.right() - br, rect.bottom()),
-               QPointF(rect.right() - br, rect.bottom() - br), br);
+    if (br > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.right() - 2.0 * br, rect.bottom() - 2.0 * br, 2.0 * br, 2.0 * br), 0.0, -90.0);
+    else if (br > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.right() - br, rect.bottom() - br, 2.0 * br, 2.0 * br), -90.0, 90.0);
+    else
+        add_corner(rect.bottomRight(), QPointF(rect.right(), rect.bottom() - br), QPointF(rect.right() - br, rect.bottom()),
+                   QPointF(rect.right() - br, rect.bottom() - br), br);
     path.lineTo(rect.left() + bl, rect.bottom());
-    add_corner(rect.bottomLeft(), QPointF(rect.left() + bl, rect.bottom()), QPointF(rect.left(), rect.bottom() - bl),
-               QPointF(rect.left() + bl, rect.bottom() - bl), bl);
+    if (bl > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.left(), rect.bottom() - 2.0 * bl, 2.0 * bl, 2.0 * bl), 270.0, -90.0);
+    else if (bl > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.left() - bl, rect.bottom() - bl, 2.0 * bl, 2.0 * bl), 0.0, 90.0);
+    else
+        add_corner(rect.bottomLeft(), QPointF(rect.left() + bl, rect.bottom()), QPointF(rect.left(), rect.bottom() - bl),
+                   QPointF(rect.left() + bl, rect.bottom() - bl), bl);
     path.lineTo(rect.left(), rect.top() + tl);
-    add_corner(rect.topLeft(), QPointF(rect.left(), rect.top() + tl), QPointF(rect.left() + tl, rect.top()),
-               QPointF(rect.left() + tl, rect.top() + tl), tl);
+    if (tl > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.left(), rect.top(), 2.0 * tl, 2.0 * tl), 180.0, -90.0);
+    else if (tl > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.left() - tl, rect.top() - tl, 2.0 * tl, 2.0 * tl), 90.0, 90.0);
+    else
+        add_corner(rect.topLeft(), QPointF(rect.left(), rect.top() + tl), QPointF(rect.left() + tl, rect.top()),
+                   QPointF(rect.left() + tl, rect.top() + tl), tl);
     path.closeSubpath();
     return path;
 }
@@ -2430,7 +2451,7 @@ static QPainterPath editor_corner_rect_path(const QRectF &rect, double top_left,
 static QPainterPath editor_layer_rounded_rect_path(const Layer &layer, const QRectF &rect)
 {
     return editor_corner_rect_path(rect, layer.corner_radius_tl, layer.corner_radius_tr,
-                                   layer.corner_radius_br, layer.corner_radius_bl, layer.corner_type);
+                                   layer.corner_radius_br, layer.corner_radius_bl, layer.corner_bevel_roundness);
 }
 
 static void set_layer_corner_radii(Layer &layer, float top_left, float top_right,
@@ -2997,8 +3018,14 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
             total_height += leading;
     }
     double y = rect.top();
-    if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - total_height) / 2.0;
-    else if (alignment & Qt::AlignBottom) y = rect.bottom() - total_height;
+    const bool distribute_vertical = layer.align_v == 3 && lines.size() > 1 && total_height < rect.height();
+    const double distributed_gap = distribute_vertical
+        ? (rect.height() - total_height) / (static_cast<double>(lines.size()) - 1.0)
+        : 0.0;
+    if (!distribute_vertical) {
+        if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - total_height) / 2.0;
+        else if (alignment & Qt::AlignBottom) y = rect.bottom() - total_height;
+    }
 
     auto add_justified_line = [&](const Line &line, double line_left, double line_width, double baseline_y) {
         QStringList words = line.text.simplified().split(' ', Qt::SkipEmptyParts);
@@ -3034,6 +3061,7 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
             y += space_after;
         else
             y += leading;
+        y += distributed_gap;
     }
     return path;
 }

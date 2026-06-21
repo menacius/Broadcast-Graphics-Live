@@ -2,7 +2,7 @@
   "format": "obs-graphics-studio-pro-general-transition",
   "version": 1,
   "id": "general.blur-slide-in",
-  "name": "Blur Slide In",
+  "name": "Blur Slide In/Out",
   "type": "blur-slide",
   "easing": "ease-in-out",
   "duration": 0.65,

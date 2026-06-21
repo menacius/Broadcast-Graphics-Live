@@ -947,6 +947,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-top.svg", obsgs_tr("OBSTitles.AlignTop"), 0);
     add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-vertical-center.svg", obsgs_tr("OBSTitles.AlignMiddle"), 1);
     add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-bottom.svg", obsgs_tr("OBSTitles.AlignBottom"), 2);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "distribute-vertical.svg", obsgs_tr("OBSTitles.DistributeVertically"), 3);
     vertical_button_layout->addStretch(1);
     paragraph_layout->addWidget(vertical_buttons);
 
@@ -1388,6 +1389,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_rect_corner_tr_ = mk_dspin(0.0, 1000.0, 1.0);
     spn_rect_corner_br_ = mk_dspin(0.0, 1000.0, 1.0);
     spn_rect_corner_bl_ = mk_dspin(0.0, 1000.0, 1.0);
+    spn_corner_bevel_roundness_ = mk_dspin(-100.0, 100.0, 1.0);
+    spn_corner_bevel_roundness_->setDecimals(0);
+    spn_corner_bevel_roundness_->setSuffix(QStringLiteral("%"));
+    spn_corner_bevel_roundness_->setToolTip(QStringLiteral("100 = round, 0 = flat bevel, -100 = inverted round"));
     cmb_shape_type_ = new QComboBox(inner);
     cmb_shape_type_->addItem("Rectangle", (int)ShapeType::Rectangle);
     cmb_shape_type_->addItem("Rounded Rectangle", (int)ShapeType::RoundedRectangle);
@@ -1418,6 +1423,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_transform_spin(spn_rect_corner_tr_);
     style_transform_spin(spn_rect_corner_br_);
     style_transform_spin(spn_rect_corner_bl_);
+    style_transform_spin(spn_corner_bevel_roundness_);
     auto *field_width = make_shape_field(obsgs_tr("OBSTitles.W"), spn_layer_w_);
     auto *field_height = make_shape_field(obsgs_tr("OBSTitles.H"), spn_layer_h_);
     chk_size_lock_ = new TransformLockCheckBox(rect_box_);
@@ -1454,35 +1460,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.BL"), spn_rect_corner_bl_, obs_icon("corner-radius-bl.svg")), 1, 0);
     corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.BR"), spn_rect_corner_br_, obs_icon("corner-radius-br.svg")), 1, 1);
 
-    row_corner_type_ = new QWidget(rect_box_);
-    row_corner_type_->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto *corner_type_layout = new QHBoxLayout(row_corner_type_);
-    corner_type_layout->setContentsMargins(0, 0, 0, 0);
-    corner_type_layout->setSpacing(4);
-    grp_corner_type_ = new QButtonGroup(row_corner_type_);
-    grp_corner_type_->setExclusive(true);
-    auto add_corner_type_button = [&](CornerType corner_type, const char *icon_name, const QString &tip) {
-        auto *button = new QToolButton(row_corner_type_);
-        button->setCheckable(true);
-        button->setIcon(obs_icon(icon_name));
-        button->setIconSize(QSize(16, 16));
-        button->setFixedSize(28, 26);
-        button->setToolTip(tip);
-        button->setAccessibleName(tip);
-        button->setStyleSheet(QStringLiteral(
-            "QToolButton{color:%1;background:%2;border:1px solid %3;border-radius:2px;padding:0;}"
-            "QToolButton:hover{background:%4;border-color:%3;}"
-            "QToolButton:checked{background:%5;color:%6;border-color:%5;}").
-            arg(button_text_name, button_bg_name, border_name, hover_bg_name, highlight_name, highlighted_text_name));
-        grp_corner_type_->addButton(button, (int)corner_type);
-        corner_type_layout->addWidget(button);
-    };
-    add_corner_type_button(CornerType::Round, "corner-type-round.svg", obsgs_tr("OBSTitles.Round"));
-    add_corner_type_button(CornerType::Straight, "corner-type-straight.svg", obsgs_tr("OBSTitles.Straight"));
-    add_corner_type_button(CornerType::Concave, "corner-type-concave.svg", obsgs_tr("OBSTitles.Concave"));
-    add_corner_type_button(CornerType::Cutout, "corner-type-cutout.svg", obsgs_tr("OBSTitles.Cutout"));
-    corner_type_layout->addStretch(1);
-
     auto *shape_form_widget = new QWidget(rect_box_);
     shape_form_widget->setStyleSheet("background:transparent;");
     auto *rfl = new QFormLayout(shape_form_widget);
@@ -1492,7 +1469,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(rfl, "", chk_text_box_height_to_text_);
     add_form_row(rfl, obsgs_tr("OBSTitles.MaxTextBoxHeightLabel"), spn_max_text_box_height_);
     add_form_row(rfl, obsgs_tr("OBSTitles.CornerLabel"), row_rect_corners_);
-    add_form_row(rfl, obsgs_tr("OBSTitles.CornerType"), row_corner_type_);
+    add_form_row(rfl, QStringLiteral("Corner Roundness"), spn_corner_bevel_roundness_);
     add_form_row(rfl, "Points", spn_shape_points_);
     add_form_row(rfl, "Sides", spn_shape_sides_);
     add_form_row(rfl, "Inner Radius", spn_shape_inner_radius_);
@@ -3881,10 +3858,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 }
                 emit_change();
             });
-    connect(grp_corner_type_, &QButtonGroup::idClicked,
-            this, [this, can_edit, emit_change](int corner_type_id) {
+    connect(spn_corner_bevel_roundness_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, emit_change](double value) {
                 if (!can_edit()) return;
-                layer_->corner_type = (CornerType)std::clamp(corner_type_id, 0, (int)CornerType::Cutout);
+                layer_->corner_bevel_roundness = (float)std::clamp(value, -100.0, 100.0);
                 emit_change();
             });
     connect(cmb_shape_type_, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -4001,7 +3978,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 set_animated_y(layer_->size, t, default_h);
                 set_layer_all_corner_radii(*layer_, 0.0f);
                 layer_->corner_radius_locked = true;
-                layer_->corner_type = CornerType::Round;
+                layer_->corner_bevel_roundness = 100.0f;
                 layer_->shape_points = 5;
                 layer_->shape_sides = 6;
                 layer_->shape_inner_radius = 0.20f;
@@ -4844,6 +4821,7 @@ void PropertiesPanel::load_values()
         if (spn_rect_corner_tr_) spn_rect_corner_tr_->setValue(0.0);
         if (spn_rect_corner_br_) spn_rect_corner_br_->setValue(0.0);
         if (spn_rect_corner_bl_) spn_rect_corner_bl_->setValue(0.0);
+        if (spn_corner_bevel_roundness_) spn_corner_bevel_roundness_->setValue(100.0);
         spn_size_->setValue(72);
         if (cmb_font_style_) populate_font_style_combo(cmb_font_style_, cmb_font_->currentText(), obsgs_tr("OBSTitles.Regular"));
         chk_bold_->setChecked(false);
@@ -5046,6 +5024,8 @@ void PropertiesPanel::load_values()
     if (auto *live_form = qobject_cast<QFormLayout *>(live_edit_box_ ? live_edit_box_->layout() : nullptr)) {
         const bool show_scene_mask = is_rect || is_text_like;
         const bool show_expose_to_dock = is_text || is_ticker || is_image;
+        const bool show_exposed_options = show_expose_to_dock && layer_->expose_text;
+        const bool show_ignore_persistence = true;
         if (chk_scene_mask_) {
             chk_scene_mask_->setVisible(show_scene_mask);
             if (auto *label = live_form->labelForField(chk_scene_mask_))
@@ -5057,22 +5037,24 @@ void PropertiesPanel::load_values()
                 label->setVisible(show_expose_to_dock);
         }
         if (chk_exposed_hide_if_empty_) {
-            chk_exposed_hide_if_empty_->setVisible(show_expose_to_dock);
-            chk_exposed_hide_if_empty_->setEnabled(show_expose_to_dock && layer_->expose_text);
+            chk_exposed_hide_if_empty_->setVisible(show_exposed_options);
+            chk_exposed_hide_if_empty_->setEnabled(show_exposed_options);
             if (auto *label = live_form->labelForField(chk_exposed_hide_if_empty_))
-                label->setVisible(show_expose_to_dock);
+                label->setVisible(show_exposed_options);
         }
         if (chk_exposed_single_value_) {
-            chk_exposed_single_value_->setVisible(show_expose_to_dock);
-            chk_exposed_single_value_->setEnabled(show_expose_to_dock && layer_->expose_text);
+            chk_exposed_single_value_->setVisible(show_exposed_options);
+            chk_exposed_single_value_->setEnabled(show_exposed_options);
             if (auto *label = live_form->labelForField(chk_exposed_single_value_))
-                label->setVisible(show_expose_to_dock);
+                label->setVisible(show_exposed_options);
         }
         if (chk_ignore_persistence_) {
-            chk_ignore_persistence_->setVisible(true);
+            chk_ignore_persistence_->setVisible(show_ignore_persistence);
             if (auto *label = live_form->labelForField(chk_ignore_persistence_))
-                label->setVisible(true);
+                label->setVisible(show_ignore_persistence);
         }
+        if (live_edit_box_)
+            live_edit_box_->setVisible(show_scene_mask || show_expose_to_dock || show_ignore_persistence);
     }
     rect_box_->setVisible(is_text_like || is_rect || is_image);
     rect_box_->setTitle(QString());
@@ -5122,7 +5104,7 @@ void PropertiesPanel::load_values()
     set_visible(chk_size_lock_, show_shape_panel_size && is_image);
     if (row_rect_corners_) row_rect_corners_->setVisible(show_corner_radius);
     if (chk_corner_lock_) chk_corner_lock_->setVisible(show_corner_radius);
-    if (row_corner_type_) row_corner_type_->setVisible(show_corner_radius);
+    if (spn_corner_bevel_roundness_) spn_corner_bevel_roundness_->setVisible(show_corner_radius);
     if (grp_shape_type_) {
         for (auto *button : grp_shape_type_->buttons())
             button->setVisible(is_shape_layer);
@@ -5167,7 +5149,7 @@ void PropertiesPanel::load_values()
     if (background_gradient_box_) background_gradient_box_->setVisible(false);
     if (auto *form = rect_box_->findChild<QFormLayout *>()) {
         if (auto *label = form->labelForField(row_rect_corners_)) label->setVisible(show_corner_radius);
-        if (auto *label = form->labelForField(row_corner_type_)) label->setVisible(show_corner_radius);
+        if (auto *label = form->labelForField(spn_corner_bevel_roundness_)) label->setVisible(show_corner_radius);
         if (auto *label = form->labelForField(spn_shape_points_)) label->setVisible(show_star_controls);
         if (auto *label = form->labelForField(spn_shape_sides_)) label->setVisible(show_polygon_controls);
         if (auto *label = form->labelForField(spn_shape_inner_radius_)) label->setVisible(show_star_controls);
@@ -5282,10 +5264,7 @@ void PropertiesPanel::load_values()
     if (spn_rect_corner_tr_) spn_rect_corner_tr_->setValue(layer_->corner_radius_tr);
     if (spn_rect_corner_br_) spn_rect_corner_br_->setValue(layer_->corner_radius_br);
     if (spn_rect_corner_bl_) spn_rect_corner_bl_->setValue(layer_->corner_radius_bl);
-    if (grp_corner_type_) {
-        if (auto *button = grp_corner_type_->button((int)layer_->corner_type))
-            button->setChecked(true);
-    }
+    if (spn_corner_bevel_roundness_) spn_corner_bevel_roundness_->setValue(layer_->corner_bevel_roundness);
     if (cmb_shape_type_) {
         int shape_idx = cmb_shape_type_->findData((int)current_shape);
         cmb_shape_type_->setCurrentIndex(shape_idx >= 0 ? shape_idx : 0);

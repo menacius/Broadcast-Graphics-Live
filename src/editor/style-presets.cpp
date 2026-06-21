@@ -408,7 +408,7 @@ bool StylePresetLibrary::applyTextPreset(const StylePreset &preset, Layer &layer
     layer.text_leading = float(o.value(QStringLiteral("leading")).toDouble(layer.text_leading));
     layer.text_color = parseArgb(o, "textColor", layer.text_color);
     layer.align_h = o.value(QStringLiteral("alignH")).toInt(layer.align_h);
-    layer.align_v = o.value(QStringLiteral("alignV")).toInt(layer.align_v);
+    layer.align_v = std::clamp(o.value(QStringLiteral("alignV")).toInt(layer.align_v), 0, 3);
     layer.paragraph_space_before = float(o.value(QStringLiteral("paragraphBefore")).toDouble(layer.paragraph_space_before));
     layer.paragraph_space_before_prop.static_value = layer.paragraph_space_before; layer.paragraph_space_before_prop.keyframes.clear();
     layer.paragraph_space_after = float(o.value(QStringLiteral("paragraphAfter")).toDouble(layer.paragraph_space_after));

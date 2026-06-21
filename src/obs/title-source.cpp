@@ -74,10 +74,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <sstream>
+#include <iomanip>
 #include "path-geometry.h"
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
+constexpr double kCubicCircle = 0.5522847498307933984;
 constexpr uint32_t kMaxSourceDimension = 16384;
 
 static uint32_t clamped_source_dimension(int value)
@@ -321,6 +323,8 @@ struct TitleSourceData {
     std::unique_ptr<TitleGpuFilterPipeline> gpu_filter_pipeline;
     uint32_t      scene_mask_alpha_w = 0;
     uint32_t      scene_mask_alpha_h = 0;
+    std::string   scene_mask_alpha_layer_id;
+    std::string   scene_mask_alpha_key;
     /* Logical source canvas dimensions remain independent from the cached
      * texture payload dimensions. Sparse cached frames upload only their
      * alpha bounds and are drawn at texture_crop_{x,y}. */
@@ -627,6 +631,51 @@ static void release_active_scene_mask_scenes(TitleSourceData *data)
     data->active_scene_mask_scenes.clear();
 }
 
+static void invalidate_scene_mask_alpha_cache(TitleSourceData *data)
+{
+    if (!data)
+        return;
+    data->scene_mask_alpha_layer_id.clear();
+    data->scene_mask_alpha_key.clear();
+}
+
+static bool title_has_valid_scene_mask_cue(const TitleSourceData *data, const Title &title)
+{
+    const int row_count = static_cast<int>(title.live_text_rows.size());
+    if (row_count <= 0)
+        return false;
+
+    auto valid_row = [row_count](int row) {
+        return row >= 0 && row < row_count;
+    };
+
+    return valid_row(title.current_cue_row) ||
+           valid_row(title.pending_cue_row) ||
+           (data && valid_row(data->active_cue_row));
+}
+
+static bool scene_mask_active_scenes_match_configs(const TitleSourceData *data)
+{
+    if (!data)
+        return false;
+
+    std::unordered_set<std::string> configured_names;
+    for (const auto &cfg : data->scene_masks) {
+        if (!cfg.scene_name.empty())
+            configured_names.insert(cfg.scene_name);
+    }
+
+    if (configured_names.size() != data->active_scene_mask_scenes.size())
+        return false;
+
+    for (const auto &active : data->active_scene_mask_scenes) {
+        if (!active.source || configured_names.find(active.name) == configured_names.end())
+            return false;
+    }
+
+    return true;
+}
+
 static void activate_scene_mask_scenes(TitleSourceData *data)
 {
     if (!data || !data->scene_mask_foreground_active)
@@ -646,6 +695,24 @@ static void activate_scene_mask_scenes(TitleSourceData *data)
         obs_source_inc_active(scene);
         data->active_scene_mask_scenes.push_back({cfg.scene_name, scene});
     }
+}
+
+static void sync_scene_mask_scenes_for_cue(TitleSourceData *data, const std::shared_ptr<Title> &title)
+{
+    if (!data)
+        return;
+
+    const bool should_activate = data->scene_mask_foreground_active &&
+        title && title_has_valid_scene_mask_cue(data, *title);
+
+    if (!should_activate) {
+        if (!data->active_scene_mask_scenes.empty())
+            release_active_scene_mask_scenes(data);
+        return;
+    }
+
+    if (!scene_mask_active_scenes_match_configs(data))
+        activate_scene_mask_scenes(data);
 }
 
 
@@ -1033,10 +1100,24 @@ static void cairo_add_rounded_rect(cairo_t *cr, double x, double y, double w, do
     cairo_close_path(cr);
 }
 
+static double legacy_corner_type_roundness(CornerType type)
+{
+    switch (type) {
+    case CornerType::Straight:
+    case CornerType::Cutout:
+        return 0.0;
+    case CornerType::Concave:
+        return -100.0;
+    case CornerType::Round:
+    default:
+        return 100.0;
+    }
+}
+
 static void cairo_add_rounded_rect_corners(cairo_t *cr, double x, double y, double w, double h,
                                            double top_left, double top_right,
                                            double bottom_right, double bottom_left,
-                                           CornerType corner_type = CornerType::Round)
+                                           double bevel_roundness = 100.0)
 {
     const double max_radius = std::max(0.0, std::min(w, h) / 2.0);
     const double tl = std::clamp(top_left, 0.0, max_radius);
@@ -1047,56 +1128,73 @@ static void cairo_add_rounded_rect_corners(cairo_t *cr, double x, double y, doub
         cairo_rectangle(cr, x, y, w, h);
         return;
     }
-    auto add_corner = [&](double corner_x, double corner_y, double to_x, double to_y,
+    const double roundness = std::clamp(bevel_roundness, -100.0, 100.0) / 100.0;
+    auto add_corner = [&](double from_x, double from_y, double corner_x, double corner_y, double to_x, double to_y,
                           double cutout_x, double cutout_y, double radius) {
         if (radius <= 0.0) {
             cairo_line_to(cr, corner_x, corner_y);
             return;
         }
-        switch (corner_type) {
-        case CornerType::Straight:
+        if (std::abs(roundness) <= 1e-6) {
             cairo_line_to(cr, to_x, to_y);
-            break;
-        case CornerType::Cutout:
-            cairo_line_to(cr, cutout_x, cutout_y);
-            cairo_line_to(cr, to_x, to_y);
-            break;
-        case CornerType::Concave:
-            cairo_curve_to(cr, cutout_x, cutout_y, cutout_x, cutout_y, to_x, to_y);
-            break;
-        case CornerType::Round:
-        default:
-            break;
+        } else if (roundness < 0.0) {
+            const double inverted = -roundness;
+            const double flat_c1x = from_x + (to_x - from_x) / 3.0;
+            const double flat_c1y = from_y + (to_y - from_y) / 3.0;
+            const double flat_c2x = from_x + (to_x - from_x) * (2.0 / 3.0);
+            const double flat_c2y = from_y + (to_y - from_y) * (2.0 / 3.0);
+            const double arc_c1x = from_x + (cutout_x - to_x) * kCubicCircle;
+            const double arc_c1y = from_y + (cutout_y - to_y) * kCubicCircle;
+            const double arc_c2x = to_x - (corner_x - from_x) * kCubicCircle;
+            const double arc_c2y = to_y - (corner_y - from_y) * kCubicCircle;
+            cairo_curve_to(cr,
+                           flat_c1x + (arc_c1x - flat_c1x) * inverted,
+                           flat_c1y + (arc_c1y - flat_c1y) * inverted,
+                           flat_c2x + (arc_c2x - flat_c2x) * inverted,
+                           flat_c2y + (arc_c2y - flat_c2y) * inverted,
+                           to_x, to_y);
+        } else {
+            const double c1x = corner_x + (cutout_x - corner_x) * (1.0 - roundness);
+            const double c1y = corner_y + (cutout_y - corner_y) * (1.0 - roundness);
+            cairo_curve_to(cr, c1x, c1y, c1x, c1y, to_x, to_y);
         }
     };
     cairo_new_sub_path(cr);
     cairo_move_to(cr, x + tl, y);
     cairo_line_to(cr, x + w - tr, y);
-    if (tr > 0.0 && corner_type == CornerType::Round)
+    if (tr > 0.0 && roundness >= 0.999)
         cairo_arc(cr, x + w - tr, y + tr, tr, 3 * kPi / 2, 2 * kPi);
+    else if (tr > 0.0 && roundness <= -0.999)
+        cairo_arc_negative(cr, x + w, y, tr, kPi, kPi / 2);
     else
-        add_corner(x + w, y, x + w, y + tr, x + w - tr, y + tr, tr);
+        add_corner(x + w - tr, y, x + w, y, x + w, y + tr, x + w - tr, y + tr, tr);
     cairo_line_to(cr, x + w, y + h - br);
-    if (br > 0.0 && corner_type == CornerType::Round)
+    if (br > 0.0 && roundness >= 0.999)
         cairo_arc(cr, x + w - br, y + h - br, br, 0, kPi / 2);
+    else if (br > 0.0 && roundness <= -0.999)
+        cairo_arc_negative(cr, x + w, y + h, br, -kPi / 2, -kPi);
     else
-        add_corner(x + w, y + h, x + w - br, y + h, x + w - br, y + h - br, br);
+        add_corner(x + w, y + h - br, x + w, y + h, x + w - br, y + h, x + w - br, y + h - br, br);
     cairo_line_to(cr, x + bl, y + h);
-    if (bl > 0.0 && corner_type == CornerType::Round)
+    if (bl > 0.0 && roundness >= 0.999)
         cairo_arc(cr, x + bl, y + h - bl, bl, kPi / 2, kPi);
+    else if (bl > 0.0 && roundness <= -0.999)
+        cairo_arc_negative(cr, x, y + h, bl, 0, -kPi / 2);
     else
-        add_corner(x, y + h, x, y + h - bl, x + bl, y + h - bl, bl);
+        add_corner(x + bl, y + h, x, y + h, x, y + h - bl, x + bl, y + h - bl, bl);
     cairo_line_to(cr, x, y + tl);
-    if (tl > 0.0 && corner_type == CornerType::Round)
+    if (tl > 0.0 && roundness >= 0.999)
         cairo_arc(cr, x + tl, y + tl, tl, kPi, 3 * kPi / 2);
+    else if (tl > 0.0 && roundness <= -0.999)
+        cairo_arc_negative(cr, x, y, tl, kPi / 2, 0);
     else
-        add_corner(x, y, x + tl, y, x + tl, y + tl, tl);
+        add_corner(x, y + tl, x, y, x + tl, y, x + tl, y + tl, tl);
     cairo_close_path(cr);
 }
 
 static QPainterPath painter_rounded_rect_corners(const QRectF &rect, double top_left, double top_right,
                                                  double bottom_right, double bottom_left,
-                                                 CornerType corner_type = CornerType::Round)
+                                                 double bevel_roundness = 100.0)
 {
     const double max_radius = std::max(0.0, std::min(rect.width(), rect.height()) / 2.0);
     const double tl = std::clamp(top_left, 0.0, max_radius);
@@ -1108,37 +1206,62 @@ static QPainterPath painter_rounded_rect_corners(const QRectF &rect, double top_
         path.addRect(rect);
         return path;
     }
-    auto add_corner = [&](const QPointF &corner, const QPointF &to, const QPointF &cutout, double radius) {
+    const double roundness = std::clamp(bevel_roundness, -100.0, 100.0) / 100.0;
+    auto add_corner = [&](const QPointF &from, const QPointF &corner, const QPointF &to,
+                          const QPointF &cutout, double radius) {
         if (radius <= 0.0) {
             path.lineTo(corner);
             return;
         }
-        switch (corner_type) {
-        case CornerType::Straight:
+        if (std::abs(roundness) <= 1e-6) {
             path.lineTo(to);
-            break;
-        case CornerType::Cutout:
-            path.lineTo(cutout);
-            path.lineTo(to);
-            break;
-        case CornerType::Concave:
-            path.cubicTo(cutout, cutout, to);
-            break;
-        case CornerType::Round:
-        default:
-            path.quadTo(corner, to);
-            break;
+        } else if (roundness < 0.0) {
+            const double inverted = -roundness;
+            const QPointF flat_c1 = from + (to - from) / 3.0;
+            const QPointF flat_c2 = from + (to - from) * (2.0 / 3.0);
+            const QPointF arc_c1 = from + (cutout - to) * kCubicCircle;
+            const QPointF arc_c2 = to - (corner - from) * kCubicCircle;
+            path.cubicTo(flat_c1 + (arc_c1 - flat_c1) * inverted,
+                         flat_c2 + (arc_c2 - flat_c2) * inverted,
+                         to);
+        } else {
+            const QPointF control = corner + (cutout - corner) * (1.0 - roundness);
+            path.cubicTo(control, control, to);
         }
     };
     path.moveTo(rect.left() + tl, rect.top());
     path.lineTo(rect.right() - tr, rect.top());
-    add_corner(rect.topRight(), QPointF(rect.right(), rect.top() + tr), QPointF(rect.right() - tr, rect.top() + tr), tr);
+    if (tr > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.right() - 2.0 * tr, rect.top(), 2.0 * tr, 2.0 * tr), 90.0, -90.0);
+    else if (tr > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.right() - tr, rect.top() - tr, 2.0 * tr, 2.0 * tr), 180.0, 90.0);
+    else
+        add_corner(QPointF(rect.right() - tr, rect.top()), rect.topRight(),
+                   QPointF(rect.right(), rect.top() + tr), QPointF(rect.right() - tr, rect.top() + tr), tr);
     path.lineTo(rect.right(), rect.bottom() - br);
-    add_corner(rect.bottomRight(), QPointF(rect.right() - br, rect.bottom()), QPointF(rect.right() - br, rect.bottom() - br), br);
+    if (br > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.right() - 2.0 * br, rect.bottom() - 2.0 * br, 2.0 * br, 2.0 * br), 0.0, -90.0);
+    else if (br > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.right() - br, rect.bottom() - br, 2.0 * br, 2.0 * br), -90.0, 90.0);
+    else
+        add_corner(QPointF(rect.right(), rect.bottom() - br), rect.bottomRight(),
+                   QPointF(rect.right() - br, rect.bottom()), QPointF(rect.right() - br, rect.bottom() - br), br);
     path.lineTo(rect.left() + bl, rect.bottom());
-    add_corner(rect.bottomLeft(), QPointF(rect.left(), rect.bottom() - bl), QPointF(rect.left() + bl, rect.bottom() - bl), bl);
+    if (bl > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.left(), rect.bottom() - 2.0 * bl, 2.0 * bl, 2.0 * bl), 270.0, -90.0);
+    else if (bl > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.left() - bl, rect.bottom() - bl, 2.0 * bl, 2.0 * bl), 0.0, 90.0);
+    else
+        add_corner(QPointF(rect.left() + bl, rect.bottom()), rect.bottomLeft(),
+                   QPointF(rect.left(), rect.bottom() - bl), QPointF(rect.left() + bl, rect.bottom() - bl), bl);
     path.lineTo(rect.left(), rect.top() + tl);
-    add_corner(rect.topLeft(), QPointF(rect.left() + tl, rect.top()), QPointF(rect.left() + tl, rect.top() + tl), tl);
+    if (tl > 0.0 && roundness >= 0.999)
+        path.arcTo(QRectF(rect.left(), rect.top(), 2.0 * tl, 2.0 * tl), 180.0, -90.0);
+    else if (tl > 0.0 && roundness <= -0.999)
+        path.arcTo(QRectF(rect.left() - tl, rect.top() - tl, 2.0 * tl, 2.0 * tl), 90.0, 90.0);
+    else
+        add_corner(QPointF(rect.left(), rect.top() + tl), rect.topLeft(),
+                   QPointF(rect.left() + tl, rect.top()), QPointF(rect.left() + tl, rect.top() + tl), tl);
     path.closeSubpath();
     return path;
 }
@@ -1147,7 +1270,7 @@ static QPainterPath painter_layer_rounded_rect_path(const Layer &layer, const QR
 {
     return painter_rounded_rect_corners(rect, layer.corner_radius_tl, layer.corner_radius_tr,
                                         layer.corner_radius_br, layer.corner_radius_bl,
-                                        layer.corner_type);
+                                        layer.corner_bevel_roundness);
 }
 
 static void cairo_add_regular_polygon(cairo_t *cr, double cx, double cy, double rx, double ry,
@@ -2329,8 +2452,14 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
             total_height += leading;
     }
     double y = rect.top();
-    if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - total_height) / 2.0;
-    else if (alignment & Qt::AlignBottom) y = rect.bottom() - total_height;
+    const bool distribute_vertical = layer.align_v == 3 && lines.size() > 1 && total_height < rect.height();
+    const double distributed_gap = distribute_vertical
+        ? (rect.height() - total_height) / (static_cast<double>(lines.size()) - 1.0)
+        : 0.0;
+    if (!distribute_vertical) {
+        if (alignment & Qt::AlignVCenter) y = rect.top() + (rect.height() - total_height) / 2.0;
+        else if (alignment & Qt::AlignBottom) y = rect.bottom() - total_height;
+    }
 
     auto add_justified_line = [&](const Line &line, double line_left, double line_width, double baseline_y) {
         QStringList words = line.text.simplified().split(' ', Qt::SkipEmptyParts);
@@ -2366,6 +2495,7 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
             y += space_after;
         else
             y += leading;
+        y += distributed_gap;
     }
     return path;
 }
@@ -2772,6 +2902,39 @@ static void hide_rich_text_outside_range(QTextDocument &doc,
     hide_range(end, text_length);
 }
 
+static int rich_text_document_visual_line_count(const QTextDocument &doc)
+{
+    int count = 0;
+    for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        if (layout)
+            count += layout->lineCount();
+    }
+    return count;
+}
+
+static void apply_rich_text_vertical_distribute(QTextDocument &doc, const Layer &layer, const QRectF &text_rect)
+{
+    if (layer.align_v != 3 || layer.text_overflow_mode == 2)
+        return;
+
+    const QSizeF natural_size = doc.size();
+    const int line_count = rich_text_document_visual_line_count(doc);
+    if (line_count <= 1 || natural_size.height() >= text_rect.height())
+        return;
+
+    const double extra_gap = (text_rect.height() - natural_size.height()) /
+                             (static_cast<double>(line_count) - 1.0);
+    if (extra_gap <= 0.0)
+        return;
+
+    QTextBlockFormat block_format;
+    block_format.setLineHeight(extra_gap, QTextBlockFormat::LineDistanceHeight);
+    QTextCursor cursor(&doc);
+    cursor.select(QTextCursor::Document);
+    cursor.mergeBlockFormat(block_format);
+}
+
 static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &layer, const QFont &font,
                                                   const QRectF &text_rect, double t,
                                                   const TextTransitionUnitRange *visible_range = nullptr)
@@ -2806,7 +2969,46 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
     }
 
     hide_rich_text_outside_range(*doc, visible_range);
+    apply_rich_text_vertical_distribute(*doc, layer, text_rect);
     return doc;
+}
+
+static double rich_text_horizontal_fit_scale(const Layer &layer,
+                                             const QRectF &text_rect,
+                                             const QSizeF &document_size)
+{
+    if (layer.text_overflow_mode != 2 || document_size.width() <= text_rect.width())
+        return 1.0;
+
+    return std::clamp(text_rect.width() / std::max(1.0, document_size.width()),
+                      std::clamp(static_cast<double>(layer.text_fit_min_scale), 0.05, 1.0),
+                      1.0);
+}
+
+static QPointF rich_text_document_origin(const Layer &layer,
+                                         const QRectF &text_rect,
+                                         const QSizeF &document_size,
+                                         double t,
+                                         double horizontal_scale)
+{
+    QPointF origin = text_rect.topLeft();
+
+    if (layer.text_overflow_mode == 2) {
+        const double visual_width = document_size.width() * horizontal_scale;
+        if (layer.align_h == 1 || layer.align_h == 4)
+            origin.setX(text_rect.left() + (text_rect.width() - visual_width) / 2.0);
+        else if (layer.align_h == 2 || layer.align_h == 5)
+            origin.setX(text_rect.right() - visual_width);
+    }
+
+    if (layer.align_v == 1)
+        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
+    else if (layer.align_v == 2)
+        origin.setY(text_rect.bottom() - document_size.height());
+    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
+        origin.setY(origin.y() - eval_baseline_shift(layer, t));
+
+    return origin;
 }
 
 static QPointF rich_text_document_cursor_position(const QTextDocument &doc,
@@ -2841,20 +3043,8 @@ static QPointF rich_text_document_cursor_position(const QTextDocument &doc,
                   block_rect.top() + line.y());
 
     const QSizeF document_size = doc.size();
-    QPointF origin = text_rect.topLeft();
-    if (layer.align_v == 1)
-        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
-    else if (layer.align_v == 2)
-        origin.setY(text_rect.bottom() - document_size.height());
-    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
-        origin.setY(origin.y() - eval_baseline_shift(layer, t));
-
-    double horizontal_scale = 1.0;
-    if (layer.text_overflow_mode == 2 && document_size.width() > text_rect.width()) {
-        horizontal_scale = std::clamp(
-            text_rect.width() / std::max(1.0, document_size.width()),
-            std::clamp(static_cast<double>(layer.text_fit_min_scale), 0.05, 1.0), 1.0);
-    }
+    const double horizontal_scale = rich_text_horizontal_fit_scale(layer, text_rect, document_size);
+    const QPointF origin = rich_text_document_origin(layer, text_rect, document_size, t, horizontal_scale);
     local.setX(local.x() * horizontal_scale);
     return origin + local;
 }
@@ -2913,20 +3103,8 @@ static QRectF rich_text_document_range_bounds(const QTextDocument &doc,
         return {};
 
     const QSizeF document_size = doc.size();
-    QPointF origin = text_rect.topLeft();
-    if (layer.align_v == 1)
-        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
-    else if (layer.align_v == 2)
-        origin.setY(text_rect.bottom() - document_size.height());
-    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
-        origin.setY(origin.y() - eval_baseline_shift(layer, t));
-
-    double horizontal_scale = 1.0;
-    if (layer.text_overflow_mode == 2 && document_size.width() > text_rect.width()) {
-        horizontal_scale = std::clamp(
-            text_rect.width() / std::max(1.0, document_size.width()),
-            std::clamp(static_cast<double>(layer.text_fit_min_scale), 0.05, 1.0), 1.0);
-    }
+    const double horizontal_scale = rich_text_horizontal_fit_scale(layer, text_rect, document_size);
+    const QPointF origin = rich_text_document_origin(layer, text_rect, document_size, t, horizontal_scale);
     const qreal scaled_left = local_bounds.left() * horizontal_scale;
     const qreal scaled_width = local_bounds.width() * horizontal_scale;
     local_bounds.setRect(scaled_left, local_bounds.top(),
@@ -3021,16 +3199,9 @@ static void draw_rich_text_document(QPainter &painter, const Layer &layer, const
         cursor.mergeCharFormat(format);
     }
     QSizeF doc_size = doc->size();
-    QPointF origin = text_rect.topLeft();
-    if (layer.align_v == 1)
-        origin.setY(text_rect.top() + (text_rect.height() - doc_size.height()) / 2.0);
-    else if (layer.align_v == 2)
-        origin.setY(text_rect.bottom() - doc_size.height());
-    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
-        origin.setY(origin.y() - eval_baseline_shift(layer, t));
-    if (layer.text_overflow_mode == 2 && doc_size.width() > text_rect.width()) {
-        const double scale = std::clamp(text_rect.width() / std::max(1.0, doc_size.width()),
-                                        std::clamp((double)layer.text_fit_min_scale, 0.05, 1.0), 1.0);
+    const double scale = rich_text_horizontal_fit_scale(layer, text_rect, doc_size);
+    const QPointF origin = rich_text_document_origin(layer, text_rect, doc_size, t, scale);
+    if (std::abs(scale - 1.0) > 0.0001) {
         painter.save();
         painter.translate(origin);
         painter.scale(scale, 1.0);
@@ -3078,18 +3249,9 @@ static void draw_prepared_rich_text_document(QPainter &painter,
     }
 
     const QSizeF document_size = document->size();
-    QPointF origin = text_rect.topLeft();
-    if (layer.align_v == 1)
-        origin.setY(text_rect.top() + (text_rect.height() - document_size.height()) / 2.0);
-    else if (layer.align_v == 2)
-        origin.setY(text_rect.bottom() - document_size.height());
-    if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
-        origin.setY(origin.y() - eval_baseline_shift(layer, t));
-
-    if (layer.text_overflow_mode == 2 && document_size.width() > text_rect.width()) {
-        const double scale = std::clamp(
-            text_rect.width() / std::max(1.0, document_size.width()),
-            std::clamp((double)layer.text_fit_min_scale, 0.05, 1.0), 1.0);
+    const double scale = rich_text_horizontal_fit_scale(layer, text_rect, document_size);
+    const QPointF origin = rich_text_document_origin(layer, text_rect, document_size, t, scale);
+    if (std::abs(scale - 1.0) > 0.0001) {
         painter.save();
         painter.translate(origin);
         painter.scale(scale, 1.0);
@@ -4108,7 +4270,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
             QPainterPath bg_path = painter_rounded_rect_corners(bg_rect,
                 eval_background_corner_radius_tl(layer, t), eval_background_corner_radius_tr(layer, t),
                 eval_background_corner_radius_br(layer, t), eval_background_corner_radius_bl(layer, t),
-                (CornerType)(background_effect ? background_effect->effect_corner_type : 0));
+                legacy_corner_type_roundness((CornerType)(background_effect ? background_effect->effect_corner_type : 0)));
             painter.setPen(Qt::NoPen);
             painter.setBrush(background_gradient ? background_gradient_fill_brush(layer, bg_rect, eval_background_opacity(layer, t)) : QBrush(bg));
             if (bg.alpha() > 0 || background_gradient)
@@ -4150,7 +4312,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
     if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
-    if (layer.align_v == 0) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
+    if (layer.align_v == 0 || layer.align_v == 3) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignTop;
     if (layer.align_v == 2) align = (align & ~Qt::AlignVertical_Mask) | Qt::AlignBottom;
     const bool has_rich_text = layer.type != LayerType::Ticker;
     QPainterPath text_path;
@@ -4355,7 +4517,7 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
             .arg(layer.corner_radius_tr, 0, 'f', 2)
             .arg(layer.corner_radius_br, 0, 'f', 2)
             .arg(layer.corner_radius_bl, 0, 'f', 2)
-            .arg((int)layer.corner_type)
+            .arg(layer.corner_bevel_roundness, 0, 'f', 2)
             .arg(layer.shape_points).arg(layer.shape_sides)
             .arg(layer.shape_inner_radius, 0, 'f', 4)
             .arg(layer.shape_outer_radius, 0, 'f', 4)
@@ -4483,7 +4645,7 @@ static QImage image_box_shadow_mask(const QImage &argb, const Layer &layer, doub
         return mask;
     painter.setClipPath(painter_rounded_rect_corners(visible, layer.corner_radius_tl, layer.corner_radius_tr,
                                                      layer.corner_radius_br, layer.corner_radius_bl,
-                                                     layer.corner_type));
+                                                     layer.corner_bevel_roundness));
     painter.drawImage(QRectF(layout.x, layout.y, layout.w, layout.h), argb);
     return mask;
 }
@@ -4525,7 +4687,7 @@ static void stroke_image_visible_outline(cairo_t *cr, const Layer &layer, const 
                                        visible.width(), visible.height(),
                                        layer.corner_radius_tl, layer.corner_radius_tr,
                                        layer.corner_radius_br, layer.corner_radius_bl,
-                                       layer.corner_type);
+                                       layer.corner_bevel_roundness);
     };
 
     const int alignment = eval_outline_alignment(layer, t);
@@ -4637,7 +4799,7 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
             cairo_add_rounded_rect_corners(cr, x, y, bw, bh,
                 eval_background_corner_radius_tl(layer, t), eval_background_corner_radius_tr(layer, t),
                 eval_background_corner_radius_br(layer, t), eval_background_corner_radius_bl(layer, t),
-                (CornerType)(background_effect ? background_effect->effect_corner_type : 0));
+                legacy_corner_type_roundness((CornerType)(background_effect ? background_effect->effect_corner_type : 0)));
             cairo_pattern_t *gradient_pattern = nullptr;
             if (ba > 0.0 || background_gradient) {
                 if (background_gradient) {
@@ -4672,7 +4834,7 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
                                    visible.width(), visible.height(),
                                    layer.corner_radius_tl, layer.corner_radius_tr,
                                    layer.corner_radius_br, layer.corner_radius_bl,
-                                   layer.corner_type);
+                                   layer.corner_bevel_roundness);
     cairo_clip(cr);
     cairo_translate(cr, box_x + image_layout.x, box_y + image_layout.y);
     cairo_scale(cr, image_layout.w / argb.width(), image_layout.h / argb.height());
@@ -5311,7 +5473,7 @@ static std::vector<uint8_t> render_background_effect_behind_surface(
                                         : (double)effect.effect_corner_radius_bl);
 
     cairo_add_rounded_rect_corners(under_cr.get(), x, y, bw, bh, tl, tr, br, bl,
-                                   (CornerType)effect.effect_corner_type);
+                                   legacy_corner_type_roundness((CornerType)effect.effect_corner_type));
     const bool gradient = effect.effect_fill_type == 1;
     QColor fill = color_from_argb(eval_effect_color(effect, t));
     const double fill_opacity = std::clamp(effect.opacity_prop.is_animated()
@@ -6500,6 +6662,7 @@ static void render_title_frame(TitleSourceData *data,
             data->scene_mask_alpha_texture = nullptr;
             data->scene_mask_alpha_w = 0;
             data->scene_mask_alpha_h = 0;
+            invalidate_scene_mask_alpha_cache(data);
             texture_created = data->texture != nullptr;
             obs_leave_graphics();
         }
@@ -6668,6 +6831,7 @@ static bool upload_cached_title_frame(TitleSourceData *data, const QImage &image
             data->scene_mask_alpha_texture = nullptr;
             data->scene_mask_alpha_w = 0;
             data->scene_mask_alpha_h = 0;
+            invalidate_scene_mask_alpha_cache(data);
             texture_created = data->texture != nullptr;
             obs_leave_graphics();
         }
@@ -7028,6 +7192,7 @@ static void source_destroy(void *priv)
         data->scene_mask_effect = nullptr;
         data->scene_mask_alpha_w = 0;
         data->scene_mask_alpha_h = 0;
+        invalidate_scene_mask_alpha_cache(data);
         data->tex_w = 0;
         data->tex_h = 0;
     }
@@ -7046,8 +7211,6 @@ static void source_update(void *priv, obs_data_t *settings)
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
     const bool title_changed = data->title_id != previous_title_id;
     refresh_scene_mask_configs(data, settings);
-    if (keep_scene_masks_foreground)
-        activate_scene_mask_scenes(data);
     data->playhead = 0.0;
     data->playback_reverse = false;
     data->cue_phase = TitleSourceData::CuePhase::FreeRun;
@@ -7081,10 +7244,13 @@ static void source_update(void *priv, obs_data_t *settings)
     data->last_clock_refresh = std::chrono::steady_clock::now();
     data->seen_store_revision = TitleDataStore::instance().revision();
     data->effect_layer_cache.clear();
+    invalidate_scene_mask_alpha_cache(data);
     data->cache_hash_revision = std::numeric_limits<uint64_t>::max();
     data->cached_content_hash.clear();
     data->cache_hash_last_verify = {};
     data->dirty    = true;
+    if (keep_scene_masks_foreground)
+        sync_scene_mask_scenes_for_cue(data, TitleDataStore::instance().get_title(data->title_id));
 }
 
 static void source_activate(void *priv)
@@ -7093,9 +7259,9 @@ static void source_activate(void *priv)
     if (!data)
         return;
     data->scene_mask_foreground_active = true;
-    activate_scene_mask_scenes(data);
 
     auto title = TitleDataStore::instance().get_title(data->title_id);
+    sync_scene_mask_scenes_for_cue(data, title);
     if (!title || !title->playlist_restart_on_source_active)
         return;
 
@@ -7407,13 +7573,16 @@ static void source_video_tick(void *priv, float seconds)
                     release_active_scene_mask_scenes(data);
                 refresh_scene_mask_configs(data, settings);
                 if (keep_scene_masks_foreground)
-                    activate_scene_mask_scenes(data);
+                    sync_scene_mask_scenes_for_cue(data, title);
                 obs_data_release(settings);
             }
         }
         data->effect_layer_cache.clear();
+        invalidate_scene_mask_alpha_cache(data);
         data->dirty = true;
     }
+
+    sync_scene_mask_scenes_for_cue(data, title);
 
     if (!data->output_visible) {
         data->dirty = false;
@@ -7437,6 +7606,7 @@ static void source_video_tick(void *priv, float seconds)
             data->cache_hash_revision = revision;
             data->last_cached_image_key = 0;
             data->effect_layer_cache.clear();
+            invalidate_scene_mask_alpha_cache(data);
             data->dirty = true;
         }
     }
@@ -7563,6 +7733,41 @@ static const TitleSourceData::SceneMaskConfig *scene_mask_config_for_layer(
             return &cfg;
     }
     return nullptr;
+}
+
+static obs_source_t *active_scene_mask_source_for_name(const TitleSourceData &data, const std::string &name)
+{
+    for (const auto &active : data.active_scene_mask_scenes) {
+        if (active.name == name && active.source)
+            return active.source;
+    }
+    return nullptr;
+}
+
+static std::string scene_mask_alpha_cache_key(const Title &title, const Layer &layer,
+                                              double title_time, uint32_t canvas_w, uint32_t canvas_h)
+{
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    std::ostringstream key;
+    key.setf(std::ios::fixed);
+    key << std::setprecision(4)
+        << title.id << '|'
+        << canvas_w << 'x' << canvas_h << '|'
+        << layer.id << '|'
+        << static_cast<int>(layer.type) << '|'
+        << layer_chain_visible(title, layer, title_time) << '|'
+        << layer_chain_opacity(title, layer, title_time) << '|'
+        << eval_box_width(layer, lt) << 'x' << eval_box_height(layer, lt) << '|'
+        << layer.position.evaluate(lt).x << ',' << layer.position.evaluate(lt).y << '|'
+        << layer.scale.evaluate(lt).x << ',' << layer.scale.evaluate(lt).y << '|'
+        << layer.rotation.evaluate(lt) << '|'
+        << eval_origin_x(layer, lt) << ',' << eval_origin_y(layer, lt) << '|'
+        << static_cast<int>(layer.shape_type) << '|'
+        << layer.corner_radius_tl << ',' << layer.corner_radius_tr << ','
+        << layer.corner_radius_br << ',' << layer.corner_radius_bl << '|'
+        << layer.corner_bevel_roundness << '|'
+        << gsp::path_geometry_signature(layer).toStdString();
+    return key.str();
 }
 
 struct HiddenSceneMaskItem {
@@ -7735,6 +7940,7 @@ static bool ensure_scene_mask_alpha_texture(TitleSourceData *data, uint32_t w, u
         data->scene_mask_alpha_texture = nullptr;
         data->scene_mask_alpha_w = 0;
         data->scene_mask_alpha_h = 0;
+        invalidate_scene_mask_alpha_cache(data);
     }
 
     if (!data->scene_mask_alpha_texture) {
@@ -7750,7 +7956,7 @@ static bool ensure_scene_mask_alpha_texture(TitleSourceData *data, uint32_t w, u
 
 static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, double title_time)
 {
-    if (!data || data->scene_masks.empty())
+    if (!data || data->scene_masks.empty() || data->active_scene_mask_scenes.empty())
         return;
 
     if (!data->scene_mask_scene_texrender)
@@ -7765,7 +7971,7 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
         if (!cfg || cfg->scene_name.empty())
             continue;
 
-        obs_source_t *scene = obs_get_source_by_name(cfg->scene_name.c_str());
+        obs_source_t *scene = active_scene_mask_source_for_name(*data, cfg->scene_name);
         if (!scene)
             continue;
 
@@ -7773,18 +7979,29 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
         const double w = eval_box_width(*layer, lt);
         const double h = eval_box_height(*layer, lt);
         if (w <= 0.0 || h <= 0.0) {
-            obs_source_release(scene);
             continue;
         }
         const double zoom = std::clamp(cfg->zoom, 0.01, 100.0);
 
-        std::vector<uint8_t> mask_pixels;
-        if (!render_scene_mask_alpha_pixels(title, *layer, title_time, (int)data->tex_w, (int)data->tex_h, mask_pixels) ||
-            !ensure_scene_mask_alpha_texture(data, data->tex_w, data->tex_h)) {
-            obs_source_release(scene);
-            continue;
+        const std::string alpha_key = scene_mask_alpha_cache_key(title, *layer, title_time,
+                                                                 data->tex_w, data->tex_h);
+        const bool alpha_texture_reusable = data->scene_mask_alpha_texture &&
+            data->scene_mask_alpha_w == data->tex_w &&
+            data->scene_mask_alpha_h == data->tex_h &&
+            data->scene_mask_alpha_layer_id == layer->id &&
+            data->scene_mask_alpha_key == alpha_key;
+        if (!alpha_texture_reusable) {
+            std::vector<uint8_t> mask_pixels;
+            if (!render_scene_mask_alpha_pixels(title, *layer, title_time, (int)data->tex_w, (int)data->tex_h, mask_pixels) ||
+                !ensure_scene_mask_alpha_texture(data, data->tex_w, data->tex_h)) {
+                continue;
+            }
+            gs_texture_set_image(data->scene_mask_alpha_texture, mask_pixels.data(), data->tex_w * 4, false);
+            data->scene_mask_alpha_layer_id = layer->id;
+            data->scene_mask_alpha_key = alpha_key;
         }
-        gs_texture_set_image(data->scene_mask_alpha_texture, mask_pixels.data(), data->tex_w * 4, false);
+        if (!data->scene_mask_alpha_texture)
+            continue;
 
         gs_viewport_push();
         gs_projection_push();
@@ -7794,7 +8011,6 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
             gs_blend_state_pop();
             gs_projection_pop();
             gs_viewport_pop();
-            obs_source_release(scene);
             continue;
         }
         gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
@@ -7838,8 +8054,6 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
                 gs_blend_state_pop();
             }
         }
-
-        obs_source_release(scene);
     }
 }
 

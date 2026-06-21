@@ -2515,24 +2515,24 @@ bool CanvasPreview::corner_control_sync(bool *mixed) const
     return have_value ? value : true;
 }
 
-CornerType CanvasPreview::corner_control_type(bool *mixed) const
+double CanvasPreview::corner_control_bevel_roundness(bool *mixed) const
 {
     if (mixed) *mixed = false;
     bool have_value = false;
-    CornerType value = CornerType::Round;
+    double value = 100.0;
     bool is_mixed = false;
     for (const auto &layer : selected_layers()) {
         if (!layer || !layer_supports_corner_radius_handles(*layer))
             continue;
         if (!have_value) {
-            value = layer->corner_type;
+            value = layer->corner_bevel_roundness;
             have_value = true;
-        } else if (layer->corner_type != value) {
+        } else if (std::abs(layer->corner_bevel_roundness - value) > 1e-4) {
             is_mixed = true;
         }
     }
     if (mixed) *mixed = is_mixed;
-    return value;
+    return have_value ? value : 100.0;
 }
 
 QPointF CanvasPreview::corner_radius_handle_view_pos(const Layer &layer,
@@ -2747,13 +2747,16 @@ void CanvasPreview::set_corner_control_sync(bool enabled)
     update();
 }
 
-void CanvasPreview::set_corner_control_type(CornerType type)
+void CanvasPreview::set_corner_control_bevel_roundness(double roundness)
 {
+    roundness = std::clamp(roundness, -100.0, 100.0);
     bool changed = false;
     for (auto &layer : selected_layers()) {
         if (!layer || !layer_supports_corner_radius_handles(*layer))
             continue;
-        layer->corner_type = type;
+        if (std::abs(layer->corner_bevel_roundness - roundness) <= 1e-4)
+            continue;
+        layer->corner_bevel_roundness = (float)roundness;
         changed = true;
     }
     if (!changed) return;
@@ -5750,15 +5753,9 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         auto corner_layer = hit_test_selected_corner_layer(ev->pos(), corner_index);
         if (corner_layer && corner_index >= 0) {
             if (ev->modifiers().testFlag(Qt::AltModifier)) {
-                CornerType next = CornerType::Round;
-                switch (corner_layer->corner_type) {
-                case CornerType::Round: next = CornerType::Concave; break;
-                case CornerType::Concave: next = CornerType::Straight; break;
-                case CornerType::Straight:
-                case CornerType::Cutout:
-                default: next = CornerType::Round; break;
-                }
-                set_corner_control_type(next);
+                const double current = corner_layer->corner_bevel_roundness;
+                const double next = current > 50.0 ? -100.0 : (current < -50.0 ? 0.0 : 100.0);
+                set_corner_control_bevel_roundness(next);
                 ev->accept();
                 return;
             }
@@ -6383,23 +6380,13 @@ void CanvasPreview::keyPressEvent(QKeyEvent *ev)
             auto layer = title_->find_layer(corner_radius_drag_.primary_layer_id);
             if (layer) {
                 const bool forward = ev->key() == Qt::Key_Up;
-                CornerType next = CornerType::Round;
-                switch (layer->corner_type) {
-                case CornerType::Round:
-                    next = forward ? CornerType::Concave : CornerType::Straight;
-                    break;
-                case CornerType::Concave:
-                    next = forward ? CornerType::Straight : CornerType::Round;
-                    break;
-                case CornerType::Straight:
-                case CornerType::Cutout:
-                default:
-                    next = forward ? CornerType::Round : CornerType::Concave;
-                    break;
-                }
+                const double current = layer->corner_bevel_roundness;
+                const double next = forward
+                    ? (current > 50.0 ? -100.0 : (current < -50.0 ? 0.0 : 100.0))
+                    : (current > 50.0 ? 0.0 : (current < -50.0 ? 100.0 : -100.0));
                 for (auto &selected : selected_layers())
                     if (selected && layer_supports_corner_radius_handles(*selected))
-                        selected->corner_type = next;
+                        selected->corner_bevel_roundness = (float)next;
                 dirty_ = true;
                 drag_changed_ = true;
                 invalidate_canvas_overlay_caches();

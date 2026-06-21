@@ -127,6 +127,7 @@ constexpr int kTitleIconViewItemWidth = 172;
 constexpr int kTitleIconViewItemHeight = 126;
 constexpr int kTitleIconViewTextLines = 2;
 constexpr int kTitlePlaylistActiveRole = Qt::UserRole + 20;
+constexpr int kTitleCuedRole = Qt::UserRole + 21;
 constexpr int kLiveCueColumn = 0;
 constexpr int kLiveCacheColumn = 1;
 constexpr int kLiveSelectColumn = 2;
@@ -1725,6 +1726,8 @@ public:
         const auto *list_view = qobject_cast<const QListView *>(option.widget);
         if (list_view && list_view->viewMode() == QListView::ListMode) {
             QStyledItemDelegate::paint(painter, option, index);
+            if (index.data(kTitleCuedRole).toBool())
+                paint_cued_border(painter, option.rect.adjusted(2, 1, -2, -1), 3);
             if (index.data(kTitlePlaylistActiveRole).toBool()) {
                 const QRect badge_rect(option.rect.right() - 28,
                                        option.rect.center().y() - 10,
@@ -1754,6 +1757,8 @@ public:
         const QPixmap pixmap = icon.pixmap(thumb_rect.size());
         if (!pixmap.isNull())
             painter->drawPixmap(thumb_rect.topLeft(), pixmap);
+        if (index.data(kTitleCuedRole).toBool())
+            paint_cued_border(painter, thumb_rect.adjusted(1, 1, -1, -1), 4);
 
         QRect text_rect(item_rect.x(), thumb_rect.bottom() + 6, item_rect.width(),
                         option.fontMetrics.height() * kTitleIconViewTextLines + 4);
@@ -1763,6 +1768,21 @@ public:
                                                  : QPalette::Text));
         const QString display = elide_to_two_lines(index.data(Qt::DisplayRole).toString(), option.fontMetrics, text_rect.width());
         painter->drawText(text_rect, Qt::AlignHCenter | Qt::AlignTop, display);
+    }
+
+private:
+    static void paint_cued_border(QPainter *painter, const QRect &rect, int radius)
+    {
+        if (!painter || rect.isEmpty())
+            return;
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(QColor(220, 36, 36), 2.0);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRoundedRect(QRectF(rect).adjusted(1.0, 1.0, -1.0, -1.0), radius, radius);
+        painter->restore();
     }
 };
 
@@ -3509,6 +3529,7 @@ void TitleDock::populate_list()
         }
         item->setData(Qt::UserRole, title_id);
         item->setData(kTitlePlaylistActiveRole, t->playlist_active);
+        item->setData(kTitleCuedRole, t->current_cue_row >= 0 || t->pending_cue_row >= 0);
         // Layer count hint as tooltip
         item->setToolTip(QStringLiteral("%1\n%2")
             .arg(obsgs_tr("OBSTitles.LayerCountTooltipFormat").arg(t->layers.size()).arg(t->duration),

@@ -208,8 +208,7 @@ private:
     QDoubleSpinBox  *spn_rect_corner_bl_ = nullptr;
     QCheckBox       *chk_corner_lock_ = nullptr;
     QWidget         *row_rect_corners_ = nullptr;
-    QWidget         *row_corner_type_ = nullptr;
-    QButtonGroup    *grp_corner_type_ = nullptr;
+    QDoubleSpinBox  *spn_corner_bevel_roundness_ = nullptr;
     QComboBox       *cmb_shape_type_ = nullptr;
     QButtonGroup    *grp_shape_type_ = nullptr;
     QPushButton     *btn_shape_defaults_ = nullptr;

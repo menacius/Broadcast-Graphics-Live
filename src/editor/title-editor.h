@@ -314,7 +314,7 @@ private:
     QToolButton     *boolean_exclude_button_ = nullptr;
     QWidget         *corner_toolbar_widget_ = nullptr;
     QLabel          *corner_toolbar_label_ = nullptr;
-    QComboBox       *corner_toolbar_type_ = nullptr;
+    QDoubleSpinBox  *corner_toolbar_roundness_ = nullptr;
     QDoubleSpinBox  *corner_toolbar_radius_ = nullptr;
     QCheckBox       *corner_toolbar_sync_ = nullptr;
     QWidget         *point_toolbar_widget_ = nullptr;

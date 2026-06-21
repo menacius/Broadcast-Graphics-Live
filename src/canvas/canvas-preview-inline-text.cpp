@@ -93,6 +93,41 @@ double CanvasPreview::inline_text_visual_scale(const Layer &layer) const
     return std::clamp(view_scale() * std::sqrt(std::max(0.0001, sx * sy)), 0.05, 16.0);
 }
 
+static int inline_text_visual_line_count(const QTextDocument &doc)
+{
+    int count = 0;
+    for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        if (layout)
+            count += layout->lineCount();
+    }
+    return count;
+}
+
+static void apply_inline_text_vertical_distribute(QTextDocument &doc, const Layer &layer,
+                                                  const QRectF &text_rect, double visual_scale)
+{
+    if (layer.align_v != 3 || layer.text_overflow_mode == 2)
+        return;
+
+    const QSizeF natural_size = doc.size();
+    const int line_count = inline_text_visual_line_count(doc);
+    const double target_height = text_rect.height() * visual_scale;
+    if (line_count <= 1 || natural_size.height() >= target_height)
+        return;
+
+    const double extra_gap = (target_height - natural_size.height()) /
+                             (static_cast<double>(line_count) - 1.0);
+    if (extra_gap <= 0.0)
+        return;
+
+    QTextBlockFormat block_format;
+    block_format.setLineHeight(extra_gap, QTextBlockFormat::LineDistanceHeight);
+    QTextCursor cursor(&doc);
+    cursor.select(QTextCursor::Document);
+    cursor.mergeBlockFormat(block_format);
+}
+
 void CanvasPreview::configure_inline_text_editor(const Layer &layer)
 {
     if (!inline_text_editor_) return;
@@ -140,6 +175,7 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
 
     QTextBlockFormat block_format;
     block_format.setAlignment(align);
+    block_format.setLineHeight(0.0, QTextBlockFormat::SingleHeight);
     block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
     block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
     block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
@@ -168,6 +204,7 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
         format_cursor.select(QTextCursor::Document);
         format_cursor.mergeCharFormat(char_format);
     }
+    apply_inline_text_vertical_distribute(*doc, layer, text_rect, visual_scale);
     /*
      * Do not call mergeCurrentCharFormat() while the saved cursor owns a
      * selection. QTextEdit applies that merge to the selected document text,
@@ -375,6 +412,7 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
 
     QTextBlockFormat block_format;
     block_format.setAlignment(align);
+    block_format.setLineHeight(0.0, QTextBlockFormat::SingleHeight);
     block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
     block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
     block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
@@ -383,6 +421,7 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
     QTextCursor format_cursor(&measure_doc);
     format_cursor.select(QTextCursor::Document);
     format_cursor.mergeBlockFormat(block_format);
+    apply_inline_text_vertical_distribute(measure_doc, layer, text_rect, visual_scale);
 
     QSizeF doc_size;
     if (auto *layout = measure_doc.documentLayout()) {

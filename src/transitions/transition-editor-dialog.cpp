@@ -3,6 +3,7 @@
 #include "title-localization.h"
 #include "transition-preset-catalog.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -14,6 +15,7 @@
 #include <QShowEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QMouseEvent>
 #include <QTimer>
 #include <QVector>
 #include <QVBoxLayout>
@@ -23,6 +25,93 @@
 #include <initializer_list>
 
 namespace {
+
+class NumericDragLabel final : public QLabel {
+public:
+    NumericDragLabel(const QString &text, QDoubleSpinBox *spin, QWidget *parent = nullptr)
+        : QLabel(text, parent), spin_(spin)
+    {
+        if (!spin_)
+            return;
+        setToolTip(obsgs_tr("OBSTitles.DragNumericLabelTooltip"));
+        setCursor(Qt::SizeHorCursor);
+    }
+
+    ~NumericDragLabel() override
+    {
+        if (dragging_)
+            QApplication::restoreOverrideCursor();
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !can_drag()) {
+            QLabel::mousePressEvent(event);
+            return;
+        }
+
+        dragging_ = true;
+        drag_start_x_ = event->globalPosition().x();
+        drag_start_value_ = spin_->value();
+        grabMouse(Qt::SizeHorCursor);
+        QApplication::setOverrideCursor(Qt::SizeHorCursor);
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (!dragging_) {
+            QLabel::mouseMoveEvent(event);
+            return;
+        }
+        if (!can_drag()) {
+            finish_drag();
+            event->accept();
+            return;
+        }
+
+        const double delta = event->globalPosition().x() - drag_start_x_;
+        const double next = drag_start_value_ + delta * spin_->singleStep();
+        spin_->setValue(std::clamp(next, spin_->minimum(), spin_->maximum()));
+        event->accept();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (!dragging_ || event->button() != Qt::LeftButton) {
+            QLabel::mouseReleaseEvent(event);
+            return;
+        }
+
+        finish_drag();
+        event->accept();
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        if (!dragging_)
+            QLabel::leaveEvent(event);
+    }
+
+private:
+    bool can_drag() const
+    {
+        return spin_ && spin_->isEnabled() && spin_->isVisible() && isEnabled();
+    }
+
+    void finish_drag()
+    {
+        dragging_ = false;
+        releaseMouse();
+        QApplication::restoreOverrideCursor();
+    }
+
+    QDoubleSpinBox *spin_ = nullptr;
+    bool dragging_ = false;
+    double drag_start_x_ = 0.0;
+    double drag_start_value_ = 0.0;
+};
 
 class TransitionPreviewWidget final : public QWidget {
 public:
@@ -279,6 +368,19 @@ QComboBox *make_combo(QWidget *parent)
     return combo;
 }
 
+QLabel *make_numeric_drag_label(const QString &text, QDoubleSpinBox *spin, QWidget *parent)
+{
+    return new NumericDragLabel(text, spin, parent);
+}
+
+QString transition_settings_display_name(const LayerTransition &transition)
+{
+    QString name = QString::fromStdString(transition.display_name);
+    if (name.endsWith(QStringLiteral(" In"), Qt::CaseInsensitive))
+        name = name.left(name.size() - 3) + QStringLiteral(" In/Out");
+    return name;
+}
+
 } // namespace
 
 TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition,
@@ -286,13 +388,13 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
                                                QWidget *parent)
     : QDialog(parent), transition_(transition)
 {
-    setWindowTitle(obsgs_tr("OBSTitles.TransitionSettingsNamed")
-                       .arg(QString::fromStdString(transition.display_name)));
+    const QString display_name = transition_settings_display_name(transition);
+    setWindowTitle(obsgs_tr("OBSTitles.TransitionSettingsNamed").arg(display_name));
     setModal(true);
     resize(470, 560);
 
     auto *layout = new QVBoxLayout(this);
-    const QString safe_display_name = QString::fromStdString(transition.display_name).toHtmlEscaped();
+    const QString safe_display_name = display_name.toHtmlEscaped();
     auto *title = new QLabel(QStringLiteral("<b>%1</b>").arg(safe_display_name), this);
     layout->addWidget(title);
 
@@ -311,7 +413,7 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     duration_->setSingleStep(0.05);
     duration_->setSuffix(QStringLiteral(" s"));
     duration_->setValue(std::clamp(transition.duration, duration_->minimum(), duration_->maximum()));
-    form->addRow(obsgs_tr("OBSTitles.Duration"), duration_);
+    form->addRow(make_numeric_drag_label(obsgs_tr("OBSTitles.Duration"), duration_, this), duration_);
 
     easing_ = make_combo(this);
     easing_->addItem(obsgs_tr("OBSTitles.Linear"), (int)EasingType::Linear);
@@ -338,39 +440,39 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     direction_->setCurrentIndex(std::max(0, direction_->findData((int)transition.direction)));
     form->addRow(direction_label_, direction_);
 
-    stagger_label_ = new QLabel(obsgs_tr("OBSTitles.Stagger"), this);
     stagger_ = new QDoubleSpinBox(this);
     stagger_->setRange(0.0, 95.0);
     stagger_->setSuffix(QStringLiteral(" %"));
     stagger_->setValue(transition.stagger * 100.0);
+    stagger_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.Stagger"), stagger_, this);
     form->addRow(stagger_label_, stagger_);
 
-    blur_label_ = new QLabel(obsgs_tr("OBSTitles.BlurAmount"), this);
     blur_ = new QDoubleSpinBox(this);
     blur_->setRange(0.0, 256.0);
     blur_->setSuffix(QStringLiteral(" px"));
     blur_->setValue(transition.blur_amount);
+    blur_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.BlurAmount"), blur_, this);
     form->addRow(blur_label_, blur_);
 
-    scale_label_ = new QLabel(obsgs_tr("OBSTitles.StartScale"), this);
     scale_ = new QDoubleSpinBox(this);
     scale_->setRange(-1000.0, 1000.0);
     scale_->setSuffix(QStringLiteral(" %"));
     scale_->setValue(transition.scale_from * 100.0);
+    scale_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.StartScale"), scale_, this);
     form->addRow(scale_label_, scale_);
 
-    offset_label_ = new QLabel(obsgs_tr("OBSTitles.Offset"), this);
     offset_ = new QDoubleSpinBox(this);
     offset_->setRange(0.0, 10000.0);
     offset_->setSuffix(QStringLiteral(" px"));
     offset_->setValue(transition.offset);
+    offset_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.Offset"), offset_, this);
     form->addRow(offset_label_, offset_);
 
-    softness_label_ = new QLabel(obsgs_tr("OBSTitles.Softness"), this);
     softness_ = new QDoubleSpinBox(this);
     softness_->setRange(0.0, 100.0);
     softness_->setSuffix(QStringLiteral(" %"));
     softness_->setValue(transition.softness * 100.0);
+    softness_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.Softness"), softness_, this);
     form->addRow(softness_label_, softness_);
 
     reverse_order_ = new QCheckBox(obsgs_tr("OBSTitles.ReverseOrder"), this);
