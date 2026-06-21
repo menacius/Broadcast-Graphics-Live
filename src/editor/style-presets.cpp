@@ -53,11 +53,36 @@ StylePresetKind stringToKind(const QString &value)
     return value == QStringLiteral("gradient") ? StylePresetKind::Gradient : StylePresetKind::Text;
 }
 
+int normalizedGradientType(int type)
+{
+    switch (std::clamp(type, 0, 4)) {
+    case 1: return 1;
+    case 2: return 2;
+    case 4: return 1;
+    case 0:
+    case 3:
+    default: return 0;
+    }
+}
+
+int normalizedGradientSpread(int spread)
+{
+    return spread == 1 || spread == 2 ? spread : 0;
+}
+
+int gradientSpreadFromPayload(const QJsonObject &o, int fallback)
+{
+    if (!o.contains(QStringLiteral("gradientSpread")) && o.value(QStringLiteral("gradientType")).toInt(0) == 3)
+        return 1;
+    return normalizedGradientSpread(o.value(QStringLiteral("gradientSpread")).toInt(fallback));
+}
+
 QJsonObject gradientPayloadFromLayer(const Layer &layer)
 {
     QJsonObject o;
     o[QStringLiteral("fillType")] = layer.fill_type;
     o[QStringLiteral("gradientType")] = layer.gradient_type;
+    o[QStringLiteral("gradientSpread")] = layer.gradient_spread;
     o[QStringLiteral("startColor")] = QString::number(layer.gradient_start_color, 16);
     o[QStringLiteral("endColor")] = QString::number(layer.gradient_end_color, 16);
     o[QStringLiteral("startPos")] = layer.gradient_start_pos;
@@ -98,7 +123,8 @@ QColor colorFromArgb(uint32_t argb)
 void applyGradientPayload(const QJsonObject &o, Layer &layer)
 {
     layer.fill_type = o.value(QStringLiteral("fillType")).toInt(1);
-    layer.gradient_type = o.value(QStringLiteral("gradientType")).toInt(layer.gradient_type);
+    layer.gradient_spread = gradientSpreadFromPayload(o, layer.gradient_spread);
+    layer.gradient_type = normalizedGradientType(o.value(QStringLiteral("gradientType")).toInt(layer.gradient_type));
     layer.gradient_start_color = parseArgb(o, "startColor", layer.gradient_start_color);
     layer.gradient_end_color = parseArgb(o, "endColor", layer.gradient_end_color);
     layer.gradient_start_pos = float(o.value(QStringLiteral("startPos")).toDouble(layer.gradient_start_pos));
@@ -127,7 +153,8 @@ void applyGradientPayload(const QJsonObject &o, Layer &layer)
 void fillFormatFromGradientPayload(const QJsonObject &o, RichTextCharFormat &format)
 {
     format.fill.type = o.value(QStringLiteral("fillType")).toInt(1);
-    format.fill.gradient_type = o.value(QStringLiteral("gradientType")).toInt(format.fill.gradient_type);
+    format.fill.gradient_spread = gradientSpreadFromPayload(o, format.fill.gradient_spread);
+    format.fill.gradient_type = normalizedGradientType(o.value(QStringLiteral("gradientType")).toInt(format.fill.gradient_type));
     format.fill.gradient_start_color = parseArgb(o, "startColor", format.fill.gradient_start_color);
     format.fill.gradient_end_color = parseArgb(o, "endColor", format.fill.gradient_end_color);
     format.fill.gradient_start_pos = float(o.value(QStringLiteral("startPos")).toDouble(format.fill.gradient_start_pos));

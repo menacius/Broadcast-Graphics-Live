@@ -732,10 +732,13 @@ void EffectsPanel::load_settings()
         auto *grad_type = combo();
         grad_type->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
         grad_type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-        grad_type->addItem(obsgs_tr("OBSTitles.Angle"), 2);
-        grad_type->addItem(obsgs_tr("OBSTitles.Reflected"), 3);
-        grad_type->addItem(obsgs_tr("OBSTitles.Diamond"), 4);
-        grad_type->setCurrentIndex(grad_type->findData(effect->effect_gradient_type));
+        grad_type->addItem(obsgs_tr("OBSTitles.ConicalGradient"), 2);
+        grad_type->setCurrentIndex(std::max(0, grad_type->findData(effect->effect_gradient_type)));
+        auto *grad_spread = combo();
+        grad_spread->addItem(obsgs_tr("OBSTitles.No"), 0);
+        grad_spread->addItem(obsgs_tr("OBSTitles.Repeat"), 2);
+        grad_spread->addItem(obsgs_tr("OBSTitles.Reflect"), 1);
+        grad_spread->setCurrentIndex(std::max(0, grad_spread->findData(effect->effect_gradient_spread)));
         auto *grad_start = color_button(effect->effect_gradient_start_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_gradient_start_color = argb; });
         auto *grad_end = color_button(effect->effect_gradient_end_color, [this](uint32_t argb){ if (selected_effect()) selected_effect()->effect_gradient_end_color = argb; });
         auto *grad_angle = spin(-360.0, 360.0, 1.0); grad_angle->setValue(effect->effect_gradient_angle);
@@ -788,6 +791,7 @@ void EffectsPanel::load_settings()
         add_effect_row(obsgs_tr("OBSTitles.StrokeOpacity"), stroke_opacity);
         add_effect_row(obsgs_tr("OBSTitles.OpacityLabel"), opacity);
         add_effect_row(obsgs_tr("OBSTitles.GradientTypeLabel"), grad_type);
+        add_effect_row(obsgs_tr("OBSTitles.SpreadLabel"), grad_spread);
         add_effect_row(obsgs_tr("OBSTitles.StartColorLabel"), grad_start);
         add_effect_row(obsgs_tr("OBSTitles.EndColorLabel"), grad_end);
         add_effect_row(obsgs_tr("OBSTitles.AngleLabel"), grad_angle);
@@ -802,6 +806,7 @@ void EffectsPanel::load_settings()
 
         connect(fill, QOverload<int>::of(&QComboBox::activated), this, [this, fill](int){ if (selected_effect()) { selected_effect()->effect_fill_type = fill->currentData().toInt(); emit_effect_changed(); }});
         connect(grad_type, QOverload<int>::of(&QComboBox::activated), this, [this, grad_type](int){ if (selected_effect()) { selected_effect()->effect_gradient_type = grad_type->currentData().toInt(); emit_effect_changed(); }});
+        connect(grad_spread, QOverload<int>::of(&QComboBox::activated), this, [this, grad_spread](int){ if (selected_effect()) { selected_effect()->effect_gradient_spread = grad_spread->currentData().toInt(); emit_effect_changed(); }});
         connect(grad_angle, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_gradient_angle = v; emit_effect_changed(); }});
         connect(opacity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_opacity = v; set_animated_value(selected_effect()->opacity_prop, lt, v); emit_effect_changed(); }});
         connect(stroke_width, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_stroke_width = v; set_animated_value(selected_effect()->stroke_width_prop, lt, v); emit_effect_changed(); }});

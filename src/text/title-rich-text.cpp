@@ -34,6 +34,7 @@ static RichTextCharFormat layer_char_format(const Layer &layer)
     f.fill.type = layer.fill_type;
     f.fill.color = layer.text_color;
     f.fill.gradient_type = layer.gradient_type;
+    f.fill.gradient_spread = layer.gradient_spread;
     f.fill.gradient_start_color = layer.gradient_start_color;
     f.fill.gradient_end_color = layer.gradient_end_color;
     f.fill.gradient_start_pos = layer.gradient_start_pos;
@@ -80,6 +81,7 @@ static bool same_format(const RichTextCharFormat &a, const RichTextCharFormat &b
            a.fractions == b.fractions && a.opentype_features == b.opentype_features &&
            a.language == b.language && a.fill.type == b.fill.type &&
            a.fill.color == b.fill.color && a.fill.gradient_type == b.fill.gradient_type &&
+           a.fill.gradient_spread == b.fill.gradient_spread &&
            a.fill.gradient_start_color == b.fill.gradient_start_color &&
            a.fill.gradient_end_color == b.fill.gradient_end_color &&
            a.fill.gradient_start_pos == b.fill.gradient_start_pos &&
@@ -214,6 +216,7 @@ void rich_text_document_sync_layer_mirrors(Layer &layer)
     layer.fill_type = f.fill.type;
     layer.text_color = f.fill.color;
     layer.gradient_type = f.fill.gradient_type;
+    layer.gradient_spread = f.fill.gradient_spread;
     layer.gradient_start_color = f.fill.gradient_start_color;
     layer.gradient_end_color = f.fill.gradient_end_color;
     layer.gradient_start_pos = f.fill.gradient_start_pos;

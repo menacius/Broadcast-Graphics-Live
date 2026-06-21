@@ -2099,7 +2099,7 @@ CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(co
         return g;
 
     g.valid = true;
-    g.radial = layer.gradient_type == 1 || layer.gradient_type == 4;
+    g.radial = layer.gradient_type == 1;
     g.local_rect = box;
     g.center = QPointF(box.left() + (double)layer.gradient_center_x * box.width(),
                        box.top() + (double)layer.gradient_center_y * box.height());
@@ -2310,13 +2310,13 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
         return false;
 
     layer->fill_type = 1;
-    if (layer->gradient_type < 0 || layer->gradient_type > 4)
+    if (layer->gradient_type < 0 || layer->gradient_type > 2)
         layer->gradient_type = 0;
     const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
     gradient_tool_dragging_ = true;
     gradient_tool_start_local_ = local;
     drag_start_selection_bounds_ = selected_canvas_bounds();
-    drag_mode_ = (layer->gradient_type == 1 || layer->gradient_type == 4) ? DragMode::GradientRadius : DragMode::GradientEnd;
+    drag_mode_ = layer->gradient_type == 1 ? DragMode::GradientRadius : DragMode::GradientEnd;
 
     auto normalized = [&](const QPointF &pt) {
         return QPointF((pt.x() - box.left()) / box.width(),
@@ -3411,6 +3411,9 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
         next_layers.push_back(layer);
         if (!layer) continue;
         auto clone = clones_by_original.find(layer->id);
+        /* LayerStack displays title_->layers in reverse order. Inserting the
+         * clone after the source in model order places it directly above the
+         * original in the visible layer list and render stack. */
         if (clone != clones_by_original.end())
             next_layers.push_back(clone->second);
     }

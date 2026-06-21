@@ -187,7 +187,8 @@ struct Layer {
     bool        outline_on_front = false;
     int         outline_alignment = 0;  /* 0=outer, 1=mid/centered, 2=inner */
     bool        outline_antialias = true;
-    int         stroke_gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
+    int         stroke_gradient_type = 0;  /* 0=linear, 1=radial, 2=conical */
+    int         stroke_gradient_spread = 0; /* 0=no/pad, 1=reflect, 2=repeat */
     uint32_t    stroke_gradient_start_color = 0xFFFFFFFF;
     uint32_t    stroke_gradient_end_color   = 0xFF000000;
     float       stroke_gradient_start_pos = 0.0f;
@@ -220,7 +221,8 @@ struct Layer {
     /* ----- Solid / shape ----- */
     uint32_t    fill_color    = 0xFF222222;
     int         fill_type     = 0;  /* 0=solid, 1=gradient */
-    int         gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
+    int         gradient_type = 0;  /* 0=linear, 1=radial, 2=conical */
+    int         gradient_spread = 0; /* 0=no/pad, 1=reflect, 2=repeat */
     uint32_t    gradient_start_color = 0xFF4B6EA8;
     uint32_t    gradient_end_color   = 0xFF1B1B1B;
     float       gradient_start_pos = 0.0f;
@@ -257,7 +259,8 @@ struct Layer {
     float       background_stroke_width = 0.0f;
     float       background_stroke_opacity = 1.0f;
     int         background_stroke_fill_type = 0;  /* reserved: 0=solid */
-    int         background_gradient_type = 0;  /* 0=linear, 1=radial, 2=angle, 3=reflected, 4=diamond */
+    int         background_gradient_type = 0;  /* 0=linear, 1=radial, 2=conical */
+    int         background_gradient_spread = 0; /* 0=no/pad, 1=reflect, 2=repeat */
     uint32_t    background_gradient_start_color = 0xFF4B6EA8;
     uint32_t    background_gradient_end_color   = 0xFF1B1B1B;
     float       background_gradient_start_pos = 0.0f;

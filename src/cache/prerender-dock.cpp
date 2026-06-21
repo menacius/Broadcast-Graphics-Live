@@ -5,23 +5,17 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
-#include <QSignalBlocker>
-#include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace {
 constexpr const char *kPrerenderStartModeKey = "Prerender/StartMode";
 constexpr const char *kPrerenderPlaybackModeKey = "Prerender/PlaybackMode";
-constexpr const char *kPrerenderSkipFramesKey = "Prerender/SkipFrames";
-constexpr const char *kPrerenderSpeedPercentKey = "Prerender/SpeedPercent";
 constexpr const char *kPrerenderPlayAfterRenderingKey = "Prerender/PlayAfterRendering";
-constexpr const char *kPrerenderPlayEveryFrameKey = "Prerender/PlayEveryFrame";
 }
 
 PrerenderDock::PrerenderDock(QWidget *parent)
@@ -30,7 +24,7 @@ PrerenderDock::PrerenderDock(QWidget *parent)
     buildUi();
     connect(&CacheManager::instance(), &CacheManager::queueChanged, this, &PrerenderDock::updateStatus);
     connect(&CacheManager::instance(), &CacheManager::cacheStatesChanged, this, [this]() { updateStatus(); });
-    connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this, &PrerenderDock::updateCacheEnabled);
+    connect(&CacheManager::instance(), &CacheManager::cacheEnabledChanged, this, [this](bool) { updateStatus(); });
     connect(&CacheManager::instance(), &CacheManager::diagnosticsChanged, this, &PrerenderDock::updateStatus);
 }
 
@@ -63,34 +57,14 @@ void PrerenderDock::buildUi()
     playback_mode_->addItems({obsgs_tr("OBSTitles.Loop"), obsgs_tr("OBSTitles.PingPongLoop"), obsgs_tr("OBSTitles.PlayOnce"), obsgs_tr("OBSTitles.PlaybackMode")});
     form->addRow(obsgs_tr("OBSTitles.Mode"), playback_mode_);
 
-    cache_enabled_ = new QCheckBox(obsgs_tr("OBSTitles.EnableCache"), this);
-    cache_enabled_->setChecked(CacheManager::instance().cacheEnabled());
-    form->addRow(QString(), cache_enabled_);
-
     QSettings prerender_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
-
-    skip_frames_ = new QSpinBox(this);
-    skip_frames_->setRange(0, 30);
-    form->addRow(obsgs_tr("OBSTitles.SkipFrames"), skip_frames_);
-
-    speed_percent_ = new QDoubleSpinBox(this);
-    speed_percent_->setRange(1.0, 400.0);
-    speed_percent_->setValue(100.0);
-    speed_percent_->setSuffix(QStringLiteral("%"));
-    form->addRow(obsgs_tr("OBSTitles.Speed"), speed_percent_);
 
     cached_only_ = new QCheckBox(obsgs_tr("OBSTitles.PlayAfterRendering"), this);
     form->addRow(QString(), cached_only_);
 
-    play_every_frame_ = new QCheckBox(obsgs_tr("OBSTitles.PlayEveryFrameEvenIfSlow"), this);
-    form->addRow(QString(), play_every_frame_);
-
     start_mode_->setCurrentIndex(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderStartModeKey), 0).toInt(), 0, start_mode_->count() - 1));
     playback_mode_->setCurrentIndex(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderPlaybackModeKey), 0).toInt(), 0, playback_mode_->count() - 1));
-    skip_frames_->setValue(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderSkipFramesKey), 0).toInt(), skip_frames_->minimum(), skip_frames_->maximum()));
-    speed_percent_->setValue(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderSpeedPercentKey), 100.0).toDouble(), speed_percent_->minimum(), speed_percent_->maximum()));
     cached_only_->setChecked(prerender_settings.value(QString::fromUtf8(kPrerenderPlayAfterRenderingKey), false).toBool());
-    play_every_frame_->setChecked(prerender_settings.value(QString::fromUtf8(kPrerenderPlayEveryFrameKey), false).toBool());
 
     root->addLayout(form);
 
@@ -133,22 +107,12 @@ void PrerenderDock::buildUi()
 
     for (auto *combo : {start_mode_, playback_mode_})
         connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &PrerenderDock::applySettings);
-    connect(skip_frames_, QOverload<int>::of(&QSpinBox::valueChanged), this, &PrerenderDock::applySettings);
-    connect(speed_percent_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &PrerenderDock::applySettings);
     connect(cached_only_, &QCheckBox::toggled, this, &PrerenderDock::applySettings);
-    connect(play_every_frame_, &QCheckBox::toggled, this, &PrerenderDock::applySettings);
-    connect(cache_enabled_, &QCheckBox::toggled, this, [](bool enabled) {
-        CacheManager::instance().setCacheEnabled(enabled);
-    });
     applySettings();
 }
 
 void PrerenderDock::applySettings()
 {
-    const bool play_every_frame = play_every_frame_ && play_every_frame_->isChecked();
-    if (skip_frames_) skip_frames_->setEnabled(!play_every_frame);
-    if (speed_percent_) speed_percent_->setEnabled(!play_every_frame);
-
     CachePlaybackSettings settings;
     settings.from_beginning = start_mode_ && start_mode_->currentIndex() == 1;
     const int playback_index = playback_mode_ ? playback_mode_->currentIndex() : 0;
@@ -156,28 +120,16 @@ void PrerenderDock::applySettings()
                   : playback_index == 2 ? CachePlaybackMode::PlayOnce
                                         : CachePlaybackMode::Loop;
     settings.follow_title_playback_mode = playback_index == 3;
-    settings.skip_frames = play_every_frame ? 0 : (skip_frames_ ? skip_frames_->value() : 0);
-    settings.speed_percent = play_every_frame ? 100.0 : (speed_percent_ ? speed_percent_->value() : 100.0);
+    settings.skip_frames = 0;
+    settings.speed_percent = 100.0;
     settings.cached_frames_only = cached_only_ && cached_only_->isChecked();
-    settings.play_every_frame = play_every_frame;
+    settings.play_every_frame = false;
     CacheManager::instance().setPlaybackSettings(settings);
 
     QSettings prerender_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
     if (start_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderStartModeKey), start_mode_->currentIndex());
     if (playback_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlaybackModeKey), playback_mode_->currentIndex());
-    if (skip_frames_) prerender_settings.setValue(QString::fromUtf8(kPrerenderSkipFramesKey), skip_frames_->value());
-    if (speed_percent_) prerender_settings.setValue(QString::fromUtf8(kPrerenderSpeedPercentKey), speed_percent_->value());
     if (cached_only_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlayAfterRenderingKey), cached_only_->isChecked());
-    if (play_every_frame_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlayEveryFrameKey), play_every_frame_->isChecked());
-}
-
-void PrerenderDock::updateCacheEnabled(bool enabled)
-{
-    if (cache_enabled_ && cache_enabled_->isChecked() != enabled) {
-        QSignalBlocker blocker(cache_enabled_);
-        cache_enabled_->setChecked(enabled);
-    }
-    updateStatus();
 }
 
 void PrerenderDock::updateStatus()

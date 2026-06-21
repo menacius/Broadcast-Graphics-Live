@@ -51,6 +51,27 @@ static double finite_or(double value, double fallback)
     return std::isfinite(value) ? value : fallback;
 }
 
+static int normalize_gradient_type(int type)
+{
+    switch (std::clamp(type, 0, 4)) {
+    case 1:
+        return 1; /* radial */
+    case 2:
+        return 2; /* conical; legacy Angle used the same conical renderer */
+    case 4:
+        return 1; /* legacy Diamond falls back to radial */
+    case 0:
+    case 3:
+    default:
+        return 0; /* linear; legacy Reflected is represented by spread */
+    }
+}
+
+static int normalize_gradient_spread(int spread)
+{
+    return spread == 1 || spread == 2 ? spread : 0;
+}
+
 static std::string current_iso_utc_string()
 {
     const std::time_t now = std::time(nullptr);
@@ -153,6 +174,15 @@ static int json_int(const json &j, const char *key, int fallback)
     if (parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max())
         return fallback;
     return (int)parsed;
+}
+
+static int gradient_spread_from_json(const json &j, const char *spread_key,
+                                     const char *type_key, int fallback_spread = 0)
+{
+    const int legacy_type = std::clamp(json_int(j, type_key, 0), 0, 4);
+    if (!j.contains(spread_key) && legacy_type == 3)
+        return 1; /* legacy Reflected */
+    return normalize_gradient_spread(json_int(j, spread_key, fallback_spread));
 }
 
 static double json_double(const json &j, const char *key, double fallback)
@@ -893,6 +923,7 @@ static std::vector<BezierPathPoint> bezier_path_points_from_json(const json &j)
 static json rich_fill_to_json(const RichTextFill &f)
 {
     return {{"type", f.type}, {"color", f.color}, {"gradient_type", f.gradient_type},
+            {"gradient_spread", f.gradient_spread},
             {"gradient_start_color", f.gradient_start_color}, {"gradient_end_color", f.gradient_end_color},
             {"gradient_start_pos", f.gradient_start_pos}, {"gradient_end_pos", f.gradient_end_pos},
             {"gradient_start_opacity", f.gradient_start_opacity}, {"gradient_end_opacity", f.gradient_end_opacity},
@@ -908,7 +939,8 @@ static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallb
     if (!j.is_object()) return f;
     f.type = std::clamp(json_int(j, "type", f.type), 0, 1);
     f.color = json_color(j, "color", f.color);
-    f.gradient_type = std::clamp(json_int(j, "gradient_type", f.gradient_type), 0, 4);
+    f.gradient_spread = gradient_spread_from_json(j, "gradient_spread", "gradient_type", f.gradient_spread);
+    f.gradient_type = normalize_gradient_type(json_int(j, "gradient_type", f.gradient_type));
     f.gradient_start_color = json_color(j, "gradient_start_color", f.gradient_start_color);
     f.gradient_end_color = json_color(j, "gradient_end_color", f.gradient_end_color);
     f.gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "gradient_start_pos", f.gradient_start_pos), f.gradient_start_pos), 0.0, 1.0);
@@ -1208,6 +1240,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_corner_radius_bl", effect.effect_corner_radius_bl},
                            {"effect_corner_type", effect.effect_corner_type},
                            {"effect_gradient_type", effect.effect_gradient_type},
+                           {"effect_gradient_spread", effect.effect_gradient_spread},
                            {"effect_gradient_start_color", effect.effect_gradient_start_color},
                            {"effect_gradient_end_color", effect.effect_gradient_end_color},
                            {"effect_gradient_start_pos", effect.effect_gradient_start_pos},
@@ -1312,6 +1345,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["outline_alignment"] = l.outline_alignment;
     j["outline_antialias"] = l.outline_antialias;
     j["stroke_gradient_type"] = l.stroke_gradient_type;
+    j["stroke_gradient_spread"] = l.stroke_gradient_spread;
     j["stroke_gradient_start_color"] = l.stroke_gradient_start_color;
     j["stroke_gradient_end_color"] = l.stroke_gradient_end_color;
     j["stroke_gradient_start_pos"] = l.stroke_gradient_start_pos;
@@ -1343,6 +1377,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["fill_color"]    = l.fill_color;
     j["fill_type"]     = l.fill_type;
     j["gradient_type"] = l.gradient_type;
+    j["gradient_spread"] = l.gradient_spread;
     j["gradient_start_color"] = l.gradient_start_color;
     j["gradient_end_color"] = l.gradient_end_color;
     j["gradient_start_pos"] = l.gradient_start_pos;
@@ -1379,6 +1414,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["background_stroke_opacity"] = l.background_stroke_opacity;
     j["background_stroke_fill_type"] = l.background_stroke_fill_type;
     j["background_gradient_type"] = l.background_gradient_type;
+    j["background_gradient_spread"] = l.background_gradient_spread;
     j["background_gradient_start_color"] = l.background_gradient_start_color;
     j["background_gradient_end_color"] = l.background_gradient_end_color;
     j["background_gradient_start_pos"] = l.background_gradient_start_pos;
@@ -1584,7 +1620,11 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_corner_radius_br = (float)std::clamp(finite_or(json_double(effect_json, "effect_corner_radius_br", effect.effect_corner_radius_br), effect.effect_corner_radius_br), 0.0, (double)kMaxCanvasDimension);
             effect.effect_corner_radius_bl = (float)std::clamp(finite_or(json_double(effect_json, "effect_corner_radius_bl", effect.effect_corner_radius_bl), effect.effect_corner_radius_bl), 0.0, (double)kMaxCanvasDimension);
             effect.effect_corner_type = std::clamp(json_int(effect_json, "effect_corner_type", effect.effect_corner_type), 0, 3);
-            effect.effect_gradient_type = std::clamp(json_int(effect_json, "effect_gradient_type", effect.effect_gradient_type), 0, 4);
+            effect.effect_gradient_spread = gradient_spread_from_json(effect_json, "effect_gradient_spread",
+                                                                       "effect_gradient_type",
+                                                                       effect.effect_gradient_spread);
+            effect.effect_gradient_type = normalize_gradient_type(json_int(effect_json, "effect_gradient_type",
+                                                                           effect.effect_gradient_type));
             effect.effect_gradient_start_color = json_color(effect_json, "effect_gradient_start_color", effect.effect_gradient_start_color);
             effect.effect_gradient_end_color = json_color(effect_json, "effect_gradient_end_color", effect.effect_gradient_end_color);
             effect.effect_gradient_start_pos = (float)std::clamp(finite_or(json_double(effect_json, "effect_gradient_start_pos", effect.effect_gradient_start_pos), effect.effect_gradient_start_pos), 0.0, 1.0);
@@ -1725,7 +1765,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->outline_on_front = json_bool(j, "outline_on_front", false);
     l->outline_alignment = std::clamp(json_int(j, "outline_alignment", 0), 0, 2);
     l->outline_antialias = json_bool(j, "outline_antialias", true);
-    l->stroke_gradient_type = std::clamp(json_int(j, "stroke_gradient_type", 0), 0, 4);
+    l->stroke_gradient_spread = gradient_spread_from_json(j, "stroke_gradient_spread", "stroke_gradient_type", 0);
+    l->stroke_gradient_type = normalize_gradient_type(json_int(j, "stroke_gradient_type", 0));
     l->stroke_gradient_start_color = json_color(j, "stroke_gradient_start_color", (uint32_t)0xFFFFFFFF);
     l->stroke_gradient_end_color = json_color(j, "stroke_gradient_end_color", l->stroke_color);
     l->stroke_gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "stroke_gradient_start_pos", 0.0), 0.0), 0.0, 1.0);
@@ -1766,7 +1807,8 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
 
     l->fill_color    = json_color(j, "fill_color", (uint32_t)0xFF222222);
     l->fill_type     = std::clamp(json_int(j, "fill_type", 0), 0, 1);
-    l->gradient_type = std::clamp(json_int(j, "gradient_type", 0), 0, 4);
+    l->gradient_spread = gradient_spread_from_json(j, "gradient_spread", "gradient_type", 0);
+    l->gradient_type = normalize_gradient_type(json_int(j, "gradient_type", 0));
     l->gradient_start_color = json_color(j, "gradient_start_color", (uint32_t)0xFF4B6EA8);
     l->gradient_end_color = json_color(j, "gradient_end_color", (uint32_t)0xFF1B1B1B);
     l->gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "gradient_start_pos", 0.0), 0.0), 0.0, 1.0);
@@ -1804,7 +1846,11 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->background_stroke_width = (float)std::clamp(finite_or(json_double(j, "background_stroke_width", 0.0), 0.0), 0.0, (double)kMaxCanvasDimension);
     l->background_stroke_opacity = (float)std::clamp(finite_or(json_double(j, "background_stroke_opacity", 1.0), 1.0), 0.0, 1.0);
     l->background_stroke_fill_type = std::clamp(json_int(j, "background_stroke_fill_type", 0), 0, 1);
-    l->background_gradient_type = std::clamp(json_int(j, "background_gradient_type", l->gradient_type), 0, 4);
+    l->background_gradient_spread = gradient_spread_from_json(j, "background_gradient_spread",
+                                                             "background_gradient_type",
+                                                             l->gradient_spread);
+    l->background_gradient_type = normalize_gradient_type(json_int(j, "background_gradient_type",
+                                                                  l->gradient_type));
     l->background_gradient_start_color = json_color(j, "background_gradient_start_color", l->gradient_start_color);
     l->background_gradient_end_color = json_color(j, "background_gradient_end_color", l->gradient_end_color);
     l->background_gradient_start_pos = (float)std::clamp(finite_or(json_double(j, "background_gradient_start_pos", l->gradient_start_pos), l->gradient_start_pos), 0.0, 1.0);
@@ -1954,6 +2000,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_corner_radius_bl = l->background_corner_radius_bl;
             effect.effect_corner_type = (int)l->background_corner_type;
             effect.effect_gradient_type = l->background_gradient_type;
+            effect.effect_gradient_spread = l->background_gradient_spread;
             effect.effect_gradient_start_color = l->background_gradient_start_color;
             effect.effect_gradient_end_color = l->background_gradient_end_color;
             effect.effect_gradient_start_pos = l->background_gradient_start_pos;
@@ -2017,6 +2064,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_on_front = l->outline_on_front;
             effect.effect_antialias = l->outline_antialias;
             effect.effect_gradient_type = l->stroke_gradient_type;
+            effect.effect_gradient_spread = l->stroke_gradient_spread;
             effect.effect_gradient_start_color = l->stroke_gradient_start_color;
             effect.effect_gradient_end_color = l->stroke_gradient_end_color;
             effect.effect_gradient_start_pos = l->stroke_gradient_start_pos;

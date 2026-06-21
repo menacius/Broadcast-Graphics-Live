@@ -1246,7 +1246,47 @@ static void apply_base_gradient_stops(QGradient &gradient,
     apply_extra_gradient_stops(gradient, extra_stops, opacity);
 }
 
+static int normalized_gradient_type(int gradient_type)
+{
+    switch (std::clamp(gradient_type, 0, 4)) {
+    case 1: return 1;
+    case 2: return 2;
+    case 4: return 1;
+    case 0:
+    case 3:
+    default: return 0;
+    }
+}
+
+static int normalized_gradient_spread(int gradient_spread, int gradient_type)
+{
+    if (gradient_spread == 1 || gradient_spread == 2)
+        return gradient_spread;
+    return std::clamp(gradient_type, 0, 4) == 3 ? 1 : 0;
+}
+
+static QGradient::Spread qt_gradient_spread(int gradient_spread, int gradient_type)
+{
+    switch (normalized_gradient_spread(gradient_spread, gradient_type)) {
+    case 1: return QGradient::ReflectSpread;
+    case 2: return QGradient::RepeatSpread;
+    case 0:
+    default: return QGradient::PadSpread;
+    }
+}
+
+static cairo_extend_t cairo_gradient_extend(int gradient_spread, int gradient_type)
+{
+    switch (normalized_gradient_spread(gradient_spread, gradient_type)) {
+    case 1: return CAIRO_EXTEND_REFLECT;
+    case 2: return CAIRO_EXTEND_REPEAT;
+    case 0:
+    default: return CAIRO_EXTEND_PAD;
+    }
+}
+
 static QBrush make_gradient_brush(int gradient_type,
+                                  int gradient_spread,
                                   const QRectF &box,
                                   double opacity,
                                   double center_x, double center_y,
@@ -1256,7 +1296,8 @@ static QBrush make_gradient_brush(int gradient_type,
                                   double end_pos, uint32_t end_color, double end_opacity,
                                   const std::vector<GradientStop> &extra_stops)
 {
-    const int type = std::clamp(gradient_type, 0, 4);
+    const int type = normalized_gradient_type(gradient_type);
+    const QGradient::Spread spread = qt_gradient_spread(gradient_spread, gradient_type);
     const double cx = box.left() + center_x * box.width();
     const double cy = box.top() + center_y * box.height();
     const double safe_scale = std::clamp(scale, 0.01, 100.0);
@@ -1265,12 +1306,12 @@ static QBrush make_gradient_brush(int gradient_type,
     const double dx = std::cos(angle) * length;
     const double dy = std::sin(angle) * length;
 
-    if (type == 1 || type == 4) {
+    if (type == 1) {
         const double radius = std::max(box.width(), box.height()) * 0.5 * safe_scale;
         QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
-                                 type == 1 ? QPointF(box.left() + focal_x * box.width(),
-                                                     box.top() + focal_y * box.height())
-                                           : QPointF(cx, cy));
+                                 QPointF(box.left() + focal_x * box.width(),
+                                         box.top() + focal_y * box.height()));
+        gradient.setSpread(spread);
         apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
                                   end_pos, end_color, end_opacity, extra_stops, opacity);
         return QBrush(gradient);
@@ -1284,8 +1325,7 @@ static QBrush make_gradient_brush(int gradient_type,
     }
 
     QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
-    if (type == 3)
-        gradient.setSpread(QGradient::ReflectSpread);
+    gradient.setSpread(spread);
     apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
                               end_pos, end_color, end_opacity, extra_stops, opacity);
     return QBrush(gradient);
@@ -1293,7 +1333,7 @@ static QBrush make_gradient_brush(int gradient_type,
 
 static QBrush gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
 {
-    return make_gradient_brush(layer.gradient_type, box,
+    return make_gradient_brush(layer.gradient_type, layer.gradient_spread, box,
                                std::clamp((double)layer.gradient_opacity * layer_opacity, 0.0, 1.0),
                                layer.gradient_center_x, layer.gradient_center_y,
                                layer.gradient_focal_x, layer.gradient_focal_y,
@@ -1311,7 +1351,7 @@ static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &b
 {
     const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
     if (!effect) return QBrush(Qt::NoBrush);
-    return make_gradient_brush(effect->effect_gradient_type, box,
+    return make_gradient_brush(effect->effect_gradient_type, effect->effect_gradient_spread, box,
                                std::clamp((double)effect->effect_gradient_opacity * layer_opacity, 0.0, 1.0),
                                effect->effect_gradient_center_x, effect->effect_gradient_center_y,
                                effect->effect_gradient_focal_x, effect->effect_gradient_focal_y,
@@ -1325,7 +1365,7 @@ static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &b
 
 static QBrush stroke_gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
 {
-    return make_gradient_brush(layer.stroke_gradient_type, box,
+    return make_gradient_brush(layer.stroke_gradient_type, layer.stroke_gradient_spread, box,
                                std::clamp((double)layer.stroke_gradient_opacity * layer_opacity, 0.0, 1.0),
                                layer.stroke_gradient_center_x, layer.stroke_gradient_center_y,
                                layer.stroke_gradient_focal_x, layer.stroke_gradient_focal_y,
@@ -1346,7 +1386,8 @@ static cairo_pattern_t *create_fill_gradient_pattern(const Layer &layer, double 
     const double start_pos = std::clamp((double)layer.gradient_start_pos, 0.0, 1.0);
     const double end_pos = std::clamp((double)layer.gradient_end_pos, 0.0, 1.0);
     cairo_pattern_t *pattern = nullptr;
-    if (layer.gradient_type == 1 || layer.gradient_type == 4) {
+    const int type = normalized_gradient_type(layer.gradient_type);
+    if (type == 1) {
         const double radius = std::max(w, h) * 0.5 * scale;
         const double fx = x + (double)layer.gradient_focal_x * w;
         const double fy = y + (double)layer.gradient_focal_y * h;
@@ -1366,7 +1407,7 @@ static cairo_pattern_t *create_fill_gradient_pattern(const Layer &layer, double 
     add_stop(end_pos, layer.gradient_end_color, layer.gradient_end_opacity);
     for (const auto &stop : layer.gradient_stops)
         add_stop(stop.position, stop.color, stop.opacity);
-    cairo_pattern_set_extend(pattern, layer.gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
+    cairo_pattern_set_extend(pattern, cairo_gradient_extend(layer.gradient_spread, layer.gradient_type));
     return pattern;
 }
 
@@ -1379,7 +1420,8 @@ static cairo_pattern_t *create_stroke_gradient_pattern(const Layer &layer, doubl
     const double start_pos = std::clamp((double)layer.stroke_gradient_start_pos, 0.0, 1.0);
     const double end_pos = std::clamp((double)layer.stroke_gradient_end_pos, 0.0, 1.0);
     cairo_pattern_t *pattern = nullptr;
-    if (layer.stroke_gradient_type == 1 || layer.stroke_gradient_type == 4) {
+    const int type = normalized_gradient_type(layer.stroke_gradient_type);
+    if (type == 1) {
         const double radius = std::max(w, h) * 0.5 * scale;
         const double fx = x + (double)layer.stroke_gradient_focal_x * w;
         const double fy = y + (double)layer.stroke_gradient_focal_y * h;
@@ -1399,7 +1441,7 @@ static cairo_pattern_t *create_stroke_gradient_pattern(const Layer &layer, doubl
     add_stop(end_pos, layer.stroke_gradient_end_color, layer.stroke_gradient_end_opacity);
     for (const auto &stop : layer.stroke_gradient_stops)
         add_stop(stop.position, stop.color, stop.opacity);
-    cairo_pattern_set_extend(pattern, layer.stroke_gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
+    cairo_pattern_set_extend(pattern, cairo_gradient_extend(layer.stroke_gradient_spread, layer.stroke_gradient_type));
     return pattern;
 }
 
@@ -1421,7 +1463,8 @@ static cairo_pattern_t *create_background_gradient_pattern_for_effect(const Laye
     const double start_pos = std::clamp((double)effect.effect_gradient_start_pos, 0.0, 1.0);
     const double end_pos = std::clamp((double)effect.effect_gradient_end_pos, 0.0, 1.0);
     cairo_pattern_t *pattern = nullptr;
-    if (effect.effect_gradient_type == 1 || effect.effect_gradient_type == 4) {
+    const int type = normalized_gradient_type(effect.effect_gradient_type);
+    if (type == 1) {
         const double radius = std::max(w, h) * 0.5 * scale;
         const double fx = x + (double)effect.effect_gradient_focal_x * w;
         const double fy = y + (double)effect.effect_gradient_focal_y * h;
@@ -1439,7 +1482,7 @@ static cairo_pattern_t *create_background_gradient_pattern_for_effect(const Laye
     };
     add_stop(start_pos, effect.effect_gradient_start_color, effect.effect_gradient_start_opacity);
     add_stop(end_pos, effect.effect_gradient_end_color, effect.effect_gradient_end_opacity);
-    cairo_pattern_set_extend(pattern, effect.effect_gradient_type == 3 ? CAIRO_EXTEND_REFLECT : CAIRO_EXTEND_PAD);
+    cairo_pattern_set_extend(pattern, cairo_gradient_extend(effect.effect_gradient_spread, effect.effect_gradient_type));
     return pattern;
 }
 
@@ -2468,6 +2511,7 @@ static bool rich_text_format_differs_from_default(const RichTextCharFormat &a, c
            a.opentype_features != b.opentype_features || a.language != b.language ||
            a.fill.type != b.fill.type || a.fill.color != b.fill.color ||
            a.fill.gradient_type != b.fill.gradient_type ||
+           a.fill.gradient_spread != b.fill.gradient_spread ||
            a.fill.gradient_start_color != b.fill.gradient_start_color ||
            a.fill.gradient_end_color != b.fill.gradient_end_color ||
            std::abs(a.fill.gradient_start_pos - b.fill.gradient_start_pos) >= 0.0001f ||
@@ -2533,7 +2577,7 @@ static QBrush rich_text_fill_brush(const RichTextFill &fill, const QRectF &box)
     if (fill.type != 1)
         return QBrush(color_from_argb(fill.color));
 
-    return make_gradient_brush(fill.gradient_type, box,
+    return make_gradient_brush(fill.gradient_type, fill.gradient_spread, box,
                                std::clamp((double)fill.gradient_opacity, 0.0, 1.0),
                                fill.gradient_center_x, fill.gradient_center_y,
                                fill.gradient_focal_x, fill.gradient_focal_y,

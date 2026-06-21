@@ -95,23 +95,14 @@ void ForegroundBackgroundSwatch::paintEvent(QPaintEvent *)
                 brush = QBrush(grad);
                 break;
             }
-            case 3: { // reflected
-                QLinearGradient grad(inner.left(), inner.center().y(), inner.right(), inner.center().y());
-                grad.setColorAt(0.0, fill.end);
-                grad.setColorAt(0.5, fill.start);
-                grad.setColorAt(1.0, fill.end);
-                brush = QBrush(grad);
-                break;
-            }
-            case 4: { // diamond-style preview approximation
-                QRadialGradient grad(inner.center(), std::max(inner.width(), inner.height()) / 2.0);
+            case 2: { // conical
+                QConicalGradient grad(inner.center(), 0.0);
                 grad.setColorAt(0.0, fill.start);
-                grad.setColorAt(0.55, fill.start);
+                grad.setColorAt(0.5, fill.end);
                 grad.setColorAt(1.0, fill.end);
                 brush = QBrush(grad);
                 break;
             }
-            case 2: // angle: compact diagonal preview
             default: {
                 QLinearGradient grad(inner.topLeft(), inner.bottomRight());
                 grad.setColorAt(0.0, fill.start);

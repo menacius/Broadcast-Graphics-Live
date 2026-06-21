@@ -60,6 +60,7 @@ class EffectsPanel;
 class ToolsSidebar;
 class TitlePropertiesPanel;
 class PrerenderDock;
+class ResponsiveSwatchGrid;
 class QEvent;
 class QKeyEvent;
 class QContextMenuEvent;
@@ -72,7 +73,6 @@ class QMenuBar;
 class QMenu;
 class QActionGroup;
 class QVBoxLayout;
-class QGridLayout;
 class QTextEdit;
 struct RichTextCharFormat;
 
@@ -209,6 +209,9 @@ private:
     void load_new_layer_defaults();
     void save_new_layer_defaults() const;
     void open_default_sidebar_color_popup(bool foreground);
+    enum class EditorTool { Selection, DirectSelection, Shape, Pen, Text, Image, ColorPicker, Gradient };
+    void activate_editor_tool(EditorTool tool);
+    void handle_gradient_editor_tool_request(bool active);
     void load_editor_layout();
     void save_editor_layout() const;
     void reset_default_layout();
@@ -255,7 +258,7 @@ private:
     QDockWidget     *timeline_dock_ = nullptr;
     QDockWidget     *prerender_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
-    QGridLayout     *recent_color_swatches_grid_ = nullptr;
+    ResponsiveSwatchGrid *recent_color_swatches_grid_ = nullptr;
     std::vector<QToolButton *> recent_color_swatch_buttons_;
     struct ColorLibraryColor {
         QString name;
@@ -274,12 +277,15 @@ private:
     QToolButton     *color_library_rename_button_ = nullptr;
     QToolButton     *color_library_delete_button_ = nullptr;
     QWidget         *color_library_swatch_widget_ = nullptr;
-    QGridLayout     *color_library_swatches_grid_ = nullptr;
+    ResponsiveSwatchGrid *color_library_swatches_grid_ = nullptr;
     ToolsSidebar    *tools_sidebar_ = nullptr;
     PrerenderDock   *prerender_panel_ = nullptr;
     QColor           default_foreground_color_ = QColor(34, 34, 34);
     QColor           default_background_color_ = QColor(255, 255, 255);
     bool             reopen_color_tab_after_canvas_pick_ = false;
+    EditorTool       current_editor_tool_ = EditorTool::Selection;
+    EditorTool       tool_before_gradient_editor_ = EditorTool::Selection;
+    bool             gradient_editor_tool_override_active_ = false;
     Layer            default_new_layer_style_;
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;

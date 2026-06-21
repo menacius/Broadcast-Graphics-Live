@@ -225,6 +225,7 @@ private:
     QWidget         *row_fill_type_ = nullptr;
     QGroupBox       *gradient_box_ = nullptr;
     QComboBox       *cmb_gradient_type_ = nullptr;
+    QComboBox       *cmb_gradient_spread_ = nullptr;
     QPushButton     *btn_gradient_start_color_ = nullptr;
     QPushButton     *btn_gradient_end_color_ = nullptr;
     QDoubleSpinBox  *spn_gradient_start_pos_ = nullptr;

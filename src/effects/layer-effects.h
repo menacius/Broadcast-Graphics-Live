@@ -92,7 +92,8 @@ struct LayerEffect {
     float effect_corner_radius_br = 0.0f;
     float effect_corner_radius_bl = 0.0f;
     int effect_corner_type = 0;
-    int effect_gradient_type = 0;
+    int effect_gradient_type = 0; /* 0=linear, 1=radial, 2=conical */
+    int effect_gradient_spread = 0; /* 0=no/pad, 1=reflect, 2=repeat */
     uint32_t effect_gradient_start_color = 0xFF4B6EA8;
     uint32_t effect_gradient_end_color = 0xFF1B1B1B;
     float effect_gradient_start_pos = 0.0f;

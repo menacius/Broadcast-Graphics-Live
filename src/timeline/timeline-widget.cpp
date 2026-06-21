@@ -692,15 +692,6 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     /* Background */
     p.fillRect(dirty, window);
 
-    /* Compact ruler/header.  Keep this height matched with LayerStack's
-     * column header so the first layer row starts at the same Y position
-     * in both panes. */
-    if (dirty.top() < rh) {
-        p.fillRect(QRect(0, 0, W, rh).intersected(dirty), ruler_bg);
-        p.setPen(border);
-        p.drawLine(0, rh - 1, W, rh - 1);
-    }
-
     double dur = title_ ? title_->duration : 10.0;
     double fps = obs_frame_rate();
     double frame_step = obs_frame_duration();
@@ -708,7 +699,21 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     int last_frame = (int)std::ceil((scroll_x_ + dirty.right()) / pixels_per_sec_ / frame_step) + 1;
     int label_every = std::max(1, (int)std::ceil(55.0 / (pixels_per_sec_ * frame_step)));
 
-    if (dirty.top() < rh) {
+    auto draw_header = [&]() {
+        const QRect header_dirty = dirty.intersected(QRect(0, 0, W, rh));
+        if (header_dirty.isEmpty())
+            return;
+
+        p.save();
+        p.setClipRect(header_dirty);
+
+        /* Compact ruler/header. Keep this height matched with LayerStack's
+         * column header so the first layer row starts at the same Y position
+         * in both panes. */
+        p.fillRect(QRect(0, 0, W, rh), ruler_bg);
+        p.setPen(border);
+        p.drawLine(0, rh - 1, W, rh - 1);
+
         for (int frame = first_frame; frame <= last_frame; ++frame) {
             double t = frame * frame_step;
             if (t > dur + frame_step) break;
@@ -728,52 +733,49 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 p.drawText(x + 2, rh - 2, text);
             }
         }
-    }
 
-    if (title_ && dirty.top() < rh) {
-        const QString title_id = QString::fromStdString(title_->id);
-        const int cache_y = rh - 14;
-        const int cache_h = 5;
-        const int frame_w = std::max(1, (int)std::ceil(pixels_per_sec_ * frame_step));
-        auto state_color = [](FrameCacheState state, bool static_frame) {
-            switch (state) {
-            case FrameCacheState::Queued: return QColor(96, 96, 96);
-            case FrameCacheState::Rendering: return QColor(255, 202, 74);
-            case FrameCacheState::CachedRam:
-                /* Dynamic RAM frames stay bright green; visually static/reused
-                 * RAM frames are darker so the user can see cache reuse spans. */
-                return static_frame ? QColor(21, 112, 67) : QColor(39, 186, 103);
-            case FrameCacheState::CachedDisk:
-                /* Disk-resident static frames are blue, distinct from RAM. */
-                return static_frame ? QColor(45, 105, 190) : QColor(74, 144, 226);
-            case FrameCacheState::Stale: return QColor(214, 90, 90);
-            case FrameCacheState::Disabled: return QColor(95, 95, 95);
-            case FrameCacheState::NotCached:
-            default: return QColor(0, 0, 0, 0);
+        if (title_) {
+            const int cache_y = rh - 14;
+            const int cache_h = 5;
+            const int frame_w = std::max(1, (int)std::ceil(pixels_per_sec_ * frame_step));
+            auto state_color = [](FrameCacheState state, bool static_frame) {
+                switch (state) {
+                case FrameCacheState::Queued: return QColor(96, 96, 96);
+                case FrameCacheState::Rendering: return QColor(255, 202, 74);
+                case FrameCacheState::CachedRam:
+                    /* Dynamic RAM frames stay bright green; visually static/reused
+                     * RAM frames are darker so the user can see cache reuse spans. */
+                    return static_frame ? QColor(21, 112, 67) : QColor(39, 186, 103);
+                case FrameCacheState::CachedDisk:
+                    /* Disk-resident static frames are blue, distinct from RAM. */
+                    return static_frame ? QColor(45, 105, 190) : QColor(74, 144, 226);
+                case FrameCacheState::Stale: return QColor(214, 90, 90);
+                case FrameCacheState::Disabled: return QColor(95, 95, 95);
+                case FrameCacheState::NotCached:
+                default: return QColor(0, 0, 0, 0);
+                }
+            };
+            const bool cache_disabled = !CacheManager::instance().cacheEnabled() ||
+                CacheManager::instance().titleCacheability(title_) == TitleCacheability::NonCacheable;
+            if (cache_disabled) {
+                p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled, false));
+            } else {
+                for (int frame = first_frame; frame <= last_frame; ++frame) {
+                    const FrameCacheState state = CacheManager::instance().displayStateForFrame(title_, frame);
+                    if (state == FrameCacheState::NotCached) continue;
+                    const bool static_frame = (state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk) &&
+                        CacheManager::instance().displayFrameIsStatic(title_, frame);
+                    const QColor color = state_color(state, static_frame);
+                    if (color.alpha() == 0) continue;
+                    const int x = time_to_x(frame * frame_step);
+                    p.fillRect(QRect(x, cache_y, frame_w, cache_h), color);
+                }
             }
-        };
-        const bool cache_disabled = !CacheManager::instance().cacheEnabled() ||
-            CacheManager::instance().titleCacheability(title_) == TitleCacheability::NonCacheable;
-        if (cache_disabled) {
-            p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled, false));
-        } else {
-            for (int frame = first_frame; frame <= last_frame; ++frame) {
-                const FrameCacheState state = CacheManager::instance().displayStateForFrame(title_, frame);
-                if (state == FrameCacheState::NotCached) continue;
-                const bool static_frame = (state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk) &&
-                    CacheManager::instance().displayFrameIsStatic(title_, frame);
-                const QColor color = state_color(state, static_frame);
-                if (color.alpha() == 0) continue;
-                const int x = time_to_x(frame * frame_step);
-                p.fillRect(QRect(x, cache_y, frame_w, cache_h), color);
-            }
+            p.setPen(with_alpha(text, 70));
+            p.drawLine(0, cache_y + cache_h, W, cache_y + cache_h);
         }
-        p.setPen(with_alpha(text, 70));
-        p.drawLine(0, cache_y + cache_h, W, cache_y + cache_h);
-    }
 
-    if (title_ && dirty.intersects(QRect(0, 0, W, H))) {
-        if (title_->playback_mode == 1) {
+        if (title_ && title_->playback_mode == 1) {
             int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, dur));
             int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, dur));
             if (loop_x1 > loop_x0) {
@@ -786,7 +788,7 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, obsgs_tr("OBSTitles.LoopOut"));
             }
         }
-        if (title_->playback_mode == 2) {
+        if (title_ && title_->playback_mode == 2) {
             int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, dur));
             p.setPen(QPen(pause_color, 2));
             p.drawLine(pause_x, 12, pause_x, rh);
@@ -799,97 +801,106 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             p.drawText(pause_x + 4, 22, 100, 16, Qt::AlignVCenter, obsgs_tr("OBSTitles.Pause"));
             p.setBrush(Qt::NoBrush);
         }
-    }
+        p.restore();
+    };
 
     /* Layer/property rows.  This uses the same row model as LayerStack so
      * keyframed property rows stay vertically aligned with the layer list.
      */
-    const int first_dirty_row = std::max(0, (dirty.top() - rh + scroll_y_) / rowh);
-    const int last_dirty_row = (dirty.bottom() - rh + scroll_y_) / rowh;
-    const auto rows = visible_timeline_rows(title_, first_dirty_row, last_dirty_row);
-    for (const auto &visible_row : rows) {
-        const int row = visible_row.row;
-        const auto &entry = visible_row.entry;
-        auto &layer = entry.layer;
-        int y = rh + row * rowh - scroll_y_;
-        if (!dirty.intersects(QRect(0, y, W, rowh))) continue;
-        bool sel = is_layer_selected(layer->id);
+    const QRect body_dirty = dirty.intersected(QRect(0, rh, W, std::max(0, H - rh)));
+    if (!body_dirty.isEmpty()) {
+        p.save();
+        p.setClipRect(body_dirty);
+        const int first_dirty_row = std::max(0, (body_dirty.top() - rh + scroll_y_) / rowh);
+        const int last_dirty_row = (body_dirty.bottom() - rh + scroll_y_) / rowh;
+        const auto rows = visible_timeline_rows(title_, first_dirty_row, last_dirty_row);
+        for (const auto &visible_row : rows) {
+            const int row = visible_row.row;
+            const auto &entry = visible_row.entry;
+            auto &layer = entry.layer;
+            int y = rh + row * rowh - scroll_y_;
+            if (!body_dirty.intersects(QRect(0, y, W, rowh))) continue;
+            bool sel = is_layer_selected(layer->id);
 
-        p.fillRect(0, y, W, rowh,
-                   entry.is_property ? property_bg :
-                   sel ? selected_row : window);
-        p.setPen(border);
-        p.drawLine(0, y + rowh - 1, W, y + rowh - 1);
+            p.fillRect(0, y, W, rowh,
+                       entry.is_property ? property_bg :
+                       sel ? selected_row : window);
+            p.setPen(border);
+            p.drawLine(0, y + rowh - 1, W, y + rowh - 1);
 
-        int x0 = time_to_x(layer->in_time);
-        int x1 = time_to_x(layer->out_time);
-        if (!entry.is_property) {
-            QRect strip_rect(std::min(x0, x1), y + 3, std::abs(x1 - x0), rowh - 6);
-            QColor bar_col = layer_color(*layer, row);
-            if (!layer->visible) {
-                const int gray = qGray(bar_col.rgb());
-                bar_col = QColor(gray, gray, gray).darker(135);
-            }
-            if (sel) bar_col = bar_col.lighter(125);
-            p.fillRect(strip_rect, bar_col);
-            if (layer->locked) {
-                p.save();
-                p.setClipRect(strip_rect);
-                p.setPen(QPen(with_alpha(dark, 170), 2));
-                for (int lx = strip_rect.left() - strip_rect.height(); lx < strip_rect.right() + strip_rect.height(); lx += 8)
-                    p.drawLine(lx, strip_rect.bottom(), lx + strip_rect.height(), strip_rect.top());
-                p.restore();
-            }
-            p.setBrush(Qt::NoBrush);
-            p.setPen(dark);
-            p.drawRect(strip_rect);
-
-            /* Trim handles for mouse resizing of unlocked layer in/out. */
-            if (!layer->locked) {
-                p.fillRect(x0, y + 3, 4, rowh - 6, handle_color);
-                p.fillRect(x1 - 4, y + 3, 4, rowh - 6, handle_color);
-            }
-
-            p.setPen(layer->visible ? text : disabled_text);
-            const QString switches = title_ ? timeline_layer_switches_text(*title_, *layer) : QString();
-            const QString layer_label = switches.isEmpty()
-                ? QString::fromStdString(layer->name)
-                : QStringLiteral("%1    [%2]").arg(QString::fromStdString(layer->name), switches);
-            p.drawText(std::max(strip_rect.left(), 0) + 6, y, std::max(1, strip_rect.width() - 12), rowh,
-                       Qt::AlignVCenter, layer_label);
-        } else {
-            p.fillRect(x0, y + rowh / 2 - 1, x1 - x0, 2, border);
-            p.setPen(disabled_text.isValid() ? disabled_text : with_alpha(text, 150));
-            p.drawText(6, y, 150, rowh, Qt::AlignVCenter, property_label(entry.prop.name()));
-        }
-
-        auto draw_kf = [&](const TimelinePropertyRef &prop) {
-            for (int i = 0; i < (int)prop.keyframe_count(); ++i) {
-                int kx = time_to_x(layer->in_time + prop.keyframe_time((size_t)i));
-                if (kx < dirty.left() - 10 || kx > dirty.right() + 10) continue;
-                int ky = y + rowh / 2;
-                const EasingType easing = prop.keyframe_easing((size_t)i);
-                QColor kf_fill = keyframe_color(easing);
-                if (!layer->visible)
-                    kf_fill = kf_fill.darker(160);
-                const bool selected = is_keyframe_selected(layer->id, prop.name(), i);
-                if (selected) {
-                    draw_keyframe_marker(p, QPointF(kx, ky), easing, 8.0,
-                                         with_alpha(highlighted_text, 45),
-                                         highlighted_text, 2.0);
+            int x0 = time_to_x(layer->in_time);
+            int x1 = time_to_x(layer->out_time);
+            if (!entry.is_property) {
+                QRect strip_rect(std::min(x0, x1), y + 3, std::abs(x1 - x0), rowh - 6);
+                QColor bar_col = layer_color(*layer, row);
+                if (!layer->visible) {
+                    const int gray = qGray(bar_col.rgb());
+                    bar_col = QColor(gray, gray, gray).darker(135);
                 }
-                draw_keyframe_marker(p, QPointF(kx, ky), easing, 5.0,
-                                     selected ? kf_fill.lighter(125) : kf_fill,
-                                     selected ? highlighted_text : border,
-                                     selected ? 2.0 : 1.0);
-            }
-        };
+                if (sel) bar_col = bar_col.lighter(125);
+                p.fillRect(strip_rect, bar_col);
+                if (layer->locked) {
+                    p.save();
+                    p.setClipRect(strip_rect);
+                    p.setPen(QPen(with_alpha(dark, 170), 2));
+                    for (int lx = strip_rect.left() - strip_rect.height(); lx < strip_rect.right() + strip_rect.height(); lx += 8)
+                        p.drawLine(lx, strip_rect.bottom(), lx + strip_rect.height(), strip_rect.top());
+                    p.restore();
+                }
+                p.setBrush(Qt::NoBrush);
+                p.setPen(dark);
+                p.drawRect(strip_rect);
 
-        if (entry.is_property)
-            draw_kf(entry.prop);
-        else if (!layer->properties_expanded)
-            for (auto prop : timeline_properties(*layer)) draw_kf(prop);
+                /* Trim handles for mouse resizing of unlocked layer in/out. */
+                if (!layer->locked) {
+                    p.fillRect(x0, y + 3, 4, rowh - 6, handle_color);
+                    p.fillRect(x1 - 4, y + 3, 4, rowh - 6, handle_color);
+                }
+
+                p.setPen(layer->visible ? text : disabled_text);
+                const QString switches = title_ ? timeline_layer_switches_text(*title_, *layer) : QString();
+                const QString layer_label = switches.isEmpty()
+                    ? QString::fromStdString(layer->name)
+                    : QStringLiteral("%1    [%2]").arg(QString::fromStdString(layer->name), switches);
+                p.drawText(std::max(strip_rect.left(), 0) + 6, y, std::max(1, strip_rect.width() - 12), rowh,
+                           Qt::AlignVCenter, layer_label);
+            } else {
+                p.fillRect(x0, y + rowh / 2 - 1, x1 - x0, 2, border);
+                p.setPen(disabled_text.isValid() ? disabled_text : with_alpha(text, 150));
+                p.drawText(6, y, 150, rowh, Qt::AlignVCenter, property_label(entry.prop.name()));
+            }
+
+            auto draw_kf = [&](const TimelinePropertyRef &prop) {
+                for (int i = 0; i < (int)prop.keyframe_count(); ++i) {
+                    int kx = time_to_x(layer->in_time + prop.keyframe_time((size_t)i));
+                    if (kx < body_dirty.left() - 10 || kx > body_dirty.right() + 10) continue;
+                    int ky = y + rowh / 2;
+                    const EasingType easing = prop.keyframe_easing((size_t)i);
+                    QColor kf_fill = keyframe_color(easing);
+                    if (!layer->visible)
+                        kf_fill = kf_fill.darker(160);
+                    const bool selected = is_keyframe_selected(layer->id, prop.name(), i);
+                    if (selected) {
+                        draw_keyframe_marker(p, QPointF(kx, ky), easing, 8.0,
+                                             with_alpha(highlighted_text, 45),
+                                             highlighted_text, 2.0);
+                    }
+                    draw_keyframe_marker(p, QPointF(kx, ky), easing, 5.0,
+                                         selected ? kf_fill.lighter(125) : kf_fill,
+                                         selected ? highlighted_text : border,
+                                         selected ? 2.0 : 1.0);
+                }
+            };
+
+            if (entry.is_property)
+                draw_kf(entry.prop);
+            else if (!layer->properties_expanded)
+                for (auto prop : timeline_properties(*layer)) draw_kf(prop);
+        }
+        p.restore();
     }
+
+    draw_header();
 
     /* Playhead */
     int phx = time_to_x(playhead_);

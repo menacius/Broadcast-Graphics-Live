@@ -251,6 +251,91 @@ static QString obsgs_color_swatch_tooltip(const QString &name, const QColor &col
         .arg(base, text, fill, border, safe_name, subtle, safe_hex);
 }
 
+class ResponsiveSwatchGrid : public QWidget {
+public:
+    explicit ResponsiveSwatchGrid(QWidget *parent = nullptr, int swatch_size = 24, int spacing = 6)
+        : QWidget(parent),
+          swatch_size_(swatch_size),
+          spacing_(spacing)
+    {
+        layout_ = new QGridLayout(this);
+        layout_->setContentsMargins(0, 0, 0, 0);
+        layout_->setHorizontalSpacing(spacing_);
+        layout_->setVerticalSpacing(spacing_);
+        layout_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    }
+
+    void clearSwatches()
+    {
+        swatches_.clear();
+        while (QLayoutItem *item = layout_->takeAt(0)) {
+            if (QWidget *widget = item->widget())
+                widget->deleteLater();
+            delete item;
+        }
+        last_columns_ = 0;
+        updateGeometry();
+    }
+
+    void addSwatch(QWidget *swatch)
+    {
+        if (!swatch)
+            return;
+        swatch->setParent(this);
+        swatches_.push_back(swatch);
+        reflow();
+    }
+
+    QSize sizeHint() const override
+    {
+        const int columns = columnCount();
+        const int rows = swatches_.empty() ? 0 : (int)((swatches_.size() + columns - 1) / columns);
+        return QSize(columns * swatch_size_ + std::max(0, columns - 1) * spacing_,
+                     rows * swatch_size_ + std::max(0, rows - 1) * spacing_);
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return QSize(swatch_size_, swatches_.empty() ? 0 : swatch_size_);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        if (columnCount() != last_columns_)
+            reflow();
+    }
+
+private:
+    int columnCount() const
+    {
+        int available = width();
+        if (available <= 0 && parentWidget())
+            available = parentWidget()->width();
+        available = std::max(available, swatch_size_);
+        return std::max(1, (available + spacing_) / (swatch_size_ + spacing_));
+    }
+
+    void reflow()
+    {
+        const int columns = columnCount();
+        last_columns_ = columns;
+        for (QWidget *swatch : swatches_)
+            layout_->removeWidget(swatch);
+        for (int i = 0; i < (int)swatches_.size(); ++i)
+            layout_->addWidget(swatches_[(size_t)i], i / columns, i % columns);
+        updateGeometry();
+    }
+
+    QGridLayout *layout_ = nullptr;
+    std::vector<QWidget *> swatches_;
+    int swatch_size_ = 24;
+    int spacing_ = 6;
+    int last_columns_ = 0;
+};
+
 static void obsgs_prepare_embedded_color_dialog(color_widgets::ColorDialog *dialog, const QColor &initial, bool alpha = true)
 {
     if (!dialog)
@@ -653,6 +738,18 @@ static uint32_t gradient_editor_argb_from_color(const QColor &color)
            (uint32_t)color.blue();
 }
 
+static int normalized_gradient_type(int gradient_type)
+{
+    switch (std::clamp(gradient_type, 0, 4)) {
+    case 1: return 1;
+    case 2: return 2;
+    case 4: return 1;
+    case 0:
+    case 3:
+    default: return 0;
+    }
+}
+
 class GradientEditorPreview : public QWidget {
 public:
     explicit GradientEditorPreview(QWidget *parent = nullptr) : QWidget(parent)
@@ -666,7 +763,7 @@ public:
                       double start_pos, double end_pos, double start_opacity, double end_opacity,
                       double opacity, double angle, double center_x, double center_y, double scale)
     {
-        type_ = std::clamp(type, 0, 4);
+        type_ = normalized_gradient_type(type);
         colors_.assign({gradient_editor_color_from_argb(start_color), gradient_editor_color_from_argb(end_color)});
         for (auto &color : colors_) color.setAlpha(255);
         positions_.assign({std::clamp(start_pos, 0.0, 1.0), std::clamp(end_pos, 0.0, 1.0)});
@@ -733,7 +830,7 @@ public:
     double center_y() const { return center_y_; }
     double scale() const { return scale_; }
 
-    void set_gradient_type(int type) { type_ = std::clamp(type, 0, 4); changed(); }
+    void set_gradient_type(int type) { type_ = normalized_gradient_type(type); changed(); }
     void set_angle(double value) { angle_ = value; changed(); }
     void set_center_x(double value) { center_x_ = value; changed(); }
     void set_center_y(double value) { center_y_ = value; changed(); }
@@ -1014,9 +1111,7 @@ private:
     {
         switch (type) {
         case 1: return obsgs_tr("OBSTitles.Radial");
-        case 2: return obsgs_tr("OBSTitles.Angle");
-        case 3: return obsgs_tr("OBSTitles.Reflected");
-        case 4: return obsgs_tr("OBSTitles.Diamond");
+        case 2: return obsgs_tr("OBSTitles.Conical");
         case 0:
         default: return obsgs_tr("OBSTitles.Linear");
         }
@@ -1160,6 +1255,7 @@ enum RichTextFormatProperty {
     RichTextPropFillType,
     RichTextPropFillColor,
     RichTextPropGradientType,
+    RichTextPropGradientSpread,
     RichTextPropGradientStartColor,
     RichTextPropGradientEndColor,
     RichTextPropGradientStartPos,
@@ -1211,6 +1307,7 @@ static void store_rich_text_format_properties(QTextCharFormat &out, const RichTe
     out.setProperty(RichTextPropFillType, format.fill.type);
     out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
     out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
+    out.setProperty(RichTextPropGradientSpread, format.fill.gradient_spread);
     out.setProperty(RichTextPropGradientStartColor, (uint)format.fill.gradient_start_color);
     out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
     out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
@@ -1259,6 +1356,7 @@ static void store_editor_rich_text_format_properties_masked(QTextCharFormat &out
         out.setProperty(RichTextPropFillType, format.fill.type);
         out.setProperty(RichTextPropFillColor, (uint)format.fill.color);
         out.setProperty(RichTextPropGradientType, format.fill.gradient_type);
+        out.setProperty(RichTextPropGradientSpread, format.fill.gradient_spread);
         out.setProperty(RichTextPropGradientStartColor, (uint)format.fill.gradient_start_color);
         out.setProperty(RichTextPropGradientEndColor, (uint)format.fill.gradient_end_color);
         out.setProperty(RichTextPropGradientStartPos, (double)format.fill.gradient_start_pos);
@@ -1355,6 +1453,7 @@ static RichTextCharFormat rich_text_format_from_qtext_format(const QTextCharForm
             out.fill.color = rich_text_argb_from_color(c);
     }
     if (fmt.hasProperty(RichTextPropGradientType)) out.fill.gradient_type = fmt.property(RichTextPropGradientType).toInt();
+    if (fmt.hasProperty(RichTextPropGradientSpread)) out.fill.gradient_spread = fmt.property(RichTextPropGradientSpread).toInt();
     if (fmt.hasProperty(RichTextPropGradientStartColor)) out.fill.gradient_start_color = fmt.property(RichTextPropGradientStartColor).toUInt();
     if (fmt.hasProperty(RichTextPropGradientEndColor)) out.fill.gradient_end_color = fmt.property(RichTextPropGradientEndColor).toUInt();
     if (fmt.hasProperty(RichTextPropGradientStartPos)) out.fill.gradient_start_pos = (float)fmt.property(RichTextPropGradientStartPos).toDouble();
@@ -1492,6 +1591,7 @@ static void populate_qtext_document_from_plain_layer_text(QTextDocument *doc, co
 static bool rich_text_fills_equal(const RichTextFill &a, const RichTextFill &b)
 {
     return a.type == b.type && a.color == b.color && a.gradient_type == b.gradient_type &&
+           a.gradient_spread == b.gradient_spread &&
            a.gradient_start_color == b.gradient_start_color &&
            a.gradient_end_color == b.gradient_end_color &&
            std::abs(a.gradient_start_pos - b.gradient_start_pos) < 0.0001f &&
@@ -1631,6 +1731,7 @@ static RichTextCharFormat layer_char_format_for_editor(const Layer &layer)
     f.fill.type = layer.fill_type;
     f.fill.color = layer.text_color;
     f.fill.gradient_type = layer.gradient_type;
+    f.fill.gradient_spread = layer.gradient_spread;
     f.fill.gradient_start_color = layer.gradient_start_color;
     f.fill.gradient_end_color = layer.gradient_end_color;
     f.fill.gradient_start_pos = layer.gradient_start_pos;
@@ -3275,7 +3376,25 @@ static void apply_base_gradient_stops(QGradient &gradient,
     apply_extra_gradient_stops(gradient, extra_stops, opacity);
 }
 
+static int normalized_gradient_spread(int gradient_spread, int gradient_type)
+{
+    if (gradient_spread == 1 || gradient_spread == 2)
+        return gradient_spread;
+    return std::clamp(gradient_type, 0, 4) == 3 ? 1 : 0;
+}
+
+static QGradient::Spread qt_gradient_spread(int gradient_spread, int gradient_type)
+{
+    switch (normalized_gradient_spread(gradient_spread, gradient_type)) {
+    case 1: return QGradient::ReflectSpread;
+    case 2: return QGradient::RepeatSpread;
+    case 0:
+    default: return QGradient::PadSpread;
+    }
+}
+
 static QBrush make_gradient_brush(int gradient_type,
+                                  int gradient_spread,
                                   const QRectF &box,
                                   double opacity,
                                   double center_x, double center_y,
@@ -3285,7 +3404,8 @@ static QBrush make_gradient_brush(int gradient_type,
                                   double end_pos, uint32_t end_color, double end_opacity,
                                   const std::vector<GradientStop> &extra_stops)
 {
-    const int type = std::clamp(gradient_type, 0, 4);
+    const int type = normalized_gradient_type(gradient_type);
+    const QGradient::Spread spread = qt_gradient_spread(gradient_spread, gradient_type);
     const double cx = box.left() + center_x * box.width();
     const double cy = box.top() + center_y * box.height();
     const double safe_scale = std::clamp(scale, 0.01, 100.0);
@@ -3294,14 +3414,12 @@ static QBrush make_gradient_brush(int gradient_type,
     const double dx = std::cos(angle) * length;
     const double dy = std::sin(angle) * length;
 
-    if (type == 1 || type == 4) {
+    if (type == 1) {
         const double radius = std::max(box.width(), box.height()) * 0.5 * safe_scale;
-        // Qt has no native diamond gradient. Use a centered radial brush as a safe
-        // rendering fallback while preserving the distinct Diamond type in data/UI.
         QRadialGradient gradient(QPointF(cx, cy), std::max(1.0, radius),
-                                 type == 1 ? QPointF(box.left() + focal_x * box.width(),
-                                                     box.top() + focal_y * box.height())
-                                           : QPointF(cx, cy));
+                                 QPointF(box.left() + focal_x * box.width(),
+                                         box.top() + focal_y * box.height()));
+        gradient.setSpread(spread);
         apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
                                   end_pos, end_color, end_opacity, extra_stops, opacity);
         return QBrush(gradient);
@@ -3315,8 +3433,7 @@ static QBrush make_gradient_brush(int gradient_type,
     }
 
     QLinearGradient gradient(QPointF(cx - dx, cy - dy), QPointF(cx + dx, cy + dy));
-    if (type == 3)
-        gradient.setSpread(QGradient::ReflectSpread);
+    gradient.setSpread(spread);
     apply_base_gradient_stops(gradient, start_pos, start_color, start_opacity,
                               end_pos, end_color, end_opacity, extra_stops, opacity);
     return QBrush(gradient);
@@ -3324,7 +3441,7 @@ static QBrush make_gradient_brush(int gradient_type,
 
 static QBrush gradient_fill_brush(const Layer &layer, const QRectF &box, double layer_opacity = 1.0)
 {
-    return make_gradient_brush(layer.gradient_type, box,
+    return make_gradient_brush(layer.gradient_type, layer.gradient_spread, box,
                                std::clamp((double)layer.gradient_opacity * layer_opacity, 0.0, 1.0),
                                layer.gradient_center_x, layer.gradient_center_y,
                                layer.gradient_focal_x, layer.gradient_focal_y,
@@ -3343,7 +3460,7 @@ static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &b
 {
     const auto *effect = find_layer_effect(layer, LayerEffectType::BackgroundColor);
     if (!effect) return QBrush(Qt::NoBrush);
-    return make_gradient_brush(effect->effect_gradient_type, box,
+    return make_gradient_brush(effect->effect_gradient_type, effect->effect_gradient_spread, box,
                                std::clamp((double)effect->effect_gradient_opacity * layer_opacity, 0.0, 1.0),
                                effect->effect_gradient_center_x, effect->effect_gradient_center_y,
                                effect->effect_gradient_focal_x, effect->effect_gradient_focal_y,
@@ -3947,12 +4064,11 @@ static void style_gradient_button(QPushButton *button, uint32_t start_argb, uint
     QColor start = color_from_argb(start_argb);
     QColor end = color_from_argb(end_argb);
     button->setText(QString());
-    const bool radial = gradient_type == 1 || gradient_type == 4;
+    const int type = normalized_gradient_type(gradient_type);
+    const bool radial = type == 1;
     QString type_name = obsgs_tr("OBSTitles.LinearGradient");
-    if (gradient_type == 1) type_name = obsgs_tr("OBSTitles.RadialGradient");
-    else if (gradient_type == 2) type_name = obsgs_tr("OBSTitles.AngleGradient");
-    else if (gradient_type == 3) type_name = obsgs_tr("OBSTitles.ReflectedGradient");
-    else if (gradient_type == 4) type_name = obsgs_tr("OBSTitles.DiamondGradient");
+    if (type == 1) type_name = obsgs_tr("OBSTitles.RadialGradient");
+    else if (type == 2) type_name = obsgs_tr("OBSTitles.ConicalGradient");
     button->setToolTip(type_name);
     const QString fill = radial
         ? QStringLiteral("qradialgradient(cx:0.5,cy:0.5,radius:0.65,fx:0.5,fy:0.5,stop:0 %1,stop:1 %2)")

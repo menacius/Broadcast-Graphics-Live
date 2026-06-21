@@ -378,6 +378,90 @@ QWidget *TitleEditor::create_prerender_panel()
     return prerender_panel_;
 }
 
+void TitleEditor::activate_editor_tool(EditorTool tool)
+{
+    current_editor_tool_ = tool;
+    if (tools_sidebar_) {
+        switch (tool) {
+        case EditorTool::Selection:
+            tools_sidebar_->activate_selection_tool();
+            return;
+        case EditorTool::DirectSelection:
+            tools_sidebar_->activate_direct_selection_tool();
+            return;
+        case EditorTool::Shape:
+            tools_sidebar_->activate_shape_tool(tools_sidebar_->selected_shape());
+            return;
+        case EditorTool::Pen:
+            tools_sidebar_->activate_pen_tool();
+            return;
+        case EditorTool::Text:
+            tools_sidebar_->activate_text_tool(tools_sidebar_->selected_text_layer_type());
+            return;
+        case EditorTool::Image:
+            tools_sidebar_->activate_image_tool();
+            return;
+        case EditorTool::ColorPicker:
+            tools_sidebar_->activate_color_picker_tool();
+            return;
+        case EditorTool::Gradient:
+            tools_sidebar_->activate_gradient_tool();
+            return;
+        }
+    }
+
+    if (!canvas_)
+        return;
+    switch (tool) {
+    case EditorTool::Selection:
+        canvas_->set_selection_tool_active();
+        break;
+    case EditorTool::DirectSelection:
+        canvas_->set_direct_selection_tool_active();
+        break;
+    case EditorTool::Shape:
+        canvas_->set_shape_tool_active(ShapeType::Rectangle);
+        break;
+    case EditorTool::Pen:
+        canvas_->set_pen_tool_active();
+        break;
+    case EditorTool::Text:
+        canvas_->set_text_tool_active(LayerType::Text);
+        break;
+    case EditorTool::Image:
+        canvas_->set_image_tool_active();
+        break;
+    case EditorTool::ColorPicker:
+        canvas_->set_color_picker_tool_active();
+        break;
+    case EditorTool::Gradient:
+        canvas_->set_gradient_tool_active();
+        break;
+    }
+}
+
+void TitleEditor::handle_gradient_editor_tool_request(bool active)
+{
+    if (canvas_)
+        canvas_->set_gradient_editor_active(active);
+
+    if (active) {
+        if (!gradient_editor_tool_override_active_) {
+            tool_before_gradient_editor_ = current_editor_tool_;
+            gradient_editor_tool_override_active_ = true;
+        }
+        activate_editor_tool(EditorTool::Gradient);
+        return;
+    }
+
+    if (!gradient_editor_tool_override_active_)
+        return;
+
+    const EditorTool restore_tool = tool_before_gradient_editor_;
+    gradient_editor_tool_override_active_ = false;
+    activate_editor_tool(restore_tool);
+}
+
 QWidget *TitleEditor::create_styles_panel()
 {
     auto *tabs = new QTabWidget(this);
@@ -408,6 +492,7 @@ QWidget *TitleEditor::create_styles_panel()
                         inline_style.text_color = summary.format.fill.color;
                         inline_style.fill_color = summary.format.fill.color;
                         inline_style.gradient_type = summary.format.fill.gradient_type;
+                        inline_style.gradient_spread = summary.format.fill.gradient_spread;
                         inline_style.gradient_start_color = summary.format.fill.gradient_start_color;
                         inline_style.gradient_end_color = summary.format.fill.gradient_end_color;
                         inline_style.gradient_start_pos = summary.format.fill.gradient_start_pos;
@@ -473,6 +558,7 @@ QWidget *TitleEditor::create_styles_panel()
                         inline_gradient.text_color = summary.format.fill.color;
                         inline_gradient.fill_color = summary.format.fill.color;
                         inline_gradient.gradient_type = summary.format.fill.gradient_type;
+                        inline_gradient.gradient_spread = summary.format.fill.gradient_spread;
                         inline_gradient.gradient_start_color = summary.format.fill.gradient_start_color;
                         inline_gradient.gradient_end_color = summary.format.fill.gradient_end_color;
                         inline_gradient.gradient_start_pos = summary.format.fill.gradient_start_pos;
@@ -565,16 +651,11 @@ QWidget *TitleEditor::create_color_swatches_panel()
     recent_label->setFont(section_font);
     layout->addWidget(recent_label);
 
-    auto *recent_grid_widget = new QWidget(panel);
-    recent_color_swatches_grid_ = new QGridLayout(recent_grid_widget);
-    recent_color_swatches_grid_->setContentsMargins(0, 0, 0, 0);
-    recent_color_swatches_grid_->setHorizontalSpacing(6);
-    recent_color_swatches_grid_->setVerticalSpacing(6);
-    recent_color_swatches_grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    recent_color_swatches_grid_ = new ResponsiveSwatchGrid(panel);
     recent_color_swatch_buttons_.clear();
     recent_color_swatch_buttons_.reserve(16);
     for (int i = 0; i < 16; ++i) {
-        auto *swatch = new QToolButton(recent_grid_widget);
+        auto *swatch = new QToolButton(recent_color_swatches_grid_);
         swatch->setObjectName(QStringLiteral("OBSGraphicsStudioProRecentColorSwatch"));
         swatch->setFixedSize(24, 24);
         swatch->setAutoRaise(false);
@@ -620,10 +701,10 @@ QWidget *TitleEditor::create_color_swatches_panel()
             else if (selected == remove_action)
                 remove_recent_color(i);
         });
-        recent_color_swatches_grid_->addWidget(swatch, i / 8, i % 8);
+        recent_color_swatches_grid_->addSwatch(swatch);
         recent_color_swatch_buttons_.push_back(swatch);
     }
-    layout->addWidget(recent_grid_widget, 0, Qt::AlignTop | Qt::AlignLeft);
+    layout->addWidget(recent_color_swatches_grid_, 0);
 
     auto *library_label = new QLabel(obsgs_tr("OBSTitles.ColorLibraries"), panel);
     library_label->setFont(section_font);
@@ -656,12 +737,8 @@ QWidget *TitleEditor::create_color_swatches_panel()
     library_scroll->setWidgetResizable(true);
     library_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     library_scroll->setMinimumHeight(140);
-    color_library_swatch_widget_ = new QWidget(library_scroll);
-    color_library_swatches_grid_ = new QGridLayout(color_library_swatch_widget_);
-    color_library_swatches_grid_->setContentsMargins(0, 0, 0, 0);
-    color_library_swatches_grid_->setHorizontalSpacing(6);
-    color_library_swatches_grid_->setVerticalSpacing(6);
-    color_library_swatches_grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    color_library_swatch_widget_ = new ResponsiveSwatchGrid(library_scroll);
+    color_library_swatches_grid_ = static_cast<ResponsiveSwatchGrid *>(color_library_swatch_widget_);
     library_scroll->setWidget(color_library_swatch_widget_);
     layout->addWidget(library_scroll, 1);
 
@@ -897,17 +974,12 @@ void TitleEditor::refresh_color_library_swatches()
     if (!color_library_swatches_grid_ || !color_library_swatch_widget_)
         return;
 
-    while (QLayoutItem *item = color_library_swatches_grid_->takeAt(0)) {
-        if (QWidget *widget = item->widget())
-            widget->deleteLater();
-        delete item;
-    }
+    color_library_swatches_grid_->clearSwatches();
 
     if (selected_color_library_index_ < 0 || selected_color_library_index_ >= (int)color_libraries_.size())
         return;
 
     const auto &colors = color_libraries_[selected_color_library_index_].colors;
-    const int columns = 8;
     for (int i = 0; i < (int)colors.size(); ++i) {
         const ColorLibraryColor entry = colors[i];
         auto *swatch = new QToolButton(color_library_swatch_widget_);
@@ -931,7 +1003,7 @@ void TitleEditor::refresh_color_library_swatches()
             if (menu.exec(swatch->mapToGlobal(pos)) == remove_action)
                 remove_color_from_current_library(i);
         });
-        color_library_swatches_grid_->addWidget(swatch, i / columns, i % columns);
+        color_library_swatches_grid_->addSwatch(swatch);
     }
 }
 
@@ -2869,7 +2941,7 @@ void TitleEditor::build_ui()
             });
     connect(props_, &PropertiesPanel::gradient_editor_active_changed,
             this, [this](bool active) {
-                if (canvas_) canvas_->set_gradient_editor_active(active);
+                handle_gradient_editor_tool_request(active);
             });
     connect(props_, &PropertiesPanel::recent_colors_changed,
             this, [this]() {
@@ -2881,6 +2953,7 @@ void TitleEditor::build_ui()
     connect(props_, &PropertiesPanel::color_picker_tool_requested,
             this, [this]() {
                 reopen_color_tab_after_canvas_pick_ = true;
+                current_editor_tool_ = EditorTool::ColorPicker;
                 if (canvas_) canvas_->set_color_picker_tool_active();
             });
     connect(title_props_, &TitlePropertiesPanel::title_changed,
@@ -2984,8 +3057,10 @@ void TitleEditor::build_ui()
                 update_sidebar_color_swatches(nullptr);
                 if (tools_sidebar_)
                     tools_sidebar_->activate_selection_tool();
-                else if (canvas_)
+                else if (canvas_) {
+                    current_editor_tool_ = EditorTool::Selection;
                     canvas_->set_selection_tool_active();
+                }
             });
     connect(canvas_, &CanvasPreview::layer_structure_changed,
             this, [this]() {
@@ -3010,30 +3085,38 @@ void TitleEditor::build_ui()
             this, &TitleEditor::create_pen_path_layer_from_canvas);
     if (tools_sidebar_) {
         connect(tools_sidebar_, &ToolsSidebar::selection_tool_requested, this, [this]() {
+            current_editor_tool_ = EditorTool::Selection;
             if (canvas_) canvas_->set_selection_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::direct_selection_tool_requested, this, [this]() {
+            current_editor_tool_ = EditorTool::DirectSelection;
             if (canvas_) canvas_->set_direct_selection_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::shape_tool_requested, this, [this](ShapeType shape_type) {
+            current_editor_tool_ = EditorTool::Shape;
             if (tools_sidebar_) tools_sidebar_->set_selected_shape(shape_type);
             if (canvas_) canvas_->set_shape_tool_active(shape_type);
         });
         connect(tools_sidebar_, &ToolsSidebar::pen_tool_requested, this, [this]() {
+            current_editor_tool_ = EditorTool::Pen;
             if (canvas_) canvas_->set_pen_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::text_tool_requested, this, [this](LayerType type) {
+            current_editor_tool_ = EditorTool::Text;
             if (tools_sidebar_) tools_sidebar_->set_selected_text_layer_type(type);
             if (canvas_) canvas_->set_text_tool_active(type);
         });
         connect(tools_sidebar_, &ToolsSidebar::image_tool_requested, this, [this]() {
+            current_editor_tool_ = EditorTool::Image;
             if (canvas_) canvas_->set_image_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::color_picker_tool_requested, this, [this]() {
+            current_editor_tool_ = EditorTool::ColorPicker;
             reopen_color_tab_after_canvas_pick_ = false;
             if (canvas_) canvas_->set_color_picker_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::gradient_tool_requested, this, [this]() {
+            current_editor_tool_ = EditorTool::Gradient;
             if (canvas_) canvas_->set_gradient_tool_active();
         });
         connect(tools_sidebar_, &ToolsSidebar::foreground_color_requested, this, [this]() {
@@ -5901,6 +5984,7 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.fill_color = src.fill_color;
     dst.fill_type = src.fill_type;
     dst.gradient_type = src.gradient_type;
+    dst.gradient_spread = src.gradient_spread;
     dst.gradient_start_color = src.gradient_start_color;
     dst.gradient_end_color = src.gradient_end_color;
     dst.gradient_start_pos = src.gradient_start_pos;
@@ -5928,6 +6012,7 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.scale_stroke_with_shape = src.scale_stroke_with_shape;
     dst.scale_corners_with_shape = src.scale_corners_with_shape;
     dst.stroke_gradient_type = src.stroke_gradient_type;
+    dst.stroke_gradient_spread = src.stroke_gradient_spread;
     dst.stroke_gradient_start_color = src.stroke_gradient_start_color;
     dst.stroke_gradient_end_color = src.stroke_gradient_end_color;
     dst.stroke_gradient_start_pos = src.stroke_gradient_start_pos;
@@ -5964,6 +6049,7 @@ static void copy_editor_layer_style_fields(Layer &dst, const Layer &src)
     dst.background_stroke_opacity = src.background_stroke_opacity;
     dst.background_stroke_fill_type = src.background_stroke_fill_type;
     dst.background_gradient_type = src.background_gradient_type;
+    dst.background_gradient_spread = src.background_gradient_spread;
     dst.background_gradient_start_color = src.background_gradient_start_color;
     dst.background_gradient_end_color = src.background_gradient_end_color;
     dst.background_gradient_start_opacity = src.background_gradient_start_opacity;

@@ -75,6 +75,35 @@ static bool properties_parse_color_hex(QString text, QColor &color)
     return color.isValid();
 }
 
+static void properties_limit_gradient_stop_color_dialog(color_widgets::ColorDialog *dialog)
+{
+    if (!dialog)
+        return;
+
+    dialog->setAlphaEnabled(true);
+    dialog->setButtonMode(color_widgets::ColorDialog::Close);
+    const QStringList hidden_names = {
+        QStringLiteral("wheel"), QStringLiteral("preview"), QStringLiteral("line"),
+        QStringLiteral("label"), QStringLiteral("slide_red"), QStringLiteral("spin_red"),
+        QStringLiteral("label_2"), QStringLiteral("slide_green"), QStringLiteral("spin_green"),
+        QStringLiteral("label_3"), QStringLiteral("slide_blue"), QStringLiteral("spin_blue")
+    };
+    for (const QString &name : hidden_names) {
+        if (auto *widget = dialog->findChild<QWidget *>(name))
+            widget->hide();
+    }
+    if (auto *buttons = dialog->findChild<QDialogButtonBox *>(QStringLiteral("buttonBox"))) {
+        buttons->show();
+        for (auto *button : buttons->buttons()) {
+            const bool is_picker = buttons->buttonRole(button) == QDialogButtonBox::ActionRole;
+            button->setVisible(is_picker);
+            if (is_picker)
+                button->setToolTip(obsgs_tr("OBSTitles.PickColor"));
+        }
+    }
+    dialog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+}
+
 static std::vector<PropertiesColorLibrary> properties_load_color_libraries()
 {
     std::vector<PropertiesColorLibrary> libraries;
@@ -1491,11 +1520,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_gradient_type_ = new QComboBox(inner);
     cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
     cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.Angle"), 2);
-    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.Reflected"), 3);
-    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.Diamond"), 4);
+    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.ConicalGradient"), 2);
     cmb_gradient_type_->setFixedHeight(22);
     cmb_gradient_type_->setStyleSheet(control_style);
+    cmb_gradient_spread_ = new QComboBox(inner);
+    cmb_gradient_spread_->addItem(obsgs_tr("OBSTitles.No"), 0);
+    cmb_gradient_spread_->addItem(obsgs_tr("OBSTitles.Repeat"), 2);
+    cmb_gradient_spread_->addItem(obsgs_tr("OBSTitles.Reflect"), 1);
+    cmb_gradient_spread_->setFixedHeight(22);
+    cmb_gradient_spread_->setStyleSheet(control_style);
     btn_gradient_start_color_ = new QPushButton(inner);
     btn_gradient_end_color_ = new QPushButton(inner);
     spn_gradient_start_pos_ = mk_dspin(0.0, 1.0, 0.01);
@@ -1517,6 +1550,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         spin->setDecimals(2);
     spn_gradient_angle_->setSuffix("°");
     add_form_row(gfl, obsgs_tr("OBSTitles.GradientTypeLabel"), cmb_gradient_type_);
+    add_form_row(gfl, obsgs_tr("OBSTitles.SpreadLabel"), cmb_gradient_spread_);
     add_form_row(gfl, obsgs_tr("OBSTitles.StartColorLabel"), btn_gradient_start_color_);
     add_form_row(gfl, obsgs_tr("OBSTitles.StartStopLabel"), spn_gradient_start_pos_);
     add_form_row(gfl, obsgs_tr("OBSTitles.StartOpacityLabel"), spn_gradient_start_opacity_);
@@ -1710,6 +1744,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         fmt.fill.type = layer_->fill_type;
         fmt.fill.color = layer_->text_color;
         fmt.fill.gradient_type = layer_->gradient_type;
+        fmt.fill.gradient_spread = layer_->gradient_spread;
         fmt.fill.gradient_start_color = layer_->gradient_start_color;
         fmt.fill.gradient_end_color = layer_->gradient_end_color;
         fmt.fill.gradient_start_pos = layer_->gradient_start_pos;
@@ -2734,30 +2769,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *swatches_scroll = new QScrollArea(swatches_tab);
         swatches_scroll->setWidgetResizable(true);
         swatches_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        auto *swatches_grid_widget = new QWidget(swatches_scroll);
-        auto *swatches_grid = new QGridLayout(swatches_grid_widget);
-        swatches_grid->setContentsMargins(0, 0, 0, 0);
-        swatches_grid->setHorizontalSpacing(6);
-        swatches_grid->setVerticalSpacing(6);
-        swatches_grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        auto *swatches_grid_widget = new ResponsiveSwatchGrid(swatches_scroll);
         swatches_scroll->setWidget(swatches_grid_widget);
         swatches_layout->addWidget(swatches_combo);
         swatches_layout->addWidget(swatches_scroll, 1);
         auto swatch_libraries = std::make_shared<std::vector<PropertiesColorLibrary>>(properties_load_color_libraries());
         for (const auto &library : *swatch_libraries)
             swatches_combo->addItem(library.name);
-        auto refresh_swatches_tab = [swatches_grid, swatches_grid_widget, swatches_combo, swatch_libraries,
+        auto refresh_swatches_tab = [swatches_grid_widget, swatches_combo, swatch_libraries,
                                      color_hex, swatch_style, &apply_and_sync_color, &popup]() {
-            while (QLayoutItem *item = swatches_grid->takeAt(0)) {
-                if (QWidget *widget = item->widget())
-                    widget->deleteLater();
-                delete item;
-            }
+            swatches_grid_widget->clearSwatches();
             const int library_index = swatches_combo->currentIndex();
             if (library_index < 0 || library_index >= (int)swatch_libraries->size())
                 return;
             const auto &colors = (*swatch_libraries)[library_index].colors;
-            const int columns = 8;
             for (int i = 0; i < (int)colors.size(); ++i) {
                 const auto entry = colors[i];
                 auto *button = new QPushButton(swatches_grid_widget);
@@ -2768,7 +2793,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 connect(button, &QPushButton::clicked, &popup, [=, &apply_and_sync_color]() {
                     apply_and_sync_color(entry.color, true);
                 });
-                swatches_grid->addWidget(button, i / columns, i % columns);
+                swatches_grid_widget->addSwatch(button);
             }
         };
         connect(swatches_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), &popup,
@@ -2821,10 +2846,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *type = new QComboBox(gradient_form);
         type->addItem(obsgs_tr("OBSTitles.Linear"), 0);
         type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-        type->addItem(obsgs_tr("OBSTitles.Angle"), 2);
-        type->addItem(obsgs_tr("OBSTitles.Reflected"), 3);
-        type->addItem(obsgs_tr("OBSTitles.Diamond"), 4);
+        type->addItem(obsgs_tr("OBSTitles.ConicalGradient"), 2);
         type->setStyleSheet(control_style);
+        auto *repeat_mode = new QComboBox(gradient_form);
+        repeat_mode->addItem(obsgs_tr("OBSTitles.No"), 0);
+        repeat_mode->addItem(obsgs_tr("OBSTitles.Repeat"), 2);
+        repeat_mode->addItem(obsgs_tr("OBSTitles.Reflect"), 1);
+        repeat_mode->setStyleSheet(control_style);
         auto *smoothness = new QSpinBox(gradient_form);
         smoothness->setRange(0, 100);
         smoothness->setValue(100);
@@ -2837,6 +2865,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_form_layout->addWidget(type, 0, 1);
         gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Smooth"), gradient_form), 0, 2);
         gradient_form_layout->addWidget(smoothness, 0, 3);
+        gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.SpreadLabel"), gradient_form), 1, 0);
+        gradient_form_layout->addWidget(repeat_mode, 1, 1);
         gradient_form_layout->setColumnStretch(1, 1);
 
         auto *preview = new GradientEditorPreview(gradient_tab);
@@ -2872,19 +2902,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *focal_y = make_spin(-100.0, 100.0, 0.01);
         auto *reverse_gradient = new QCheckBox(obsgs_tr("OBSTitles.ReverseGradient"), gradient_tab);
         auto *dither_gradient = new QCheckBox(obsgs_tr("OBSTitles.Dither"), gradient_tab);
-        auto *repeat_mode = new QComboBox(gradient_tab);
-        repeat_mode->addItem(obsgs_tr("OBSTitles.Clamp"), 0);
-        repeat_mode->addItem(obsgs_tr("OBSTitles.Repeat"), 1);
-        repeat_mode->addItem(obsgs_tr("OBSTitles.Mirror"), 2);
-        repeat_mode->setStyleSheet(control_style);
         for (auto *w : {gradient_opacity, angle, center_x, center_y, scale, focal_x, focal_y})
             w->hide();
         reverse_gradient->hide();
         dither_gradient->hide();
-        repeat_mode->hide();
 
         if (stroke) {
-            type->setCurrentIndex(std::max(0, type->findData(std::clamp(layer_->stroke_gradient_type, 0, 4))));
+            type->setCurrentIndex(std::max(0, type->findData(layer_->stroke_gradient_type)));
+            repeat_mode->setCurrentIndex(std::max(0, repeat_mode->findData(layer_->stroke_gradient_spread)));
             style_color_button(start_color, layer_->stroke_gradient_start_color);
             style_color_button(end_color, layer_->stroke_gradient_end_color);
             start_pos->setValue(layer_->stroke_gradient_start_pos);
@@ -2899,7 +2924,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             focal_x->setValue(layer_->stroke_gradient_focal_x);
             focal_y->setValue(layer_->stroke_gradient_focal_y);
         } else {
-            type->setCurrentIndex(std::max(0, type->findData(std::clamp(layer_->gradient_type, 0, 4))));
+            type->setCurrentIndex(std::max(0, type->findData(layer_->gradient_type)));
+            repeat_mode->setCurrentIndex(std::max(0, repeat_mode->findData(layer_->gradient_spread)));
             style_color_button(start_color, layer_->gradient_start_color);
             style_color_button(end_color, layer_->gradient_end_color);
             start_pos->setValue(layer_->gradient_start_pos);
@@ -3009,20 +3035,24 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         stop_actions_layout->addStretch(1);
         stops_layout->addWidget(stop_actions);
 
-        auto *gradient_color_picker = new color_widgets::ColorDialog(gradient_tab, Qt::Widget);
+        auto *gradient_color_picker = new color_widgets::ColorDialog(stops_box, Qt::Widget);
         obsgs_prepare_embedded_color_dialog(gradient_color_picker, color_from_argb(stroke ? layer_->stroke_gradient_start_color
                                                                                           : layer_->gradient_start_color));
-        gradient_color_picker->setVisible(false);
+        properties_limit_gradient_stop_color_dialog(gradient_color_picker);
+        gradient_color_picker->setVisible(true);
+        gradient_color_picker->setEnabled(false);
+        stops_layout->addWidget(gradient_color_picker);
         int active_gradient_stop = -1;
         bool syncing_gradient_color_picker = false;
         auto set_gradient_color_picker_target = [&](int stop_index) {
             if (stop_index < 0 || stop_index >= preview->stop_count()) {
                 active_gradient_stop = -1;
-                gradient_color_picker->setVisible(false);
+                gradient_color_picker->setEnabled(false);
                 return;
             }
 
             active_gradient_stop = stop_index;
+            gradient_color_picker->setEnabled(true);
             QColor color = color_from_argb(preview->stop_color_argb(stop_index));
             color.setAlphaF(preview->stop_opacity(stop_index));
             syncing_gradient_color_picker = true;
@@ -3031,7 +3061,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 gradient_color_picker->setColor(color);
             }
             syncing_gradient_color_picker = false;
-            gradient_color_picker->setVisible(true);
         };
 
         auto make_preset = [&](uint32_t a, uint32_t b) {
@@ -3075,7 +3104,6 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_layout->addWidget(gradient_form);
         gradient_layout->addWidget(preview);
         gradient_layout->addWidget(stops_box);
-        gradient_layout->addWidget(gradient_color_picker);
         gradient_layout->addWidget(preset_box, 0, Qt::AlignTop);
         tabs->addTab(gradient_tab, obsgs_tr("OBSTitles.Gradient"));
         // With the Color tab hidden, open directly on Gradient.
@@ -3137,6 +3165,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 layer_->outline_enabled = true;
                 layer_->stroke_fill_type = 2;
                 layer_->stroke_gradient_type = type->currentData().toInt();
+                layer_->stroke_gradient_spread = repeat_mode->currentData().toInt();
                 layer_->stroke_gradient_start_pos = (float)(start_pos->value() / 100.0);
                 layer_->stroke_gradient_end_pos = (float)(end_pos->value() / 100.0);
                 layer_->stroke_gradient_start_opacity = (float)(start_opacity->value() / 100.0);
@@ -3152,6 +3181,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             } else {
                 layer_->fill_type = 1;
                 layer_->gradient_type = type->currentData().toInt();
+                layer_->gradient_spread = repeat_mode->currentData().toInt();
                 layer_->gradient_start_pos = (float)(start_pos->value() / 100.0);
                 layer_->gradient_end_pos = (float)(end_pos->value() / 100.0);
                 layer_->gradient_start_opacity = (float)(start_opacity->value() / 100.0);
@@ -3193,6 +3223,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 apply_gradient();
         });
         connect(type, QOverload<int>::of(&QComboBox::currentIndexChanged), &popup, [=](int){ apply_gradient(); });
+        connect(repeat_mode, QOverload<int>::of(&QComboBox::currentIndexChanged), &popup, [=](int){ apply_gradient(); });
         connect(type_group, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
                 &popup, [=](QAbstractButton *button) {
                     type->setCurrentIndex(std::max(0, type->findData(type_group->id(button))));
@@ -4032,6 +4063,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, emit_change, apply_text_fill_format](int idx) {
                 if (can_edit()) { layer_->gradient_type = cmb_gradient_type_->itemData(idx).toInt(); apply_text_fill_format(); emit_change(); }
             });
+    connect(cmb_gradient_spread_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change, apply_text_fill_format](int idx) {
+                if (can_edit()) { layer_->gradient_spread = cmb_gradient_spread_->itemData(idx).toInt(); apply_text_fill_format(); emit_change(); }
+            });
     auto connect_gradient_color = [this, can_edit, emit_change, apply_text_fill_format](QPushButton *button, uint32_t Layer::*member,
                                                                  const char *title_key, bool text_fill) {
         connect(button, &QPushButton::clicked, this, [this, can_edit, emit_change, apply_text_fill_format, button, member, title_key, text_fill]() {
@@ -4775,6 +4810,7 @@ void PropertiesPanel::load_values()
         style_color_button(btn_fill_color_, 0xFF222222);
         if (cmb_fill_type_) cmb_fill_type_->setCurrentIndex(0);
         if (cmb_gradient_type_) cmb_gradient_type_->setCurrentIndex(0);
+        if (cmb_gradient_spread_) cmb_gradient_spread_->setCurrentIndex(0);
         if (btn_gradient_start_color_) style_color_button(btn_gradient_start_color_, 0xFF4B6EA8);
         if (btn_gradient_end_color_) style_color_button(btn_gradient_end_color_, 0xFF1B1B1B);
         if (btn_appearance_fill_color_) { style_color_button(btn_appearance_fill_color_, 0xFF222222); btn_appearance_fill_color_->setText(QString()); }
@@ -5308,6 +5344,10 @@ void PropertiesPanel::load_values()
         int gradient_idx = cmb_gradient_type_->findData(layer_->gradient_type);
         cmb_gradient_type_->setCurrentIndex(gradient_idx >= 0 ? gradient_idx : 0);
     }
+    if (cmb_gradient_spread_) {
+        int spread_idx = cmb_gradient_spread_->findData(layer_->gradient_spread);
+        cmb_gradient_spread_->setCurrentIndex(spread_idx >= 0 ? spread_idx : 0);
+    }
     if (btn_gradient_start_color_) style_color_button(btn_gradient_start_color_, layer_->gradient_start_color);
     if (btn_gradient_end_color_) style_color_button(btn_gradient_end_color_, layer_->gradient_end_color);
     if (spn_gradient_start_pos_) spn_gradient_start_pos_->setValue(layer_->gradient_start_pos);
@@ -5472,6 +5512,10 @@ void PropertiesPanel::load_values()
                 int rich_gradient_i = cmb_gradient_type_->findData(fmt.fill.gradient_type);
                 cmb_gradient_type_->setCurrentIndex(rich_gradient_i >= 0 ? rich_gradient_i : 0);
             }
+            if (cmb_gradient_spread_) {
+                int rich_spread_i = cmb_gradient_spread_->findData(fmt.fill.gradient_spread);
+                cmb_gradient_spread_->setCurrentIndex(rich_spread_i >= 0 ? rich_spread_i : 0);
+            }
             if (btn_gradient_start_color_) style_color_button(btn_gradient_start_color_, fmt.fill.gradient_start_color);
             if (btn_gradient_end_color_) style_color_button(btn_gradient_end_color_, fmt.fill.gradient_end_color);
             if (spn_gradient_start_pos_) spn_gradient_start_pos_->setValue(fmt.fill.gradient_start_pos);
@@ -5512,6 +5556,7 @@ void PropertiesPanel::load_values()
         set_combo_mixed(cmb_text_style_, summary.mixed & RichTextCharTextStyle);
         set_combo_mixed(cmb_fill_type_, summary.mixed & RichTextCharFillColor);
         set_combo_mixed(cmb_gradient_type_, summary.mixed & RichTextCharFillColor);
+        set_combo_mixed(cmb_gradient_spread_, summary.mixed & RichTextCharFillColor);
         set_spin_mixed(spn_gradient_start_pos_, summary.mixed & RichTextCharFillColor);
         set_spin_mixed(spn_gradient_end_pos_, summary.mixed & RichTextCharFillColor);
         set_spin_mixed(spn_gradient_start_opacity_, summary.mixed & RichTextCharFillColor);

@@ -797,7 +797,7 @@ QString CacheManager::contentHash(const Title &title) const
         hash.addData(bytes);
     };
     auto add_fill = [&](const RichTextFill &f) {
-        add(f.type); add((quint32)f.color); add(f.gradient_type);
+        add(f.type); add((quint32)f.color); add(f.gradient_type); add(f.gradient_spread);
         add((quint32)f.gradient_start_color); add((quint32)f.gradient_end_color);
         add(f.gradient_start_pos); add(f.gradient_end_pos);
         add(f.gradient_start_opacity); add(f.gradient_end_opacity); add(f.gradient_opacity);
@@ -843,7 +843,8 @@ QString CacheManager::contentHash(const Title &title) const
         add((quint32)e.effect_stroke_color); add(e.effect_stroke_width); add(e.effect_stroke_opacity);
         add(e.effect_padding_left); add(e.effect_padding_right); add(e.effect_padding_top); add(e.effect_padding_bottom);
         add(e.effect_corner_radius_tl); add(e.effect_corner_radius_tr); add(e.effect_corner_radius_br); add(e.effect_corner_radius_bl);
-        add(e.effect_corner_type); add(e.effect_gradient_type); add((quint32)e.effect_gradient_start_color);
+        add(e.effect_corner_type); add(e.effect_gradient_type); add(e.effect_gradient_spread);
+        add((quint32)e.effect_gradient_start_color);
         add((quint32)e.effect_gradient_end_color); add(e.effect_gradient_start_pos); add(e.effect_gradient_end_pos);
         add(e.effect_gradient_start_opacity); add(e.effect_gradient_end_opacity); add(e.effect_gradient_opacity);
         add(e.effect_gradient_angle); add(e.effect_gradient_center_x); add(e.effect_gradient_center_y);
@@ -985,7 +986,7 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->fill_type); add((quint32)layer->fill_color);
         add_anim(layer->fill_color_a); add_anim(layer->fill_color_r);
         add_anim(layer->fill_color_g); add_anim(layer->fill_color_b);
-        add(layer->gradient_type);
+        add(layer->gradient_type); add(layer->gradient_spread);
         add((quint32)layer->gradient_start_color); add((quint32)layer->gradient_end_color);
         add(layer->gradient_start_pos); add(layer->gradient_end_pos);
         add(layer->gradient_start_opacity); add(layer->gradient_end_opacity); add(layer->gradient_opacity);
@@ -996,7 +997,7 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->outline_enabled); add(layer->stroke_fill_type); add((quint32)layer->stroke_color);
         add(layer->stroke_width); add(layer->outline_opacity); add(layer->outline_join_style);
         add(layer->outline_on_front); add(layer->outline_alignment); add(layer->outline_antialias);
-        add(layer->stroke_gradient_type);
+        add(layer->stroke_gradient_type); add(layer->stroke_gradient_spread);
         add((quint32)layer->stroke_gradient_start_color); add((quint32)layer->stroke_gradient_end_color);
         add(layer->stroke_gradient_start_pos); add(layer->stroke_gradient_end_pos);
         add(layer->stroke_gradient_start_opacity); add(layer->stroke_gradient_end_opacity);
@@ -1027,7 +1028,7 @@ QString CacheManager::contentHash(const Title &title) const
         add_anim(layer->background_color_g); add_anim(layer->background_color_b);
         add_anim(layer->background_stroke_color_a); add_anim(layer->background_stroke_color_r);
         add_anim(layer->background_stroke_color_g); add_anim(layer->background_stroke_color_b);
-        add(layer->background_gradient_type);
+        add(layer->background_gradient_type); add(layer->background_gradient_spread);
         add((quint32)layer->background_gradient_start_color); add((quint32)layer->background_gradient_end_color);
         add(layer->background_gradient_start_pos); add(layer->background_gradient_end_pos);
         add(layer->background_gradient_start_opacity); add(layer->background_gradient_end_opacity);

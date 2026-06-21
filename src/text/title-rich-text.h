@@ -10,6 +10,7 @@ struct RichTextFill {
     int type = 0; /* 0=solid, 1=gradient */
     uint32_t color = 0xFFFFFFFF;
     int gradient_type = 0;
+    int gradient_spread = 0;
     uint32_t gradient_start_color = 0xFF4B6EA8;
     uint32_t gradient_end_color = 0xFF1B1B1B;
     float gradient_start_pos = 0.0f;
