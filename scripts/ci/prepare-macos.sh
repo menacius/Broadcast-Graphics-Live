@@ -40,6 +40,13 @@ for directory in "${DEPS_ROOT}"/obs-deps-*; do
   fi
 done
 
+OBS_SOURCE_DIR="$(find "${DEPS_ROOT}" -maxdepth 1 -type d -name 'obs-studio-*' -print -quit)"
+if [[ -z "${OBS_SOURCE_DIR}" || ! -d "${OBS_SOURCE_DIR}/cmake/finders" ]]; then
+  echo "Could not locate the OBS CMake finder modules under ${DEPS_ROOT}" >&2
+  exit 1
+fi
+OBS_FINDERS_DIR="${OBS_SOURCE_DIR}/cmake/finders"
+
 LIBOBS_CONFIG="$(find "${DEPS_ROOT}" -type f \( -name 'libobsConfig.cmake' -o -name 'libobs-config.cmake' \) -print -quit)"
 if [[ -z "${LIBOBS_CONFIG}" ]]; then
   echo "No generated libobs CMake package was found under ${DEPS_ROOT}" >&2
@@ -48,7 +55,10 @@ if [[ -z "${LIBOBS_CONFIG}" ]]; then
 fi
 LIBOBS_DIR="$(dirname "${LIBOBS_CONFIG}")"
 
+echo "Resolved OBS source: ${OBS_SOURCE_DIR}"
+echo "Resolved OBS finder modules: ${OBS_FINDERS_DIR}"
 echo "Resolved libobs package: ${LIBOBS_CONFIG}"
 printf '%s\n' "OBS_GSP_DEPS_ROOT=${DEPS_ROOT}" >> "${GITHUB_ENV}"
 printf '%s\n' "OBS_GSP_PREFIX_PATH=${PREFIX_PATH}" >> "${GITHUB_ENV}"
 printf '%s\n' "OBS_GSP_LIBOBS_DIR=${LIBOBS_DIR}" >> "${GITHUB_ENV}"
+printf '%s\n' "OBS_GSP_CMAKE_MODULE_PATH=${OBS_FINDERS_DIR}" >> "${GITHUB_ENV}"
