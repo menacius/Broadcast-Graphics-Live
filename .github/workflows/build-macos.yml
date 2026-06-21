@@ -1,0 +1,94 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OBS_TEMPLATE_REF: 3e7d7ac3b5342cd7d9b88890b9c70b472d1520fc
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          show-progress: false
+      - uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-plugintemplate
+          ref: ${{ env.OBS_TEMPLATE_REF }}
+          path: .ci/obs-plugintemplate
+          show-progress: false
+      - name: Install native dependencies
+        shell: bash
+        run: |
+          brew install pkg-config cairo pango lz4
+          brew_prefix="$(brew --prefix)"
+          echo "PKG_CONFIG_PATH=${brew_prefix}/lib/pkgconfig:${brew_prefix}/share/pkgconfig" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${brew_prefix}" >> "$GITHUB_ENV"
+      - name: Prepare OBS SDK
+        shell: bash
+        run: |
+          set +e
+          bash -x scripts/ci/prepare-macos.sh > macos-prepare.log 2>&1
+          status=$?
+          cat macos-prepare.log
+          exit $status
+      - name: Upload preparation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-prepare-diagnostics
+          path: macos-prepare.log
+          if-no-files-found: warn
+      - name: Configure
+        shell: bash
+        run: |
+          set +e
+          combined_prefix_path="$CMAKE_PREFIX_PATH;$OBS_GSP_PREFIX_PATH"
+          cmake -S . -B build-macos -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DOBS_SDK_DIR="$OBS_GSP_DEPS_ROOT" \
+            -Dlibobs_DIR="$OBS_GSP_LIBOBS_DIR" \
+            -DCMAKE_MODULE_PATH="$OBS_GSP_CMAKE_MODULE_PATH" \
+            -DCMAKE_PREFIX_PATH="$combined_prefix_path" \
+            -DOBS_GSP_BUILD_TESTS=ON > macos-configure.log 2>&1
+          status=$?
+          cat macos-configure.log
+          exit $status
+      - name: Upload configure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-configure-diagnostics
+          path: |
+            macos-configure.log
+            build-macos/CMakeCache.txt
+            build-macos/CMakeFiles/CMakeError.log
+            build-macos/CMakeFiles/CMakeOutput.log
+          if-no-files-found: warn
+      - name: Build
+        shell: bash
+        run: |
+          set +e
+          cmake --build build-macos --config RelWithDebInfo --parallel --verbose > macos-build.log 2>&1
+          status=$?
+          cat macos-build.log
+          exit $status
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build-diagnostics
+          path: macos-build.log
+          if-no-files-found: error
+      - name: Test
+        run: ctest --test-dir build-macos -C RelWithDebInfo --output-on-failure
