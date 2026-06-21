@@ -49,6 +49,7 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -DOBS_SDK_DIR="$OBS_GSP_DEPS_ROOT" \
             -Dlibobs_DIR="$OBS_GSP_LIBOBS_DIR" \
+            -DCMAKE_MODULE_PATH="$OBS_GSP_CMAKE_MODULE_PATH" \
             -DCMAKE_PREFIX_PATH="$OBS_GSP_PREFIX_PATH" \
             -DOBS_GSP_BUILD_TESTS=ON > macos-configure.log 2>&1
           status=$?
