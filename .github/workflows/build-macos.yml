@@ -26,7 +26,6 @@ jobs:
           path: .ci/obs-plugintemplate
           show-progress: false
       - name: Prepare OBS SDK
-        id: prepare_obs
         shell: bash
         run: |
           set +e
@@ -42,7 +41,29 @@ jobs:
           path: macos-prepare.log
           if-no-files-found: warn
       - name: Configure
-        run: cmake -S . -B build-macos -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 -DOBS_SDK_DIR="$OBS_GSP_DEPS_ROOT" -DCMAKE_PREFIX_PATH="$OBS_GSP_PREFIX_PATH" -DOBS_GSP_BUILD_TESTS=ON
+        shell: bash
+        run: |
+          set +e
+          cmake -S . -B build-macos -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DOBS_SDK_DIR="$OBS_GSP_DEPS_ROOT" \
+            -DCMAKE_PREFIX_PATH="$OBS_GSP_PREFIX_PATH" \
+            -DOBS_GSP_BUILD_TESTS=ON > macos-configure.log 2>&1
+          status=$?
+          cat macos-configure.log
+          exit $status
+      - name: Upload configure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-configure-diagnostics
+          path: |
+            macos-configure.log
+            build-macos/CMakeCache.txt
+            build-macos/CMakeFiles/CMakeError.log
+            build-macos/CMakeFiles/CMakeOutput.log
+          if-no-files-found: warn
       - name: Build
         run: cmake --build build-macos --config RelWithDebInfo --parallel
       - name: Test
