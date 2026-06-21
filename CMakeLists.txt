@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-graphics-studio-pro VERSION 1.0.0)
+project(obs-graphics-studio-pro VERSION 0.8.0)
+
+# Public development version shown in the About dialog and diagnostic logs.
+# Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
+# prerelease channel separately.
+set(OBS_GSP_PRERELEASE "alpha")
+set(OBS_GSP_VERSION "${PROJECT_VERSION}-${OBS_GSP_PRERELEASE}")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -561,7 +567,7 @@ endif()
 # ── Locale / data files ──────────────────────────────────────────────
 target_compile_definitions(obs-graphics-studio-pro PRIVATE
     PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
-    PLUGIN_VERSION="${PROJECT_VERSION}"
+    PLUGIN_VERSION="${OBS_GSP_VERSION}"
 )
 if(OBS_GSP_LZ4_TARGET)
     target_compile_definitions(obs-graphics-studio-pro PRIVATE OBS_GSP_HAVE_LZ4=1)

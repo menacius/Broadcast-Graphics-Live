@@ -4,8 +4,10 @@
 
 **OBS Graphics Studio Pro** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
+**Current development version: `v0.8.0-alpha`**
+
 > [!WARNING]
-> The project is under active **alpha development**. Core authoring, serialization, playback, live-cue, and caching workflows are implemented, but file formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+> `v0.8.0-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
 
 OBS Graphics Studio Pro is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
 
@@ -43,6 +45,11 @@ OBS Graphics Studio Pro is an independent third-party project and is not affilia
   - Diamond
   - Line
 - Direct canvas selection, movement, resizing, rotation, anchor/origin editing, and multi-selection.
+- Pen Tool for open and closed straight or cubic Bézier paths.
+- Direct Selection Tool for anchor points, Bézier direction handles, marquee point selection, live-corner editing, and compound-path contours.
+- Context-sensitive toolbar controls for transforms, selected path points, and multi-shape operations.
+- Vector boolean operations for two or more selected shape layers: **Unite**, **Subtract Front**, **Intersect**, and **Exclude**.
+- Boolean results remain editable as Path layers, preserve compound contours and holes, retain parametric rounded shapes when possible, and otherwise convert curved boundaries to cubic Bézier segments. Gradient mapping is preserved in canvas space when the result bounds change.
 - Photoshop-style rulers, draggable guides, safe guides, snapping, zoom, and pan.
 - Layer visibility, locking, duplication, ordering, parent/child transforms, blend modes, and track-matte-style masks.
 - Alpha, inverted alpha, luma, and inverted luma masks.
@@ -67,7 +74,7 @@ OBS Graphics Studio Pro is an independent third-party project and is not affilia
 - Internal image anchoring, optional clipping/cropping, aspect-ratio controls, and scalable filtering.
 - Bilinear, bicubic, Lanczos, and area image filters.
 - Solid and gradient fills.
-- Linear, radial, angle, reflected, and diamond gradients.
+- Linear, radial, and conical/angle gradients, with pad, reflected, and repeating spread modes. Legacy reflected and diamond preset data is normalized on load.
 - Editable gradient stops, opacity, position, angle, center, focal point, and scale.
 - Outer, centered, and inner stroke alignment.
 - Per-side padding and independent corner radii/types where supported.
@@ -179,13 +186,27 @@ The current implementation uses one cached prefix rather than multiple independe
 
 ## Current status and limitations
 
-- The project is an alpha and is not yet recommended as the only copy of production-critical graphics.
+- The current release line is **`v0.8.0-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
+- Remaining pre-beta work includes the final planned features, UI consistency and visual polish, broader workflow validation, performance verification, and focused bug hunting across editor, dock, cache, and OBS playback paths.
 - The primary cross-platform composition and text-rendering path uses Cairo, Pango, and PangoCairo.
 - GPU effect-pipeline infrastructure exists, but the migration of all rendering and effects to a fully GPU-native path is not complete.
 - Partial dynamic caching currently supports one safe static prefix below the first dynamic output.
 - Complex rich text, masks, effects, motion blur, large images, and high-resolution timelines can still require significant CPU, RAM, GPU, and disk resources.
 - Template and title schemas may evolve before a stable release.
 - Automated coverage currently focuses on selected model behavior rather than the complete OBS/editor integration surface.
+
+---
+
+## Versioning and release maturity
+
+The project follows Semantic Versioning for public development builds:
+
+- **`v0.8.x-alpha`** — completion of the remaining planned feature set, editor integration work, and active UI changes.
+- **`v0.9.0-beta.n`** — feature-complete testing phase focused on UI polish, compatibility, performance, and bug fixing.
+- **`v0.9.0-rc.n`** — release-candidate builds under feature freeze, with only release-blocking fixes accepted.
+- **`v1.0.0`** — first stable release with a documented compatibility and migration baseline.
+
+The version displayed by the About dialog and plugin logs is generated from the root `CMakeLists.txt`. Update the numeric `project(... VERSION ...)` value and the `OBS_GSP_PRERELEASE` channel together when preparing a release.
 
 ---
 
@@ -487,6 +508,7 @@ Key components:
 | `TimelineWidget` | Layer timing, transport, parenting, keyframes, and cache visualization |
 | `TitleDataStore` | Scene-collection-specific title ownership and atomic persistence |
 | `CacheManager` | Frame caching, invalidation, background scheduling, and live-cue preparation |
+| Root `CMakeLists.txt` | Canonical project and prerelease version used by About and plugin diagnostics |
 
 See [`docs/module-architecture.md`](docs/module-architecture.md) for the current ownership and dependency map.
 
