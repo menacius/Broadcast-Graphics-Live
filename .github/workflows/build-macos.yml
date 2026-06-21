@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          cmake --build build-macos --config RelWithDebInfo --parallel --verbose > macos-build.log 2>&1
+          cmake --build build-macos --config Release --parallel --verbose > macos-build.log 2>&1
           status=$?
           cat macos-build.log
           exit $status
@@ -91,4 +91,4 @@ jobs:
           path: macos-build.log
           if-no-files-found: error
       - name: Test
-        run: ctest --test-dir build-macos -C RelWithDebInfo --output-on-failure
+        run: ctest --test-dir build-macos -C Release --output-on-failure
