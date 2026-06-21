@@ -1,0 +1,22 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build-macos -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DOBS_GSP_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build-macos --config RelWithDebInfo --parallel
+      - name: Test
+        run: ctest --test-dir build-macos -C RelWithDebInfo --output-on-failure
