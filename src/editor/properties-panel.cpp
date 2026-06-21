@@ -2352,6 +2352,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *tabs = new QTabWidget(&popup);
         // Keep the selector as the existing tabbed popup; do not open a separate Gradient Editor window.
         root->addWidget(tabs);
+        bool live_visual_dirty = false;
+        auto emit_live_visual_change = [&]() {
+            if (loading_values_)
+                return;
+            live_visual_dirty = true;
+            emit live_visual_changed();
+        };
 
         auto update_main_swatch = [this, stroke, text_fill]() {
             if (stroke) {
@@ -2380,7 +2387,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (!text_fill && btn_fill_color_) style_color_button(btn_fill_color_, eval_fill_color(*layer_, t));
             }
         };
-        auto apply_solid_color = [this, stroke, text_fill, local_time, emit_change, apply_text_fill_format,
+        auto apply_solid_color = [this, stroke, text_fill, local_time, &emit_live_visual_change, apply_text_fill_format,
                                   update_main_swatch](const QColor &color) {
             if (!layer_ || loading_values_ || !color.isValid()) return;
             const uint32_t argb = argb_from_color(color);
@@ -2400,7 +2407,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 }
             }
             update_main_swatch();
-            emit_change();
+            emit_live_visual_change();
         };
 
         auto *color_tab = new QWidget(tabs);
@@ -2614,28 +2621,25 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         connect(&recent_commit_timer, &QTimer::timeout, &popup,
                 [&]() { commit_recent_color(selected_color, false); });
 
-        auto update_color_controls = [&]() {
+        auto update_color_controls = [&](bool sync_picker = true, bool refresh_recent = true) {
             syncing_color_controls = true;
             foreground_button->setStyleSheet(swatch_style(selected_color, 30));
             background_button->setStyleSheet(swatch_style(background_color, 30));
             foreground_button->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.ForegroundColor"), selected_color, color_hex(selected_color)));
             background_button->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.BackgroundColor"), background_color, color_hex(background_color)));
-            {
+            if (sync_picker) {
                 QSignalBlocker blocker(color_picker);
                 color_picker->setColor(selected_color);
             }
-            update_recent_buttons();
+            if (refresh_recent)
+                update_recent_buttons();
             syncing_color_controls = false;
         };
 
         auto apply_and_sync_color = [&](const QColor &color, bool update_picker) {
             if (!color.isValid()) return;
             selected_color = color;
-            if (update_picker) {
-                QSignalBlocker blocker(color_picker);
-                color_picker->setColor(color);
-            }
-            update_color_controls();
+            update_color_controls(update_picker, false);
             apply_solid_color(color);
             if (color.alpha() > 0)
                 recent_commit_timer.start();
@@ -2650,7 +2654,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             if (selected_color.isValid() && selected_color.alpha() > 0)
                 emit color_library_add_requested(selected_color);
         });
-        connect(none_button, &QPushButton::clicked, &popup, [=, &selected_color, &update_color_controls, &update_main_swatch, &emit_change, &apply_text_fill_format]() {
+        connect(none_button, &QPushButton::clicked, &popup, [=, &selected_color, &update_color_controls, &update_main_swatch, &emit_live_visual_change, &apply_text_fill_format]() {
             if (!layer_) return;
             QColor none = selected_color;
             none.setAlpha(0);
@@ -2672,7 +2676,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             }
             update_color_controls();
             update_main_swatch();
-            emit_change();
+            emit_live_visual_change();
         });
         connect(swap_button, &QPushButton::clicked, &popup, [=, &selected_color, &background_color, &apply_and_sync_color]() {
             const QColor new_foreground = background_color;
@@ -3126,7 +3130,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             preview->set_extra_stops(stroke ? layer_->stroke_gradient_stops : layer_->gradient_stops);
             sync_stop_rows();
         };
-        auto apply_gradient = [=, &popup]() {
+        auto apply_gradient = [=, &popup, &emit_live_visual_change]() {
             if (!layer_ || loading_values_) return;
             if (stroke) {
                 layer_->outline_enabled = true;
@@ -3166,33 +3170,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             else
                 sync_stop_rows();
             update_main_swatch();
-            emit_change();
+            emit_live_visual_change();
         };
-        auto apply_gradient_stop_color = [=, &apply_gradient](int stop_index, const QColor &picked) {
+        auto apply_gradient_stop_color = [=](int stop_index, const QColor &picked) {
             if (!picked.isValid() || stop_index < 0 || stop_index >= preview->stop_count())
                 return;
-
-            auto *color_button = stop_index == 0 ? start_color : (stop_index == 1 ? end_color : nullptr);
-            const uint32_t argb = argb_from_color(QColor(picked.red(), picked.green(), picked.blue(), 255));
-            if (stroke) {
-                if (stop_index == 0) layer_->stroke_gradient_start_color = argb;
-                else if (stop_index == 1) layer_->stroke_gradient_end_color = argb;
-            } else {
-                if (stop_index == 0) layer_->gradient_start_color = argb;
-                else if (stop_index == 1) layer_->gradient_end_color = argb;
-            }
-
-            if (color_button) {
-                style_color_button(color_button, argb);
-                color_button->setText(QString());
-            }
-
-            if (stop_index == 0) start_opacity->setValue(picked.alphaF() * 100.0);
-            else if (stop_index == 1) end_opacity->setValue(picked.alphaF() * 100.0);
-            else preview->set_stop_opacity(stop_index, picked.alphaF());
-
             preview->set_stop_color(stop_index, picked);
-            apply_gradient();
         };
         auto show_stop_color_popup = [=, &set_gradient_color_picker_target](int stop_index, const QPoint &global_pos) {
             Q_UNUSED(global_pos);
@@ -3326,6 +3309,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         const bool is_gradient_value = stroke ? (layer_->stroke_fill_type == 2) : (layer_->fill_type == 1);
         tabs->setCurrentIndex(is_gradient_value ? 2 : 0);
         emit gradient_editor_active_changed(is_gradient_value);
+        live_visual_dirty = false;
         auto *source_button = stroke ? btn_appearance_stroke_color_ : btn_appearance_fill_color_;
         popup.adjustSize();
         const QPoint cursor_pos = QCursor::pos();
@@ -3341,6 +3325,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         popup.move(clamp_popup_position_to_screen(desired_pos, popup.size(), source_button));
         popup.exec();
         emit gradient_editor_active_changed(false);
+        if (live_visual_dirty)
+            emit_change();
     };
     connect(btn_appearance_fill_color_, &QPushButton::clicked,
             this, [open_color_selector]() { open_color_selector(false); });

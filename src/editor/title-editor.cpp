@@ -2776,6 +2776,17 @@ void TitleEditor::build_ui()
                 on_title_modified(push_undo_snapshot);
                 if (layers_) layers_->refresh();
             });
+    connect(props_, &PropertiesPanel::live_visual_changed,
+            this, [this]() {
+                if (updating_layer_panels_)
+                    return;
+                force_next_title_visual_update();
+                if (title_)
+                    set_dirty(true);
+                schedule_cache_invalidation();
+                if (canvas_)
+                    canvas_->refresh_preview();
+            });
     connect(props_, &PropertiesPanel::text_char_format_changed,
             this, [this](const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask) {
                 if (canvas_) canvas_->apply_active_text_char_format(layer_id, format, mask);
