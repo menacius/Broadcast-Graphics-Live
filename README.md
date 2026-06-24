@@ -13,7 +13,7 @@ OBS Graphics Studio Pro is an independent third-party project and is not affilia
 
 ## Development approach
 
-This project is the result of **vibe coding**. **Antonios Dimopoulos** defines the product vision, broadcast workflows, desired behavior, interface decisions, architecture goals, and acceptance criteria, while AI-assisted development tools help translate those requirements into C++/Qt implementation. He knows considerably more about what he wants to build than he does about C++.
+This project is the result of **vibe coding**. **[Antonios Dimopoulos](https://web.facebook.com/menacius)** defines the product vision, broadcast workflows, desired behavior, interface decisions, architecture goals, and acceptance criteria, while AI-assisted development tools help translate those requirements into C++/Qt implementation. He knows considerably more about what he wants to build than he does about C++.
 
 That development model makes validation especially important. This alpha should be treated as experimental: code changes need diff review, structural and build checks, focused automated tests, and real OBS runtime testing before they can be considered reliable for production use.
 
