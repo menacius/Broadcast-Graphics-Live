@@ -1,6 +1,6 @@
 {
   "name": "obs-graphics-studio-pro-deps",
-  "version-string": "0.8.1-alpha",
+  "version-string": "0.8.2-alpha",
   "dependencies": [
     "cairo",
     "pango",

@@ -65,6 +65,7 @@ signals:
     void live_visual_changed();
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     void gradient_editor_active_changed(bool active);
+    void gradient_model_refresh_requested();
     void color_picker_tool_requested();
     void recent_colors_changed();
     void color_library_add_requested(const QColor &color);

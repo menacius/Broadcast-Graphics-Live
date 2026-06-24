@@ -1,0 +1,104 @@
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <fstream>
+#include <iterator>
+#include <string>
+
+namespace {
+
+struct PremultipliedPixel {
+    double r;
+    double g;
+    double b;
+    double a;
+};
+
+double gpu_mask_value(const PremultipliedPixel &pixel, int mode)
+{
+    double value = pixel.a;
+    if (mode == 3 || mode == 4) {
+        const double inv_alpha = pixel.a > 1e-6 ? 1.0 / pixel.a : 0.0;
+        const double straight_r = pixel.r * inv_alpha;
+        const double straight_g = pixel.g * inv_alpha;
+        const double straight_b = pixel.b * inv_alpha;
+        value = (straight_r * 0.2126 + straight_g * 0.7152 +
+                 straight_b * 0.0722) * pixel.a;
+    }
+    if (mode == 2 || mode == 4)
+        value = 1.0 - value;
+    return std::clamp(value, 0.0, 1.0);
+}
+
+bool near(double actual, double expected)
+{
+    return std::abs(actual - expected) < 1e-9;
+}
+
+std::string read_file(const char *path)
+{
+    std::ifstream input(path, std::ios::binary);
+    assert(input.good());
+    return std::string((std::istreambuf_iterator<char>(input)),
+                       std::istreambuf_iterator<char>());
+}
+
+void test_mask_modes()
+{
+    const PremultipliedPixel half_red {0.5, 0.0, 0.0, 0.5};
+    assert(near(gpu_mask_value(half_red, 1), 0.5));
+    assert(near(gpu_mask_value(half_red, 2), 0.5));
+    assert(near(gpu_mask_value(half_red, 3), 0.2126 * 0.5));
+    assert(near(gpu_mask_value(half_red, 4), 1.0 - 0.2126 * 0.5));
+
+    const PremultipliedPixel transparent {0.0, 0.0, 0.0, 0.0};
+    assert(near(gpu_mask_value(transparent, 1), 0.0));
+    assert(near(gpu_mask_value(transparent, 2), 1.0));
+    assert(near(gpu_mask_value(transparent, 3), 0.0));
+    assert(near(gpu_mask_value(transparent, 4), 1.0));
+}
+
+void test_source_contract(const std::string &source)
+{
+    assert(source.find("static constexpr const char *kGpuMaskEffect") !=
+           std::string::npos);
+    assert(source.find("maskMode == 3 || maskMode == 4") !=
+           std::string::npos);
+    assert(source.find("maskMode == 2 || maskMode == 4") !=
+           std::string::npos);
+    assert(source.find("render_gpu_mask_graph_texture") !=
+           std::string::npos);
+    assert(source.find("MaskTextureCacheEntry") != std::string::npos);
+    assert(source.find("mask_texture_cache") != std::string::npos);
+    assert(source.find("effect_stack_respects_masks") != std::string::npos);
+    assert(source.find("cairo_mask_surface") == std::string::npos);
+    assert(source.find("render_layer_with_mask") == std::string::npos);
+    assert(source.find("convert_argb32_surface_to_luma_alpha_mask") ==
+           std::string::npos);
+    assert(source.find("render_gpu_scene_mask_base_raster") ==
+           std::string::npos);
+    assert(source.find("kMaximumMaskTextures") != std::string::npos);
+}
+
+void test_editor_first_frame_contract(const std::string &source)
+{
+    const std::size_t set_title = source.find("void CanvasPreview::set_title");
+    assert(set_title != std::string::npos);
+    const std::size_t next_function = source.find(
+        "CanvasPreview::ViewState CanvasPreview::view_state", set_title);
+    assert(next_function != std::string::npos);
+    const std::string body = source.substr(set_title, next_function - set_title);
+    assert(body.find("title_gpu_render_session_update") != std::string::npos);
+    assert(body.find("gpu_model_dirty_ = false") != std::string::npos);
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    assert(argc == 3);
+    test_mask_modes();
+    test_source_contract(read_file(argv[1]));
+    test_editor_first_frame_contract(read_file(argv[2]));
+    return 0;
+}

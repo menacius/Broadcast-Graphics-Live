@@ -959,6 +959,29 @@ static RichTextFill rich_fill_from_json(const json &j, const RichTextFill &fallb
     return f;
 }
 
+static json rich_stroke_to_json(const RichTextStroke &stroke)
+{
+    return {{"enabled", stroke.enabled}, {"width", stroke.width},
+            {"opacity", stroke.opacity}, {"on_front", stroke.on_front},
+            {"alignment", stroke.alignment}, {"antialias", stroke.antialias},
+            {"join_style", stroke.join_style}, {"fill", rich_fill_to_json(stroke.fill)}};
+}
+
+static RichTextStroke rich_stroke_from_json(const json &j, const RichTextStroke &fallback = {})
+{
+    RichTextStroke stroke = fallback;
+    if (!j.is_object()) return stroke;
+    stroke.enabled = json_bool(j, "enabled", stroke.enabled);
+    stroke.width = (float)std::clamp(finite_or(json_double(j, "width", stroke.width), stroke.width), 0.0, 200.0);
+    stroke.opacity = (float)std::clamp(finite_or(json_double(j, "opacity", stroke.opacity), stroke.opacity), 0.0, 1.0);
+    stroke.on_front = json_bool(j, "on_front", stroke.on_front);
+    stroke.alignment = std::clamp(json_int(j, "alignment", stroke.alignment), 0, 2);
+    stroke.antialias = json_bool(j, "antialias", stroke.antialias);
+    stroke.join_style = std::clamp(json_int(j, "join_style", stroke.join_style), 0, 2);
+    if (j.contains("fill")) stroke.fill = rich_fill_from_json(j["fill"], stroke.fill);
+    return stroke;
+}
+
 static json rich_char_format_to_json(const RichTextCharFormat &f)
 {
     return {{"font_family", f.font_family}, {"font_style", f.font_style},
@@ -970,7 +993,8 @@ static json rich_char_format_to_json(const RichTextCharFormat &f)
             {"baseline_shift", f.baseline_shift}, {"text_style", f.text_style},
             {"ligatures", f.ligatures}, {"stylistic_alternates", f.stylistic_alternates},
             {"fractions", f.fractions}, {"opentype_features", f.opentype_features},
-            {"language", f.language}, {"fill", rich_fill_to_json(f.fill)}};
+            {"language", f.language}, {"fill", rich_fill_to_json(f.fill)},
+            {"stroke", rich_stroke_to_json(f.stroke)}};
 }
 
 static RichTextCharFormat rich_char_format_from_json(const json &j, const RichTextCharFormat &fallback = {})
@@ -998,6 +1022,7 @@ static RichTextCharFormat rich_char_format_from_json(const json &j, const RichTe
     f.opentype_features = json_bool(j, "opentype_features", f.opentype_features);
     f.language = bounded_string(j, "language", f.language, kMaxNameLength);
     if (j.contains("fill")) f.fill = rich_fill_from_json(j["fill"], f.fill);
+    if (j.contains("stroke")) f.stroke = rich_stroke_from_json(j["stroke"], f.stroke);
     return f;
 }
 
@@ -1029,22 +1054,15 @@ static json rich_doc_to_json(const RichTextDocument &doc)
 {
     json blocks = json::array();
     for (const auto &b : doc.blocks)
-        blocks.push_back({{"start", b.start}, {"length", b.length}, {"format", rich_paragraph_format_to_json(b.format)}});
+        blocks.push_back({{"start", b.start}, {"length", b.length}, {"mask", b.mask},
+                          {"format", rich_paragraph_format_to_json(b.format)}});
     json ranges = json::array();
     for (const auto &r : doc.ranges)
-        ranges.push_back({{"start", r.start}, {"length", r.length}, {"format", rich_char_format_to_json(r.format)}});
+        ranges.push_back({{"start", r.start}, {"length", r.length}, {"mask", r.mask},
+                          {"format", rich_char_format_to_json(r.format)}});
 
-    /* Runtime edit history is intentionally not persisted. The previous
-     * implementation serialized RichTextTransaction::removed_text/inserted_text.
-     * Those strings are produced by byte-level diffs; with Greek/Unicode live
-     * cue edits the diff can legally start inside a UTF-8 codepoint, producing
-     * an invalid UTF-8 substring. nlohmann::json throws while dumping such a
-     * string, which crashed OBS when saving after editing live text cues.
-     *
-     * The title file only needs the canonical rich_text model (plain_text,
-     * ranges and auto-style rules). Undo/typing transactions are session-only.
-     */
-    json transactions = json::array();
+    /* Runtime edit history is intentionally not persisted. Transactions use
+     * Unicode-safe boundaries, but the title file contains canonical state only. */
 
     json auto_rules = json::array();
     for (const auto &rule : doc.auto_style_rules) {
@@ -1076,26 +1094,52 @@ static json rich_doc_to_json(const RichTextDocument &doc)
             {"default_paragraph_format", rich_paragraph_format_to_json(doc.default_paragraph_format)},
             {"has_typing_format", doc.has_typing_format},
             {"typing_format", rich_char_format_to_json(doc.has_typing_format ? doc.typing_format : doc.default_format)},
+            {"typing_format_mask", doc.has_typing_format ? doc.typing_format_mask : 0u},
             {"blocks", blocks}, {"ranges", ranges},
             {"auto_style_enabled", doc.auto_style_enabled},
             {"auto_default_style_preset_id", doc.auto_default_style_preset_id},
             {"auto_default_style_cached_mask", doc.auto_default_style_cached_mask},
             {"auto_default_style_cached_format", rich_char_format_to_json(doc.auto_default_style_cached_format)},
             {"auto_style_rules", auto_rules},
-            {"selection", {{"anchor", doc.selection.anchor}, {"head", doc.selection.head}}},
-            {"transactions", transactions}};
+            {"selection", {{"anchor", doc.selection.anchor}, {"head", doc.selection.head}}}};
 }
 
 static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
 {
     RichTextDocument doc = rich_text_document_from_layer_defaults(layer);
     if (!j.is_object()) return doc;
-    doc.version = std::clamp(json_int(j, "version", 1), 1, 1);
+    doc.version = std::clamp(json_int(j, "version", 1), 1, 2);
     doc.plain_text = bounded_string(j, "plain_text", doc.plain_text, kMaxTextLength);
     if (j.contains("default_format")) doc.default_format = rich_char_format_from_json(j["default_format"], doc.default_format);
     if (j.contains("default_paragraph_format")) doc.default_paragraph_format = rich_paragraph_format_from_json(j["default_paragraph_format"], doc.default_paragraph_format);
     doc.has_typing_format = json_bool(j, "has_typing_format", false);
     doc.typing_format = j.contains("typing_format") ? rich_char_format_from_json(j["typing_format"], doc.default_format) : doc.default_format;
+    doc.typing_format_mask = j.contains("typing_format_mask")
+        ? (uint32_t)std::clamp(json_int(j, "typing_format_mask", 0), 0, (int)RichTextCharAll)
+        : (doc.has_typing_format
+               ? rich_text_char_format_difference_mask(doc.typing_format, doc.default_format)
+               : 0u);
+    doc.blocks.clear();
+    if (j.contains("blocks") && j["blocks"].is_array()) {
+        for (size_t i = 0; i < std::min(j["blocks"].size(), kMaxTextLength); ++i) {
+            const auto &bj = j["blocks"][i];
+            if (!bj.is_object()) continue;
+            RichTextBlock block;
+            block.start = (size_t)std::clamp(json_int(bj, "start", 0), 0, (int)kMaxTextLength);
+            block.length = (size_t)std::clamp(json_int(bj, "length", 0), 0, (int)kMaxTextLength);
+            block.format = bj.contains("format")
+                ? rich_paragraph_format_from_json(bj["format"], doc.default_paragraph_format)
+                : doc.default_paragraph_format;
+            /* Version 1 paragraph blocks had no override mask. Infer the
+             * sparse fields that differ from the document default. */
+            block.mask = bj.contains("mask")
+                ? (uint32_t)std::clamp(json_int(bj, "mask", (int)RichTextParagraphAll),
+                                       0, (int)RichTextParagraphAll)
+                : rich_text_paragraph_format_difference_mask(block.format,
+                                                              doc.default_paragraph_format);
+            doc.blocks.push_back(block);
+        }
+    }
     doc.ranges.clear();
     if (j.contains("ranges") && j["ranges"].is_array()) {
         for (size_t i = 0; i < std::min(j["ranges"].size(), kMaxTextLength); ++i) {
@@ -1105,12 +1149,18 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
             r.start = (size_t)std::clamp(json_int(rj, "start", 0), 0, (int)kMaxTextLength);
             r.length = (size_t)std::clamp(json_int(rj, "length", 0), 0, (int)kMaxTextLength);
             r.format = rj.contains("format") ? rich_char_format_from_json(rj["format"], doc.default_format) : doc.default_format;
+            /* Version 1 stored complete style snapshots. Since it had no
+             * explicit override intent, infer the sparse fields that differ
+             * from the document default during migration. */
+            r.mask = rj.contains("mask")
+                ? (uint32_t)std::clamp(json_int(rj, "mask", (int)RichTextCharAll), 0, (int)RichTextCharAll)
+                : rich_text_char_format_difference_mask(r.format, doc.default_format);
             doc.ranges.push_back(r);
         }
     }
     doc.auto_style_enabled = json_bool(j, "auto_style_enabled", false);
     doc.auto_default_style_preset_id = bounded_string(j, "auto_default_style_preset_id", "", kMaxNameLength);
-    doc.auto_default_style_cached_mask = (uint32_t)std::clamp(json_int(j, "auto_default_style_cached_mask", 0), 0, (int)((1u << 19) - 1));
+    doc.auto_default_style_cached_mask = (uint32_t)std::clamp(json_int(j, "auto_default_style_cached_mask", 0), 0, (int)RichTextCharAll);
     doc.auto_default_style_cached_format = j.contains("auto_default_style_cached_format")
         ? rich_char_format_from_json(j["auto_default_style_cached_format"], doc.default_format)
         : doc.default_format;
@@ -1153,7 +1203,7 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
                 rule.start_offset = 0;
                 rule.end_offset = rule.length;
             }
-            rule.cached_mask = (uint32_t)std::clamp(json_int(rj, "cached_mask", 0), 0, (int)((1u << 19) - 1));
+            rule.cached_mask = (uint32_t)std::clamp(json_int(rj, "cached_mask", 0), 0, (int)RichTextCharAll);
             rule.cached_format = rj.contains("cached_format") ? rich_char_format_from_json(rj["cached_format"], doc.default_format) : doc.default_format;
             doc.auto_style_rules.push_back(rule);
         }
@@ -1162,28 +1212,9 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
         doc.selection.anchor = (size_t)std::clamp(json_int(j["selection"], "anchor", 0), 0, (int)kMaxTextLength);
         doc.selection.head = (size_t)std::clamp(json_int(j["selection"], "head", 0), 0, (int)kMaxTextLength);
     }
+    /* Ignore transactions embedded by older files. They describe a previous
+     * editing session and are not part of the canonical document contract. */
     doc.transactions.clear();
-    if (j.contains("transactions") && j["transactions"].is_array()) {
-        const size_t start = j["transactions"].size() > 100 ? j["transactions"].size() - 100 : 0;
-        for (size_t i = start; i < j["transactions"].size(); ++i) {
-            const auto &tj = j["transactions"][i];
-            if (!tj.is_object()) continue;
-            RichTextTransaction tr;
-            tr.type = bounded_string(tj, "type", "replace_text", kMaxNameLength);
-            tr.position = (size_t)std::clamp(json_int(tj, "position", 0), 0, (int)kMaxTextLength);
-            tr.removed_text = bounded_string(tj, "removed_text", "", kMaxTextLength);
-            tr.inserted_text = bounded_string(tj, "inserted_text", "", kMaxTextLength);
-            if (tj.contains("before_selection")) {
-                tr.before_selection.anchor = (size_t)std::clamp(json_int(tj["before_selection"], "anchor", 0), 0, (int)kMaxTextLength);
-                tr.before_selection.head = (size_t)std::clamp(json_int(tj["before_selection"], "head", 0), 0, (int)kMaxTextLength);
-            }
-            if (tj.contains("after_selection")) {
-                tr.after_selection.anchor = (size_t)std::clamp(json_int(tj["after_selection"], "anchor", 0), 0, (int)kMaxTextLength);
-                tr.after_selection.head = (size_t)std::clamp(json_int(tj["after_selection"], "head", 0), 0, (int)kMaxTextLength);
-            }
-            doc.transactions.push_back(tr);
-        }
-    }
     doc.normalize();
     return doc;
 }
@@ -1554,6 +1585,37 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     return j;
 }
 
+std::string layer_render_fingerprint(const Layer &layer)
+{
+    json j = layer_to_json(layer, false, false, nullptr, nullptr);
+    static constexpr const char *kCompositorOnlyKeys[] = {
+        "id", "name", "visible", "locked", "properties_expanded",
+        "parent_id", "mask_source_id", "mask_mode", "blend_mode",
+        "use_as_scene_mask", "effect_stack_respects_masks",
+        "in_time", "out_time", "position", "scale", "scale_lock",
+        "rotation", "opacity", "expose_text", "exposed_hide_if_empty",
+        "exposed_single_value", "ignore_persistence"
+    };
+    for (const char *key : kCompositorOnlyKeys)
+        j.erase(key);
+
+    /* General transitions are implemented as GPU matrices/opacity. Text
+     * transitions remain in the fingerprint because they alter glyph coverage. */
+    if (j.contains("transitions") && j["transitions"].is_array()) {
+        json raster_transitions = json::array();
+        for (const auto &transition : j["transitions"]) {
+            if (!transition.is_object() ||
+                json_int(transition, "kind", 0) !=
+                    static_cast<int>(LayerTransitionKind::General))
+                raster_transitions.push_back(transition);
+        }
+        j["transitions"] = std::move(raster_transitions);
+    }
+
+    const std::string serialized = j.dump();
+    return std::to_string(std::hash<std::string>{}(serialized));
+}
+
 static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedded_assets = false,
                                                std::string *error = nullptr)
 {
@@ -1774,7 +1836,6 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->opacity.static_value = std::clamp(l->opacity.static_value, 0.0, 1.0);
 
     l->text_content  = bounded_string(j, "text_content", "Title", kMaxTextLength);
-    l->rich_text_html.clear();
     l->clock_format  = bounded_string(j, "clock_format", "H:i:s", kMaxNameLength);
     l->expose_text   = json_bool(j, "expose_text", false);
     l->exposed_hide_if_empty = json_bool(j, "exposed_hide_if_empty", false);

@@ -10,12 +10,11 @@ static RichTextDocument text_doc(const std::string &text)
     doc.default_format.font_family = "Inter";
     doc.default_format.font_size = 40;
     doc.default_format.fill.color = 0xFFFFFFFF;
-    doc.ranges = {{0, text.size(), doc.default_format}};
     doc.normalize();
     return doc;
 }
 
-int main()
+static void test_mixed_styles_and_transactions()
 {
     RichTextDocument doc = text_doc("HelloWorld");
     RichTextCharFormat red = doc.default_format;
@@ -28,12 +27,19 @@ int main()
     blue.ligatures = false;
     blue.kerning_mode = 2;
     blue.manual_kerning = 12.0f;
-    doc.ranges = {{0, 5, red}, {5, 5, blue}};
+    doc.ranges = {
+        {0, 5, red, rich_text_char_format_difference_mask(red, doc.default_format)},
+        {5, 5, blue, rich_text_char_format_difference_mask(blue, doc.default_format)},
+    };
     doc.normalize();
+    assert(doc.version == 2);
     assert(doc.ranges.size() == 2);
     assert(doc.ranges[1].format.text_style == 1);
     assert(!doc.ranges[1].format.ligatures);
     assert(doc.ranges[1].format.kerning_mode == 2);
+    assert((doc.ranges[0].mask & RichTextCharFontSize) != 0);
+    assert((doc.ranges[0].mask & RichTextCharFillColor) != 0);
+    assert((doc.ranges[0].mask & RichTextCharFontFamily) == 0);
 
     rich_text_document_replace_text(doc, "Hello Big World");
     assert(doc.plain_text == "Hello Big World");
@@ -56,11 +62,13 @@ int main()
     gradient.fill.gradient_scale = 1.5f;
     gradient.fill.gradient_focal_x = 0.2f;
     gradient.fill.gradient_focal_y = 0.8f;
-    rich_text_document_replace_text(doc, "Hello Big Wide World", &gradient);
+    rich_text_document_replace_text(doc, "Hello Big Wide World", gradient,
+                                    RichTextCharFillColor);
     bool has_gradient = false;
     for (const auto &range : doc.ranges) {
         has_gradient = has_gradient || (range.format.fill.type == 1);
         if (range.format.fill.type == 1) {
+            assert((range.mask & RichTextCharFillColor) != 0);
             assert(range.format.fill.gradient_start_opacity == 0.75f);
             assert(range.format.fill.gradient_end_opacity == 0.5f);
             assert(range.format.fill.gradient_opacity == 0.8f);
@@ -89,7 +97,369 @@ int main()
     reloaded.normalize();
     assert(reloaded.plain_text == doc.plain_text);
     assert(reloaded.ranges.size() == doc.ranges.size());
+}
 
-    std::cout << "rich text model transactions, mixed styles, gradients, property replacement, serialization-copy reload, and undo/redo snapshots passed\n";
+static void test_sparse_overrides_follow_defaults()
+{
+    RichTextDocument doc = text_doc("Alpha");
+    RichTextCharFormat local = doc.default_format;
+    local.bold = true;
+    local.fill.color = 0xFF00FF00;
+    doc.ranges = {{0, doc.plain_text.size(), local,
+                   rich_text_char_format_difference_mask(local, doc.default_format)}};
+    doc.normalize();
+    assert(doc.ranges.size() == 1);
+    assert(doc.ranges[0].mask == (RichTextCharBold | RichTextCharFillColor));
+
+    doc.default_format.font_family = "Noto Sans";
+    doc.default_format.tracking = 14.0f;
+    doc.normalize();
+    const RichTextCharFormat effective = rich_text_format_at(doc, 0);
+    assert(effective.font_family == "Noto Sans");
+    assert(effective.tracking == 14.0f);
+    assert(effective.bold);
+    assert(effective.fill.color == 0xFF00FF00);
+
+    RichTextCharFormat resized = effective;
+    resized.font_size = 96;
+    rich_text_document_apply_format(doc, 1, 2, resized, RichTextCharFontSize);
+    assert(rich_text_format_at(doc, 0).font_size == 40);
+    assert(rich_text_format_at(doc, 1).font_size == 96);
+    assert(rich_text_format_at(doc, 3).font_size == 40);
+}
+
+static void test_unicode_boundaries_and_safe_transactions()
+{
+    RichTextDocument doc = text_doc(u8"AΩ🙂B");
+    RichTextCharFormat bold = doc.default_format;
+    bold.bold = true;
+
+    /* Offset 2 is inside Ω (bytes 1..2). normalize() must expand it to a
+     * complete codepoint instead of leaving an invalid range boundary. */
+    doc.ranges = {{2, 1, bold, RichTextCharBold}};
+    doc.selection = {5, 6}; /* both positions are inside the emoji bytes */
+    doc.normalize();
+    assert(doc.ranges.size() == 1);
+    assert(doc.ranges[0].start == 1);
+    assert(doc.ranges[0].length == 2);
+    assert(rich_text_utf8_is_boundary(doc.plain_text, doc.ranges[0].start));
+    assert(rich_text_utf8_is_boundary(doc.plain_text, doc.ranges[0].start + doc.ranges[0].length));
+    assert(doc.selection.anchor == 3);
+    assert(doc.selection.head == 3);
+
+    doc.transactions.clear();
+    rich_text_document_replace_text(doc, u8"AΨ🙂B");
+    assert(doc.transactions.size() == 1);
+    const RichTextTransaction &transaction = doc.transactions.back();
+    assert(transaction.position == 1);
+    assert(transaction.removed_text == u8"Ω");
+    assert(transaction.inserted_text == u8"Ψ");
+    assert(rich_text_utf8_is_boundary(doc.plain_text, transaction.position));
+    assert(rich_text_utf8_is_boundary(doc.plain_text,
+                                      transaction.position + transaction.inserted_text.size()));
+}
+
+static void test_paragraph_blocks_survive_normalization_and_edits()
+{
+    RichTextDocument doc = text_doc("One\nTwo\nThree");
+    assert(doc.blocks.size() == 3);
+    doc.blocks[1].format.indent_left = 42.0f;
+    doc.blocks[1].format.space_before = 7.0f;
+    doc.blocks[1].mask = RichTextParagraphIndentLeft | RichTextParagraphSpaceBefore;
+    doc.normalize();
+    assert(doc.blocks.size() == 3);
+    assert(doc.blocks[1].format.indent_left == 42.0f);
+    assert(doc.blocks[1].format.space_before == 7.0f);
+
+    rich_text_document_replace_text(doc, "One\nNew\nTwo\nThree");
+    assert(doc.blocks.size() == 4);
+    assert(doc.blocks[2].start == 8);
+    assert(doc.blocks[2].format.indent_left == 42.0f);
+    assert(doc.blocks[2].format.space_before == 7.0f);
+
+    doc.default_paragraph_format.indent_right = 25.0f;
+    doc.normalize();
+    const RichTextParagraphFormat inherited = rich_text_paragraph_format_at(doc, doc.blocks[2].start);
+    assert(inherited.indent_left == 42.0f);
+    assert(inherited.indent_right == 25.0f);
+    assert((doc.blocks[2].mask & RichTextParagraphIndentRight) == 0);
+
+    RichTextDocument boundary = text_doc("One\nTwo");
+    boundary.blocks[1].format.indent_left = 42.0f;
+    boundary.blocks[1].mask = RichTextParagraphIndentLeft;
+    boundary.normalize();
+    rich_text_document_replace_text(boundary, "One\nXTwo");
+    assert(boundary.blocks.size() == 2);
+    assert(boundary.blocks[1].start == 4);
+    assert(boundary.blocks[1].format.indent_left == 42.0f);
+    assert(boundary.blocks[1].mask == RichTextParagraphIndentLeft);
+
+    rich_text_document_replace_text(boundary, "XTwo");
+    assert(boundary.blocks.size() == 1);
+    assert(boundary.blocks[0].format.indent_left == 42.0f);
+    assert(boundary.blocks[0].mask == RichTextParagraphIndentLeft);
+}
+
+static void test_explicit_masks_survive_matching_defaults()
+{
+    RichTextDocument doc = text_doc("Mask");
+    RichTextCharFormat local = doc.default_format;
+    local.bold = true;
+    doc.ranges = {{0, doc.plain_text.size(), local, RichTextCharBold}};
+    doc.default_format.bold = true;
+    doc.normalize();
+    assert(doc.ranges.size() == 1);
+    assert(doc.ranges[0].mask == RichTextCharBold);
+    doc.default_format.bold = false;
+    doc.normalize();
+    assert(rich_text_format_at(doc, 0).bold);
+
+    doc.blocks[0].format.space_after = 10.0f;
+    doc.blocks[0].mask = RichTextParagraphSpaceAfter;
+    doc.default_paragraph_format.space_after = 10.0f;
+    doc.normalize();
+    assert(doc.blocks[0].mask == RichTextParagraphSpaceAfter);
+    doc.default_paragraph_format.space_after = 0.0f;
+    doc.normalize();
+    assert(rich_text_paragraph_format_at(doc, 0).space_after == 10.0f);
+}
+
+
+static void test_explicit_insertion_mask_survives_default_change()
+{
+    RichTextDocument doc = text_doc("A");
+    RichTextCharFormat insertion = doc.default_format;
+    insertion.bold = false;
+    rich_text_document_replace_text(doc, "AB", insertion, RichTextCharBold);
+    assert(doc.ranges.size() == 1);
+    assert(doc.ranges[0].start == 1);
+    assert(doc.ranges[0].length == 1);
+    assert(doc.ranges[0].mask == RichTextCharBold);
+
+    doc.default_format.bold = true;
+    doc.normalize();
+    assert(rich_text_format_at(doc, 0).bold);
+    assert(!rich_text_format_at(doc, 1).bold);
+}
+
+
+static void test_sparse_typing_and_unicode_auto_style()
+{
+    RichTextDocument doc = text_doc(u8"ΑΒΓ");
+    doc.typing_format = doc.default_format;
+    doc.typing_format.bold = true;
+    doc.typing_format_mask = RichTextCharBold;
+    doc.has_typing_format = true;
+    doc.default_format.tracking = 22.0f;
+    doc.normalize();
+    const RichTextCharFormat typing = rich_text_effective_typing_format(doc);
+    assert(typing.bold);
+    assert(typing.tracking == 22.0f);
+    assert(doc.typing_format_mask == RichTextCharBold);
+
+    RichTextAutoStyleRule rule;
+    rule.style_preset_id = "unicode-test";
+    rule.condition_type = "start_to_char";
+    rule.start = 1;
+    rule.length = 1;
+    rule.cached_format = doc.default_format;
+    rule.cached_format.italic = true;
+    rule.cached_mask = RichTextCharItalic;
+    doc.auto_style_enabled = true;
+    doc.auto_style_rules = {rule};
+    RichTextDocument styled = rich_text_document_with_auto_styles(doc, {});
+    assert(styled.ranges.size() == 1);
+    assert(styled.ranges[0].start == 2);
+    assert(styled.ranges[0].length == 2);
+    assert(rich_text_utf8_is_boundary(styled.plain_text, styled.ranges[0].start));
+    assert(rich_text_utf8_is_boundary(styled.plain_text,
+                                      styled.ranges[0].start + styled.ranges[0].length));
+    assert(rich_text_format_at(styled, 2).italic);
+}
+
+
+static void test_independent_font_scale_metrics()
+{
+    RichTextFontScaleMetrics horizontal = rich_text_font_scale_metrics(2.0f, 1.0f);
+    assert(horizontal.vertical_factor == 1.0f);
+    assert(horizontal.horizontal_stretch_percent == 200);
+
+    RichTextFontScaleMetrics vertical = rich_text_font_scale_metrics(1.0f, 2.0f);
+    assert(vertical.vertical_factor == 2.0f);
+    assert(vertical.horizontal_stretch_percent == 50);
+
+    RichTextFontScaleMetrics uniform = rich_text_font_scale_metrics(2.0f, 2.0f);
+    assert(uniform.vertical_factor == 2.0f);
+    assert(uniform.horizontal_stretch_percent == 100);
+}
+
+static void test_object_level_property_replaces_only_matching_overrides()
+{
+    RichTextDocument doc = text_doc("RedBold");
+    RichTextCharFormat local = doc.default_format;
+    local.bold = true;
+    local.fill.color = 0xFFFF0000;
+    local.scale_x = 1.75f;
+    doc.ranges = {{0, doc.plain_text.size(), local,
+                   RichTextCharBold | RichTextCharFillColor | RichTextCharScaleX}};
+    doc.normalize();
+
+    doc.default_format.scale_x = 1.25f;
+    rich_text_document_clear_char_format_mask(doc, RichTextCharScaleX);
+    RichTextCharFormat effective = rich_text_format_at(doc, 0);
+    assert(effective.scale_x == 1.25f);
+    assert(effective.bold);
+    assert(effective.fill.color == 0xFFFF0000);
+    assert((doc.ranges[0].mask & RichTextCharScaleX) == 0);
+    assert((doc.ranges[0].mask & RichTextCharBold) != 0);
+    assert((doc.ranges[0].mask & RichTextCharFillColor) != 0);
+}
+
+static void test_paragraph_selection_formatting()
+{
+    RichTextDocument doc = text_doc(u8"Ένα\nΔύο\nΤρία");
+    RichTextParagraphFormat format = doc.default_paragraph_format;
+    format.indent_left = 31.0f;
+
+    const size_t second_start = doc.plain_text.find(u8"Δύο");
+    rich_text_document_apply_paragraph_format(doc, second_start, second_start,
+                                              format, RichTextParagraphIndentLeft);
+    assert(rich_text_paragraph_format_at(doc, 0).indent_left == 0.0f);
+    assert(rich_text_paragraph_format_at(doc, second_start).indent_left == 31.0f);
+    const size_t third_start = doc.plain_text.find(u8"Τρία");
+    assert(rich_text_paragraph_format_at(doc, third_start).indent_left == 0.0f);
+
+    format.space_after = 9.0f;
+    rich_text_document_apply_paragraph_format(doc, 0, third_start, format,
+                                              RichTextParagraphSpaceAfter);
+    assert(rich_text_paragraph_format_at(doc, 0).space_after == 9.0f);
+    assert(rich_text_paragraph_format_at(doc, second_start).space_after == 9.0f);
+    assert(rich_text_paragraph_format_at(doc, third_start).space_after == 0.0f);
+
+    doc.default_paragraph_format.indent_left = 12.0f;
+    rich_text_document_clear_paragraph_format_mask(doc, RichTextParagraphIndentLeft);
+    assert(rich_text_paragraph_format_at(doc, second_start).indent_left == 12.0f);
+    assert(rich_text_paragraph_format_at(doc, second_start).space_after == 9.0f);
+}
+
+static void test_multiple_styles_and_colors_remain_independent()
+{
+    RichTextDocument doc = text_doc("One Two Three");
+    RichTextCharFormat red = doc.default_format;
+    red.fill.color = 0xFFFF0000;
+    RichTextCharFormat blue_bold = doc.default_format;
+    blue_bold.fill.color = 0xFF0000FF;
+    blue_bold.bold = true;
+    doc.ranges = {
+        {0, 3, red, RichTextCharFillColor},
+        {4, 3, blue_bold, RichTextCharFillColor | RichTextCharBold},
+    };
+    doc.normalize();
+
+    RichTextCharFormat scaled = rich_text_format_at(doc, 4);
+    scaled.scale_y = 1.8f;
+    rich_text_document_apply_format(doc, 4, 3, scaled, RichTextCharScaleY);
+    assert(rich_text_format_at(doc, 0).fill.color == 0xFFFF0000);
+    assert(rich_text_format_at(doc, 4).fill.color == 0xFF0000FF);
+    assert(rich_text_format_at(doc, 4).bold);
+    assert(rich_text_format_at(doc, 4).scale_y == 1.8f);
+    assert(rich_text_format_at(doc, 8).scale_y == 1.0f);
+}
+
+static void test_mixed_property_difference_masks_are_precise()
+{
+    RichTextCharFormat base;
+    RichTextCharFormat changed = base;
+    changed.tracking = 12.0f;
+    assert(rich_text_char_format_difference_mask(base, changed) ==
+           RichTextCharTracking);
+
+    changed = base;
+    changed.scale_x = 1.5f;
+    assert(rich_text_char_format_difference_mask(base, changed) ==
+           RichTextCharScaleX);
+
+    changed = base;
+    changed.scale_y = 0.75f;
+    assert(rich_text_char_format_difference_mask(base, changed) ==
+           RichTextCharScaleY);
+
+    changed = base;
+    changed.fill.gradient_angle = 45.0f;
+    assert(rich_text_char_format_difference_mask(base, changed) ==
+           RichTextCharFillColor);
+
+    RichTextParagraphFormat paragraph_base;
+    RichTextParagraphFormat paragraph_changed = paragraph_base;
+    paragraph_changed.space_after = 18.0f;
+    assert(rich_text_paragraph_format_difference_mask(
+               paragraph_base, paragraph_changed) == RichTextParagraphSpaceAfter);
+}
+
+static void test_selected_swatch_fill_changes_only_selected_range()
+{
+    RichTextDocument doc;
+    doc.plain_text = "red blue green";
+    doc.default_format.fill.type = 0;
+    doc.default_format.fill.color = 0xFFFFFFFF;
+    doc.normalize();
+
+    const size_t start = 4;
+    const size_t length = 4;
+    RichTextCharFormat selected = rich_text_format_at(doc, start);
+    selected.fill.type = 0;
+    selected.fill.color = 0xFF3366CC;
+    rich_text_document_apply_format(
+        doc, start, length, selected, RichTextCharFillColor);
+
+    assert(rich_text_format_at(doc, 0).fill.color == 0xFFFFFFFF);
+    assert(rich_text_format_at(doc, start).fill.color == 0xFF3366CC);
+    assert(rich_text_format_at(doc, start + length).fill.color == 0xFFFFFFFF);
+    assert(rich_text_format_mask_at(doc, start) & RichTextCharFillColor);
+}
+
+
+static void test_selected_inline_stroke_changes_only_selected_range()
+{
+    RichTextDocument doc = text_doc("one two three");
+    const size_t start = 4;
+    const size_t length = 3;
+    RichTextCharFormat selected = rich_text_format_at(doc, start);
+    selected.stroke.enabled = true;
+    selected.stroke.width = 6.0f;
+    selected.stroke.fill.type = 0;
+    selected.stroke.fill.color = 0xFFFFAA00;
+    rich_text_document_apply_format(
+        doc, start, length, selected, RichTextCharStroke);
+
+    assert(!rich_text_format_at(doc, 0).stroke.enabled);
+    const RichTextCharFormat inside = rich_text_format_at(doc, start);
+    assert(inside.stroke.enabled);
+    assert(inside.stroke.width == 6.0f);
+    assert(inside.stroke.fill.color == 0xFFFFAA00);
+    assert(!rich_text_format_at(doc, start + length).stroke.enabled);
+    assert((rich_text_format_mask_at(doc, start) & RichTextCharStroke) != 0);
+    assert(rich_text_char_format_difference_mask(
+               doc.default_format, inside, RichTextCharStroke) ==
+           RichTextCharStroke);
+}
+
+int main()
+{
+    test_mixed_styles_and_transactions();
+    test_sparse_overrides_follow_defaults();
+    test_unicode_boundaries_and_safe_transactions();
+    test_paragraph_blocks_survive_normalization_and_edits();
+    test_explicit_masks_survive_matching_defaults();
+    test_explicit_insertion_mask_survives_default_change();
+    test_sparse_typing_and_unicode_auto_style();
+    test_independent_font_scale_metrics();
+    test_object_level_property_replaces_only_matching_overrides();
+    test_paragraph_selection_formatting();
+    test_multiple_styles_and_colors_remain_independent();
+    test_mixed_property_difference_masks_are_precise();
+    test_selected_swatch_fill_changes_only_selected_range();
+    test_selected_inline_stroke_changes_only_selected_range();
+    std::cout << "rich text v2 sparse ranges, independent H/V scale, multi-style colors, Unicode-safe edits, transactions, and paragraph selection passed\n";
     return 0;
 }

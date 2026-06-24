@@ -74,7 +74,7 @@ void RamFrameCache::clear()
 void RamFrameCache::setMaxBytes(quint64 bytes)
 {
     QMutexLocker lock(&mutex_);
-    max_bytes_ = std::max<quint64>(64ull * 1024ull * 1024ull, bytes);
+    max_bytes_ = std::max<quint64>(16ull * 1024ull * 1024ull, bytes);
     evictIfNeeded();
 }
 

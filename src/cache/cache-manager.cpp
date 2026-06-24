@@ -1,5 +1,9 @@
 #include "cache-manager.h"
+#include "cache-frame-payload.h"
+#include "cache-tile-payload.h"
+#include "cache-time.h"
 #include "title-cache-policy.h"
+#include "title-snapshot.h"
 #include "title-localization.h"
 #include "title-source.h"
 #include "title-preferences.h"
@@ -14,12 +18,13 @@
 #include <QDataStream>
 #include <QMutexLocker>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QPainter>
 #include <QVector>
 #include <QSet>
 #include <QSettings>
+#include <QStringList>
 
 #ifdef OBS_GSP_HAVE_LZ4
 #include <lz4.h>
@@ -31,6 +36,7 @@
 #include <limits>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -40,6 +46,26 @@
 #endif
 
 namespace {
+
+static const char *cache_playback_state_name(FrameCacheState state)
+{
+    switch (state) {
+    case FrameCacheState::NotCached: return "NotCached";
+    case FrameCacheState::Queued: return "Queued";
+    case FrameCacheState::Rendering: return "Rendering";
+    case FrameCacheState::CachedRam: return "CachedRam";
+    case FrameCacheState::CachedDisk: return "CachedDisk";
+    case FrameCacheState::Stale: return "Stale";
+    case FrameCacheState::Disabled: return "Disabled";
+    }
+    return "Unknown";
+}
+
+static void log_cache_playback(const QString &message)
+{
+    if (TitlePreferences::cache_playback_logging_enabled())
+        OGS_LOG_INFO("CachePlayback", message);
+}
 double cache_obs_frame_rate()
 {
     obs_video_info info = {};
@@ -54,26 +80,52 @@ int cache_last_frame_for_title(const Title &title, double fps)
 }
 
 constexpr quint32 kRawFrameMagic = 0x4f475346; // OGSF
-constexpr quint16 kRawFrameVersion = 4;
+constexpr quint16 kRawFrameVersion = 5;
+constexpr quint32 kTilePayloadMagic = 0x4f475354; // OGST
+constexpr quint16 kTilePayloadVersion = 1;
 constexpr quint16 kFrameCodecRaw = 0;
 constexpr quint16 kFrameCodecLz4 = 1;
 /* Cache payloads are straight-alpha BGRA, exactly as OBS expects for GS_BGRA.
  * Premultiplied Cairo frames are converted once on the worker, never during
  * realtime playback. */
 constexpr QImage::Format kDiskFrameFormat = QImage::Format_ARGB32;
-constexpr int kCacheTileSize = 256;
+constexpr int kCacheTileSize = gsp::cache_tile_payload::kTileSize;
+/* Bump whenever the GPU render graph, effect compositing, alpha contract,
+ * bounds expansion, or cache/readback semantics change. This is part of the
+ * visual cache identity and prevents stale prerenders from surviving renderer
+ * fixes. */
+constexpr const char *kGpuRendererCacheAbi = "gpu-renderer-v24-phase15-visibility-recovery";
 
-constexpr const char *kSparseCanvasX = "obs_gsp_canvas_x";
-constexpr const char *kSparseCanvasY = "obs_gsp_canvas_y";
-constexpr const char *kSparseCanvasWidth = "obs_gsp_canvas_width";
-constexpr const char *kSparseCanvasHeight = "obs_gsp_canvas_height";
-
-static void set_sparse_frame_metadata(QImage &image, int x, int y, int canvas_width, int canvas_height)
+static bool gpu_ram_frame_contains(const CacheFrameKey &key)
 {
-    image.setText(QString::fromLatin1(kSparseCanvasX), QString::number(x));
-    image.setText(QString::fromLatin1(kSparseCanvasY), QString::number(y));
-    image.setText(QString::fromLatin1(kSparseCanvasWidth), QString::number(canvas_width));
-    image.setText(QString::fromLatin1(kSparseCanvasHeight), QString::number(canvas_height));
+    return title_gpu_frame_cache_contains(key.toString().toStdString());
+}
+
+static bool cache_ram_frame_contains(const RamFrameCache &cache,
+                                     const CacheFrameKey &key)
+{
+    if (gpu_ram_frame_contains(key))
+        return true;
+    QImage ignored;
+    return cache.get(key, ignored);
+}
+
+static uint64_t gpu_cache_model_revision(const CacheFrameKey &key)
+{
+    bool ok = false;
+    uint64_t revision = key.content_hash.left(16).toULongLong(&ok, 16);
+    if (!ok || revision == 0)
+        revision = static_cast<uint64_t>(qHash(key.content_hash));
+    revision ^= static_cast<uint64_t>(static_cast<uint32_t>(key.width)) << 32;
+    revision ^= static_cast<uint64_t>(static_cast<uint32_t>(key.height));
+    return revision == 0 ? 1 : revision;
+}
+
+static void set_sparse_frame_metadata(QImage &image, int x, int y,
+                                      int canvas_width, int canvas_height)
+{
+    gsp::cache_frame_payload::set_placement(image, x, y,
+                                            canvas_width, canvas_height);
 }
 
 static QRect alpha_bounds(const QImage &image)
@@ -115,31 +167,42 @@ static QRect alpha_bounds(const QImage &image)
         : QRect();
 }
 
-static bool sparse_frame_metadata(const QImage &image, int &x, int &y, int &canvas_width, int &canvas_height)
+static bool sparse_frame_metadata(const QImage &image, int &x, int &y,
+                                  int &canvas_width, int &canvas_height)
 {
-    bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
-    x = image.text(QString::fromLatin1(kSparseCanvasX)).toInt(&ok_x);
-    y = image.text(QString::fromLatin1(kSparseCanvasY)).toInt(&ok_y);
-    canvas_width = image.text(QString::fromLatin1(kSparseCanvasWidth)).toInt(&ok_w);
-    canvas_height = image.text(QString::fromLatin1(kSparseCanvasHeight)).toInt(&ok_h);
-    return ok_x && ok_y && ok_w && ok_h && x >= 0 && y >= 0 &&
-           canvas_width > 0 && canvas_height > 0 &&
-           x + image.width() <= canvas_width && y + image.height() <= canvas_height;
+    gsp::cache_frame_payload::Placement placement;
+    if (!gsp::cache_frame_payload::read_placement(image, placement))
+        return false;
+    x = placement.x;
+    y = placement.y;
+    canvas_width = placement.canvas_width;
+    canvas_height = placement.canvas_height;
+    return true;
 }
 
 static QImage expand_sparse_frame(const QImage &image, int expected_width, int expected_height)
 {
     int x = 0, y = 0, canvas_width = 0, canvas_height = 0;
-    if (!sparse_frame_metadata(image, x, y, canvas_width, canvas_height))
-        return image;
+    if (!sparse_frame_metadata(image, x, y, canvas_width, canvas_height)) {
+        return image.width() == expected_width && image.height() == expected_height
+            ? image
+            : QImage();
+    }
     if (canvas_width != expected_width || canvas_height != expected_height)
         return QImage();
     QImage full(canvas_width, canvas_height, kDiskFrameFormat);
     full.fill(Qt::transparent);
-    QPainter painter(&full);
-    painter.setCompositionMode(QPainter::CompositionMode_Source);
-    painter.drawImage(x, y, image);
-    painter.end();
+    const QImage source = image.format() == kDiskFrameFormat
+        ? image : image.convertToFormat(kDiskFrameFormat);
+    if (source.isNull() || x < 0 || y < 0 ||
+        x + source.width() > full.width() ||
+        y + source.height() > full.height())
+        return QImage();
+    const qsizetype row_bytes = qsizetype(source.width()) * 4;
+    for (int row = 0; row < source.height(); ++row) {
+        std::memcpy(full.scanLine(y + row) + qsizetype(x) * 4,
+                    source.constScanLine(row), row_bytes);
+    }
     return full;
 }
 
@@ -195,20 +258,6 @@ static void apply_persisted_live_cue_persistence(const std::shared_ptr<Title> &t
         title->cue_persistent_text_columns.clear();
 }
 
-static std::shared_ptr<Title> immutable_title_snapshot(const std::shared_ptr<Title> &title)
-{
-    if (!title)
-        return nullptr;
-    auto snapshot = std::make_shared<Title>(*title);
-    snapshot->layers.clear();
-    snapshot->layers.reserve(title->layers.size());
-    for (const auto &layer : title->layers) {
-        if (layer)
-            snapshot->layers.push_back(std::make_shared<Layer>(*layer));
-    }
-    return snapshot;
-}
-
 static void enter_cache_worker_background_mode()
 {
 #ifdef _WIN32
@@ -244,12 +293,147 @@ DiskFrameCache::DiskFrameCache(QObject *parent) : QObject(parent)
     QDir().mkpath(cache_dir_);
     rebuildIndex();
     bytes_used_ = scanBytesUsed();
+    const QFileInfo active_info(cache_dir_);
+    QDir cache_parent(active_info.absolutePath());
+    const QString obsolete_pattern =
+        active_info.fileName() + QStringLiteral(".obsolete-*");
+    for (const QFileInfo &obsolete : cache_parent.entryInfoList(
+             QStringList() << obsolete_pattern,
+             QDir::Dirs | QDir::NoDotAndDotDot))
+        cleanup_queue_.push_back(obsolete.absoluteFilePath());
+    writer_thread_ = std::thread(&DiskFrameCache::writerLoop, this);
+    if (!cleanup_queue_.empty())
+        writer_cv_.notify_one();
+}
+
+DiskFrameCache::~DiskFrameCache()
+{
+    {
+        std::lock_guard<std::mutex> lock(writer_mutex_);
+        writer_stop_ = true;
+    }
+    writer_cv_.notify_all();
+    writer_space_cv_.notify_all();
+    if (writer_thread_.joinable())
+        writer_thread_.join();
+}
+
+void DiskFrameCache::enqueuePut(const CacheFrameKey &key, const QImage &image)
+{
+    if (image.isNull())
+        return;
+    WriteJob job;
+    job.key = key;
+    job.image = image;
+    job.generation = writer_generation_.load(std::memory_order_acquire);
+    job.bytes = static_cast<quint64>(
+        std::max<qsizetype>(0, image.sizeInBytes()));
+    {
+        std::unique_lock<std::mutex> lock(writer_mutex_);
+        /* Compression is intentionally asynchronous, but an unbounded queue of
+         * full/sparse QImages merely moves the cache explosion from GPU memory
+         * to system RAM. Keep at most four writes and ~64 MiB of payloads in
+         * flight; an individual oversized frame is allowed only when alone. */
+        writer_space_cv_.wait(lock, [this, &job]() {
+            const bool byte_room = writer_pending_bytes_ == 0 ||
+                (job.bytes <= writer_queue_budget_ &&
+                 writer_pending_bytes_ <= writer_queue_budget_ - job.bytes);
+            const std::size_t in_flight = writer_queue_.size() +
+                (writer_active_ ? 1u : 0u);
+            return writer_stop_ || (in_flight < 4 && byte_room);
+        });
+        if (writer_stop_)
+            return;
+        writer_pending_bytes_ += job.bytes;
+        writer_queue_.push_back(std::move(job));
+    }
+    writer_cv_.notify_one();
+}
+
+void DiskFrameCache::flushWrites()
+{
+    std::unique_lock<std::mutex> lock(writer_mutex_);
+    writer_idle_cv_.wait(lock, [this]() {
+        return writer_queue_.empty() && cleanup_queue_.empty() &&
+               !writer_active_;
+    });
+}
+
+void DiskFrameCache::cancelQueuedWrites()
+{
+    writer_generation_.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard<std::mutex> lock(writer_mutex_);
+        for (const WriteJob &job : writer_queue_)
+            writer_pending_bytes_ -= std::min(writer_pending_bytes_, job.bytes);
+        writer_queue_.clear();
+        if (!writer_active_)
+            writer_idle_cv_.notify_all();
+    }
+    writer_space_cv_.notify_all();
+}
+
+void DiskFrameCache::writerLoop()
+{
+    for (;;) {
+        WriteJob job;
+        QString cleanup_dir;
+        bool write_job = false;
+        {
+            std::unique_lock<std::mutex> lock(writer_mutex_);
+            writer_cv_.wait(lock, [this]() {
+                return writer_stop_ || !writer_queue_.empty() ||
+                       !cleanup_queue_.empty();
+            });
+            if (writer_stop_ && writer_queue_.empty() &&
+                cleanup_queue_.empty())
+                break;
+            if (!cleanup_queue_.empty()) {
+                cleanup_dir = std::move(cleanup_queue_.front());
+                cleanup_queue_.pop_front();
+            } else {
+                job = std::move(writer_queue_.front());
+                writer_queue_.pop_front();
+                write_job = true;
+            }
+            writer_active_ = true;
+        }
+
+        if (write_job)
+            putForGeneration(job.key, job.image, job.generation);
+        else if (!cleanup_dir.isEmpty())
+            QDir(cleanup_dir).removeRecursively();
+
+        {
+            std::lock_guard<std::mutex> lock(writer_mutex_);
+            if (write_job)
+                writer_pending_bytes_ -= std::min(
+                    writer_pending_bytes_, job.bytes);
+            writer_active_ = false;
+            if (writer_queue_.empty() && cleanup_queue_.empty())
+                writer_idle_cv_.notify_all();
+        }
+        writer_space_cv_.notify_all();
+    }
+    {
+        std::lock_guard<std::mutex> lock(writer_mutex_);
+        writer_active_ = false;
+        writer_idle_cv_.notify_all();
+    }
 }
 
 QString DiskFrameCache::pathForKey(const CacheFrameKey &key) const
 {
-    const QByteArray digest = QCryptographicHash::hash(key.toString().toUtf8(), QCryptographicHash::Sha1).toHex();
-    return QDir(cache_dir_).filePath(QString::fromLatin1(digest) + QStringLiteral(".ogsf"));
+    const QByteArray digest = QCryptographicHash::hash(
+        key.toString().toUtf8(), QCryptographicHash::Sha1).toHex();
+    return QDir(cache_dir_).filePath(
+        QString::fromLatin1(digest) + QStringLiteral(".ogsf"));
+}
+
+QString DiskFrameCache::pathForTileDigest(const QByteArray &digest) const
+{
+    return QDir(cache_dir_).filePath(
+        QString::fromLatin1(digest.toHex()) + QStringLiteral(".ogst"));
 }
 
 bool DiskFrameCache::contains(const CacheFrameKey &key) const
@@ -262,14 +446,11 @@ bool DiskFrameCache::contains(const CacheFrameKey &key) const
     return indexed_keys_.contains(key.toString());
 }
 
-bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
+bool DiskFrameCache::readFrameTileRefsLocked(
+    const CacheFrameKey &key, QVector<TileRef> &refs) const
 {
-    QMutexLocker lock(&mutex_);
-    const QString path = pathForKey(key);
-    if (!QFileInfo::exists(path))
-        return false;
-
-    QFile file(path);
+    refs.clear();
+    QFile file(pathForKey(key));
     if (!file.open(QIODevice::ReadOnly))
         return false;
 
@@ -280,188 +461,336 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
     quint32 magic = 0;
     quint16 version = 0;
     quint16 format = 0;
-    quint16 codec = 0;
-    quint16 reserved = 0;
     quint32 canvas_width = 0;
     quint32 canvas_height = 0;
-    qint32 crop_x = 0;
-    qint32 crop_y = 0;
+    quint32 tile_size = 0;
+    quint32 tile_count = 0;
+    stream >> magic >> version >> format
+           >> canvas_width >> canvas_height >> tile_size >> tile_count;
+    const quint64 max_tiles =
+        quint64((std::max(1, key.width) + gsp::cache_tile_payload::kTileSize - 1) /
+                gsp::cache_tile_payload::kTileSize) *
+        quint64((std::max(1, key.height) + gsp::cache_tile_payload::kTileSize - 1) /
+                gsp::cache_tile_payload::kTileSize);
+    if (stream.status() != QDataStream::Ok ||
+        magic != kRawFrameMagic || version != kRawFrameVersion ||
+        format != quint16(kDiskFrameFormat) ||
+        canvas_width != quint32(key.width) ||
+        canvas_height != quint32(key.height) ||
+        tile_size != quint32(gsp::cache_tile_payload::kTileSize) ||
+        tile_count > max_tiles)
+        return false;
+
+    const QRect canvas_rect(0, 0, key.width, key.height);
+    refs.reserve(int(tile_count));
+    for (quint32 index = 0; index < tile_count; ++index) {
+        qint32 x = 0;
+        qint32 y = 0;
+        quint32 width = 0;
+        quint32 height = 0;
+        QByteArray digest;
+        stream >> x >> y >> width >> height >> digest;
+        const QRect rect(x, y, int(width), int(height));
+        if (stream.status() != QDataStream::Ok || digest.size() != 32 ||
+            width == 0 || height == 0 ||
+            width > quint32(gsp::cache_tile_payload::kTileSize) ||
+            height > quint32(gsp::cache_tile_payload::kTileSize) ||
+            !canvas_rect.contains(rect))
+            return false;
+        refs.push_back({rect, digest});
+    }
+    return stream.status() == QDataStream::Ok;
+}
+
+bool DiskFrameCache::readTileLocked(const TileRef &ref, QImage &image) const
+{
+    image = QImage();
+    QFile file(pathForTileDigest(ref.digest));
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+
+    QDataStream stream(&file);
+    stream.setVersion(QDataStream::Qt_5_15);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    quint32 magic = 0;
+    quint16 version = 0;
+    quint16 format = 0;
     quint32 width = 0;
     quint32 height = 0;
     quint32 row_bytes = 0;
-    stream >> magic >> version >> format
-           >> canvas_width >> canvas_height
-           >> crop_x >> crop_y >> width >> height >> row_bytes;
-    const quint64 expected_row_bytes = static_cast<quint64>(width) * 4ull;
+    quint16 codec = 0;
+    quint16 reserved = 0;
+    quint32 raw_size = 0;
+    quint32 payload_size = 0;
+    stream >> magic >> version >> format >> width >> height >> row_bytes
+           >> codec >> reserved >> raw_size >> payload_size;
+    const quint64 expected_row_bytes = quint64(ref.rect.width()) * 4ull;
+    const quint64 expected_raw_size =
+        expected_row_bytes * quint64(ref.rect.height());
     if (stream.status() != QDataStream::Ok ||
-        magic != kRawFrameMagic ||
-        version != kRawFrameVersion ||
-        format != (quint16)kDiskFrameFormat ||
-        canvas_width != (quint32)key.width ||
-        canvas_height != (quint32)key.height ||
-        width == 0 || height == 0 ||
-        crop_x < 0 || crop_y < 0 ||
-        static_cast<quint64>(crop_x) + width > canvas_width ||
-        static_cast<quint64>(crop_y) + height > canvas_height ||
-        expected_row_bytes > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
-        row_bytes != static_cast<quint32>(expected_row_bytes))
-        return false;
-
-    const quint64 expected_raw_size = static_cast<quint64>(row_bytes) * static_cast<quint64>(height);
-    if (expected_raw_size == 0 || expected_raw_size > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
-        expected_raw_size > static_cast<quint64>(std::numeric_limits<int>::max()))
-        return false;
-    quint32 raw_size = static_cast<quint32>(expected_raw_size);
-    quint32 payload_size = raw_size;
-    stream >> codec >> reserved >> raw_size >> payload_size;
-    if (stream.status() != QDataStream::Ok || raw_size != expected_raw_size ||
+        magic != kTilePayloadMagic || version != kTilePayloadVersion ||
+        format != quint16(kDiskFrameFormat) ||
+        width != quint32(ref.rect.width()) ||
+        height != quint32(ref.rect.height()) ||
+        row_bytes != expected_row_bytes || raw_size != expected_raw_size ||
+        reserved != 0 ||
+        raw_size > quint32(std::numeric_limits<int>::max()) ||
+        payload_size > quint32(std::numeric_limits<int>::max()) ||
         (codec != kFrameCodecRaw && codec != kFrameCodecLz4))
         return false;
 
-    QImage loaded((int)width, (int)height, kDiskFrameFormat);
-    if (loaded.isNull())
-        return false;
-
-    if (payload_size > static_cast<quint32>(std::numeric_limits<int>::max()) ||
-        raw_size > static_cast<quint32>(std::numeric_limits<int>::max()))
-        return false;
     const QByteArray payload = file.read(payload_size);
-    if (payload.size() != static_cast<int>(payload_size))
+    if (payload.size() != int(payload_size))
         return false;
     QByteArray raw;
     if (codec == kFrameCodecRaw) {
         raw = payload;
     } else {
 #ifdef OBS_GSP_HAVE_LZ4
-        raw.resize(static_cast<int>(raw_size));
-        const int decoded = LZ4_decompress_safe(payload.constData(), raw.data(),
-                                                static_cast<int>(payload.size()),
-                                                static_cast<int>(raw.size()));
-        if (decoded != static_cast<int>(raw.size()))
+        raw.resize(int(raw_size));
+        const int decoded = LZ4_decompress_safe(
+            payload.constData(), raw.data(), int(payload.size()), int(raw.size()));
+        if (decoded != raw.size())
             return false;
 #else
         return false;
 #endif
     }
-    if (raw.size() != static_cast<int>(raw_size))
+    if (raw.size() != int(raw_size))
         return false;
-    for (quint32 y = 0; y < height; ++y)
-        memcpy(loaded.scanLine(static_cast<int>(y)),
-               raw.constData() + static_cast<int>(y * row_bytes), row_bytes);
 
-    set_sparse_frame_metadata(loaded, crop_x, crop_y,
-                              static_cast<int>(canvas_width),
-                              static_cast<int>(canvas_height));
-    image = loaded;
+    QImage loaded(ref.rect.size(), kDiskFrameFormat);
+    if (loaded.isNull())
+        return false;
+    for (int y = 0; y < loaded.height(); ++y) {
+        std::memcpy(loaded.scanLine(y),
+                    raw.constData() + qsizetype(y) * row_bytes,
+                    size_t(row_bytes));
+    }
+    if (gsp::cache_tile_payload::digest_for_tile(loaded) != ref.digest)
+        return false;
+    image = std::move(loaded);
     return true;
+}
+
+bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
+{
+    QMutexLocker lock(&mutex_);
+    if (!indexed_keys_.contains(key.toString()))
+        return false;
+
+    QVector<TileRef> refs;
+    if (!readFrameTileRefsLocked(key, refs))
+        return false;
+
+    QVector<gsp::cache_tile_payload::Tile> tiles;
+    tiles.reserve(refs.size());
+    for (const TileRef &ref : refs) {
+        QImage tile_image;
+        if (!readTileLocked(ref, tile_image))
+            return false;
+        tiles.push_back({ref.rect, std::move(tile_image), ref.digest});
+    }
+    image = gsp::cache_tile_payload::compose_sparse_tiles(
+        tiles, key.width, key.height);
+    return !image.isNull();
 }
 
 void DiskFrameCache::put(const CacheFrameKey &key, const QImage &image)
 {
-    if (image.isNull()) return;
-    QMutexLocker lock(&mutex_);
-    QDir().mkpath(cache_dir_);
-    const QString indexed_key = key.toString();
-    const bool already_indexed = indexed_keys_.contains(indexed_key);
-    const QString path = pathForKey(key);
-    const QString temp_path = path + QStringLiteral(".tmp");
-    QFile::remove(temp_path);
-
-    QFile file(temp_path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        QFile::remove(temp_path);
+    if (image.isNull())
         return;
+    QMutexLocker lock(&mutex_);
+    putLocked(key, image);
+}
+
+void DiskFrameCache::putForGeneration(const CacheFrameKey &key,
+                                      const QImage &image,
+                                      quint64 generation)
+{
+    if (image.isNull())
+        return;
+    QMutexLocker lock(&mutex_);
+    /* Re-check only after acquiring the disk-cache lock. clear(), clearFast(),
+     * and setCacheDirectory() advance the generation before taking this lock,
+     * so an already-dequeued stale write can neither recreate a cleared frame
+     * nor land in the replacement cache directory. */
+    if (generation != writer_generation_.load(std::memory_order_acquire))
+        return;
+    putLocked(key, image);
+}
+
+bool DiskFrameCache::writeTileLocked(const QImage &image,
+                                     const QByteArray &digest,
+                                     quint64 &created_bytes)
+{
+    if (image.isNull() || digest.size() != 32)
+        return false;
+    const QString path = pathForTileDigest(digest);
+    if (QFileInfo::exists(path)) {
+        TileRef existing_ref;
+        existing_ref.rect = QRect(QPoint(0, 0), image.size());
+        existing_ref.digest = digest;
+        QImage existing_image;
+        if (readTileLocked(existing_ref, existing_image))
+            return true;
+        const quint64 corrupt_size = quint64(QFileInfo(path).size());
+        if (QFile::remove(path))
+            bytes_used_ -= std::min(bytes_used_, corrupt_size);
     }
 
     const QImage frame = image.format() == kDiskFrameFormat
-        ? image
-        : image.convertToFormat(kDiskFrameFormat);
-    bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
-    const int crop_x = frame.text(QString::fromLatin1(kSparseCanvasX)).toInt(&ok_x);
-    const int crop_y = frame.text(QString::fromLatin1(kSparseCanvasY)).toInt(&ok_y);
-    const int canvas_width = frame.text(QString::fromLatin1(kSparseCanvasWidth)).toInt(&ok_w);
-    const int canvas_height = frame.text(QString::fromLatin1(kSparseCanvasHeight)).toInt(&ok_h);
-    if (!ok_x || !ok_y || !ok_w || !ok_h ||
-        canvas_width != key.width || canvas_height != key.height ||
-        crop_x < 0 || crop_y < 0 ||
-        crop_x + frame.width() > canvas_width ||
-        crop_y + frame.height() > canvas_height) {
-        file.close();
-        QFile::remove(temp_path);
-        return;
-    }
-    const quint64 row_bytes_64 = static_cast<quint64>(frame.width()) * 4ull;
-    const quint64 raw_size_64 = row_bytes_64 * static_cast<quint64>(frame.height());
-    if (row_bytes_64 > static_cast<quint64>(std::numeric_limits<quint32>::max()) ||
-        raw_size_64 > static_cast<quint64>(std::numeric_limits<int>::max())) {
-        file.close();
-        QFile::remove(temp_path);
-        return;
-    }
-    const quint32 row_bytes = static_cast<quint32>(row_bytes_64);
-    QByteArray raw;
-    raw.resize(static_cast<int>(raw_size_64));
-    for (int y = 0; y < frame.height(); ++y)
-        memcpy(raw.data() + y * (int)row_bytes, frame.constScanLine(y), row_bytes);
+        ? image : image.convertToFormat(kDiskFrameFormat);
+    const QByteArray raw = gsp::cache_tile_payload::raw_bgra_bytes(frame);
+    if (raw.isEmpty() || raw.size() > std::numeric_limits<int>::max())
+        return false;
+
     QByteArray payload = raw;
     quint16 codec = kFrameCodecRaw;
 #ifdef OBS_GSP_HAVE_LZ4
-    if (raw.size() > 0 && raw.size() <= LZ4_MAX_INPUT_SIZE) {
+    if (raw.size() <= LZ4_MAX_INPUT_SIZE) {
         QByteArray compressed;
-        const int raw_size = static_cast<int>(raw.size());
+        const int raw_size = int(raw.size());
         compressed.resize(LZ4_compressBound(raw_size));
-        const int compressed_size = LZ4_compress_default(raw.constData(), compressed.data(),
-                                                         raw_size,
-                                                         static_cast<int>(compressed.size()));
-        if (compressed_size > 0 && compressed_size < raw.size()) {
+        const int compressed_size = LZ4_compress_default(
+            raw.constData(), compressed.data(), raw_size,
+            int(compressed.size()));
+        if (compressed_size > 0 && compressed_size < raw_size) {
             compressed.resize(compressed_size);
-            payload = compressed;
+            payload = std::move(compressed);
             codec = kFrameCodecLz4;
         }
     }
 #endif
 
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
     QDataStream stream(&file);
     stream.setVersion(QDataStream::Qt_5_15);
     stream.setByteOrder(QDataStream::LittleEndian);
-    stream << kRawFrameMagic
-           << kRawFrameVersion
-           << (quint16)kDiskFrameFormat
-           << (quint32)canvas_width
-           << (quint32)canvas_height
-           << (qint32)crop_x
-           << (qint32)crop_y
-           << (quint32)frame.width()
-           << (quint32)frame.height()
-           << row_bytes
-           << codec
-           << (quint16)0
-           << (quint32)raw.size()
-           << (quint32)payload.size();
+    stream << kTilePayloadMagic << kTilePayloadVersion
+           << quint16(kDiskFrameFormat)
+           << quint32(frame.width()) << quint32(frame.height())
+           << quint32(frame.width() * 4)
+           << codec << quint16(0)
+           << quint32(raw.size()) << quint32(payload.size());
+    if (stream.status() != QDataStream::Ok ||
+        file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit())
+        return false;
+    created_bytes += quint64(QFileInfo(path).size());
+    return true;
+}
+
+void DiskFrameCache::addTileReferencesLocked(
+    const QVector<QByteArray> &digests)
+{
+    for (const QByteArray &digest : digests)
+        tile_ref_counts_[digest] = tile_ref_counts_.value(digest) + 1;
+}
+
+void DiskFrameCache::releaseTileReferencesLocked(
+    const QVector<QByteArray> &digests)
+{
+    for (const QByteArray &digest : digests) {
+        const qsizetype remaining = tile_ref_counts_.value(digest) - 1;
+        if (remaining > 0) {
+            tile_ref_counts_[digest] = remaining;
+            continue;
+        }
+        tile_ref_counts_.remove(digest);
+        const QString path = pathForTileDigest(digest);
+        const quint64 size = QFileInfo(path).exists()
+            ? quint64(QFileInfo(path).size()) : 0;
+        if (QFile::remove(path))
+            bytes_used_ -= std::min(bytes_used_, size);
+    }
+}
+
+void DiskFrameCache::putLocked(const CacheFrameKey &key, const QImage &image)
+{
+    QDir().mkpath(cache_dir_);
+    const QImage frame = image.format() == kDiskFrameFormat
+        ? image : image.convertToFormat(kDiskFrameFormat);
+    gsp::cache_frame_payload::Placement placement;
+    if (!gsp::cache_frame_payload::read_placement(frame, placement) ||
+        placement.canvas_width != key.width ||
+        placement.canvas_height != key.height)
+        return;
+
+    const QVector<gsp::cache_tile_payload::Tile> tiles =
+        gsp::cache_tile_payload::extract_nonempty_tiles(frame, placement);
+    quint64 created_tile_bytes = 0;
+    QVector<QByteArray> created_tile_digests;
+    QVector<QByteArray> new_digests;
+    new_digests.reserve(tiles.size());
+    const auto discard_unreferenced_created_tiles = [&]() {
+        for (const QByteArray &created : created_tile_digests) {
+            if (!tile_ref_counts_.contains(created))
+                QFile::remove(pathForTileDigest(created));
+        }
+    };
+    for (const auto &tile : tiles) {
+        const quint64 created_before = created_tile_bytes;
+        if (!writeTileLocked(tile.image, tile.digest, created_tile_bytes)) {
+            discard_unreferenced_created_tiles();
+            return;
+        }
+        if (created_tile_bytes > created_before &&
+            !tile_ref_counts_.contains(tile.digest))
+            created_tile_digests.push_back(tile.digest);
+        new_digests.push_back(tile.digest);
+    }
+
+    const QString indexed_key = key.toString();
+    const bool already_indexed = indexed_keys_.contains(indexed_key);
+    const QVector<QByteArray> previous_digests =
+        frame_tile_digests_.value(indexed_key);
+    const QString path = pathForKey(key);
+    const quint64 previous_size = QFileInfo(path).exists()
+        ? quint64(QFileInfo(path).size()) : 0;
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        discard_unreferenced_created_tiles();
+        return;
+    }
+
+    QDataStream stream(&file);
+    stream.setVersion(QDataStream::Qt_5_15);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream << kRawFrameMagic << kRawFrameVersion
+           << quint16(kDiskFrameFormat)
+           << quint32(key.width) << quint32(key.height)
+           << quint32(gsp::cache_tile_payload::kTileSize)
+           << quint32(tiles.size());
+    for (const auto &tile : tiles) {
+        stream << qint32(tile.rect.x()) << qint32(tile.rect.y())
+               << quint32(tile.rect.width()) << quint32(tile.rect.height())
+               << tile.digest;
+    }
     if (stream.status() != QDataStream::Ok) {
-        file.close();
-        QFile::remove(temp_path);
+        file.cancelWriting();
+        discard_unreferenced_created_tiles();
+        return;
+    }
+    if (!file.commit()) {
+        discard_unreferenced_created_tiles();
         return;
     }
 
-    if (file.write(payload) != payload.size()) {
-        file.close();
-        QFile::remove(temp_path);
-        return;
-    }
-    file.close();
-
-    const quint64 previous_size = QFileInfo(path).exists() ? (quint64)QFileInfo(path).size() : 0;
-    QFile::remove(path);
-    if (QFile::rename(temp_path, path)) {
-        const quint64 new_size = (quint64)QFileInfo(path).size();
-        bytes_used_ = bytes_used_ - std::min(bytes_used_, previous_size) + new_size;
-        indexed_keys_[indexed_key] = key;
-        if (!already_indexed)
-            appendManifestEntry(key);
-    } else {
-        QFile::remove(temp_path);
-    }
+    const quint64 new_frame_size = quint64(QFileInfo(path).size());
+    bytes_used_ = bytes_used_ - std::min(bytes_used_, previous_size) +
+                  new_frame_size + created_tile_bytes;
+    addTileReferencesLocked(new_digests);
+    releaseTileReferencesLocked(previous_digests);
+    frame_tile_digests_[indexed_key] = new_digests;
+    indexed_keys_[indexed_key] = key;
+    if (!already_indexed)
+        appendManifestEntry(key);
 }
 
 QVector<CacheFrameKey> DiskFrameCache::keysForTitle(const QString &title_id) const
@@ -479,31 +808,76 @@ QVector<CacheFrameKey> DiskFrameCache::keysForTitle(const QString &title_id) con
 void DiskFrameCache::remove(const CacheFrameKey &key)
 {
     QMutexLocker lock(&mutex_);
+    const QString indexed_key = key.toString();
+    const QVector<QByteArray> digests =
+        frame_tile_digests_.take(indexed_key);
     const QString path = pathForKey(key);
     const quint64 previous_size = QFileInfo(path).exists() ? (quint64)QFileInfo(path).size() : 0;
     if (QFile::remove(path))
         bytes_used_ -= std::min(bytes_used_, previous_size);
-    indexed_keys_.remove(key.toString());
+    indexed_keys_.remove(indexed_key);
+    releaseTileReferencesLocked(digests);
 }
 
 void DiskFrameCache::clear()
 {
+    cancelQueuedWrites();
     QMutexLocker lock(&mutex_);
     QDir dir(cache_dir_);
     if (!dir.exists()) {
         indexed_keys_.clear();
+        frame_tile_digests_.clear();
+        tile_ref_counts_.clear();
         bytes_used_ = 0;
         return;
     }
-    for (const QFileInfo &file : dir.entryInfoList(QStringList() << QStringLiteral("*.ogsf") << QStringLiteral("*.tmp"), QDir::Files))
+    for (const QFileInfo &file : dir.entryInfoList(
+             QStringList() << QStringLiteral("*.ogsf")
+                           << QStringLiteral("*.ogst")
+                           << QStringLiteral("*.tmp"), QDir::Files))
         QFile::remove(file.absoluteFilePath());
     QFile::remove(manifestPath());
     indexed_keys_.clear();
+    frame_tile_digests_.clear();
+    tile_ref_counts_.clear();
     bytes_used_ = 0;
+}
+
+void DiskFrameCache::clearFast()
+{
+    cancelQueuedWrites();
+    QMutexLocker lock(&mutex_);
+    const QString old_dir = cache_dir_;
+    const QString tombstone = old_dir + QStringLiteral(".obsolete-%1")
+        .arg(QDateTime::currentMSecsSinceEpoch());
+
+    QDir old(old_dir);
+    if (old.exists()) {
+        QDir parent(QFileInfo(old_dir).absolutePath());
+        parent.rename(QFileInfo(old_dir).fileName(), QFileInfo(tombstone).fileName());
+    }
+    QDir().mkpath(old_dir);
+    indexed_keys_.clear();
+    frame_tile_digests_.clear();
+    tile_ref_counts_.clear();
+    bytes_used_ = 0;
+
+    /* The active generation is detached synchronously, then reclaimed by the
+     * owned writer thread. Unlike a detached cleanup thread, this worker is
+     * joined during shutdown, so obsolete cache generations cannot accumulate
+     * indefinitely or outlive Qt/OBS. */
+    if (QDir(tombstone).exists()) {
+        {
+            std::lock_guard<std::mutex> writer_lock(writer_mutex_);
+            cleanup_queue_.push_back(tombstone);
+        }
+        writer_cv_.notify_one();
+    }
 }
 
 void DiskFrameCache::setCacheDirectory(const QString &path)
 {
+    cancelQueuedWrites();
     QMutexLocker lock(&mutex_);
     const QString clean = QDir::cleanPath(path);
     if (clean.isEmpty() || clean == cache_dir_)
@@ -530,9 +904,19 @@ quint64 DiskFrameCache::bytesUsed() const
 void DiskFrameCache::rebuildIndex()
 {
     indexed_keys_.clear();
+    frame_tile_digests_.clear();
+    tile_ref_counts_.clear();
+    QSet<QString> indexed_frame_files;
     QFile manifest(manifestPath());
-    if (!manifest.open(QIODevice::ReadOnly))
+    if (!manifest.open(QIODevice::ReadOnly)) {
+        QDir dir(cache_dir_);
+        for (const QFileInfo &file : dir.entryInfoList(
+                 QStringList() << QStringLiteral("*.ogsf")
+                               << QStringLiteral("*.ogst")
+                               << QStringLiteral("*.tmp"), QDir::Files))
+            QFile::remove(file.absoluteFilePath());
         return;
+    }
 
     while (!manifest.atEnd()) {
         const QJsonDocument doc = QJsonDocument::fromJson(manifest.readLine().trimmed());
@@ -548,24 +932,49 @@ void DiskFrameCache::rebuildIndex()
         if (key.title_id.isEmpty() || key.content_hash.isEmpty() ||
             key.frame < 0 || key.width <= 0 || key.height <= 0)
             continue;
-        const QString path = pathForKey(key);
-        QFile frame_file(path);
-        if (!frame_file.open(QIODevice::ReadOnly))
+        const QString indexed_key = key.toString();
+        if (indexed_keys_.contains(indexed_key))
             continue;
-        QDataStream frame_stream(&frame_file);
-        frame_stream.setVersion(QDataStream::Qt_5_15);
-        frame_stream.setByteOrder(QDataStream::LittleEndian);
-        quint32 magic = 0;
-        quint16 version = 0;
-        frame_stream >> magic >> version;
-        if (frame_stream.status() == QDataStream::Ok &&
-            magic == kRawFrameMagic && version == kRawFrameVersion) {
-            indexed_keys_[key.toString()] = key;
-        } else {
-            frame_file.close();
-            QFile::remove(path);
+        QVector<TileRef> refs;
+        if (!readFrameTileRefsLocked(key, refs)) {
+            QFile::remove(pathForKey(key));
+            continue;
         }
+        QVector<QByteArray> digests;
+        bool valid = true;
+        digests.reserve(refs.size());
+        for (const TileRef &ref : refs) {
+            if (!QFileInfo::exists(pathForTileDigest(ref.digest))) {
+                valid = false;
+                break;
+            }
+            digests.push_back(ref.digest);
+        }
+        if (!valid) {
+            QFile::remove(pathForKey(key));
+            continue;
+        }
+        indexed_keys_[indexed_key] = key;
+        frame_tile_digests_[indexed_key] = digests;
+        addTileReferencesLocked(digests);
+        indexed_frame_files.insert(QFileInfo(pathForKey(key)).fileName());
     }
+    manifest.close();
+
+    QDir dir(cache_dir_);
+    for (const QFileInfo &frame : dir.entryInfoList(
+             QStringList() << QStringLiteral("*.ogsf"), QDir::Files)) {
+        if (!indexed_frame_files.contains(frame.fileName()))
+            QFile::remove(frame.absoluteFilePath());
+    }
+    for (const QFileInfo &tile : dir.entryInfoList(
+             QStringList() << QStringLiteral("*.ogst"), QDir::Files)) {
+        const QByteArray digest = QByteArray::fromHex(
+            tile.completeBaseName().toLatin1());
+        if (!tile_ref_counts_.contains(digest))
+            QFile::remove(tile.absoluteFilePath());
+    }
+    rewriteManifestLocked();
 }
 
 quint64 DiskFrameCache::scanBytesUsed() const
@@ -574,7 +983,9 @@ quint64 DiskFrameCache::scanBytesUsed() const
     QDir dir(cache_dir_);
     if (!dir.exists())
         return total;
-    for (const QFileInfo &file : dir.entryInfoList(QStringList() << QStringLiteral("*.ogsf"), QDir::Files))
+    for (const QFileInfo &file : dir.entryInfoList(
+             QStringList() << QStringLiteral("*.ogsf")
+                           << QStringLiteral("*.ogst"), QDir::Files))
         total += (quint64)file.size();
     return total;
 }
@@ -600,13 +1011,36 @@ void DiskFrameCache::appendManifestEntry(const CacheFrameKey &key) const
     manifest.write("\n");
 }
 
+void DiskFrameCache::rewriteManifestLocked() const
+{
+    QDir().mkpath(cache_dir_);
+    QSaveFile manifest(manifestPath());
+    if (!manifest.open(QIODevice::WriteOnly | QIODevice::Text))
+        return;
+    for (auto it = indexed_keys_.cbegin(); it != indexed_keys_.cend(); ++it) {
+        const CacheFrameKey &key = it.value();
+        QJsonObject obj;
+        obj.insert(QStringLiteral("title_id"), key.title_id);
+        obj.insert(QStringLiteral("content_hash"), key.content_hash);
+        obj.insert(QStringLiteral("frame"), key.frame);
+        obj.insert(QStringLiteral("width"), key.width);
+        obj.insert(QStringLiteral("height"), key.height);
+        if (manifest.write(QJsonDocument(obj).toJson(QJsonDocument::Compact)) < 0 ||
+            manifest.write("\n") != 1) {
+            manifest.cancelWriting();
+            return;
+        }
+    }
+    manifest.commit();
+}
+
 
 
 CacheInvalidationManager::CacheInvalidationManager(QObject *parent) : QObject(parent) {}
 
 int CacheInvalidationManager::frameForTime(double t) const
 {
-    return std::max(0, (int)std::round(t * cache_obs_frame_rate()));
+    return cache_frame_index_for_time(t, cache_obs_frame_rate());
 }
 
 void CacheInvalidationManager::invalidateAll(const std::shared_ptr<Title> &title)
@@ -637,6 +1071,19 @@ void CacheInvalidationManager::invalidateLayer(const std::shared_ptr<Title> &tit
     invalidateRange(title, layer->in_time, layer->out_time);
 }
 
+struct CacheManager::WorkerPipeline {
+    struct PendingReadback {
+        RenderQueueManager::Job job;
+        TitleGpuReadbackTicket ticket;
+        QImage previous;
+        bool was_stale = false;
+        bool had_previous = false;
+        QString live_state_key;
+    };
+
+    std::deque<PendingReadback> pending_readbacks;
+};
+
 CacheManager &CacheManager::instance()
 {
     static CacheManager manager;
@@ -649,7 +1096,8 @@ CacheManager::CacheManager(QObject *parent)
       disk_cache_(this),
       state_tracker_(this),
       queue_(this),
-      invalidation_(this)
+      invalidation_(this),
+      worker_pipeline_(std::make_unique<WorkerPipeline>())
 {
     cache_enabled_.store(TitlePreferences::cache_enabled());
     paused_.store(!cache_enabled_.load());
@@ -678,7 +1126,17 @@ CacheManager::CacheManager(QObject *parent)
                 state_tracker_.markRange(title_id, first, last, FrameCacheState::Stale);
                 wakeWorker();
             });
-    ram_cache_.setMaxBytes((quint64)TitlePreferences::cache_ram_limit_mb() * 1024ull * 1024ull);
+    const quint64 initial_ram_budget =
+        (quint64)TitlePreferences::cache_ram_limit_mb() * 1024ull * 1024ull;
+    const quint64 compatibility_ram_budget = std::clamp<quint64>(
+        initial_ram_budget / 8ull,
+        16ull * 1024ull * 1024ull,
+        64ull * 1024ull * 1024ull);
+    ram_cache_.setMaxBytes(compatibility_ram_budget);
+    title_gpu_frame_cache_set_budget(
+        initial_ram_budget > compatibility_ram_budget
+            ? initial_ram_budget - compatibility_ram_budget
+            : initial_ram_budget);
     worker_thread_ = std::thread(&CacheManager::workerLoop, this);
     wakeWorker();
     OGS_LOG_INFO("Cache", QStringLiteral("CacheManager initialized enabled=%1 ramLimitMb=%2 disk=%3 worker=background")
@@ -689,7 +1147,17 @@ CacheManager::CacheManager(QObject *parent)
 
 CacheManager::~CacheManager()
 {
-    worker_stop_.store(true);
+    shutdownWorker();
+}
+
+void CacheManager::shutdownWorker()
+{
+    if (worker_stop_.exchange(true)) {
+        if (worker_thread_.joinable())
+            worker_thread_.join();
+        return;
+    }
+    queue_.setAcceptingJobs(false);
     worker_cv_.notify_all();
     if (worker_thread_.joinable())
         worker_thread_.join();
@@ -740,7 +1208,7 @@ std::shared_ptr<Title> CacheManager::snapshotForJob(const std::shared_ptr<Title>
         }
     }
 
-    auto snapshot = immutable_title_snapshot(title);
+    auto snapshot = clone_title_snapshot(title);
     if (!snapshot)
         return nullptr;
     {
@@ -777,17 +1245,19 @@ bool CacheManager::visualStateCurrent(const Title &title) const
 
 int CacheManager::frameForTime(double t) const
 {
-    return std::max(0, (int)std::round(t * effectiveFrameRate()));
+    return cache_frame_index_for_time(t, effectiveFrameRate());
 }
 
 double CacheManager::timeForFrame(int frame) const
 {
-    return (double)frame / std::max(1.0, effectiveFrameRate());
+    return cache_time_for_frame(frame, effectiveFrameRate());
 }
 
 QString CacheManager::contentHash(const Title &title) const
 {
     QCryptographicHash hash(QCryptographicHash::Sha1);
+    hash.addData(kGpuRendererCacheAbi);
+    hash.addData("\0", 1);
     auto add = [&](const auto &value) {
         QByteArray bytes;
         QDataStream stream(&bytes, QIODevice::WriteOnly);
@@ -804,27 +1274,70 @@ QString CacheManager::contentHash(const Title &title) const
         add(f.gradient_angle); add(f.gradient_center_x); add(f.gradient_center_y);
         add(f.gradient_scale); add(f.gradient_focal_x); add(f.gradient_focal_y);
     };
+    auto add_stroke = [&](const RichTextStroke &stroke) {
+        add(stroke.enabled); add(stroke.width); add(stroke.opacity);
+        add(stroke.on_front); add(stroke.alignment); add(stroke.antialias);
+        add(stroke.join_style); add_fill(stroke.fill);
+    };
     auto add_char_format = [&](const RichTextCharFormat &f) {
         add(QString::fromStdString(f.font_family)); add(QString::fromStdString(f.font_style));
         add(f.font_size); add(f.bold); add(f.italic); add(f.underline); add(f.strikethrough);
         add(f.kerning); add(f.kerning_mode); add(f.manual_kerning); add(f.tracking);
         add(f.scale_x); add(f.scale_y); add(f.baseline_shift); add(f.text_style);
         add(f.ligatures); add(f.stylistic_alternates); add(f.fractions); add(f.opentype_features);
-        add(QString::fromStdString(f.language)); add_fill(f.fill);
+        add(QString::fromStdString(f.language)); add_fill(f.fill); add_stroke(f.stroke);
     };
     auto add_paragraph_format = [&](const RichTextParagraphFormat &f) {
         add(f.align_h); add(f.align_v); add(f.indent_left); add(f.indent_right);
         add(f.indent_first_line); add(f.line_spacing); add(f.space_before);
         add(f.space_after); add(f.hyphenate);
     };
+    auto add_char_format_masked = [&](const RichTextCharFormat &f, uint32_t mask) {
+        mask &= RichTextCharAll;
+        if (mask & RichTextCharFontFamily) add(QString::fromStdString(f.font_family));
+        if (mask & RichTextCharFontStyle) add(QString::fromStdString(f.font_style));
+        if (mask & RichTextCharFontSize) add(f.font_size);
+        if (mask & RichTextCharBold) add(f.bold);
+        if (mask & RichTextCharItalic) add(f.italic);
+        if (mask & RichTextCharUnderline) add(f.underline);
+        if (mask & RichTextCharStrikethrough) add(f.strikethrough);
+        if (mask & RichTextCharKerning) {
+            add(f.kerning); add(f.kerning_mode); add(f.manual_kerning);
+        }
+        if (mask & RichTextCharTracking) add(f.tracking);
+        if (mask & RichTextCharScaleX) add(f.scale_x);
+        if (mask & RichTextCharScaleY) add(f.scale_y);
+        if (mask & RichTextCharBaselineShift) add(f.baseline_shift);
+        if (mask & RichTextCharFillColor) add_fill(f.fill);
+        if (mask & RichTextCharTextStyle) add(f.text_style);
+        if (mask & RichTextCharLigatures) add(f.ligatures);
+        if (mask & RichTextCharStylisticAlternates) add(f.stylistic_alternates);
+        if (mask & RichTextCharFractions) add(f.fractions);
+        if (mask & RichTextCharOpenTypeFeatures) add(f.opentype_features);
+        if (mask & RichTextCharLanguage) add(QString::fromStdString(f.language));
+        if (mask & RichTextCharStroke) add_stroke(f.stroke);
+    };
+    auto add_paragraph_format_masked = [&](const RichTextParagraphFormat &f,
+                                           uint32_t mask) {
+        mask &= RichTextParagraphAll;
+        if (mask & RichTextParagraphAlignH) add(f.align_h);
+        if (mask & RichTextParagraphAlignV) add(f.align_v);
+        if (mask & RichTextParagraphIndentLeft) add(f.indent_left);
+        if (mask & RichTextParagraphIndentRight) add(f.indent_right);
+        if (mask & RichTextParagraphIndentFirstLine) add(f.indent_first_line);
+        if (mask & RichTextParagraphLineSpacing) add(f.line_spacing);
+        if (mask & RichTextParagraphSpaceBefore) add(f.space_before);
+        if (mask & RichTextParagraphSpaceAfter) add(f.space_after);
+        if (mask & RichTextParagraphHyphenate) add(f.hyphenate);
+    };
     auto add_anim = [&](const AnimatedProperty &p) {
-        add(QString::fromStdString(p.name)); add(p.static_value); add((quint64)p.keyframes.size());
+        add(p.static_value); add((quint64)p.keyframes.size());
         for (const auto &k : p.keyframes) {
             add(k.time); add(k.value); add((int)k.easing); add(k.cx1); add(k.cy1); add(k.cx2); add(k.cy2);
         }
     };
     auto add_anim_vec2 = [&](const AnimatedVec2Property &p) {
-        add(QString::fromStdString(p.name)); add(p.static_value.x); add(p.static_value.y); add((quint64)p.keyframes.size());
+        add(p.static_value.x); add(p.static_value.y); add((quint64)p.keyframes.size());
         for (const auto &k : p.keyframes) {
             add(k.time); add(k.value.x); add(k.value.y); add((int)k.easing); add(k.cx1); add(k.cy1); add(k.cx2); add(k.cy2);
         }
@@ -860,19 +1373,29 @@ QString CacheManager::contentHash(const Title &title) const
     auto add_rich_text = [&](const RichTextDocument &rt) {
         add(rt.version); add(QString::fromStdString(rt.plain_text));
         add_char_format(rt.default_format); add_paragraph_format(rt.default_paragraph_format);
-        add(rt.has_typing_format); if (rt.has_typing_format) add_char_format(rt.typing_format);
+        /* Caret/typing format affects only future input, not the pixels of the
+         * current document. Keeping it in the visual hash created duplicate
+         * cache generations when the cursor moved or selection changed. */
         add((quint64)rt.blocks.size());
         for (const auto &block : rt.blocks) {
-            add((quint64)block.start); add((quint64)block.length); add_paragraph_format(block.format);
+            add((quint64)block.start); add((quint64)block.length); add(block.mask);
+            add_paragraph_format_masked(block.format, block.mask);
         }
         add((quint64)rt.ranges.size());
-        for (const auto &r : rt.ranges) { add((quint64)r.start); add((quint64)r.length); add_char_format(r.format); }
+        for (const auto &r : rt.ranges) {
+            add((quint64)r.start); add((quint64)r.length); add(r.mask);
+            add_char_format_masked(r.format, r.mask);
+        }
         add(rt.auto_style_enabled); add(QString::fromStdString(rt.auto_default_style_preset_id));
-        add(rt.auto_default_style_cached_mask); add_char_format(rt.auto_default_style_cached_format);
+        add(rt.auto_default_style_cached_mask);
+        add_char_format_masked(rt.auto_default_style_cached_format,
+                               rt.auto_default_style_cached_mask);
         add((quint64)rt.auto_style_rules.size());
         for (const auto &rule : rt.auto_style_rules) {
             add(rule.enabled); add(QString::fromStdString(rule.style_preset_id));
-            add(QString::fromStdString(rule.rule_id)); add(QString::fromStdString(rule.display_name));
+            add(QString::fromStdString(rule.rule_id));
+            /* display_name is editor metadata; rule_id remains because rule
+             * exclusion references can affect the applied visual result. */
             add(QString::fromStdString(rule.conflict_mode)); add(QString::fromStdString(rule.match_mode));
             add(rule.stop_processing); add(rule.require_stop_match);
             add(rule.include_start_marker); add(rule.include_end_marker);
@@ -883,7 +1406,8 @@ QString CacheManager::contentHash(const Title &title) const
             add(QString::fromStdString(rule.condition_type));
             add((quint64)rule.start); add((quint64)rule.length);
             add(QString::fromStdString(rule.start_custom_chars)); add(QString::fromStdString(rule.end_custom_chars));
-            add(rule.cached_mask); add_char_format(rule.cached_format);
+            add(rule.cached_mask);
+            add_char_format_masked(rule.cached_format, rule.cached_mask);
         }
     };
     const TitleDynamicLayerAnalysis cache_analysis = analyze_title_dynamic_layers(title);
@@ -952,7 +1476,6 @@ QString CacheManager::contentHash(const Title &title) const
         add(layer->origin_x); add(layer->origin_y); add_anim_vec2(layer->origin_prop);
 
         add(QString::fromStdString(layer->text_content));
-        add(QString::fromStdString(layer->rich_text_html));
         add_rich_text(layer->rich_text);
         add(QString::fromStdString(layer->clock_format));
         add(layer->ticker_style); add(layer->ticker_speed); add(layer->ticker_line_hold); add(layer->ticker_direction);
@@ -1322,13 +1845,20 @@ CacheFrameKey CacheManager::keyForTime(const Title &title, double time) const
 CacheFrameKey CacheManager::keyForTime(const Title &title, double time,
                                         const QString &known_content_hash) const
 {
-    const int requested_frame = frameForTime(std::clamp(time, 0.0, std::max(0.0, title.duration)));
-    const int clamped_frame = titleHasTimelineChanges(title)
-        ? std::clamp(requested_frame, 0, cache_last_frame_for_title(title, effectiveFrameRate()))
-        : 0;
+    const int clamped_frame = frameIndexForTitleTime(title, time);
     return {QString::fromStdString(title.id),
             known_content_hash.isEmpty() ? contentHash(title) : known_content_hash,
             clamped_frame, title.width, title.height};
+}
+
+int CacheManager::frameIndexForTitleTime(const Title &title, double time) const
+{
+    const double clamped_time = std::clamp(
+        time, 0.0, std::max(0.0, title.duration));
+    const double frame_rate = effectiveFrameRate();
+    return cache_frame_index_for_title_time(
+        clamped_time, frame_rate, titleHasTimelineChanges(title),
+        cache_last_frame_for_title(title, frame_rate));
 }
 
 QVector<CacheFrameKey> CacheManager::frameKeysForTitle(const Title &title) const
@@ -1403,58 +1933,89 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
     return false;
 }
 
-QImage CacheManager::renderUncachedFrame(const std::shared_ptr<Title> &title, double time) const
-{
-    if (!title)
-        return QImage();
-    return render_title_to_image(*title, std::clamp(time, 0.0, std::max(0.0, title->duration)));
-}
-
 QImage CacheManager::requestFrame(const std::shared_ptr<Title> &title, double time, bool cached_only)
 {
-    if (!title)
+    if (!title) {
+        log_cache_playback(QStringLiteral("request kind=editor result=null-title time=%1 cachedOnly=%2")
+            .arg(time, 0, 'f', 6).arg(cached_only));
         return QImage();
-    const TitleCacheability cacheability = titleCacheability(title);
-    if (cacheability == TitleCacheability::NonCacheable)
-        return renderUncachedFrame(title, time);
-    /* requestFrame() is the editor-facing path. During an interactive edit the
-     * cached-frames-only playback preference must not blank or freeze the
-     * canvas: the live model is the source of truth until the edit commits.
-     * OBS playback uses requestFrameRealtime(), so this synchronous uncached
-     * fallback never runs on the OBS render thread. */
-    if (interactive_bypass_.load() || !cache_enabled_.load())
-        return renderUncachedFrame(title, time);
+    }
 
-    const double clamped_time = std::clamp(time, 0.0, std::max(0.0, title->duration));
+    const TitleCacheability cacheability = titleCacheability(title);
+    if (cacheability == TitleCacheability::NonCacheable ||
+        interactive_bypass_.load() || !cache_enabled_.load()) {
+        log_cache_playback(QStringLiteral("request kind=editor result=bypass title=%1 time=%2 cachedOnly=%3 cacheability=%4 enabled=%5 interactive=%6")
+            .arg(QString::fromStdString(title->id)).arg(time, 0, 'f', 6).arg(cached_only)
+            .arg(static_cast<int>(cacheability)).arg(cache_enabled_.load()).arg(interactive_bypass_.load()));
+        return QImage();
+    }
+
+    const double clamped_time = std::clamp(
+        time, 0.0, std::max(0.0, title->duration));
     const auto finish_cached_frame = [&](const QImage &cached_frame) {
-        if (cacheability != TitleCacheability::PartiallyCacheable)
-            return cached_frame;
-        return render_title_over_cached_frame(*title, clamped_time, cached_frame);
+        return cached_frame;
     };
 
     const QString content_hash = contentHash(*title);
     const CacheFrameKey key = keyForTime(*title, time, content_hash);
+    const FrameCacheState initial_state = state_tracker_.state(key);
+    log_cache_playback(QStringLiteral("request kind=editor title=%1 time=%2 clamped=%3 frame=%4 state=%5 cachedOnly=%6 key=%7")
+        .arg(key.title_id).arg(time, 0, 'f', 6).arg(clamped_time, 0, 'f', 6).arg(key.frame)
+        .arg(QString::fromUtf8(cache_playback_state_name(initial_state))).arg(cached_only).arg(key.toString()));
     QImage image;
-    if (state_tracker_.state(key) != FrameCacheState::Stale && ram_cache_.get(key, image)) {
+    if (initial_state != FrameCacheState::Stale && ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
+        log_cache_playback(QStringLiteral("result=ram-hit kind=editor title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
+            .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
         return finish_cached_frame(image);
     }
 
-    /* The editor is allowed to synchronously promote its currently visible
-     * frame from the persistent disk cache. This is a bounded single-frame
-     * LZ4 read and prevents reopening an editor session from falling through
-     * to the uncached renderer while the worker slowly hydrates the timeline.
-     * OBS video_tick continues to use requestFrameRealtime(), which never
-     * touches the filesystem. */
-    if (state_tracker_.state(key) != FrameCacheState::Stale && disk_cache_.get(key, image)) {
+    if (initial_state != FrameCacheState::Stale && disk_cache_.get(key, image)) {
         ram_cache_.put(key, image);
         state_tracker_.setState(key, FrameCacheState::CachedRam);
         emit diagnosticsChanged();
+        log_cache_playback(QStringLiteral("result=disk-hit-promoted kind=editor title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
+            .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
         return finish_cached_frame(image);
     }
 
-    queueRealtimeJob(title, time, false, -1, QString(), content_hash);
-    return cached_only ? QImage() : renderUncachedFrame(title, time);
+    queueRealtimeJob(title, clamped_time, false, -1, QString(), content_hash);
+    log_cache_playback(QStringLiteral("result=miss-queued kind=editor title=%1 frame=%2 initialState=%3 cachedOnly=%4 key=%5")
+        .arg(key.title_id).arg(key.frame).arg(QString::fromUtf8(cache_playback_state_name(initial_state)))
+        .arg(cached_only).arg(key.toString()));
+    return QImage();
+}
+
+QString CacheManager::requestFrameGpuToken(
+    const std::shared_ptr<Title> &title, double time,
+    bool queue_if_missing, const QString &known_content_hash)
+{
+    if (!title || !cache_enabled_.load() || interactive_bypass_.load() ||
+        titleCacheability(title) == TitleCacheability::NonCacheable)
+        return QString();
+
+    const double clamped_time = std::clamp(
+        time, 0.0, std::max(0.0, title->duration));
+    const CacheFrameKey key = keyForTime(
+        *title, clamped_time, known_content_hash);
+    const FrameCacheState state = state_tracker_.state(key);
+    if (state != FrameCacheState::Stale &&
+        title_gpu_frame_cache_contains(key.toString().toStdString())) {
+        state_tracker_.setState(key, FrameCacheState::CachedRam);
+        return key.toString();
+    }
+
+    if (queue_if_missing) {
+        queueRealtimeJob(title, clamped_time, false, -1, QString(),
+                         known_content_hash);
+    }
+    return QString();
+}
+
+quint64 CacheManager::ramBytesUsed() const
+{
+    return static_cast<quint64>(title_gpu_frame_cache_bytes_used()) +
+           ram_cache_.bytesUsed();
 }
 
 void CacheManager::queueRealtimeJob(const std::shared_ptr<Title> &title, double time,
@@ -1486,25 +2047,70 @@ void CacheManager::queueRealtimeJob(const std::shared_ptr<Title> &title, double 
     }
 }
 
+void CacheManager::rejectFramePayload(const std::shared_ptr<Title> &title,
+                                      double time,
+                                      const QString &known_content_hash)
+{
+    if (!title)
+        return;
+
+    const CacheFrameKey key = keyForTime(*title, time, known_content_hash);
+    {
+        std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
+        ram_cache_.remove(key);
+        title_gpu_frame_cache_remove(key.toString().toStdString());
+        disk_cache_.remove(key);
+        state_tracker_.setState(key, FrameCacheState::Stale);
+    }
+    OGS_LOG_WARNING("CachePlayback", QStringLiteral(
+        "Rejected invalid cache payload title=%1 frame=%2 key=%3")
+        .arg(key.title_id).arg(key.frame).arg(key.toString()));
+    queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
+    emit diagnosticsChanged();
+}
+
 QImage CacheManager::requestFrameRealtime(const std::shared_ptr<Title> &title, double time,
                                               const QString &known_content_hash)
 {
     if (!title || !cache_enabled_.load() || interactive_bypass_.load() ||
-        titleCacheability(title) == TitleCacheability::NonCacheable)
+        titleCacheability(title) == TitleCacheability::NonCacheable) {
+        log_cache_playback(QStringLiteral("request kind=standard result=bypass title=%1 time=%2 enabled=%3 interactive=%4")
+            .arg(title ? QString::fromStdString(title->id) : QStringLiteral("<null>"))
+            .arg(time, 0, 'f', 6).arg(cache_enabled_.load()).arg(interactive_bypass_.load()));
         return QImage();
+    }
     const CacheFrameKey key = keyForTime(*title, time, known_content_hash);
-    if (state_tracker_.state(key) == FrameCacheState::Stale) {
+    const FrameCacheState initial_state = state_tracker_.state(key);
+    log_cache_playback(QStringLiteral("request kind=standard title=%1 time=%2 frame=%3 state=%4 key=%5")
+        .arg(key.title_id).arg(time, 0, 'f', 6).arg(key.frame)
+        .arg(QString::fromUtf8(cache_playback_state_name(initial_state)), key.toString()));
+    if (initial_state == FrameCacheState::Stale) {
         queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
+        log_cache_playback(QStringLiteral("result=stale-queued title=%1 frame=%2 key=%3")
+            .arg(key.title_id).arg(key.frame).arg(key.toString()));
         return QImage();
     }
     QImage image;
     if (ram_cache_.get(key, image)) {
         state_tracker_.setState(key, FrameCacheState::CachedRam);
+        log_cache_playback(QStringLiteral("result=ram-hit title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
+            .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
         return image;
     }
-    /* Never touch the filesystem from obs_source_video_tick. The worker will
-     * promote a matching disk frame to RAM, or render it when absent. */
+
+    if (initial_state == FrameCacheState::CachedDisk && disk_cache_.get(key, image)) {
+        ram_cache_.put(key, image);
+        state_tracker_.setState(key, FrameCacheState::CachedRam);
+        log_cache_playback(QStringLiteral("result=disk-hit-promoted title=%1 frame=%2 cacheKey=%3 size=%4x%5 key=%6")
+            .arg(key.title_id).arg(key.frame).arg(image.cacheKey()).arg(image.width()).arg(image.height()).arg(key.toString()));
+        return image;
+    }
+
     queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
+    log_cache_playback(QStringLiteral("result=miss-queued title=%1 frame=%2 initialState=%3 diskAttempt=%4 key=%5")
+        .arg(key.title_id).arg(key.frame)
+        .arg(QString::fromUtf8(cache_playback_state_name(initial_state)))
+        .arg(initial_state == FrameCacheState::CachedDisk).arg(key.toString()));
     return QImage();
 }
 
@@ -1595,10 +2201,10 @@ void CacheManager::queueFrameWithHash(const std::shared_ptr<Title> &title, doubl
     if (time < 0.0 || time > std::max(0.0, title->duration))
         return;
     const CacheFrameKey key = keyForTime(*title, time, known_content_hash);
-    QImage ignored;
     const FrameCacheState existing_state = state_tracker_.state(key);
     if (existing_state != FrameCacheState::Stale &&
-        (ram_cache_.get(key, ignored) || disk_cache_.contains(key)))
+        (cache_ram_frame_contains(ram_cache_, key) ||
+         disk_cache_.contains(key)))
         return;
     if (existing_state == FrameCacheState::Rendering || queue_.contains(key))
         return;
@@ -1724,6 +2330,7 @@ void CacheManager::clearRam()
         temporal_canonical_keys_.clear();
         adaptive_canonical_keys_.clear();
     }
+    title_gpu_frame_cache_clear();
     resetCancelledWorkState();
     {
         std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
@@ -1741,11 +2348,11 @@ void CacheManager::clearDisk()
         std::lock_guard<std::recursive_mutex> publication_lock(publication_mutex_);
         cache_epoch_.fetch_add(1);
         queue_.clear();
-        disk_cache_.clear();
         QMutexLocker dedup_lock(&temporal_dedup_mutex_);
         temporal_canonical_keys_.clear();
         adaptive_canonical_keys_.clear();
     }
+    disk_cache_.clearFast();
     resetCancelledWorkState();
     state_tracker_.clear();
     wakeWorker();
@@ -1760,11 +2367,13 @@ void CacheManager::clearAll()
         cache_epoch_.fetch_add(1);
         queue_.clear();
         ram_cache_.clear();
-        disk_cache_.clear();
         QMutexLocker dedup_lock(&temporal_dedup_mutex_);
         temporal_canonical_keys_.clear();
         adaptive_canonical_keys_.clear();
     }
+    title_gpu_frame_cache_clear();
+    disk_cache_.clearFast();
+    resetCancelledWorkState();
     state_tracker_.clear();
     {
         std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
@@ -1854,7 +2463,16 @@ void CacheManager::setRamCacheLimitMb(int megabytes)
 {
     const int clamped = std::clamp(megabytes, 64, 32768);
     TitlePreferences::set_cache_ram_limit_mb(clamped);
-    ram_cache_.setMaxBytes((quint64)clamped * 1024ull * 1024ull);
+    const quint64 bytes = (quint64)clamped * 1024ull * 1024ull;
+    const quint64 compatibility_ram_budget = std::clamp<quint64>(
+        bytes / 8ull,
+        16ull * 1024ull * 1024ull,
+        64ull * 1024ull * 1024ull);
+    ram_cache_.setMaxBytes(compatibility_ram_budget);
+    title_gpu_frame_cache_set_budget(
+        bytes > compatibility_ram_budget
+            ? bytes - compatibility_ram_budget
+            : bytes);
     emit diagnosticsChanged();
 }
 
@@ -1950,6 +2568,47 @@ QVector<CacheTileRegion> CacheManager::tilesForRect(const QRect &rect, const QSi
     return tiles;
 }
 
+static std::pair<double, double> animated_scalar_extents(
+    const AnimatedProperty &property)
+{
+    double minimum = property.static_value;
+    double maximum = property.static_value;
+    for (const Keyframe &keyframe : property.keyframes) {
+        minimum = std::min(minimum, keyframe.value);
+        maximum = std::max(maximum, keyframe.value);
+    }
+    return {minimum, maximum};
+}
+
+static double animated_scalar_max_nonnegative(
+    const AnimatedProperty &property, double fallback)
+{
+    const auto extents = animated_scalar_extents(property);
+    return std::max({0.0, fallback, extents.second});
+}
+
+struct AnimatedVec2Extents {
+    double min_x = 0.0;
+    double max_x = 0.0;
+    double min_y = 0.0;
+    double max_y = 0.0;
+};
+
+static AnimatedVec2Extents animated_vec2_extents(
+    const AnimatedVec2Property &property)
+{
+    AnimatedVec2Extents extents {
+        property.static_value.x, property.static_value.x,
+        property.static_value.y, property.static_value.y};
+    for (const VectorKeyframe &keyframe : property.keyframes) {
+        extents.min_x = std::min(extents.min_x, keyframe.value.x);
+        extents.max_x = std::max(extents.max_x, keyframe.value.x);
+        extents.min_y = std::min(extents.min_y, keyframe.value.y);
+        extents.max_y = std::max(extents.max_y, keyframe.value.y);
+    }
+    return extents;
+}
+
 QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
 {
     const QSize frame_size(std::max(1, title.width), std::max(1, title.height));
@@ -1957,42 +2616,200 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
     if (!layer.visible || layer.live_cue_hidden_if_empty)
         return QRect();
 
-    const double x = layer.position.static_value.x;
-    const double y = layer.position.static_value.y;
-    const double sx = std::max(0.01, std::abs(layer.scale.static_value.x));
-    const double sy = std::max(0.01, std::abs(layer.scale.static_value.y));
-    double w = std::max(1.0, layer.size.static_value.x * sx);
-    double h = std::max(1.0, layer.size.static_value.y * sy);
+    /* Dirty tiles are shared by every invalidated frame in the layer range, so
+     * their bounds must cover the whole animated envelope rather than only the
+     * static/default values. Bezier easing is clamped between keyframe values
+     * by AnimatedProperty, making keyframe extrema conservative here. */
+    const AnimatedVec2Extents position = animated_vec2_extents(layer.position);
+    const AnimatedVec2Extents scale = animated_vec2_extents(layer.scale);
+    const AnimatedVec2Extents size = animated_vec2_extents(layer.size);
+    const double sx = std::max({0.01, std::abs(scale.min_x),
+                                std::abs(scale.max_x)});
+    const double sy = std::max({0.01, std::abs(scale.min_y),
+                                std::abs(scale.max_y)});
+    double w = std::max({1.0, std::abs(size.min_x),
+                         std::abs(size.max_x)}) * sx;
+    double h = std::max({1.0, std::abs(size.min_y),
+                         std::abs(size.max_y)}) * sy;
 
-    if (layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker) {
-        w = std::max(w, (double)std::max(1, layer.font_size) * std::max<size_t>(1, layer.text_content.size()) * 0.75 * sx);
-        h = std::max(h, (double)std::max(1, layer.font_size) * 1.6 * sy);
+    if (layer.type == LayerType::Text || layer.type == LayerType::Clock ||
+        layer.type == LayerType::Ticker) {
+        const double font_size = animated_scalar_max_nonnegative(
+            layer.font_size_prop, std::max(1, layer.font_size));
+        w = std::max(w, font_size *
+                         std::max<size_t>(1, layer.text_content.size()) *
+                         0.75 * sx);
+        h = std::max(h, font_size * 1.6 * sy);
     } else if (layer.type == LayerType::Image && w <= 1.0 && h <= 1.0) {
         w = frame_size.width();
         h = frame_size.height();
     }
 
-    int pad = 8 + (int)std::ceil(std::max(0.0f, layer.stroke_width));
-    if (layer.background_enabled) {
-        pad += (int)std::ceil(std::max({layer.background_padding_x, layer.background_padding_y,
-                                        layer.background_padding_left, layer.background_padding_right,
-                                        layer.background_padding_top, layer.background_padding_bottom}));
-        pad += (int)std::ceil(std::max(0.0f, layer.background_stroke_width));
-    }
-    for (const auto &effect : layer.effects) {
-        if (!effect.enabled) continue;
-        pad += (int)std::ceil(std::max({effect.effect_size, effect.effect_distance,
-                                        effect.effect_spread, effect.effect_stroke_width,
-                                        effect.effect_padding_left, effect.effect_padding_right,
-                                        effect.effect_padding_top, effect.effect_padding_bottom, 0.0f}));
+    double left = 8.0 + std::max(0.0f, layer.stroke_width);
+    double right = left;
+    double top = left;
+    double bottom = left;
+    const bool background_may_be_enabled = layer.background_enabled ||
+        layer.background_enabled_prop.is_animated();
+    if (background_may_be_enabled) {
+        const double padding_x = animated_scalar_max_nonnegative(
+            layer.background_padding_x_prop, layer.background_padding_x);
+        const double padding_y = animated_scalar_max_nonnegative(
+            layer.background_padding_y_prop, layer.background_padding_y);
+        left += std::max(padding_x, animated_scalar_max_nonnegative(
+            layer.background_padding_left_prop,
+            layer.background_padding_left));
+        right += std::max(padding_x, animated_scalar_max_nonnegative(
+            layer.background_padding_right_prop,
+            layer.background_padding_right));
+        top += std::max(padding_y, animated_scalar_max_nonnegative(
+            layer.background_padding_top_prop,
+            layer.background_padding_top));
+        bottom += std::max(padding_y, animated_scalar_max_nonnegative(
+            layer.background_padding_bottom_prop,
+            layer.background_padding_bottom));
+        const double stroke = animated_scalar_max_nonnegative(
+            layer.background_stroke_width_prop,
+            layer.background_stroke_width);
+        left += stroke;
+        right += stroke;
+        top += stroke;
+        bottom += stroke;
     }
 
-    QRectF rect(x - pad, y - pad, w + pad * 2.0, h + pad * 2.0);
-    if (std::fmod(std::abs(layer.rotation.static_value), 360.0) > 0.001) {
-        const QPointF c = rect.center();
-        const double diag = std::hypot(rect.width(), rect.height());
-        rect = QRectF(c.x() - diag / 2.0, c.y() - diag / 2.0, diag, diag);
+    for (const auto &effect : layer.effects) {
+        if (!effect.enabled && !effect.enabled_prop.is_animated())
+            continue;
+        const double effect_size = animated_scalar_max_nonnegative(
+            effect.size_prop, effect.effect_size);
+        const double spread = animated_scalar_max_nonnegative(
+            effect.spread_prop, effect.effect_spread);
+        const double distance = animated_scalar_max_nonnegative(
+            effect.distance_prop, effect.effect_distance);
+        switch (effect.type) {
+        case LayerEffectType::BackgroundColor:
+            left += animated_scalar_max_nonnegative(
+                effect.padding_left_prop, effect.effect_padding_left);
+            right += animated_scalar_max_nonnegative(
+                effect.padding_right_prop, effect.effect_padding_right);
+            top += animated_scalar_max_nonnegative(
+                effect.padding_top_prop, effect.effect_padding_top);
+            bottom += animated_scalar_max_nonnegative(
+                effect.padding_bottom_prop, effect.effect_padding_bottom);
+            break;
+        case LayerEffectType::Outline: {
+            const double outline = animated_scalar_max_nonnegative(
+                effect.stroke_width_prop, effect.effect_stroke_width);
+            left += outline;
+            right += outline;
+            top += outline;
+            bottom += outline;
+            break;
+        }
+        case LayerEffectType::DropShadow:
+        case LayerEffectType::LongShadow: {
+            const double halo = effect_size + spread;
+            if (effect.angle_prop.is_animated()) {
+                /* An animated direction can visit either side of the layer. */
+                left += halo + distance;
+                right += halo + distance;
+                top += halo + distance;
+                bottom += halo + distance;
+            } else {
+                const double angle = effect.angle_prop.is_animated()
+                    ? effect.angle_prop.static_value
+                    : effect.effect_angle;
+                const double radians = angle *
+                    3.14159265358979323846 / 180.0;
+                const double dx = std::cos(radians) * distance;
+                const double dy = std::sin(radians) * distance;
+                left += halo + std::max(0.0, -dx);
+                right += halo + std::max(0.0, dx);
+                top += halo + std::max(0.0, -dy);
+                bottom += halo + std::max(0.0, dy);
+            }
+            break;
+        }
+        case LayerEffectType::Glow:
+        case LayerEffectType::Bloom:
+        case LayerEffectType::Blur:
+        case LayerEffectType::MotionBlur: {
+            const double halo = effect_size + spread +
+                (effect.type == LayerEffectType::MotionBlur ? distance : 0.0);
+            left += halo;
+            right += halo;
+            top += halo;
+            bottom += halo;
+            break;
+        }
+        case LayerEffectType::Emboss:
+            left += effect_size;
+            right += effect_size;
+            top += effect_size;
+            bottom += effect_size;
+            break;
+        case LayerEffectType::InnerGlow:
+        case LayerEffectType::InnerShadow:
+        case LayerEffectType::BrightnessContrast:
+        case LayerEffectType::Saturation:
+        case LayerEffectType::ColorOverlay:
+            break;
+        }
     }
+
+    const AnimatedVec2Extents origin = animated_vec2_extents(layer.origin_prop);
+    const double geometry_left = std::max(std::abs(origin.min_x),
+                                          std::abs(origin.max_x)) * w;
+    const double geometry_right = std::max(std::abs(1.0 - origin.min_x),
+                                           std::abs(1.0 - origin.max_x)) * w;
+    const double geometry_top = std::max(std::abs(origin.min_y),
+                                         std::abs(origin.max_y)) * h;
+    const double geometry_bottom = std::max(std::abs(1.0 - origin.min_y),
+                                            std::abs(1.0 - origin.max_y)) * h;
+    const double local_left = geometry_left + left;
+    const double local_right = geometry_right + right;
+    const double local_top = geometry_top + top;
+    const double local_bottom = geometry_bottom + bottom;
+
+    if (layer.rotation.is_animated()) {
+        /* Rotation about an arbitrary animated origin is cheap to invalidate as
+         * a full frame and avoids underestimating a swept corner. The readback
+         * policy may still choose a region for other layers/titles. */
+        return frame_rect;
+    }
+
+    double rotated_min_x = -local_left;
+    double rotated_max_x = local_right;
+    double rotated_min_y = -local_top;
+    double rotated_max_y = local_bottom;
+    if (std::fmod(std::abs(layer.rotation.static_value), 360.0) > 0.001) {
+        const double radians = layer.rotation.static_value *
+            3.14159265358979323846 / 180.0;
+        const double cosine = std::cos(radians);
+        const double sine = std::sin(radians);
+        rotated_min_x = std::numeric_limits<double>::max();
+        rotated_max_x = std::numeric_limits<double>::lowest();
+        rotated_min_y = std::numeric_limits<double>::max();
+        rotated_max_y = std::numeric_limits<double>::lowest();
+        for (double corner_x : {-local_left, local_right}) {
+            for (double corner_y : {-local_top, local_bottom}) {
+                const double transformed_x = corner_x * cosine - corner_y * sine;
+                const double transformed_y = corner_x * sine + corner_y * cosine;
+                rotated_min_x = std::min(rotated_min_x, transformed_x);
+                rotated_max_x = std::max(rotated_max_x, transformed_x);
+                rotated_min_y = std::min(rotated_min_y, transformed_y);
+                rotated_max_y = std::max(rotated_max_y, transformed_y);
+            }
+        }
+    }
+
+    const QRectF rect(
+        position.min_x + rotated_min_x,
+        position.min_y + rotated_min_y,
+        (position.max_x - position.min_x) +
+            (rotated_max_x - rotated_min_x),
+        (position.max_y - position.min_y) +
+            (rotated_max_y - rotated_min_y));
     return rect.toAlignedRect().intersected(frame_rect);
 }
 
@@ -2035,72 +2852,56 @@ QVector<CacheTileRegion> CacheManager::dirtyTilesForKey(const CacheFrameKey &key
     return regions;
 }
 
-QImage CacheManager::mergeDirtyTiles(const CacheFrameKey &key, const QImage &previous, const QImage &fresh) const
+static bool effect_requires_full_gpu_cache_frame(LayerEffectType type)
 {
-    if (previous.isNull() || fresh.isNull() || previous.size() != fresh.size())
-        return fresh;
-    const QVector<CacheTileRegion> dirty_tiles = dirtyTilesForKey(key);
-    if (dirty_tiles.isEmpty())
-        return fresh;
-
-    QImage merged = previous.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QPainter painter(&merged);
-    for (const auto &tile : dirty_tiles) {
-        if (!tile.rect.isEmpty())
-            painter.drawImage(tile.rect, fresh, tile.rect);
+    switch (type) {
+    case LayerEffectType::DropShadow:
+    case LayerEffectType::LongShadow:
+    case LayerEffectType::Glow:
+    case LayerEffectType::InnerGlow:
+    case LayerEffectType::InnerShadow:
+    case LayerEffectType::Blur:
+    case LayerEffectType::MotionBlur:
+    case LayerEffectType::Bloom:
+    case LayerEffectType::Emboss:
+        return true;
+    default:
+        return false;
     }
-    painter.end();
-    {
-        QMutexLocker lock(&dirty_tiles_mutex_);
-        dirty_tiles_by_frame_.remove(tileStateKey(key.title_id, key.frame));
-    }
-    return merged;
 }
 
-
-QImage CacheManager::renderDirtyTiles(const RenderQueueManager::Job &job,
-                                      const QImage &previous) const
+static bool title_requires_full_gpu_cache_frame(const Title &title)
 {
-    if (!job.title || previous.isNull())
-        return QImage();
-
-    const QVector<CacheTileRegion> dirty_tiles = dirtyTilesForKey(job.key);
-    if (dirty_tiles.isEmpty())
-        return QImage();
-
-    QImage merged = previous.format() == QImage::Format_ARGB32_Premultiplied
-        ? previous.copy()
-        : previous.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QPainter painter(&merged);
-    painter.setCompositionMode(QPainter::CompositionMode_Source);
-
-    qsizetype rendered_pixels = 0;
-    for (const auto &tile : dirty_tiles) {
-        if (tile.rect.isEmpty())
+    for (const auto &layer : title.layers) {
+        if (!layer)
             continue;
-        const QImage tile_image = render_title_cache_region_to_image(*job.title, job.time, tile.rect);
-        if (tile_image.isNull())
-            continue;
-        painter.drawImage(tile.rect.topLeft(), tile_image);
-        rendered_pixels += qsizetype(tile.rect.width()) * qsizetype(tile.rect.height());
+        if (!layer->parent_id.empty() ||
+            layer->mask_mode != MaskMode::None ||
+            layer->use_as_scene_mask)
+            return true;
+        for (const LayerEffect &effect : layer->effects) {
+            if ((effect.enabled || effect.enabled_prop.is_animated()) &&
+                effect_requires_full_gpu_cache_frame(effect.type))
+                return true;
+        }
+        for (const LayerTransition &transition : layer->transitions) {
+            if (!transition.enabled || transition.kind != LayerTransitionKind::General)
+                continue;
+            switch (transition.type) {
+            case LayerTransitionType::OpacityBlur:
+            case LayerTransitionType::ZoomBlur:
+            case LayerTransitionType::BlurSlide:
+                if (transition.blur_amount > 0.01)
+                    return true;
+                break;
+            default:
+                break;
+            }
+        }
     }
-    painter.end();
-
-    {
-        QMutexLocker lock(&dirty_tiles_mutex_);
-        dirty_tiles_by_frame_.remove(tileStateKey(job.key.title_id, job.key.frame));
-    }
-
-    const qsizetype full_pixels = qsizetype(std::max(1, job.key.width)) *
-                                  qsizetype(std::max(1, job.key.height));
-    OGS_LOG_TRACE(job.live_cue ? "LiveCue" : "Cache",
-                  QStringLiteral("Dirty-region render title=%1 frame=%2 tiles=%3 pixels=%4/%5 (%6%)")
-                      .arg(job.key.title_id).arg(job.key.frame).arg(dirty_tiles.size())
-                      .arg(rendered_pixels).arg(full_pixels)
-                      .arg(full_pixels > 0 ? (100.0 * double(rendered_pixels) / double(full_pixels)) : 0.0,
-                           0, 'f', 1));
-    return merged;
+    return false;
 }
+
 
 void CacheManager::rememberVisualHash(const Title &title, const QString &known_hash)
 {
@@ -2151,8 +2952,15 @@ void CacheManager::invalidateAll(const std::shared_ptr<Title> &title)
         refreshLiveCueStructure(title);
         return;
     }
+    const QString title_id = QString::fromStdString(title->id);
+    /* invalidateAll() cancels/marks the previous generation stale. A same-frame
+     * reprioritize must therefore not be suppressed by the old UI sentinel. */
+    if (last_reprioritize_title_id_ == title_id) {
+        last_reprioritize_title_id_.clear();
+        last_reprioritize_frame_ = -1;
+    }
     const QSize frame_size(std::max(1, title->width), std::max(1, title->height));
-    markDirtyTiles(QString::fromStdString(title->id), 0, cache_last_frame_for_title(*title, effectiveFrameRate()),
+    markDirtyTiles(title_id, 0, cache_last_frame_for_title(*title, effectiveFrameRate()),
                    tilesForRect(QRect(QPoint(0, 0), frame_size), frame_size));
     invalidation_.invalidateAll(title);
     invalidateLiveCues(title);
@@ -2207,11 +3015,9 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
     if (!title || row < 0 || row >= static_cast<int>(title->live_text_rows.size()))
         return nullptr;
 
-    auto cue_title = std::make_shared<Title>(*title);
-    cue_title->layers.clear();
-    cue_title->layers.reserve(title->layers.size());
-    for (const auto &layer : title->layers)
-        if (layer) cue_title->layers.push_back(std::make_shared<Layer>(*layer));
+    auto cue_title = clone_title_snapshot(title);
+    if (!cue_title)
+        return nullptr;
 
     std::vector<std::shared_ptr<Layer>> exposed;
     for (const auto &layer : cue_title->layers) {
@@ -2260,11 +3066,11 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
         target->text_content = cue_value;
         if (target->rich_text.empty())
             target->rich_text = rich_text_document_from_layer_defaults(*target);
-        RichTextCharFormat insertion_format = target->rich_text.has_typing_format
-            ? target->rich_text.typing_format
-            : target->rich_text.default_format;
-        rich_text_document_replace_text(target->rich_text, cue_value, &insertion_format);
-        target->rich_text_html.clear();
+        RichTextCharFormat insertion_format =
+            rich_text_effective_typing_format(target->rich_text);
+        rich_text_document_replace_text(target->rich_text, cue_value, insertion_format,
+                                        target->rich_text.has_typing_format
+                                            ? target->rich_text.typing_format_mask : 0);
     }
 
     /* Steady cue titles are deterministic. Runtime current/pending state must
@@ -2389,8 +3195,8 @@ int CacheManager::liveCueVariantsProgress(const QVector<std::shared_ptr<Title>> 
                 continue;
             seen.insert(frame_key);
             ++total_frames;
-            QImage ignored;
-            if (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key))
+            if (cache_ram_frame_contains(ram_cache_, frame_key) ||
+                disk_cache_.contains(frame_key))
                 ++cached_frames;
         }
     }
@@ -2418,8 +3224,8 @@ int CacheManager::liveCueStoredProgress(const QString &state_key) const
 
     int cached = 0;
     for (const CacheFrameKey &frame_key : keys) {
-        QImage ignored;
-        if (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key))
+        if (cache_ram_frame_contains(ram_cache_, frame_key) ||
+            disk_cache_.contains(frame_key))
             ++cached;
     }
     const int total = std::max(1, static_cast<int>(keys.size()));
@@ -2454,8 +3260,7 @@ FrameCacheState CacheManager::liveCueStoredState(const QString &state_key) const
             any_queued = true;
         if (frame_state == FrameCacheState::Stale)
             any_stale = true;
-        QImage ignored;
-        if (ram_cache_.get(frame_key, ignored)) {
+        if (cache_ram_frame_contains(ram_cache_, frame_key)) {
             ++cached;
         } else if (disk_cache_.contains(frame_key)) {
             ++cached;
@@ -2571,11 +3376,15 @@ void CacheManager::pruneUnreferencedLiveCueRam(const QString &title_id)
             continue;
         if (queue_.cancelKey(key))
             ++cancelled_jobs;
+        const bool gpu_resident = gpu_ram_frame_contains(key);
         QImage resident;
-        if (ram_cache_.get(key, resident)) {
+        const bool cpu_resident = ram_cache_.get(key, resident);
+        if (gpu_resident)
+            title_gpu_frame_cache_remove(key.toString().toStdString());
+        if (cpu_resident)
             ram_cache_.remove(key);
+        if (gpu_resident || cpu_resident)
             ++removed_ram;
-        }
         if (disk_cache_.contains(key))
             state_tracker_.setState(key, FrameCacheState::CachedDisk);
         else
@@ -2624,8 +3433,7 @@ FrameCacheState CacheManager::liveCueVariantsState(const QVector<std::shared_ptr
                 any_queued = true;
             if (frame_state == FrameCacheState::Stale)
                 any_stale = true;
-            QImage ignored;
-            if (ram_cache_.get(frame_key, ignored)) {
+            if (cache_ram_frame_contains(ram_cache_, frame_key)) {
                 ++cached;
             } else if (disk_cache_.contains(frame_key)) {
                 ++cached;
@@ -2691,8 +3499,8 @@ int CacheManager::liveCueRangeProgress(const std::shared_ptr<Title> &cue_title) 
     const int total = std::max(1, static_cast<int>(keys.size()));
     int cached = 0;
     for (const CacheFrameKey &frame_key : keys) {
-        QImage ignored;
-        if (ram_cache_.get(frame_key, ignored) || disk_cache_.contains(frame_key))
+        if (cache_ram_frame_contains(ram_cache_, frame_key) ||
+            disk_cache_.contains(frame_key))
             ++cached;
     }
     return std::clamp((cached * 100) / total, 0, 100);
@@ -2722,8 +3530,7 @@ FrameCacheState CacheManager::liveCueRangeState(const std::shared_ptr<Title> &cu
         if (frame_state == FrameCacheState::Stale)
             any_stale = true;
 
-        QImage ignored;
-        if (ram_cache_.get(frame_key, ignored)) {
+        if (cache_ram_frame_contains(ram_cache_, frame_key)) {
             ++cached;
         } else if (disk_cache_.contains(frame_key)) {
             ++cached;
@@ -2867,8 +3674,7 @@ void CacheManager::queueLiveCueVariantSet(
     int queued = 0;
     bool active_or_queued = false;
     for (const RequiredFrame &required : required_frames) {
-        QImage ignored;
-        const bool in_ram = ram_cache_.get(required.key, ignored);
+        const bool in_ram = cache_ram_frame_contains(ram_cache_, required.key);
         const bool on_disk = !in_ram && disk_cache_.contains(required.key);
         if (in_ram)
             continue;
@@ -3042,6 +3848,7 @@ void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
             continue;
         queue_.cancelKey(frame_key);
         ram_cache_.remove(frame_key);
+        title_gpu_frame_cache_remove(frame_key.toString().toStdString());
         disk_cache_.remove(frame_key);
         live_cue_known_keys_.remove(frame_key);
         state_tracker_.setState(frame_key, FrameCacheState::NotCached);
@@ -3073,7 +3880,7 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
     const bool exact_runtime_state = title->pending_cue_row >= 0 ||
         (title->cue_persistence_transition && title->current_cue_row == row);
     if (exact_runtime_state)
-        cue_title = immutable_title_snapshot(title);
+        cue_title = clone_title_snapshot(title);
     else
         cue_title = titleWithCueApplied(title, row);
     if (!cue_title)
@@ -3130,6 +3937,48 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
     return QImage();
 }
 
+QString CacheManager::requestLiveCueFrameGpuToken(
+    const std::shared_ptr<Title> &title, int row, double time,
+    bool queue_if_missing)
+{
+    std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+    if (!cache_enabled_.load() || !title || row < 0 ||
+        row >= static_cast<int>(title->live_text_rows.size()))
+        return QString();
+
+    std::shared_ptr<Title> cue_title;
+    const bool exact_runtime_state = title->pending_cue_row >= 0 ||
+        (title->cue_persistence_transition && title->current_cue_row == row);
+    if (exact_runtime_state)
+        cue_title = clone_title_snapshot(title);
+    else
+        cue_title = titleWithCueApplied(title, row);
+    if (!cue_title)
+        return QString();
+
+    const double clamped_time = std::clamp(
+        time, 0.0, std::max(0.0, cue_title->duration));
+    const CacheFrameKey key = keyForTime(*cue_title, clamped_time);
+    if (title_gpu_frame_cache_contains(key.toString().toStdString())) {
+        live_cue_known_keys_.insert(key);
+        ++live_cue_stats_.hits;
+        ++live_cue_stats_.reuses;
+        emit diagnosticsChanged();
+        return key.toString();
+    }
+
+    if (queue_if_missing && !disk_cache_.contains(key)) {
+        if (title->pending_cue_row >= 0 && title->current_cue_row >= 0 &&
+            title->current_cue_row != title->pending_cue_row) {
+            queueLiveCueTransition(title, title->current_cue_row,
+                                   title->pending_cue_row);
+        } else {
+            queueLiveCue(title, row);
+        }
+    }
+    return QString();
+}
+
 QImage CacheManager::requestLiveCueFrameRealtime(const std::shared_ptr<Title> &title, int row, double time,
                                                      const QString &known_content_hash)
 {
@@ -3146,14 +3995,29 @@ QImage CacheManager::requestLiveCueFrameRealtime(const std::shared_ptr<Title> &t
      * every OBS video tick; queueRealtimeJob snapshots only on a true miss. */
     const double clamped_time = std::clamp(time, 0.0, std::max(0.0, title->duration));
     const CacheFrameKey key = keyForTime(*title, clamped_time, known_content_hash);
+    const FrameCacheState initial_state = state_tracker_.state(key);
+    log_cache_playback(QStringLiteral("request kind=live-cue title=%1 row=%2 time=%3 frame=%4 state=%5 key=%6")
+        .arg(key.title_id).arg(row).arg(clamped_time, 0, 'f', 6).arg(key.frame)
+        .arg(QString::fromUtf8(cache_playback_state_name(initial_state)), key.toString()));
     QImage image;
-    if (state_tracker_.state(key) != FrameCacheState::Stale && ram_cache_.get(key, image))
+    if (initial_state != FrameCacheState::Stale && ram_cache_.get(key, image)) {
+        log_cache_playback(QStringLiteral("result=ram-hit kind=live-cue title=%1 row=%2 frame=%3 cacheKey=%4 size=%5x%6 key=%7")
+            .arg(key.title_id).arg(row).arg(key.frame).arg(image.cacheKey())
+            .arg(image.width()).arg(image.height()).arg(key.toString()));
         return image;
+    }
+    if (initial_state == FrameCacheState::CachedDisk && disk_cache_.get(key, image)) {
+        ram_cache_.put(key, image);
+        state_tracker_.setState(key, FrameCacheState::CachedRam);
+        log_cache_playback(QStringLiteral("result=disk-hit-promoted kind=live-cue title=%1 row=%2 frame=%3 cacheKey=%4 key=%5")
+            .arg(key.title_id).arg(row).arg(key.frame).arg(image.cacheKey()).arg(key.toString()));
+        return image;
+    }
 
-    /* Realtime source requests are deliberately opportunistic normal jobs. The
-     * editor's live-cue state machine remains the authority for row progress,
-     * while the worker can still hydrate/render the exact transition snapshot. */
     queueRealtimeJob(title, clamped_time, false, row, QString(), known_content_hash);
+    log_cache_playback(QStringLiteral("result=miss-queued kind=live-cue title=%1 row=%2 frame=%3 initialState=%4 key=%5")
+        .arg(key.title_id).arg(row).arg(key.frame)
+        .arg(QString::fromUtf8(cache_playback_state_name(initial_state)), key.toString()));
     return QImage();
 }
 
@@ -3221,8 +4085,8 @@ int CacheManager::liveCueProgressPercent(const std::shared_ptr<Title> &title, in
 
     int cached = 0;
     for (const CacheFrameKey &key : keys) {
-        QImage ignored;
-        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+        if (cache_ram_frame_contains(ram_cache_, key) ||
+            disk_cache_.contains(key))
             ++cached;
     }
     return std::clamp((cached * 100) / static_cast<int>(keys.size()), 0, 100);
@@ -3233,9 +4097,8 @@ bool CacheManager::liveCueStateFullyResidentInRam(const QString &state_key) cons
     const QVector<CacheFrameKey> keys = live_cue_required_keys_.value(state_key);
     if (keys.isEmpty())
         return false;
-    QImage ignored;
     for (const CacheFrameKey &key : keys) {
-        if (!ram_cache_.get(key, ignored))
+        if (!cache_ram_frame_contains(ram_cache_, key))
             return false;
     }
     return true;
@@ -3257,9 +4120,8 @@ bool CacheManager::liveCueStateStartResidentInRam(const QString &state_key) cons
             first_key_by_content[content_key] = key;
     }
 
-    QImage ignored;
     for (const CacheFrameKey &key : first_key_by_content) {
-        if (!ram_cache_.get(key, ignored))
+        if (!cache_ram_frame_contains(ram_cache_, key))
             return false;
     }
     return true;
@@ -3274,12 +4136,12 @@ bool CacheManager::liveCueStateRangePlayable(const QString &state_key, int first
     const int clamped_first = std::max(0, first_frame);
     const int clamped_last = std::max(clamped_first, last_frame);
     bool found_required_frame = false;
-    QImage ignored;
     for (const CacheFrameKey &key : keys) {
         if (key.frame < clamped_first || key.frame > clamped_last)
             continue;
         found_required_frame = true;
-        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+        if (cache_ram_frame_contains(ram_cache_, key) ||
+            disk_cache_.contains(key))
             continue;
         return false;
     }
@@ -3292,9 +4154,9 @@ bool CacheManager::liveCueStateFullyPlayable(const QString &state_key) const
     if (keys.isEmpty())
         return false;
 
-    QImage ignored;
     for (const CacheFrameKey &key : keys) {
-        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+        if (cache_ram_frame_contains(ram_cache_, key) ||
+            disk_cache_.contains(key))
             continue;
         return false;
     }
@@ -3308,7 +4170,8 @@ bool CacheManager::liveCueUseDiskStreaming() const
     constexpr quint64 kMinCacheHeadroom = 96ull * 1024ull * 1024ull;
     const quint64 available = available_system_memory_bytes();
     const quint64 limit = ram_cache_.maxBytes();
-    const quint64 used = ram_cache_.bytesUsed();
+    const quint64 used = static_cast<quint64>(
+        title_gpu_frame_cache_bytes_used());
     const quint64 cache_headroom = limit > used ? limit - used : 0;
     return available < kMinSystemHeadroom ||
            (used >= (limit * 85ull) / 100ull && cache_headroom < kMinCacheHeadroom);
@@ -3475,8 +4338,8 @@ int CacheManager::liveCueAggregateProgressPercent(const std::shared_ptr<Title> &
         return 0;
     int cached = 0;
     for (const CacheFrameKey &key : keys) {
-        QImage ignored;
-        if (ram_cache_.get(key, ignored) || disk_cache_.contains(key))
+        if (cache_ram_frame_contains(ram_cache_, key) ||
+            disk_cache_.contains(key))
             ++cached;
     }
     return std::clamp((cached * 100) / static_cast<int>(keys.size()), 0, 100);
@@ -3711,7 +4574,7 @@ void CacheManager::refreshLiveCueStructureAsync(const std::shared_ptr<Title> &ti
 {
     if (!title)
         return;
-    auto snapshot = immutable_title_snapshot(title);
+    auto snapshot = clone_title_snapshot(title);
     if (!snapshot)
         return;
     const QString title_id = QString::fromStdString(snapshot->id);
@@ -3844,9 +4707,12 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
     for (const QString &state_key : state_keys)
         removeLiveCueState(state_key);
 
+    title_gpu_frame_cache_remove_title(title_id.toStdString());
     const auto ram_keys = ram_cache_.keysForTitle(title_id);
-    for (const CacheFrameKey &key : ram_keys)
+    for (const CacheFrameKey &key : ram_keys) {
         ram_cache_.remove(key);
+        title_gpu_frame_cache_remove(key.toString().toStdString());
+    }
     if (remove_disk) {
         const auto disk_keys = disk_cache_.keysForTitle(title_id);
         for (const CacheFrameKey &key : disk_keys)
@@ -3926,6 +4792,11 @@ void CacheManager::abandonJobState(const RenderQueueManager::Job &job,
         : FrameCacheState::NotCached);
 }
 
+bool CacheManager::hasPendingGpuReadbacks() const
+{
+    return worker_pipeline_ && !worker_pipeline_->pending_readbacks.empty();
+}
+
 void CacheManager::workerLoop()
 {
     enter_cache_worker_background_mode();
@@ -3935,6 +4806,8 @@ void CacheManager::workerLoop()
             std::unique_lock<std::mutex> lock(worker_wait_mutex_);
             worker_cv_.wait(lock, [this]() {
                 if (worker_stop_.load())
+                    return true;
+                if (hasPendingGpuReadbacks())
                     return true;
                 if (!cache_enabled_.load())
                     return false;
@@ -3961,8 +4834,11 @@ void CacheManager::workerLoop()
         }
         if (worker_stop_.load())
             break;
-        if (!cache_enabled_.load())
+        if (!cache_enabled_.load()) {
+            if (hasPendingGpuReadbacks())
+                resolveOldestGpuReadback(true);
             continue;
+        }
 
         std::shared_ptr<Title> refresh_title;
         if (takePendingLiveCueStructureRefresh(refresh_title)) {
@@ -3984,274 +4860,321 @@ void CacheManager::workerLoop()
         if (urgent_only) {
             have_job = queue_.takeNextUrgent(job);
         } else if (editor_focus_active) {
-            /* Only genuinely urgent/on-air work may preempt the editor. Ordinary
-             * live-cue cache population remains queued, including variants of the
-             * same title, until the editor has no prerender work left or closes. */
             have_job = queue_.takeNextUrgent(job);
             if (!have_job)
                 have_job = queue_.takeNextForTitle(editor_title_id, job);
         } else {
             have_job = queue_.takeNext(job);
         }
-        if (!have_job)
+
+        if (!have_job) {
+            /* No more GPU work is available. Resolve the oldest submitted
+             * staging surface rather than sleeping with an incomplete frame. */
+            if (hasPendingGpuReadbacks())
+                resolveOldestGpuReadback(true);
             continue;
+        }
 
-        // Background Live Text Cue population is deliberately paced below all
-        // editor/timeline work. Urgent realtime hydration still bypasses this
-        // delay through the job flags, but speculative prerender must never
-        // burst continuously enough to steal scheduling time from OBS.
         if (job.live_cue && !job.urgent && !job.realtime)
-            std::this_thread::sleep_for(std::chrono::milliseconds(12));
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
 
-        renderJob(job);
-        queue_.complete(job);
+        const bool readback_submitted = renderJob(job);
+        if (!readback_submitted)
+            queue_.complete(job);
 
-        // Cooperative duty-cycle limiting. Live-cue frames include rendering,
-        // alpha conversion, compression and disk I/O, so leave a larger gap
-        // between speculative jobs. Normal cache work keeps a small yield.
+        /* Keep up to three GPU copies in flight. Mapping starts only when the
+         * ring is full, allowing frame N readback to overlap rendering N+1/N+2. */
+        if (worker_pipeline_->pending_readbacks.size() >= 3)
+            resolveOldestGpuReadback(true);
+
         const int cooldown_ms = (job.live_cue && !job.urgent && !job.realtime)
-            ? 28
-            : (job.urgent || (job.live_cue && job.realtime)) ? 1 : 5;
-        std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_ms));
+            ? 12 : (job.urgent || (job.live_cue && job.realtime)) ? 0 : 1;
+        if (cooldown_ms > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(cooldown_ms));
     }
+
+    while (hasPendingGpuReadbacks())
+        resolveOldestGpuReadback(true);
+    disk_cache_.flushWrites();
 }
 
-void CacheManager::renderJob(RenderQueueManager::Job job)
+bool CacheManager::renderJob(RenderQueueManager::Job job)
 {
     if (!job.title || !jobIsCurrent(job))
-        return;
+        return false;
 
     QString live_state_key = job.cue_state_key;
     bool was_stale = false;
     if (job.live_cue) {
         std::lock_guard<std::recursive_mutex> lock(live_cue_mutex_);
         const QString rebound_state = liveCueStateReferencingKey(job.key, live_state_key);
-        if (rebound_state.isEmpty()) {
-            OGS_LOG_DEBUG("LiveCue", QStringLiteral("Discarded obsolete background job title=%1 row=%2 stateKey=%3 frameKey=%4")
-                                        .arg(job.key.title_id).arg(job.cue_row)
-                                        .arg(live_state_key, job.key.toString()));
-            return;
-        }
-        if (liveCueStateRenderPausedLocked(rebound_state)) {
-            OGS_LOG_DEBUG("LiveCue", QStringLiteral("Paused background job title=%1 row=%2 stateKey=%3 frameKey=%4")
-                                        .arg(job.key.title_id).arg(job.cue_row)
-                                        .arg(rebound_state, job.key.toString()));
-            return;
-        }
+        if (rebound_state.isEmpty())
+            return false;
+        if (liveCueStateRenderPausedLocked(rebound_state))
+            return false;
         live_state_key = rebound_state;
         job.cue_state_key = rebound_state;
         job.cue_row = live_cue_rows_.value(rebound_state, job.cue_row);
         was_stale = job.force_render ||
-            live_cue_states_.value(rebound_state, FrameCacheState::NotCached) == FrameCacheState::Stale;
-        if (live_cue_states_.value(rebound_state, FrameCacheState::NotCached) != FrameCacheState::Rendering) {
+            live_cue_states_.value(rebound_state, FrameCacheState::NotCached) ==
+                FrameCacheState::Stale;
+        if (live_cue_states_.value(rebound_state, FrameCacheState::NotCached) !=
+            FrameCacheState::Rendering) {
             live_cue_states_[rebound_state] = FrameCacheState::Rendering;
             live_cue_progress_percent_[rebound_state] = liveCueStoredProgress(rebound_state);
-            if (shouldEmitLiveCueUpdate(rebound_state, FrameCacheState::Rendering,
-                                        live_cue_progress_percent_.value(rebound_state)))
+            if (shouldEmitLiveCueUpdate(
+                    rebound_state, FrameCacheState::Rendering,
+                    live_cue_progress_percent_.value(rebound_state)))
                 emit liveCueStateChanged(job.key.title_id, job.cue_row);
         }
     } else {
-        was_stale = job.force_render || state_tracker_.state(job.key) == FrameCacheState::Stale;
+        was_stale = job.force_render ||
+            state_tracker_.state(job.key) == FrameCacheState::Stale;
         state_tracker_.setState(job.key, FrameCacheState::Rendering);
     }
 
-    OGS_LOG_DEBUG(job.live_cue ? "LiveCue" : "Cache",
-                  QStringLiteral("Background job title=%1 frame=%2 liveCue=%3 realtime=%4 row=%5 time=%6 key=%7")
-                      .arg(job.key.title_id).arg(job.key.frame).arg(job.live_cue).arg(job.realtime)
-                      .arg(job.cue_row).arg(job.time, 0, 'f', 3).arg(job.key.toString()));
+    /* A CPU/disk-resident frame does not need to be rerendered merely to become
+     * a GPU token. Hydrate its sparse tiled payload on the cache worker and
+     * publish it into the shared GPU tile cache. This also prevents each
+     * live/editor session from accumulating its own 2D fallback textures after
+     * an application restart. */
+    if (!was_stale) {
+        QImage resident_image;
+        const bool found_resident = ram_cache_.get(job.key, resident_image) ||
+            disk_cache_.get(job.key, resident_image);
+        if (found_resident &&
+            title_gpu_frame_cache_store_image(
+                job.key.toString().toStdString(), resident_image,
+                static_cast<uint32_t>(std::max(1, job.key.width)),
+                static_cast<uint32_t>(std::max(1, job.key.height)))) {
+            std::unique_lock<std::recursive_mutex> publication_lock(
+                publication_mutex_);
+            if (!jobIsCurrent(job)) {
+                publication_lock.unlock();
+                title_gpu_frame_cache_remove(
+                    job.key.toString().toStdString());
+                abandonJobState(job, live_state_key);
+                return false;
+            }
+
+            state_tracker_.setState(job.key, FrameCacheState::CachedRam);
+            if (job.live_cue) {
+                std::lock_guard<std::recursive_mutex> live_lock(
+                    live_cue_mutex_);
+                live_cue_known_keys_.insert(job.key);
+                live_cue_states_[live_state_key] =
+                    FrameCacheState::NotCached;
+                const FrameCacheState next_state =
+                    liveCueStoredState(live_state_key);
+                const int progress = liveCueStoredProgress(live_state_key);
+                live_cue_states_[live_state_key] = next_state;
+                live_cue_progress_percent_[live_state_key] = progress;
+                if (job.cue_row >= 0 && shouldEmitLiveCueUpdate(
+                        live_state_key, next_state, progress))
+                    emit liveCueStateChanged(job.key.title_id,
+                                             job.cue_row);
+            } else {
+                emit frameReady(job.key.title_id, job.key.frame);
+            }
+            publication_lock.unlock();
+            emit diagnosticsChanged();
+            return false;
+        }
+    }
+
+    QImage previous;
+    bool had_previous = ram_cache_.get(job.key, previous);
+    if (!had_previous)
+        had_previous = disk_cache_.get(job.key, previous);
+
+    /* A visual edit produces a new content-addressed key. Looking up only the
+     * new key made dirty-region regeneration degenerate into a full readback,
+     * because the previous pixels still live under the last published visual
+     * hash. Resolve that exact predecessor before deciding whether a GPU patch
+     * is worthwhile. Live-cue variants keep their independent state keys and
+     * conservatively use the full-frame path. */
+    if (!had_previous && was_stale && !job.live_cue) {
+        QString previous_hash;
+        {
+            QMutexLocker lock(&visual_hash_mutex_);
+            previous_hash = last_visual_hash_by_title_.value(job.key.title_id);
+        }
+        if (!previous_hash.isEmpty() &&
+            previous_hash != job.key.content_hash) {
+            CacheFrameKey previous_key = job.key;
+            previous_key.content_hash = previous_hash;
+            had_previous = ram_cache_.get(previous_key, previous);
+            if (!had_previous)
+                had_previous = disk_cache_.get(previous_key, previous);
+        }
+    }
+
+    QRect readback_region(0, 0, std::max(1, job.key.width),
+                          std::max(1, job.key.height));
+    if (was_stale && had_previous &&
+        !title_requires_full_gpu_cache_frame(*job.title)) {
+        const QVector<CacheTileRegion> dirty_tiles = dirtyTilesForKey(job.key);
+        QRect dirty_union;
+        for (const auto &tile : dirty_tiles)
+            dirty_union = dirty_union.united(tile.rect);
+        const qint64 full_pixels = qint64(readback_region.width()) *
+                                   qint64(readback_region.height());
+        const qint64 dirty_pixels = qint64(dirty_union.width()) *
+                                    qint64(dirty_union.height());
+        /* A bounded dirty union is staged as a GPU crop. Large or fragmented
+         * updates are cheaper and safer as one full-frame staging copy. */
+        if (!dirty_union.isEmpty() && full_pixels > 0 &&
+            dirty_pixels * 100 < full_pixels * 60) {
+            readback_region = dirty_union.intersected(readback_region);
+        }
+    }
+
+    while (worker_pipeline_->pending_readbacks.size() >= 3)
+        resolveOldestGpuReadback(true);
+
+    TitleGpuReadbackTicket ticket;
+    bool submitted = render_title_gpu_cache_submit_readback(
+        *job.title, job.time, gpu_cache_model_revision(job.key),
+        job.key.toString().toStdString(), readback_region, ticket);
+    if (!submitted && hasPendingGpuReadbacks()) {
+        resolveOldestGpuReadback(true);
+        submitted = render_title_gpu_cache_submit_readback(
+            *job.title, job.time, gpu_cache_model_revision(job.key),
+            job.key.toString().toStdString(), readback_region, ticket);
+    }
+    if (!submitted) {
+        abandonJobState(job, live_state_key);
+        state_tracker_.setState(job.key, FrameCacheState::Stale);
+        return false;
+    }
+
+    WorkerPipeline::PendingReadback pending;
+    pending.job = std::move(job);
+    pending.ticket = ticket;
+    pending.previous = std::move(previous);
+    pending.was_stale = was_stale;
+    pending.had_previous = had_previous;
+    pending.live_state_key = live_state_key;
+    worker_pipeline_->pending_readbacks.push_back(std::move(pending));
+    return true;
+}
+
+bool CacheManager::resolveOldestGpuReadback(bool force)
+{
+    Q_UNUSED(force);
+    if (!hasPendingGpuReadbacks())
+        return false;
+
+    WorkerPipeline::PendingReadback pending =
+        std::move(worker_pipeline_->pending_readbacks.front());
+    worker_pipeline_->pending_readbacks.pop_front();
+
+    QImage staged;
+    const bool resolved = title_gpu_render_session_resolve_readback(
+        pending.ticket, staged);
+    RenderQueueManager::Job job = std::move(pending.job);
+    struct QueueCompletionGuard {
+        RenderQueueManager &queue;
+        RenderQueueManager::Job &job;
+        ~QueueCompletionGuard() { queue.complete(job); }
+    } completion_guard {queue_, job};
+    QString live_state_key = pending.live_state_key;
+
+    if (!resolved || staged.isNull()) {
+        title_gpu_frame_cache_remove(job.key.toString().toStdString());
+        abandonJobState(job, live_state_key);
+        state_tracker_.setState(job.key, FrameCacheState::Stale);
+        emit diagnosticsChanged();
+        return false;
+    }
 
     QImage image;
-    QImage previous;
-    bool loaded_from_disk = false;
-    bool temporal_reuse = false;
-    CacheFrameKey temporal_canonical_key;
-    bool have_temporal_canonical_key = false;
-    const QString visual_state_hash = evaluatedVisualStateHash(*job.title, job.time, job.key.content_hash);
-    const QString temporal_key = temporalStateKey(job.key, visual_state_hash);
-    const QString adaptive_state_hash = adaptiveVisualStateHash(*job.title, job.time, job.key.content_hash);
-    const QString adaptive_key = temporalStateKey(job.key, QStringLiteral("adaptive:") + adaptive_state_hash);
-
-    /* Jobs are consumed serially by the prerender worker. Once the first frame
-     * for a visual state has been published, later timeline frames can reuse
-     * it without executing the renderer. The frame key/state remains distinct
-     * so progress, seeking and invalidation retain frame-level semantics. */
-    if (!was_stale && !job.force_render) {
-        CacheFrameKey canonical_key;
-        bool have_canonical = false;
-        {
-            QMutexLocker lock(&temporal_dedup_mutex_);
-            const auto it = temporal_canonical_keys_.constFind(temporal_key);
-            if (it != temporal_canonical_keys_.constEnd()) {
-                canonical_key = it.value();
-                have_canonical = true;
+    const QRect full_rect(0, 0, std::max(1, job.key.width),
+                          std::max(1, job.key.height));
+    if (pending.was_stale && pending.had_previous &&
+        pending.ticket.region != full_rect) {
+        QImage merged = expand_sparse_frame(
+            pending.previous, job.key.width, job.key.height);
+        gsp::cache_frame_payload::Placement placement;
+        const QImage patch = staged.format() == kDiskFrameFormat
+            ? staged : staged.convertToFormat(kDiskFrameFormat);
+        if (!merged.isNull() && !patch.isNull() &&
+            gsp::cache_frame_payload::read_placement(patch, placement) &&
+            placement.canvas_width == job.key.width &&
+            placement.canvas_height == job.key.height) {
+            const qsizetype row_bytes = qsizetype(patch.width()) * 4;
+            for (int y = 0; y < patch.height(); ++y) {
+                std::memcpy(
+                    merged.scanLine(placement.y + y) +
+                        qsizetype(placement.x) * 4,
+                    patch.constScanLine(y), row_bytes);
             }
+            image = make_sparse_frame(merged, job.key.width, job.key.height);
         }
-        if (have_canonical && !(canonical_key == job.key)) {
-            temporal_canonical_key = canonical_key;
-            have_temporal_canonical_key = true;
-            if (ram_cache_.get(canonical_key, image)) {
-                temporal_reuse = true;
-            } else if (disk_cache_.get(canonical_key, image)) {
-                temporal_reuse = true;
-                loaded_from_disk = true;
-            }
-            if (temporal_reuse) {
-                OGS_LOG_TRACE(job.live_cue ? "LiveCue" : "Cache",
-                              QStringLiteral("Temporal frame reuse title=%1 frame=%2 canonicalFrame=%3 state=%4")
-                                  .arg(job.key.title_id).arg(job.key.frame)
-                                  .arg(canonical_key.frame).arg(visual_state_hash.left(12)));
-            }
-        }
-    }
-
-    if (!temporal_reuse && !was_stale && !job.force_render && !job.realtime) {
-        CacheFrameKey canonical_key;
-        bool have_canonical = false;
-        {
-            QMutexLocker lock(&temporal_dedup_mutex_);
-            const auto it = adaptive_canonical_keys_.constFind(adaptive_key);
-            if (it != adaptive_canonical_keys_.constEnd()) {
-                canonical_key = it.value();
-                have_canonical = true;
-            }
-        }
-        if (have_canonical && !(canonical_key == job.key)) {
-            temporal_canonical_key = canonical_key;
-            have_temporal_canonical_key = true;
-            if (ram_cache_.get(canonical_key, image)) {
-                temporal_reuse = true;
-            } else if (disk_cache_.get(canonical_key, image)) {
-                temporal_reuse = true;
-                loaded_from_disk = true;
-            }
-            if (temporal_reuse) {
-                OGS_LOG_TRACE(job.live_cue ? "LiveCue" : "Cache",
-                              QStringLiteral("Adaptive frame reuse title=%1 frame=%2 canonicalFrame=%3 state=%4")
-                                  .arg(job.key.title_id).arg(job.key.frame)
-                                  .arg(canonical_key.frame).arg(adaptive_state_hash.left(12)));
-            }
-        }
-    }
-
-    bool had_previous = temporal_reuse || ram_cache_.get(job.key, previous);
-    if (!had_previous) {
-        had_previous = disk_cache_.get(job.key, previous);
-        loaded_from_disk = had_previous;
-    }
-    if (temporal_reuse) {
-        /* image already references the canonical QImage payload. */
-    } else if (was_stale || !had_previous) {
-        if (was_stale && had_previous) {
-            const QImage expanded_previous = expand_sparse_frame(previous, job.key.width, job.key.height);
-            image = renderDirtyTiles(job, expanded_previous);
-            if (image.isNull())
-                image = render_title_cache_to_image(*job.title, job.time);
-        } else {
-            image = render_title_cache_to_image(*job.title, job.time);
-        }
-        loaded_from_disk = false;
     } else {
-        image = previous;
+        image = make_sparse_frame(staged, job.key.width, job.key.height);
     }
 
-    /* Cairo/QPainter produce premultiplied ARGB. Convert once on the worker to
-     * straight-alpha BGRA (QImage::Format_ARGB32 on little-endian systems),
-     * which is the byte layout consumed by OBS GS_BGRA. This removes the full
-     * 1920x1080 conversion/unpremultiply pass from every playback tick. */
-    if (!image.isNull()) {
-        int sparse_x = 0, sparse_y = 0, sparse_w = 0, sparse_h = 0;
-        if (!sparse_frame_metadata(image, sparse_x, sparse_y, sparse_w, sparse_h))
-            image = make_sparse_frame(image, job.key.width, job.key.height);
-        else if (image.format() != kDiskFrameFormat)
-            image = image.convertToFormat(kDiskFrameFormat);
+    if (image.isNull()) {
+        title_gpu_frame_cache_remove(job.key.toString().toStdString());
+        abandonJobState(job, live_state_key);
+        state_tracker_.setState(job.key, FrameCacheState::Stale);
+        emit diagnosticsChanged();
+        return false;
     }
 
-    /* Serialize the final validity check with every invalidation/clear/remove
-     * publication. Without this gate, a job could pass jobIsCurrent(), then an
-     * edit could clear the caches, and the obsolete frame could be inserted
-     * immediately afterwards. */
+    /* Publish the final sparse payload into the shared GPU RAM cache only
+     * after readback resolution/dirty-patch merge. The cache decomposes it into
+     * aligned content-addressed tiles, skips transparent tiles and reuses
+     * unchanged tile textures across frames. */
+    const bool gpu_ram_stored = title_gpu_frame_cache_store_image(
+        job.key.toString().toStdString(), image,
+        static_cast<uint32_t>(std::max(1, job.key.width)),
+        static_cast<uint32_t>(std::max(1, job.key.height)));
+
+    {
+        QMutexLocker lock(&dirty_tiles_mutex_);
+        dirty_tiles_by_frame_.remove(tileStateKey(job.key.title_id, job.key.frame));
+    }
+
     std::unique_lock<std::recursive_mutex> publication_lock(publication_mutex_);
     if (!jobIsCurrent(job)) {
         publication_lock.unlock();
+        title_gpu_frame_cache_remove(job.key.toString().toStdString());
         abandonJobState(job, live_state_key);
-        return;
+        return false;
     }
 
-    /* A live-cue frame is valid only while at least one current cue state still
-     * references its content-addressed key. Keep the live state locked through
-     * the cache/state commit so a row refresh cannot detach the key between
-     * validation and publication. */
     std::unique_lock<std::recursive_mutex> live_publish_lock;
     QVector<QString> publish_live_states;
     if (job.live_cue) {
         live_publish_lock = std::unique_lock<std::recursive_mutex>(live_cue_mutex_);
         const QString rebound_state = liveCueStateReferencingKey(job.key, live_state_key);
         if (rebound_state.isEmpty()) {
-            OGS_LOG_DEBUG("LiveCue", QStringLiteral("Discarded obsolete completed job title=%1 row=%2 stateKey=%3 frameKey=%4")
-                                        .arg(job.key.title_id).arg(job.cue_row)
-                                        .arg(live_state_key, job.key.toString()));
-            return;
+            publication_lock.unlock();
+            title_gpu_frame_cache_remove(job.key.toString().toStdString());
+            return false;
         }
         live_state_key = rebound_state;
         job.cue_state_key = rebound_state;
         job.cue_row = live_cue_rows_.value(rebound_state, job.cue_row);
         publish_live_states.push_back(rebound_state);
-        /* One content-addressed frame may satisfy multiple steady/transition
-         * states. Update every owner at commit time; otherwise the non-owning
-         * rows can remain visually stuck at Queued (100%) even though all of
-         * their required frames are resident. */
-        for (auto it = live_cue_required_keys_.cbegin(); it != live_cue_required_keys_.cend(); ++it) {
-            if (it.key() == rebound_state || live_cue_title_ids_.value(it.key()) != job.key.title_id)
+        for (auto it = live_cue_required_keys_.cbegin();
+             it != live_cue_required_keys_.cend(); ++it) {
+            if (it.key() == rebound_state ||
+                live_cue_title_ids_.value(it.key()) != job.key.title_id)
                 continue;
-            if (std::find(it.value().cbegin(), it.value().cend(), job.key) != it.value().cend())
+            if (std::find(it.value().cbegin(), it.value().cend(), job.key) !=
+                it.value().cend())
                 publish_live_states.push_back(it.key());
         }
     }
 
-    if (image.isNull()) {
-        if (job.live_cue) {
-            for (const QString &state_key : publish_live_states) {
-                const int signal_row = live_cue_rows_.value(state_key, job.cue_row);
-                live_cue_states_[state_key] = FrameCacheState::Stale;
-                live_cue_progress_percent_[state_key] = 0;
-                live_cue_last_emit_states_.remove(state_key);
-                live_cue_last_emit_buckets_.remove(state_key);
-                if (signal_row >= 0)
-                    emit liveCueStateChanged(job.key.title_id, signal_row);
-            }
-        } else {
-            state_tracker_.setState(job.key, FrameCacheState::Stale);
-        }
-        emit diagnosticsChanged();
-        return;
-    }
+    /* The readback image is not retained by RamFrameCache. Its pixels have
+     * already been offered to the sparse GPU tile cache; the same payload now
+     * continues asynchronously to the bounded SSD compression writer. */
+    disk_cache_.enqueuePut(job.key, image);
 
-    const bool disk_stream_live_cue = job.live_cue && liveCueUseDiskStreaming();
-    /* If the canonical payload had fallen out of RAM and was restored from
-     * disk for an alias, promote the canonical key as well. Both puts retain
-     * the same implicitly-shared backing store and are charged only once. Under
-     * memory pressure, live-cue playback stays SSD-backed and keeps only the
-     * current QImage as a transient upload buffer. */
-    if (!disk_stream_live_cue && temporal_reuse && loaded_from_disk && have_temporal_canonical_key)
-        ram_cache_.put(temporal_canonical_key, image);
-    if (!disk_stream_live_cue)
-        ram_cache_.put(job.key, image);
-    if (!loaded_from_disk)
-        disk_cache_.put(job.key, image);
-    {
-        QMutexLocker lock(&temporal_dedup_mutex_);
-        if (!temporal_canonical_keys_.contains(temporal_key))
-            temporal_canonical_keys_.insert(temporal_key, job.key);
-        if (!job.realtime && !adaptive_canonical_keys_.contains(adaptive_key))
-            adaptive_canonical_keys_.insert(adaptive_key, job.key);
-        /* Bound stale content generations during long editing sessions. */
-        if (temporal_canonical_keys_.size() + adaptive_canonical_keys_.size() > 65536) {
-            temporal_canonical_keys_.clear();
-            adaptive_canonical_keys_.clear();
-        }
-    }
-    /* The editor invalidation baseline must describe the editable title, not
-     * an applied live-cue/transition variant or an OBS runtime snapshot. */
     if (!job.live_cue && !job.realtime)
         rememberVisualHash(*job.title, job.key.content_hash);
 
@@ -4265,30 +5188,32 @@ void CacheManager::renderJob(RenderQueueManager::Job job)
                     total, live_cue_done_by_key_.value(state_key, 0) + 1);
             }
             const int progress = liveCueStoredProgress(state_key);
-            /* Drop the transient owner before deriving residency. This preserves
-             * the RAM-vs-disk distinction instead of reporting CachedRam merely
-             * because the final completed frame was promoted into RAM. */
             live_cue_states_[state_key] = FrameCacheState::NotCached;
             FrameCacheState next_state = liveCueStoredState(state_key);
-            const bool manual_rebuild_active = live_cue_total_by_key_.contains(state_key) &&
-                live_cue_done_by_key_.value(state_key, 0) < live_cue_total_by_key_.value(state_key);
+            const bool manual_rebuild_active =
+                live_cue_total_by_key_.contains(state_key) &&
+                live_cue_done_by_key_.value(state_key, 0) <
+                    live_cue_total_by_key_.value(state_key);
             if (manual_rebuild_active) {
                 next_state = FrameCacheState::Rendering;
             } else if (live_cue_total_by_key_.contains(state_key)) {
                 live_cue_total_by_key_.remove(state_key);
                 live_cue_done_by_key_.remove(state_key);
-                /* Re-evaluate now that the temporary generation overlay has
-                 * ended, so the final state accurately reports RAM vs disk. */
                 next_state = liveCueStoredState(state_key);
             }
             live_cue_states_[state_key] = next_state;
             live_cue_progress_percent_[state_key] = progress;
-            if (signal_row >= 0 && shouldEmitLiveCueUpdate(state_key, next_state, progress))
+            if (signal_row >= 0 &&
+                shouldEmitLiveCueUpdate(state_key, next_state, progress))
                 emit liveCueStateChanged(job.key.title_id, signal_row);
         }
     } else {
-        state_tracker_.setState(job.key, FrameCacheState::CachedRam);
+        state_tracker_.setState(
+            job.key, gpu_ram_stored
+                ? FrameCacheState::CachedRam
+                : FrameCacheState::CachedDisk);
         emit frameReady(job.key.title_id, job.key.frame);
     }
     emit diagnosticsChanged();
+    return true;
 }

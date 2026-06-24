@@ -1,0 +1,54 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 texelSize;
+uniform float strength;
+uniform float opacity;
+
+sampler_state textureSampler {
+    Filter   = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertDataIn {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertDataOut VSDefault(VertDataIn v_in)
+{
+    VertDataOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float4 PSEmboss(VertDataOut v_in) : TARGET
+{
+    float4 base = image.Sample(textureSampler, v_in.uv);
+    if (base.a <= 0.0)
+        return base;
+
+    float4 low = image.Sample(textureSampler, v_in.uv - texelSize);
+    float4 high = image.Sample(textureSampler, v_in.uv + texelSize);
+    float low_luma = dot(low.rgb, float3(0.2126, 0.7090, 0.0784));
+    float high_luma = dot(high.rgb, float3(0.2126, 0.7090, 0.0784));
+    float emboss = 0.5 + (high_luma - low_luma) * strength;
+    float3 straight = base.rgb / base.a;
+    straight = lerp(straight, straight * emboss, clamp(opacity, 0.0, 1.0));
+    return float4(clamp(straight, 0.0, 1.0) * base.a, base.a);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSEmboss(v_in);
+    }
+}

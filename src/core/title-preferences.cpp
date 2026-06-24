@@ -1,6 +1,7 @@
 #include "title-preferences.h"
 
 #include "title-data.h"
+#include "system-memory.h"
 
 #include <QSettings>
 #include <QDir>
@@ -20,7 +21,6 @@ constexpr const char *kLoggingGroup = "Logging";
 constexpr const char *kTimelineColorGroup = "TimelineColors";
 constexpr const char *kAppearanceGroup = "Appearance";
 constexpr const char *kCanvasHelperColorGroup = "CanvasHelperColors";
-constexpr const char *kUseGpuKey = "useGpu";
 constexpr const char *kCacheEnabledKey = "cacheEnabled";
 constexpr const char *kCacheRamLimitMbKey = "cacheRamLimitMb";
 constexpr const char *kCacheDiskLocationKey = "cacheDiskLocation";
@@ -28,6 +28,7 @@ constexpr const char *kClearCacheOnExitKey = "clearCacheOnExit";
 constexpr const char *kLoggingEnabledKey = "enabled";
 constexpr const char *kLoggingLevelKey = "level";
 constexpr const char *kLoggingMirrorToObsKey = "mirrorToObs";
+constexpr const char *kCachePlaybackLoggingKey = "cachePlayback";
 constexpr const char *kLoggingFilePathKey = "filePath";
 constexpr const char *kSceneMaskColorKey = "sceneMaskColor";
 std::atomic_bool g_gpu_available{true};
@@ -93,26 +94,6 @@ QString canvas_helper_color_key(TitlePreferences::CanvasHelperColorRole role)
 
 namespace TitlePreferences {
 
-bool use_gpu()
-{
-    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
-    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
-    const bool enabled = settings.value(QString::fromUtf8(kUseGpuKey), false).toBool();
-    settings.endGroup();
-    return enabled;
-}
-
-void set_use_gpu(bool enabled)
-{
-    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
-    settings.beginGroup(QString::fromUtf8(kSettingsGroup));
-    settings.setValue(QString::fromUtf8(kUseGpuKey), enabled);
-    settings.endGroup();
-    settings.sync();
-    if (enabled)
-        set_gpu_available(true);
-}
-
 bool cache_enabled()
 {
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
@@ -138,14 +119,15 @@ int cache_ram_limit_mb()
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
     const int limit = settings.value(QString::fromUtf8(kCacheRamLimitMbKey), 512).toInt();
     settings.endGroup();
-    return std::clamp(limit, 64, 32768);
+    return gsp::system_memory::clamp_cache_ram_mb(limit);
 }
 
 void set_cache_ram_limit_mb(int megabytes)
 {
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
-    settings.setValue(QString::fromUtf8(kCacheRamLimitMbKey), std::clamp(megabytes, 64, 32768));
+    settings.setValue(QString::fromUtf8(kCacheRamLimitMbKey),
+                      gsp::system_memory::clamp_cache_ram_mb(megabytes));
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);
@@ -246,6 +228,25 @@ void set_logging_mirror_to_obs(bool enabled)
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kLoggingGroup));
     settings.setValue(QString::fromUtf8(kLoggingMirrorToObsKey), enabled);
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
+bool cache_playback_logging_enabled()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    const bool enabled = settings.value(QString::fromUtf8(kCachePlaybackLoggingKey), false).toBool();
+    settings.endGroup();
+    return enabled;
+}
+
+void set_cache_playback_logging_enabled(bool enabled)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    settings.setValue(QString::fromUtf8(kCachePlaybackLoggingKey), enabled);
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);

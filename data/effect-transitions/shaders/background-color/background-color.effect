@@ -1,0 +1,93 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float4 effectColor;
+uniform float opacity;
+uniform float2 textureSize; // logical raster size, independent of texture resolution
+uniform float4 backgroundRect; // x, y, width, height in logical raster coordinates
+uniform float4 cornerRadii;   // TL, TR, BR, BL
+uniform float4 strokeColor;
+uniform float strokeWidth;
+uniform float strokeOpacity;
+
+sampler_state textureSampler {
+    Filter   = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertDataIn {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertDataOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertDataOut VSDefault(VertDataIn v_in)
+{
+    VertDataOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float rounded_rect_distance(float2 p, float2 rect_min, float2 rect_size, float4 radii)
+{
+    float2 local = p - rect_min;
+    float2 center = rect_size * 0.5;
+    float2 q = local - center;
+    bool right = q.x >= 0.0;
+    bool bottom = q.y >= 0.0;
+    float radius = bottom ? (right ? radii.z : radii.w)
+                          : (right ? radii.y : radii.x);
+    radius = clamp(radius, 0.0, 0.5 * min(rect_size.x, rect_size.y));
+    float2 d = abs(q) - (center - radius);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - radius;
+}
+
+float4 premultiply(float4 c, float opacity_scale)
+{
+    float a = clamp(c.a * opacity_scale, 0.0, 1.0);
+    return float4(c.rgb * a, a);
+}
+
+float4 over(float4 front, float4 back)
+{
+    return float4(front.rgb + back.rgb * (1.0 - front.a),
+                  front.a + back.a * (1.0 - front.a));
+}
+
+float4 PSBackgroundColor(VertDataOut v_in) : TARGET
+{
+    float4 base = image.Sample(textureSampler, v_in.uv);
+    float2 p = v_in.uv * textureSize;
+    float2 rect_min = backgroundRect.xy;
+    float2 rect_size = max(backgroundRect.zw, float2(1.0, 1.0));
+    float dist = rounded_rect_distance(p, rect_min, rect_size, cornerRadii);
+    float aa = 1.0;
+    float fill_coverage = 1.0 - smoothstep(-aa, aa, dist);
+
+    float4 bg = premultiply(effectColor, opacity * fill_coverage);
+    float4 under = bg;
+
+    if (strokeWidth > 0.001 && strokeOpacity > 0.001) {
+        float inner_dist = dist + strokeWidth;
+        float inner_coverage = 1.0 - smoothstep(-aa, aa, inner_dist);
+        float stroke_coverage = clamp(fill_coverage - inner_coverage, 0.0, 1.0);
+        float4 stroke = premultiply(strokeColor, strokeOpacity * stroke_coverage);
+        under = over(stroke, under);
+    }
+
+    return over(base, under);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSBackgroundColor(v_in);
+    }
+}

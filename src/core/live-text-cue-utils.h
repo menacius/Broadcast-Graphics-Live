@@ -1,0 +1,150 @@
+#pragma once
+
+#include "title-data.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+/* Shared live-text cue structure contract. Dock editing, OBS hotkeys, source
+ * playback and cache generation must agree on exposed-layer order and row
+ * remapping; local copies of these helpers previously made that easy to break. */
+namespace gsp::live_text {
+
+inline bool is_exposed_cue_layer(const std::shared_ptr<Layer> &layer)
+{
+    return layer && layer->expose_text &&
+           (layer->type == LayerType::Text ||
+            layer->type == LayerType::Ticker ||
+            layer->type == LayerType::Image);
+}
+
+inline std::vector<std::shared_ptr<Layer>> order_exposed_text_layers(
+    const std::vector<std::shared_ptr<Layer>> &exposed,
+    const std::vector<std::string> &column_order)
+{
+    if (column_order.empty())
+        return exposed;
+
+    std::vector<std::shared_ptr<Layer>> ordered;
+    ordered.reserve(exposed.size());
+    for (const auto &layer_id : column_order) {
+        const auto it = std::find_if(
+            exposed.begin(), exposed.end(),
+            [&](const std::shared_ptr<Layer> &layer) {
+                return layer && layer->id == layer_id;
+            });
+        if (it != exposed.end())
+            ordered.push_back(*it);
+    }
+    for (const auto &layer : exposed) {
+        if (!layer)
+            continue;
+        const auto it = std::find_if(
+            ordered.begin(), ordered.end(),
+            [&](const std::shared_ptr<Layer> &ordered_layer) {
+                return ordered_layer && ordered_layer->id == layer->id;
+            });
+        if (it == ordered.end())
+            ordered.push_back(layer);
+    }
+    return ordered;
+}
+
+inline std::vector<std::shared_ptr<Layer>> exposed_text_layers(
+    const Title &title)
+{
+    std::vector<std::shared_ptr<Layer>> exposed;
+    for (const auto &layer : title.layers) {
+        if (is_exposed_cue_layer(layer))
+            exposed.push_back(layer);
+    }
+    return order_exposed_text_layers(exposed, title.live_text_column_order);
+}
+
+inline std::vector<std::shared_ptr<Layer>> exposed_text_layers(
+    const std::shared_ptr<Title> &title)
+{
+    return title ? exposed_text_layers(*title)
+                 : std::vector<std::shared_ptr<Layer>>{};
+}
+
+inline std::string live_cue_layer_value(
+    const std::shared_ptr<Layer> &layer)
+{
+    if (!layer)
+        return {};
+    return layer->type == LayerType::Image
+        ? layer->image_path
+        : layer->text_content;
+}
+
+inline void normalize_live_text_rows(
+    const std::shared_ptr<Title> &title,
+    const std::vector<std::shared_ptr<Layer>> &exposed)
+{
+    if (!title || exposed.empty())
+        return;
+
+    std::vector<std::string> new_order;
+    new_order.reserve(exposed.size());
+    for (const auto &layer : exposed)
+        new_order.push_back(layer ? layer->id : std::string());
+
+    const std::vector<std::string> old_order = title->live_text_column_order;
+    if (!old_order.empty() && old_order != new_order) {
+        for (auto &row : title->live_text_rows) {
+            std::vector<std::string> remapped;
+            remapped.reserve(exposed.size());
+            for (std::size_t new_col = 0; new_col < new_order.size(); ++new_col) {
+                const auto it = std::find(old_order.begin(), old_order.end(),
+                                          new_order[new_col]);
+                if (it != old_order.end()) {
+                    const std::size_t old_col = static_cast<std::size_t>(
+                        std::distance(old_order.begin(), it));
+                    remapped.push_back(old_col < row.size()
+                        ? row[old_col]
+                        : live_cue_layer_value(exposed[new_col]));
+                } else {
+                    remapped.push_back(live_cue_layer_value(exposed[new_col]));
+                }
+            }
+            row = std::move(remapped);
+        }
+    }
+    title->live_text_column_order = std::move(new_order);
+
+    if (title->live_text_rows.empty()) {
+        std::vector<std::string> row;
+        row.reserve(exposed.size());
+        for (const auto &layer : exposed)
+            row.push_back(live_cue_layer_value(layer));
+        title->live_text_rows.push_back(std::move(row));
+    }
+    for (auto &row : title->live_text_rows) {
+        const std::size_t old_size = row.size();
+        row.resize(exposed.size());
+        for (std::size_t i = old_size; i < exposed.size(); ++i)
+            row[i] = live_cue_layer_value(exposed[i]);
+    }
+    for (std::size_t col = 0; col < exposed.size(); ++col) {
+        if (!exposed[col] || !exposed[col]->exposed_single_value ||
+            title->live_text_rows.empty())
+            continue;
+        const std::string shared_value =
+            col < title->live_text_rows.front().size()
+                ? title->live_text_rows.front()[col]
+                : live_cue_layer_value(exposed[col]);
+        for (auto &row : title->live_text_rows) {
+            if (col < row.size())
+                row[col] = shared_value;
+        }
+    }
+    ensure_live_text_row_ids(*title);
+}
+
+} // namespace gsp::live_text

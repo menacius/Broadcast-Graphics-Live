@@ -19,6 +19,7 @@ ForegroundBackgroundSwatch::ForegroundBackgroundSwatch(QWidget *parent) : QWidge
 void ForegroundBackgroundSwatch::set_foreground_color(const QColor &color)
 {
     if (!color.isValid()) return;
+    foreground_mixed_ = false;
     foreground_color_ = color;
     foreground_fill_.type = 0;
     foreground_fill_.color = color;
@@ -30,6 +31,7 @@ void ForegroundBackgroundSwatch::set_foreground_color(const QColor &color)
 void ForegroundBackgroundSwatch::set_background_color(const QColor &color)
 {
     if (!color.isValid()) return;
+    background_mixed_ = false;
     background_color_ = color;
     background_fill_.type = 0;
     background_fill_.color = color;
@@ -41,6 +43,7 @@ void ForegroundBackgroundSwatch::set_background_color(const QColor &color)
 void ForegroundBackgroundSwatch::set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type)
 {
     if (!start.isValid() || !end.isValid()) return;
+    foreground_mixed_ = false;
     foreground_color_ = start;
     foreground_fill_.type = 1;
     foreground_fill_.start = start;
@@ -52,11 +55,26 @@ void ForegroundBackgroundSwatch::set_foreground_gradient(const QColor &start, co
 void ForegroundBackgroundSwatch::set_background_gradient(const QColor &start, const QColor &end, int gradient_type)
 {
     if (!start.isValid() || !end.isValid()) return;
+    background_mixed_ = false;
     background_color_ = start;
     background_fill_.type = 1;
     background_fill_.start = start;
     background_fill_.end = end;
     background_fill_.gradient_type = gradient_type;
+    update();
+}
+
+void ForegroundBackgroundSwatch::set_foreground_mixed(bool mixed)
+{
+    if (foreground_mixed_ == mixed) return;
+    foreground_mixed_ = mixed;
+    update();
+}
+
+void ForegroundBackgroundSwatch::set_background_mixed(bool mixed)
+{
+    if (background_mixed_ == mixed) return;
+    background_mixed_ = mixed;
     update();
 }
 
@@ -83,7 +101,7 @@ void ForegroundBackgroundSwatch::paintEvent(QPaintEvent *)
     const QColor border = pal.color(QPalette::Mid);
     const QColor text = pal.color(QPalette::WindowText);
 
-    auto draw_swatch = [&](const QRect &r, const SwatchFill &fill) {
+    auto draw_swatch = [&](const QRect &r, const SwatchFill &fill, bool mixed) {
         const QRect inner = r.adjusted(1, 1, -1, -1);
         if (fill.type == 1) {
             QBrush brush;
@@ -128,10 +146,19 @@ void ForegroundBackgroundSwatch::paintEvent(QPaintEvent *)
             p.setPen(QPen(text, 1));
             p.drawLine(r.topLeft() + QPoint(2, 2), r.bottomRight() - QPoint(2, 2));
         }
+        if (mixed) {
+            p.fillRect(inner, QColor(24, 24, 24, 215));
+            QFont mixed_font = p.font();
+            mixed_font.setPixelSize(14);
+            mixed_font.setBold(true);
+            p.setFont(mixed_font);
+            p.setPen(QColor(QStringLiteral("#f2c94c")));
+            p.drawText(inner, Qt::AlignCenter, obsgs_tr("OBSTitles.M"));
+        }
     };
 
-    draw_swatch(background_rect(), background_fill_);
-    draw_swatch(foreground_rect(), foreground_fill_);
+    draw_swatch(background_rect(), background_fill_, background_mixed_);
+    draw_swatch(foreground_rect(), foreground_fill_, foreground_mixed_);
 
     p.setPen(QPen(text, 1));
     QFont f = p.font();
@@ -323,6 +350,11 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
 
 void ToolsSidebar::set_selected_shape(ShapeType shape_type)
 {
+    /* The old line-shaped primitive is intentionally not a selectable shape.
+     * Keep a defensive normalization for stale shortcuts/settings until the
+     * dedicated line tool is introduced. */
+    if (shape_type == ShapeType::Line || shape_type == ShapeType::Path)
+        shape_type = ShapeType::Rectangle;
     selected_shape_ = shape_type;
     const QIcon icon = shape_tool_icon(shape_type);
     if (shape_button_) {
@@ -350,7 +382,6 @@ void ToolsSidebar::rebuild_shape_menu()
         ShapeType::Star,
         ShapeType::Polygon,
         ShapeType::Diamond,
-        ShapeType::Line,
     };
     for (ShapeType shape : shapes) {
         QAction *action = shape_menu_->addAction(shape_tool_icon(shape), shape_display_name(shape));
@@ -467,4 +498,14 @@ void ToolsSidebar::set_foreground_gradient(const QColor &start, const QColor &en
 void ToolsSidebar::set_background_gradient(const QColor &start, const QColor &end, int gradient_type)
 {
     if (foreground_background_swatch_) foreground_background_swatch_->set_background_gradient(start, end, gradient_type);
+}
+
+void ToolsSidebar::set_foreground_mixed(bool mixed)
+{
+    if (foreground_background_swatch_) foreground_background_swatch_->set_foreground_mixed(mixed);
+}
+
+void ToolsSidebar::set_background_mixed(bool mixed)
+{
+    if (foreground_background_swatch_) foreground_background_swatch_->set_background_mixed(mixed);
 }

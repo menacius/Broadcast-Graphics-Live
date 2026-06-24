@@ -173,37 +173,37 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
     inline_text_editor_->setLineWrapColumnOrWidth(wrap_width_px);
     inline_text_editor_->setWordWrapMode(option.wrapMode());
 
-    QTextBlockFormat block_format;
-    block_format.setAlignment(align);
-    block_format.setLineHeight(0.0, QTextBlockFormat::SingleHeight);
-    block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
-    block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
-    block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
-    block_format.setTopMargin(std::max(0.0, eval_paragraph_space_before(layer, local_time)) * visual_scale);
-    block_format.setBottomMargin(std::max(0.0, eval_paragraph_space_after(layer, local_time)) * visual_scale);
+    const RichTextDocument editor_model =
+        rich_text_document_for_editor_time(layer, local_time);
 
-    const bool has_structured_rich_text = true;
-    QTextCharFormat char_format;
-    char_format.setFont(font);
-    RichTextCharFormat layer_format = layer_char_format_for_editor(layer);
-    store_rich_text_format_properties(char_format, layer_format);
+    RichTextCharFormat layer_format = rich_text_effective_typing_format(editor_model);
+    QTextCharFormat char_format = qtext_format_from_rich_text_format(layer_format, visual_scale);
+    apply_editor_rich_text_baseline_delta(char_format, layer_format,
+                                          editor_model.default_format.baseline_shift,
+                                          visual_scale);
+    char_format.setProperty(
+        RichTextPropManualMask,
+        (uint)(editor_model.has_typing_format
+                   ? editor_model.typing_format_mask & RichTextCharAll
+                   : 0));
     QColor editor_text_color = color_from_argb(eval_text_color(layer, local_time));
     editor_text_color.setAlpha(0);
     char_format.setForeground(editor_text_color);
     char_format.setFontUnderline(layer.text_underline);
     char_format.setFontStrikeOut(layer.text_strikethrough);
 
-    if (layer.rich_text_html.empty()) {
-        QTextCursor format_cursor(doc);
-        format_cursor.select(QTextCursor::Document);
-        format_cursor.mergeBlockFormat(block_format);
-        if (!has_structured_rich_text)
-            format_cursor.mergeCharFormat(char_format);
-    } else {
-        QTextCursor format_cursor(doc);
-        format_cursor.select(QTextCursor::Document);
-        format_cursor.mergeCharFormat(char_format);
-    }
+    RichTextParagraphFormat paragraph_base = editor_model.default_paragraph_format;
+    paragraph_base.align_h = layer.align_h;
+    paragraph_base.align_v = layer.align_v;
+    paragraph_base.indent_left = (float)eval_paragraph_indent_left(layer, local_time);
+    paragraph_base.indent_right = (float)eval_paragraph_indent_right(layer, local_time);
+    paragraph_base.indent_first_line = (float)eval_paragraph_indent_first_line(layer, local_time);
+    paragraph_base.line_spacing = layer.text_leading;
+    paragraph_base.space_before = (float)eval_paragraph_space_before(layer, local_time);
+    paragraph_base.space_after = (float)eval_paragraph_space_after(layer, local_time);
+    paragraph_base.hyphenate = layer.paragraph_hyphenate;
+    apply_rich_text_paragraph_blocks_to_qtext_document(doc, editor_model,
+                                                        paragraph_base, visual_scale);
     apply_inline_text_vertical_distribute(*doc, layer, text_rect, visual_scale);
     /*
      * Do not call mergeCurrentCharFormat() while the saved cursor owns a
@@ -229,8 +229,9 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     const std::string plain = inline_text_editor_->toPlainText().toStdString();
     if (plain == layer->text_content && editor_doc && !editor_doc->isModified()) {
         const QTextCursor cursor = inline_text_editor_->textCursor();
-        RichTextSelection selection{(size_t)std::max(0, cursor.anchor()),
-                                    (size_t)std::max(0, cursor.position())};
+        const QString qplain = editor_doc ? editor_doc->toPlainText() : QString();
+        RichTextSelection selection{rich_byte_offset_from_qtext_position(qplain, std::max(0, cursor.anchor())),
+                                    rich_byte_offset_from_qtext_position(qplain, std::max(0, cursor.position()))};
         const size_t text_len = layer->rich_text.plain_text.size();
         selection.anchor = std::min(selection.anchor, text_len);
         selection.head = std::min(selection.head, text_len);
@@ -243,10 +244,15 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
             layer->rich_text.typing_format = rich_text_format_from_qtext_format(cursor.charFormat(),
                                                                                layer->rich_text.default_format,
                                                                                visual_scale);
+            layer->rich_text.typing_format_mask = cursor.charFormat().hasProperty(RichTextPropManualMask)
+                ? (uint32_t)cursor.charFormat().property(RichTextPropManualMask).toUInt() & RichTextCharAll
+                : rich_text_char_format_difference_mask(layer->rich_text.typing_format,
+                                                        layer->rich_text.default_format);
             layer->rich_text.has_typing_format = true;
             rich_text_document_sync_layer_mirrors(*layer);
         } else {
             layer->rich_text.has_typing_format = false;
+            layer->rich_text.typing_format_mask = 0;
         }
         return selection_changed;
     }
@@ -267,7 +273,13 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
                          std::abs(layer->rich_text.default_paragraph_format.space_after - next_model.default_paragraph_format.space_after) >= 0.0001f ||
                          layer->rich_text.default_paragraph_format.hyphenate != next_model.default_paragraph_format.hyphenate ||
                          layer->rich_text.has_typing_format != next_model.has_typing_format ||
-                         (layer->rich_text.has_typing_format && !rich_text_char_formats_equal(layer->rich_text.typing_format, next_model.typing_format)) ||
+                         layer->rich_text.typing_format_mask != next_model.typing_format_mask ||
+                         (layer->rich_text.has_typing_format &&
+                          rich_text_char_format_difference_mask(layer->rich_text.typing_format,
+                                                               next_model.typing_format,
+                                                               layer->rich_text.typing_format_mask |
+                                                                   next_model.typing_format_mask) != 0) ||
+                         !rich_text_blocks_equal(layer->rich_text.blocks, next_model.blocks) ||
                          !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
     if (!changed) {
         if (selection_changed)
@@ -294,7 +306,6 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
     layer->rich_text.auto_default_style_cached_format = auto_default_style_cached_format;
     layer->rich_text.auto_default_style_cached_mask = auto_default_style_cached_mask;
     layer->rich_text.auto_style_rules = auto_style_rules;
-    layer->rich_text_html.clear();
     rich_text_document_sync_layer_mirrors(*layer);
     if (editor_doc)
         editor_doc->setModified(false);
@@ -312,10 +323,16 @@ void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
     const std::string layer_id = inline_text_layer_id_;
     const bool model_changed = sync_inline_text_layer(mark_dirty);
 
+    bool geometry_changed = false;
     if (auto layer = title_ ? title_->find_layer(layer_id) : nullptr) {
-        if ((layer->text_box_width_to_text || layer->text_box_height_to_text) && inline_text_editor_) {
+        if ((layer->text_box_width_to_text || layer->text_box_height_to_text) &&
+            inline_text_editor_) {
+            /* Preserve the pre-12D point-text editing contract. The live
+             * QTextDocument may grow beyond the current box while typing; the
+             * box then follows those unconstrained metrics. */
             QTextDocument *doc = inline_text_editor_->document();
-            const double visual_scale = std::max(0.0001, inline_text_visual_scale(*layer));
+            const double visual_scale =
+                std::max(0.0001, inline_text_visual_scale(*layer));
             QSizeF doc_size;
             if (doc) {
                 if (auto *layout = doc->documentLayout())
@@ -324,35 +341,52 @@ void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
                     doc_size = doc->size();
             }
             QFontMetricsF metrics(inline_text_editor_->currentFont());
-            const double min_w = std::max(24.0, metrics.horizontalAdvance(obsgs_tr("OBSTitles.M")) / visual_scale);
-            const double min_h = std::max(12.0, metrics.lineSpacing() / visual_scale);
+            const double min_w = std::max(
+                24.0, metrics.horizontalAdvance(obsgs_tr("OBSTitles.M")) /
+                          visual_scale);
+            const double min_h =
+                std::max(12.0, metrics.lineSpacing() / visual_scale);
             if (layer->text_box_width_to_text) {
-                const double ideal = doc ? std::max(doc->idealWidth(), doc_size.width()) : 0.0;
-                const double next_w = std::clamp(ideal / visual_scale + 2.0, min_w, (double)std::max(1.0f, layer->max_text_box_width));
+                const double ideal = doc
+                    ? std::max(doc->idealWidth(), doc_size.width())
+                    : 0.0;
+                const double next_w = std::clamp(
+                    ideal / visual_scale + 2.0, min_w,
+                    static_cast<double>(std::max(
+                        1.0f, layer->max_text_box_width)));
                 if (std::abs(layer->rect_width - next_w) > 0.5) {
-                    layer->rect_width = (float)next_w;
+                    layer->rect_width = static_cast<float>(next_w);
                     layer->size.static_value.x = next_w;
-                    dirty_ = true;
+                    geometry_changed = true;
                 }
             }
             if (layer->text_box_height_to_text) {
-                const double next_h = std::clamp(doc_size.height() / visual_scale + 2.0, min_h, (double)std::max(1.0f, layer->max_text_box_height));
+                const double next_h = std::clamp(
+                    doc_size.height() / visual_scale + 2.0, min_h,
+                    static_cast<double>(std::max(
+                        1.0f, layer->max_text_box_height)));
                 if (std::abs(layer->rect_height - next_h) > 0.5) {
-                    layer->rect_height = (float)next_h;
+                    layer->rect_height = static_cast<float>(next_h);
                     layer->size.static_value.y = next_h;
-                    dirty_ = true;
+                    geometry_changed = true;
                 }
             }
         }
     }
 
-    if (mark_dirty || model_changed)
+    if (mark_dirty || model_changed || geometry_changed) {
         dirty_ = true;
+        gpu_model_dirty_ = true;
+    }
 
     position_text_editor();
 
+    /* Preserve the pre-12D inline-edit presentation semantics. Text edits and
+     * the delayed document-size notification must publish the expanded box in
+     * the same edit transaction; cursor/selection-only changes still bypass
+     * this function and remain overlay-only. */
     if (dirty_)
-        render_to_pixmap();
+        render_to_frame();
 
     if (inline_text_editor_) {
         const QRect editor_rect = inline_text_editor_->geometry().adjusted(-4, -4, 4, 4);
@@ -404,23 +438,21 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
                                 ? QSizeF(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX)
                                 : QSizeF(wrap_width_px, QWIDGETSIZE_MAX));
 
-    {
-        Layer canonical = layer;
-        rich_text_document_ensure_canonical(canonical);
-        populate_qtext_document_from_rich_text(&measure_doc, canonical.rich_text, visual_scale);
-    }
-
-    QTextBlockFormat block_format;
-    block_format.setAlignment(align);
-    block_format.setLineHeight(0.0, QTextBlockFormat::SingleHeight);
-    block_format.setLeftMargin(std::max(0.0, eval_paragraph_indent_left(layer, local_time)) * visual_scale);
-    block_format.setRightMargin(std::max(0.0, eval_paragraph_indent_right(layer, local_time)) * visual_scale);
-    block_format.setTextIndent(eval_paragraph_indent_first_line(layer, local_time) * visual_scale);
-    block_format.setTopMargin(std::max(0.0, eval_paragraph_space_before(layer, local_time)) * visual_scale);
-    block_format.setBottomMargin(std::max(0.0, eval_paragraph_space_after(layer, local_time)) * visual_scale);
-    QTextCursor format_cursor(&measure_doc);
-    format_cursor.select(QTextCursor::Document);
-    format_cursor.mergeBlockFormat(block_format);
+    const RichTextDocument editor_model =
+        rich_text_document_for_editor_time(layer, local_time);
+    populate_qtext_document_from_rich_text(&measure_doc, editor_model, visual_scale);
+    RichTextParagraphFormat paragraph_base = editor_model.default_paragraph_format;
+    paragraph_base.align_h = layer.align_h;
+    paragraph_base.align_v = layer.align_v;
+    paragraph_base.indent_left = (float)eval_paragraph_indent_left(layer, local_time);
+    paragraph_base.indent_right = (float)eval_paragraph_indent_right(layer, local_time);
+    paragraph_base.indent_first_line = (float)eval_paragraph_indent_first_line(layer, local_time);
+    paragraph_base.line_spacing = layer.text_leading;
+    paragraph_base.space_before = (float)eval_paragraph_space_before(layer, local_time);
+    paragraph_base.space_after = (float)eval_paragraph_space_after(layer, local_time);
+    paragraph_base.hyphenate = layer.paragraph_hyphenate;
+    apply_rich_text_paragraph_blocks_to_qtext_document(&measure_doc, editor_model,
+                                                        paragraph_base, visual_scale);
     apply_inline_text_vertical_distribute(measure_doc, layer, text_rect, visual_scale);
 
     QSizeF doc_size;
@@ -455,6 +487,84 @@ QRectF CanvasPreview::inline_text_document_local_rect(const Layer &layer) const
     return QRectF(x, y, std::max(1.0, doc_width), std::max(1.0, doc_height));
 }
 
+
+std::vector<QPolygonF> CanvasPreview::inline_text_selection_view_polygons() const
+{
+    std::vector<QPolygonF> polygons;
+    if (!title_ || inline_text_layer_id_.empty() || !inline_text_editor_ ||
+        !inline_text_editor_->isVisible())
+        return polygons;
+    const auto layer = title_->find_layer(inline_text_layer_id_);
+    if (!layer || layer->rich_text.selection.anchor ==
+                      layer->rich_text.selection.head)
+        return polygons;
+
+    const QRectF text_rect = text_rect_for_style(layer_local_rect(*layer), *layer);
+    const double local_time = std::max(0.0, playhead_ - layer->in_time);
+    const ImmutableTextLayout layout = editor_text_layout_for_metrics(
+        *layer, local_time, text_rect.width(), layer->text_overflow_mode,
+        text_rect.height());
+    if (!layout || !layout->valid)
+        return polygons;
+
+    const size_t start = std::min(layer->rich_text.selection.anchor,
+                                  layer->rich_text.selection.head);
+    const size_t end = std::max(layer->rich_text.selection.anchor,
+                                layer->rich_text.selection.head);
+    for (const TextLayoutRect &geometry :
+         text_layout_selection_rects(*layout, start, end)) {
+        QRectF rect(text_rect.x() + geometry.x,
+                    text_rect.y() + geometry.y,
+                    geometry.width, geometry.height);
+        if (!rect.isValid() || rect.isEmpty())
+            continue;
+        QPolygonF polygon;
+        polygon << canvas_to_view(layer_to_canvas(*layer, rect.topLeft()))
+                << canvas_to_view(layer_to_canvas(*layer, rect.topRight()))
+                << canvas_to_view(layer_to_canvas(*layer, rect.bottomRight()))
+                << canvas_to_view(layer_to_canvas(*layer, rect.bottomLeft()));
+        polygons.push_back(std::move(polygon));
+    }
+    return polygons;
+}
+
+bool CanvasPreview::inline_text_caret_view_polygon(QPolygonF &polygon) const
+{
+    polygon.clear();
+    if (!title_ || inline_text_layer_id_.empty() || !inline_text_editor_ ||
+        !inline_text_editor_->isVisible())
+        return false;
+    const auto layer = title_->find_layer(inline_text_layer_id_);
+    if (!layer || layer->rich_text.selection.anchor !=
+                      layer->rich_text.selection.head)
+        return false;
+
+    const QRectF text_rect = text_rect_for_style(layer_local_rect(*layer), *layer);
+    const double local_time = std::max(0.0, playhead_ - layer->in_time);
+    const ImmutableTextLayout layout = editor_text_layout_for_metrics(
+        *layer, local_time, text_rect.width(), layer->text_overflow_mode,
+        text_rect.height());
+    if (!layout || !layout->valid)
+        return false;
+
+    TextLayoutRect geometry;
+    const float local_caret_width = static_cast<float>(
+        std::max(0.75, 1.5 / std::max(0.01, view_scale())));
+    if (!text_layout_caret_rect(*layout, layer->rich_text.selection.head,
+                                local_caret_width, geometry))
+        return false;
+    QRectF rect(text_rect.x() + geometry.x,
+                text_rect.y() + geometry.y,
+                geometry.width, geometry.height);
+    if (!rect.isValid() || rect.isEmpty())
+        return false;
+    polygon << canvas_to_view(layer_to_canvas(*layer, rect.topLeft()))
+            << canvas_to_view(layer_to_canvas(*layer, rect.topRight()))
+            << canvas_to_view(layer_to_canvas(*layer, rect.bottomRight()))
+            << canvas_to_view(layer_to_canvas(*layer, rect.bottomLeft()));
+    return true;
+}
+
 void CanvasPreview::position_text_editor()
 {
     if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_) return;
@@ -478,15 +588,15 @@ void CanvasPreview::position_text_editor()
                                         : QString::fromStdString(layer->text_content);
         const bool scale_changed = std::abs(inline_text_last_visual_scale_ - visual_scale) > 0.001;
         const bool text_changed_externally = inline_text_editor_->toPlainText() != layer_plain;
-        /* Auto styling changes can alter the formatted QTextDocument without
-         * changing the plain text. Rebuild the editor document whenever auto
-         * styling is enabled so the canvas preview reflects rule/default-style
-         * edits immediately. */
-        const bool auto_style_may_have_changed = layer->rich_text.auto_style_enabled;
-        if (scale_changed || text_changed_externally || auto_style_may_have_changed) {
+        /* Formatting changes are pushed explicitly from the canonical model.
+         * Rebuilding on every position pass destroyed active mouse selections. */
+        if (scale_changed || text_changed_externally) {
             {
-                rich_text_document_ensure_canonical(*layer);
-                populate_qtext_document_from_rich_text(inline_text_editor_->document(), layer->rich_text, visual_scale);
+                const double local_time = std::max(0.0, playhead_ - layer->in_time);
+                const RichTextDocument editor_model =
+                    rich_text_document_for_editor_time(*layer, local_time);
+                populate_qtext_document_from_rich_text(inline_text_editor_->document(),
+                                                       editor_model, visual_scale);
             }
             inline_text_last_visual_scale_ = visual_scale;
             QTextCursor restored(inline_text_editor_->document());
@@ -524,15 +634,21 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
         commit_text_edit(true);
 
     inline_text_layer_id_ = layer->id;
+    inline_text_suspended_for_gradient_ = false;
     rich_text_document_ensure_canonical(*layer);
     updating_inline_text_editor_ = true;
     QSignalBlocker blocker(inline_text_editor_);
     configure_inline_text_editor(*layer);
     const double visual_scale = inline_text_visual_scale(*layer);
-    rich_text_document_ensure_canonical(*layer);
-    populate_qtext_document_from_rich_text(inline_text_editor_->document(), layer->rich_text, visual_scale);
+    const double local_time = std::max(0.0, playhead_ - layer->in_time);
+    const RichTextDocument editor_model =
+        rich_text_document_for_editor_time(*layer, local_time);
+    populate_qtext_document_from_rich_text(inline_text_editor_->document(),
+                                           editor_model, visual_scale);
     if (inline_text_editor_->toPlainText().isEmpty())
-        inline_text_editor_->setCurrentCharFormat(qtext_format_from_rich_text_format(layer_char_format_for_editor(*layer), visual_scale));
+        inline_text_editor_->setCurrentCharFormat(
+            qtext_format_from_rich_text_format(
+                rich_text_effective_typing_format(editor_model), visual_scale));
     inline_text_last_visual_scale_ = visual_scale;
 
     QTextCursor cursor = inline_text_editor_->textCursor();
@@ -554,6 +670,38 @@ void CanvasPreview::begin_text_edit(const std::shared_ptr<Layer> &layer)
     update();
 }
 
+void CanvasPreview::suspend_inline_text_edit_for_gradient()
+{
+    if (!inline_text_editor_ || inline_text_layer_id_.empty() ||
+        inline_text_suspended_for_gradient_)
+        return;
+
+    /* Persist the QTextEdit cursor/selection and any pending text changes into
+     * the canonical rich-text model, but keep the edit session alive. Hiding
+     * the adapter lets the canvas receive gradient-tool mouse events without
+     * converting the selected range into an object-level edit. */
+    sync_inline_text_layer(false);
+    inline_text_suspended_for_gradient_ = true;
+    inline_text_editor_->hide();
+    invalidate_canvas_overlay_caches();
+    update();
+}
+
+void CanvasPreview::resume_inline_text_edit_after_gradient()
+{
+    if (!inline_text_editor_ || inline_text_layer_id_.empty() ||
+        !inline_text_suspended_for_gradient_)
+        return;
+
+    inline_text_suspended_for_gradient_ = false;
+    position_text_editor();
+    inline_text_editor_->show();
+    inline_text_editor_->raise();
+    inline_text_editor_->setFocus(Qt::OtherFocusReason);
+    invalidate_canvas_overlay_caches();
+    update();
+}
+
 void CanvasPreview::commit_text_edit(bool accept_changes)
 {
     if (committing_inline_text_ || !inline_text_editor_ || inline_text_layer_id_.empty()) return;
@@ -564,6 +712,7 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
         sync_inline_text_layer(true);
 
     inline_text_layer_id_.clear();
+    inline_text_suspended_for_gradient_ = false;
     inline_text_last_visual_scale_ = 0.0;
     inline_text_editor_->hide();
     {
@@ -588,31 +737,43 @@ bool CanvasPreview::eventFilter(QObject *watched, QEvent *event)
         }
         if (event->type() == QEvent::KeyPress) {
             auto *key_event = static_cast<QKeyEvent *>(event);
-            auto merge_char_format = [this](const QTextCharFormat &format) {
-                QTextCursor cursor = inline_text_editor_->textCursor();
-                cursor.mergeCharFormat(format);
-                inline_text_editor_->mergeCurrentCharFormat(format);
-                inline_text_editor_->setTextCursor(cursor);
-                refresh_inline_text_edit(true, true);
+            auto apply_canonical_char_format = [this](uint32_t mask, auto mutate) {
+                if (!title_ || inline_text_layer_id_.empty()) return;
+                sync_inline_text_layer(false);
+                auto layer = title_->find_layer(inline_text_layer_id_);
+                if (!layer) return;
+                RichTextCharFormatSummary summary = summarize_rich_text_char_format(
+                    *layer, true, std::max(0.0, playhead_ - layer->in_time));
+                RichTextCharFormat format = summary.valid
+                    ? summary.format
+                    : rich_text_effective_typing_format(layer->rich_text);
+                mutate(format, (summary.mixed & mask) != 0);
+                apply_rich_text_format_to_layer_range(*layer, format, mask, true);
+                apply_active_text_char_format(layer->id, format, mask);
+                dirty_ = true;
+                emit text_edit_changed(layer->id);
             };
             if (key_event->key() == Qt::Key_B && key_event->modifiers().testFlag(Qt::ControlModifier)) {
-                QTextCharFormat format;
-                format.setFontWeight(inline_text_editor_->fontWeight() == QFont::Bold ? QFont::Normal : QFont::Bold);
-                merge_char_format(format);
+                apply_canonical_char_format(RichTextCharBold,
+                    [](RichTextCharFormat &format, bool mixed) {
+                        format.bold = mixed ? true : !format.bold;
+                    });
                 key_event->accept();
                 return true;
             }
             if (key_event->key() == Qt::Key_I && key_event->modifiers().testFlag(Qt::ControlModifier)) {
-                QTextCharFormat format;
-                format.setFontItalic(!inline_text_editor_->fontItalic());
-                merge_char_format(format);
+                apply_canonical_char_format(RichTextCharItalic,
+                    [](RichTextCharFormat &format, bool mixed) {
+                        format.italic = mixed ? true : !format.italic;
+                    });
                 key_event->accept();
                 return true;
             }
             if (key_event->key() == Qt::Key_U && key_event->modifiers().testFlag(Qt::ControlModifier)) {
-                QTextCharFormat format;
-                format.setFontUnderline(!inline_text_editor_->fontUnderline());
-                merge_char_format(format);
+                apply_canonical_char_format(RichTextCharUnderline,
+                    [](RichTextCharFormat &format, bool mixed) {
+                        format.underline = mixed ? true : !format.underline;
+                    });
                 key_event->accept();
                 return true;
             }

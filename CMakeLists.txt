@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-graphics-studio-pro VERSION 0.8.1)
+project(obs-graphics-studio-pro VERSION 0.8.2)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -199,16 +199,16 @@ endif()
 
 if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
   message(STATUS "PkgConfig not found or missing components. Falling back to native search...")
-  
+
   find_path(CAIRO_INCLUDE_DIR NAMES cairo.h PATH_SUFFIXES cairo)
   find_library(CAIRO_LIBRARY NAMES cairo)
-  
+
   find_path(PANGO_INCLUDE_DIR NAMES pango/pango.h PATH_SUFFIXES pango-1.0)
   find_library(PANGO_LIBRARY NAMES pango-1.0)
-  
+
   find_path(PANGOCAIRO_INCLUDE_DIR NAMES pango/pangocairo.h PATH_SUFFIXES pango-1.0)
   find_library(PANGOCAIRO_LIBRARY NAMES pangocairo-1.0)
-  
+
   find_path(GLIB_INCLUDE_DIR NAMES glib.h PATH_SUFFIXES glib-2.0)
   if(GLIB_INCLUDE_DIR)
     get_filename_component(GLIB_PARENT_DIR "${GLIB_INCLUDE_DIR}" DIRECTORY)
@@ -224,13 +224,13 @@ if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
   find_library(GOBJECT_LIBRARY NAMES gobject-2.0)
   find_path(HARFBUZZ_INCLUDE_DIR NAMES hb.h PATH_SUFFIXES harfbuzz)
   find_library(HARFBUZZ_LIBRARY NAMES harfbuzz)
-  
+
   if(CAIRO_INCLUDE_DIR AND CAIRO_LIBRARY AND PANGO_INCLUDE_DIR AND PANGO_LIBRARY AND PANGOCAIRO_LIBRARY)
     set(CAIRO_FOUND TRUE)
     get_filename_component(CAIRO_PARENT_DIR "${CAIRO_INCLUDE_DIR}" DIRECTORY)
     set(CAIRO_INCLUDE_DIRS ${CAIRO_INCLUDE_DIR} ${CAIRO_PARENT_DIR})
     set(CAIRO_LIBRARIES ${CAIRO_LIBRARY})
-    
+
     set(PANGO_FOUND TRUE)
     get_filename_component(PANGO_PARENT_DIR "${PANGO_INCLUDE_DIR}" DIRECTORY)
     set(PANGO_INCLUDE_DIRS ${PANGO_INCLUDE_DIR} ${PANGO_PARENT_DIR} ${GLIB_INCLUDE_DIR} ${GLIB_CONFIG_INCLUDE_DIR})
@@ -241,7 +241,7 @@ if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
     if(HARFBUZZ_LIBRARY)
       list(APPEND PANGO_LIBRARIES ${HARFBUZZ_LIBRARY})
     endif()
-    
+
     set(PANGOCAIRO_FOUND TRUE)
     get_filename_component(PANGOCAIRO_PARENT_DIR "${PANGOCAIRO_INCLUDE_DIR}" DIRECTORY)
     set(PANGOCAIRO_INCLUDE_DIRS ${PANGOCAIRO_INCLUDE_DIR} ${PANGOCAIRO_PARENT_DIR})
@@ -263,7 +263,7 @@ if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
       INTERFACE_LINK_LIBRARIES "OBS_GSP_CAIRO;OBS_GSP_PANGO")
     list(APPEND OBS_GSP_TEXT_RENDER_TARGETS
       OBS_GSP_CAIRO OBS_GSP_PANGO OBS_GSP_PANGOCAIRO)
-    
+
     message(STATUS "Native Cairo found: ${CAIRO_LIBRARY}")
     message(STATUS "Native Pango found: ${PANGO_LIBRARY}")
     message(STATUS "Native PangoCairo found: ${PANGOCAIRO_LIBRARY}")
@@ -342,12 +342,16 @@ set(OBS_GSP_CORE_SOURCES
     src/core/title-data.cpp
     src/core/title-logger.cpp
     src/core/title-preferences.cpp
+    src/core/system-memory.cpp
 )
 set(OBS_GSP_CORE_HEADERS
+    src/core/live-text-cue-utils.h
     src/core/title-data.h
+    src/core/title-snapshot.h
     src/core/title-localization.h
     src/core/title-logger.h
     src/core/title-preferences.h
+    src/core/system-memory.h
 )
 
 set(OBS_GSP_LAYER_HEADERS
@@ -397,18 +401,23 @@ set(OBS_GSP_TRANSITION_HEADERS
 
 set(OBS_GSP_TEXT_SOURCES
     src/text/title-rich-text.cpp
+    src/text/title-text-layout.cpp
+    src/text/title-text-layout-qt.cpp
 )
 set(OBS_GSP_TEXT_HEADERS
     src/text/title-rich-text.h
+    src/text/title-text-layout.h
 )
 
 set(OBS_GSP_RENDERING_SOURCES
     src/rendering/title-effect-registry.cpp
-    src/rendering/title-gpu-filter-pipeline.cpp
+    src/rendering/title-gpu-text-renderer.cpp
+    src/rendering/title-gpu-text-sdf.cpp
 )
 set(OBS_GSP_RENDERING_HEADERS
     src/rendering/title-effect-registry.h
-    src/rendering/title-gpu-filter-pipeline.h
+    src/rendering/title-gpu-text-renderer.h
+    src/rendering/title-gpu-text-sdf.h
 )
 
 set(OBS_GSP_CACHE_SOURCES
@@ -420,7 +429,10 @@ set(OBS_GSP_CACHE_SOURCES
     src/cache/render-queue-manager.cpp
 )
 set(OBS_GSP_CACHE_HEADERS
+    src/cache/cache-frame-payload.h
+    src/cache/cache-tile-payload.h
     src/cache/cache-manager.h
+    src/cache/cache-time.h
     src/cache/title-cache-policy.h
     src/cache/prerender-dock.h
 )
@@ -617,12 +629,12 @@ add_custom_command(TARGET obs-graphics-studio-pro POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${CMAKE_SOURCE_DIR}/data/icons"
             "${OBS_TITLES_PACKAGE_DIR}/data/icons"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${CMAKE_SOURCE_DIR}/data/effects"
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf
             "${OBS_TITLES_PACKAGE_DIR}/data/effects"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${CMAKE_SOURCE_DIR}/data/effects-and-presets"
             "${OBS_TITLES_PACKAGE_DIR}/data/effects-and-presets"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_SOURCE_DIR}/data/effect-transitions"
+            "${OBS_TITLES_PACKAGE_DIR}/data/effect-transitions"
     COMMENT "Staging OBS plugin data files")
 
 if(WIN32)
@@ -687,9 +699,7 @@ install(DIRECTORY data/locale
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 install(DIRECTORY data/icons
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
-install(DIRECTORY data/effects
-        DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
-install(DIRECTORY data/effects-and-presets
+install(DIRECTORY data/effect-transitions
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────
@@ -705,6 +715,14 @@ if(OBS_GSP_BUILD_TESTS)
   target_compile_definitions(rich_text_model_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
   add_test(NAME rich_text_model_test COMMAND rich_text_model_test)
 
+  add_executable(text_layout_contract_test
+      tests/text_layout_contract_test.cpp
+      src/text/title-rich-text.cpp
+      src/text/title-text-layout.cpp)
+  target_include_directories(text_layout_contract_test PRIVATE src src/core src/layers src/effects src/timeline src/text)
+  target_compile_definitions(text_layout_contract_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
+  add_test(NAME text_layout_contract_test COMMAND text_layout_contract_test)
+
   add_executable(animation_model_test
       tests/animation_model_test.cpp
       src/timeline/animation.cpp)
@@ -715,4 +733,88 @@ if(OBS_GSP_BUILD_TESTS)
       tests/transition_model_test.cpp)
   target_include_directories(transition_model_test PRIVATE src/transitions src/timeline)
   add_test(NAME transition_model_test COMMAND transition_model_test)
+
+  add_executable(cache_time_contract_test
+      tests/cache_time_contract_test.cpp)
+  target_include_directories(cache_time_contract_test PRIVATE src/cache)
+  add_test(NAME cache_time_contract_test COMMAND cache_time_contract_test)
+
+  add_executable(system_memory_contract_test
+      tests/system_memory_contract_test.cpp
+      src/core/system-memory.cpp)
+  target_include_directories(system_memory_contract_test PRIVATE src/core)
+  add_test(NAME system_memory_contract_test COMMAND system_memory_contract_test)
+
+  add_executable(cache_frame_payload_test
+      tests/cache_frame_payload_test.cpp)
+  target_include_directories(cache_frame_payload_test PRIVATE src/cache)
+  target_link_libraries(cache_frame_payload_test PRIVATE
+      Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+  add_test(NAME cache_frame_payload_test COMMAND cache_frame_payload_test)
+
+  add_executable(cache_tile_payload_test
+      tests/cache_tile_payload_test.cpp)
+  target_include_directories(cache_tile_payload_test PRIVATE src/cache)
+  target_link_libraries(cache_tile_payload_test PRIVATE
+      Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+  add_test(NAME cache_tile_payload_test COMMAND cache_tile_payload_test)
+
+  add_executable(disk_cache_tiling_contract_test
+      tests/disk_cache_tiling_contract_test.cpp)
+  add_test(NAME disk_cache_tiling_contract_test
+      COMMAND disk_cache_tiling_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-tile-payload.h)
+
+  add_executable(live_text_cue_utils_test
+      tests/live_text_cue_utils_test.cpp)
+  target_include_directories(live_text_cue_utils_test PRIVATE
+      src/core src/layers src/effects src/timeline src/text src/transitions)
+  add_test(NAME live_text_cue_utils_test COMMAND live_text_cue_utils_test)
+
+  add_executable(title_snapshot_test
+      tests/title_snapshot_test.cpp)
+  target_include_directories(title_snapshot_test PRIVATE
+      src/core src/layers src/effects src/timeline src/text src/transitions)
+  add_test(NAME title_snapshot_test COMMAND title_snapshot_test)
+
+  add_executable(gpu_rounded_image_clip_test
+      tests/gpu_rounded_image_clip_test.cpp)
+  add_test(NAME gpu_rounded_image_clip_test COMMAND gpu_rounded_image_clip_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp)
+
+  add_executable(gpu_mask_contract_test
+      tests/gpu_mask_contract_test.cpp)
+  add_test(NAME gpu_mask_contract_test COMMAND gpu_mask_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp)
+
+  add_executable(gpu_ram_cache_tiling_contract_test
+      tests/gpu_ram_cache_tiling_contract_test.cpp)
+  add_test(NAME gpu_ram_cache_tiling_contract_test
+      COMMAND gpu_ram_cache_tiling_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.h)
+
+  add_executable(phase15_visibility_recovery_contract_test
+      tests/phase15_visibility_recovery_contract_test.cpp)
+  add_test(NAME phase15_visibility_recovery_contract_test
+      COMMAND phase15_visibility_recovery_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-gpu-text-renderer.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-preferences.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(gpu_prerender_phase14_contract_test
+      tests/gpu_prerender_phase14_contract_test.cpp)
+  add_test(NAME gpu_prerender_phase14_contract_test COMMAND gpu_prerender_phase14_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp)
 endif()

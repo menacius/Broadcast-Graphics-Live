@@ -135,7 +135,6 @@ private:
     bool save_title();
     bool persist_title_changes(bool update_preview_screenshot, bool show_saved_status);
     void set_live_editing_enabled(bool enabled);
-    void set_gpu_pipeline_enabled(bool enabled);
     void save_live_edit();
     void save_title_as_new();
     void export_title_template(bool save_in_library);
@@ -300,7 +299,6 @@ private:
     QLabel          *time_lbl_  = nullptr;
     QLabel          *title_lbl_ = nullptr;
     QLineEdit       *title_name_edit_ = nullptr;
-    QLabel          *gpu_warning_lbl_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
 
     QToolBar        *toolbar_   = nullptr;

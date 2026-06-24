@@ -4,12 +4,14 @@
 param(
     [string]$BuildDir,
     [string]$VcpkgDir,
+    [string]$VcpkgInstalledDir,
     [string]$ObsSdkDir,
     [string]$InstallRoot,
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
     [string]$Configuration = "Release",
     [switch]$BuildTests,
+    [switch]$Clean,
     [switch]$SkipInstall
 )
 
@@ -23,6 +25,41 @@ if ([string]::IsNullOrWhiteSpace($BuildDir)) {
 if ([string]::IsNullOrWhiteSpace($VcpkgDir)) {
     $VcpkgDir = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "C:\vcpkg" }
 }
+
+# -Clean removes only generated CMake/plugin outputs. The manifest install tree
+# and vcpkg binary cache intentionally remain intact, so a clean plugin rebuild
+# does not rebuild Cairo/Pango/GLib and their transitive dependencies.
+if ($Clean -and (Test-Path $BuildDir)) {
+    $ResolvedBuildDir = [System.IO.Path]::GetFullPath($BuildDir)
+    $ResolvedScriptDir = [System.IO.Path]::GetFullPath($ScriptDir)
+    if ($ResolvedBuildDir -eq $ResolvedScriptDir -or
+        $ResolvedBuildDir -eq [System.IO.Path]::GetPathRoot($ResolvedBuildDir)) {
+        Write-Error "Refusing to clean unsafe build path: $ResolvedBuildDir"
+        exit 1
+    }
+    Write-Host "Cleaning generated build directory: $ResolvedBuildDir"
+    Remove-Item -Recurse -Force $ResolvedBuildDir
+}
+
+# vcpkg's Autotools/MSYS ports (notably libiconv) cannot reliably configure
+# when the manifest install root contains spaces. CMake's default manifest
+# location is <build>/vcpkg_installed, which inherits spaces from the project
+# path. Keep manifest packages in a project-specific directory below VCPKG_ROOT
+# instead. This also avoids mixing the manifest with classic-mode packages.
+if ([string]::IsNullOrWhiteSpace($VcpkgInstalledDir)) {
+    if ($env:OBS_GSP_VCPKG_INSTALLED_DIR) {
+        $VcpkgInstalledDir = $env:OBS_GSP_VCPKG_INSTALLED_DIR
+    } else {
+        $VcpkgInstalledDir = Join-Path $VcpkgDir "manifest-installed\obs-graphics-studio-pro"
+    }
+}
+$VcpkgInstalledDir = [System.IO.Path]::GetFullPath($VcpkgInstalledDir)
+if ($VcpkgInstalledDir -match "\s") {
+    Write-Error "The vcpkg manifest install path contains whitespace: $VcpkgInstalledDir. Pass -VcpkgInstalledDir with a path that has no spaces, for example C:\vcpkg-installed\obs-gsp."
+    exit 1
+}
+New-Item -ItemType Directory -Force -Path $VcpkgInstalledDir | Out-Null
+
 if ([string]::IsNullOrWhiteSpace($ObsSdkDir) -and $env:OBS_SDK_DIR) {
     $ObsSdkDir = $env:OBS_SDK_DIR
 }
@@ -207,6 +244,7 @@ if (-not (Test-ObsSdkDir $ObsSdkDir)) {
     exit 1
 }
 Write-Host "Found OBS SDK: $ObsSdkDir"
+Write-Host "vcpkg manifest install root: $VcpkgInstalledDir"
 
 # 4. Configure CMake
 Write-Host "`n=== Configuring CMake ==="
@@ -216,6 +254,7 @@ $CmakeArgs = @(
     "-A", $Architecture,
     "-DCMAKE_TOOLCHAIN_FILE=$($VcpkgToolchain.Replace('\', '/'))",
     "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet",
+    "-DVCPKG_INSTALLED_DIR=$($VcpkgInstalledDir.Replace('\', '/'))",
     "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))",
     "-DOBS_GSP_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
 )
@@ -227,7 +266,10 @@ if ($LASTEXITCODE -ne 0) {
 
 # 5. Build the Plugin
 Write-Host "`n=== Building OBS Graphics Studio Pro ($Configuration) ==="
-& cmake --build $BuildDir --config $Configuration
+# Build only the plugin target. CMake/MSBuild keeps object-file dependency
+# tracking, so unchanged translation units are reused. Do not pass -Clean for
+# normal development builds; -Clean intentionally discards incremental state.
+& cmake --build $BuildDir --config $Configuration --target obs-graphics-studio-pro -- /m
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed."
     exit 1
@@ -314,10 +356,17 @@ if ($Architecture -eq "x64") {
     $VcpkgTriplets += "x86-windows"
 }
 
-foreach ($Triplet in ($VcpkgTriplets | Select-Object -Unique)) {
-    $CandidateBin = Join-Path $VcpkgDir "installed\$Triplet\bin"
-    if (Test-Path $CandidateBin) {
-        $RuntimeDllDirs += $CandidateBin
+$VcpkgRuntimeRoots = @(
+    $VcpkgInstalledDir,
+    (Join-Path $VcpkgDir "installed")
+)
+
+foreach ($RuntimeRoot in ($VcpkgRuntimeRoots | Select-Object -Unique)) {
+    foreach ($Triplet in ($VcpkgTriplets | Select-Object -Unique)) {
+        $CandidateBin = Join-Path $RuntimeRoot "$Triplet\bin"
+        if (Test-Path $CandidateBin) {
+            $RuntimeDllDirs += $CandidateBin
+        }
     }
 }
 

@@ -13,18 +13,20 @@
 namespace {
 
 const std::vector<TitleEffectDefinition> kEffectDefinitions = {
-    {LayerEffectType::BackgroundColor, "background-color", "Background Color", "effects/background-color/background-color.effect"},
-    {LayerEffectType::Outline, "outline", "Outline", "effects/outline/outline.effect"},
-    {LayerEffectType::DropShadow, "drop-shadow", "Drop Shadow", "effects/drop-shadow/drop-shadow.effect"},
-    {LayerEffectType::LongShadow, "long-shadow", "Long Shadow", "effects/long-shadow/long-shadow.effect"},
-    {LayerEffectType::BrightnessContrast, "brightness-contrast", "Brightness/Contrast", "effects/brightness-contrast/brightness-contrast.effect"},
-    {LayerEffectType::Saturation, "saturation", "Saturation", "effects/saturation/saturation.effect"},
-    {LayerEffectType::ColorOverlay, "color-overlay", "Color Overlay", "effects/color-overlay/color-overlay.effect"},
-    {LayerEffectType::Glow, "glow", "Glow", "effects/glow/glow.effect"},
-    {LayerEffectType::InnerGlow, "inner-glow", "Inner Glow", "effects/inner-glow/inner-glow.effect"},
-    {LayerEffectType::InnerShadow, "inner-shadow", "Inner Shadow", "effects/inner-shadow/inner-shadow.effect"},
-    {LayerEffectType::Blur, "blur", "Blur", "effects/blur/blur.effect"},
-    {LayerEffectType::MotionBlur, "motion-blur", "Motion Blur", "effects/motion-blur/motion-blur.effect"},
+    {LayerEffectType::BackgroundColor, "background-color", "Background Color", "effect-transitions/shaders/background-color/background-color.effect"},
+    {LayerEffectType::Outline, "outline", "Outline", "effect-transitions/shaders/outline/outline.effect"},
+    {LayerEffectType::DropShadow, "drop-shadow", "Drop Shadow", "effect-transitions/shaders/drop-shadow/drop-shadow.effect"},
+    {LayerEffectType::LongShadow, "long-shadow", "Long Shadow", "effect-transitions/shaders/long-shadow/long-shadow.effect"},
+    {LayerEffectType::BrightnessContrast, "brightness-contrast", "Brightness/Contrast", "effect-transitions/shaders/brightness-contrast/brightness-contrast.effect"},
+    {LayerEffectType::Saturation, "saturation", "Saturation", "effect-transitions/shaders/saturation/saturation.effect"},
+    {LayerEffectType::ColorOverlay, "color-overlay", "Color Overlay", "effect-transitions/shaders/color-overlay/color-overlay.effect"},
+    {LayerEffectType::Glow, "glow", "Glow", "effect-transitions/shaders/glow/glow.effect"},
+    {LayerEffectType::InnerGlow, "inner-glow", "Inner Glow", "effect-transitions/shaders/inner-glow/inner-glow.effect"},
+    {LayerEffectType::InnerShadow, "inner-shadow", "Inner Shadow", "effect-transitions/shaders/inner-shadow/inner-shadow.effect"},
+    {LayerEffectType::Blur, "blur", "Blur", "effect-transitions/shaders/blur/blur.effect"},
+    {LayerEffectType::MotionBlur, "motion-blur", "Motion Blur", "effect-transitions/shaders/motion-blur/motion-blur.effect"},
+    {LayerEffectType::Bloom, "bloom", "Bloom", "effect-transitions/shaders/bloom/bloom.effect"},
+    {LayerEffectType::Emboss, "emboss", "Emboss", "effect-transitions/shaders/emboss/emboss.effect"},
 };
 
 } // namespace

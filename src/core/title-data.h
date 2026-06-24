@@ -90,6 +90,10 @@ struct Title {
 
 void ensure_live_text_row_ids(Title &title);
 std::string live_text_row_id(const Title &title, int row);
+/* Stable fingerprint of raster-affecting layer data. Transform, visibility,
+ * parenting, masks and compositing state are intentionally excluded so the
+ * GPU compositor can reuse a layer texture across matrix-only edits. */
+std::string layer_render_fingerprint(const Layer &layer);
 
 struct TitleTemplateExportMetadata {
     std::string title;

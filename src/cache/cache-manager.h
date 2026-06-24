@@ -3,18 +3,21 @@
 #include "title-data.h"
 
 #include <QObject>
+#include <QByteArray>
 #include <QImage>
 #include <QHash>
 #include <QSet>
 #include <QMutex>
 #include <QDateTime>
 #include <QRect>
+#include <QVector>
 
 #include <memory>
 #include <functional>
 #include <vector>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <thread>
 
@@ -113,26 +116,68 @@ class DiskFrameCache : public QObject {
     Q_OBJECT
 public:
     explicit DiskFrameCache(QObject *parent = nullptr);
+    ~DiskFrameCache() override;
     bool contains(const CacheFrameKey &key) const;
     bool get(const CacheFrameKey &key, QImage &image) const;
     void put(const CacheFrameKey &key, const QImage &image);
+    void enqueuePut(const CacheFrameKey &key, const QImage &image);
+    void flushWrites();
     QVector<CacheFrameKey> keysForTitle(const QString &title_id) const;
     void remove(const CacheFrameKey &key);
     void clear();
+    void clearFast();
     void setCacheDirectory(const QString &path);
     QString cacheDirectory() const;
     quint64 bytesUsed() const;
 
 private:
+    struct TileRef {
+        QRect rect;
+        QByteArray digest;
+    };
     QString pathForKey(const CacheFrameKey &key) const;
+    QString pathForTileDigest(const QByteArray &digest) const;
     QString manifestPath() const;
     void appendManifestEntry(const CacheFrameKey &key) const;
+    void rewriteManifestLocked() const;
     void rebuildIndex();
     quint64 scanBytesUsed() const;
+    void writerLoop();
+    void cancelQueuedWrites();
+    void putForGeneration(const CacheFrameKey &key, const QImage &image,
+                          quint64 generation);
+    void putLocked(const CacheFrameKey &key, const QImage &image);
+    bool readFrameTileRefsLocked(const CacheFrameKey &key,
+                                 QVector<TileRef> &refs) const;
+    bool readTileLocked(const TileRef &ref, QImage &image) const;
+    bool writeTileLocked(const QImage &image, const QByteArray &digest,
+                         quint64 &created_bytes);
+    void addTileReferencesLocked(const QVector<QByteArray> &digests);
+    void releaseTileReferencesLocked(const QVector<QByteArray> &digests);
+    struct WriteJob {
+        CacheFrameKey key;
+        QImage image;
+        quint64 generation = 0;
+        quint64 bytes = 0;
+    };
     mutable QMutex mutex_;
     QString cache_dir_;
     QHash<QString, CacheFrameKey> indexed_keys_;
+    QHash<QString, QVector<QByteArray>> frame_tile_digests_;
+    QHash<QByteArray, qsizetype> tile_ref_counts_;
     quint64 bytes_used_ = 0;
+    std::mutex writer_mutex_;
+    std::condition_variable writer_cv_;
+    std::condition_variable writer_idle_cv_;
+    std::condition_variable writer_space_cv_;
+    std::deque<WriteJob> writer_queue_;
+    std::deque<QString> cleanup_queue_;
+    std::thread writer_thread_;
+    bool writer_stop_ = false;
+    bool writer_active_ = false;
+    quint64 writer_pending_bytes_ = 0;
+    quint64 writer_queue_budget_ = 64ull * 1024ull * 1024ull;
+    std::atomic<quint64> writer_generation_{1};
 };
 
 class CacheStateTracker : public QObject {
@@ -234,8 +279,13 @@ public:
     static CacheManager &instance();
 
     QImage requestFrame(const std::shared_ptr<Title> &title, double time, bool cached_only = false);
+    QString requestFrameGpuToken(const std::shared_ptr<Title> &title, double time,
+                                 bool queue_if_missing = true,
+                                 const QString &known_content_hash = QString());
     QImage requestFrameRealtime(const std::shared_ptr<Title> &title, double time,
                                 const QString &known_content_hash = QString());
+    void rejectFramePayload(const std::shared_ptr<Title> &title, double time,
+                            const QString &known_content_hash = QString());
     QString contentHashForTitle(const Title &title) const;
     bool visualStateCurrent(const Title &title) const;
     void queueFrame(const std::shared_ptr<Title> &title, double time, RenderQueueManager::PriorityBand band);
@@ -244,7 +294,6 @@ public:
     void queueWorkArea(const std::shared_ptr<Title> &title);
     void reprioritize(const std::shared_ptr<Title> &title, double current_time);
     void restoreDiskStates(const std::shared_ptr<Title> &title);
-    QImage renderUncachedFrame(const std::shared_ptr<Title> &title, double time) const;
     bool titleHasTimelineChanges(const Title &title) const;
     FrameCacheState displayStateForFrame(const std::shared_ptr<Title> &title, int frame) const;
     bool displayFrameIsStatic(const std::shared_ptr<Title> &title, int frame) const;
@@ -252,6 +301,7 @@ public:
     void clearRam();
     void clearDisk();
     void clearAll();
+    void shutdownWorker();
     void pausePrerender();
     void resumePrerender();
     bool prerenderPaused() const { return paused_.load(); }
@@ -261,7 +311,7 @@ public:
     void setEditorPrerenderFocus(const QString &title_id, bool active);
     void setRamCacheLimitMb(int megabytes);
     void setDiskCacheLocation(const QString &path);
-    quint64 ramBytesUsed() const { return ram_cache_.bytesUsed(); }
+    quint64 ramBytesUsed() const;
     quint64 ramBytesLimit() const { return ram_cache_.maxBytes(); }
     quint64 diskBytesUsed() const { return disk_cache_.bytesUsed(); }
     QString diskCacheLocation() const { return disk_cache_.cacheDirectory(); }
@@ -275,6 +325,8 @@ public:
     void queueLiveCue(const std::shared_ptr<Title> &title, int row, bool urgent = false);
     void cacheLiveCueNow(const std::shared_ptr<Title> &title, int row);
     QImage requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, double time, bool queue_if_missing = true);
+    QString requestLiveCueFrameGpuToken(const std::shared_ptr<Title> &title, int row,
+                                        double time, bool queue_if_missing = true);
     QImage requestLiveCueFrameRealtime(const std::shared_ptr<Title> &title, int row, double time,
                                        const QString &known_content_hash = QString());
     QImage requestLiveCueFrame(const std::shared_ptr<Title> &title, int row, bool queue_if_missing = true);
@@ -301,6 +353,7 @@ public:
     CachePlaybackSettings playbackSettings() const;
     void setPlaybackSettings(const CachePlaybackSettings &settings);
     double effectiveFrameRate() const;
+    int frameIndexForTitleTime(const Title &title, double time) const;
 
 signals:
     void frameReady(const QString &title_id, int frame);
@@ -326,8 +379,6 @@ private:
     QString tileStateKey(const QString &title_id, int frame) const;
     void markDirtyTiles(const QString &title_id, int first_frame, int last_frame, const QVector<CacheTileRegion> &tiles);
     QVector<CacheTileRegion> dirtyTilesForKey(const CacheFrameKey &key) const;
-    QImage mergeDirtyTiles(const CacheFrameKey &key, const QImage &previous, const QImage &fresh) const;
-    QImage renderDirtyTiles(const RenderQueueManager::Job &job, const QImage &previous) const;
     void rememberVisualHash(const Title &title, const QString &known_hash = QString());
     bool visualHashUnchanged(const Title &title) const;
     std::shared_ptr<Title> titleWithCueApplied(const std::shared_ptr<Title> &title, int row) const;
@@ -364,7 +415,9 @@ private:
     void wakeWorker();
     void workerLoop();
     bool takePendingLiveCueStructureRefresh(std::shared_ptr<Title> &title);
-    void renderJob(RenderQueueManager::Job job);
+    bool renderJob(RenderQueueManager::Job job);
+    bool resolveOldestGpuReadback(bool force);
+    bool hasPendingGpuReadbacks() const;
     void abandonJobState(const RenderQueueManager::Job &job, const QString &live_state_key);
     void resetCancelledWorkState(const QString &title_id = QString());
     void queueRealtimeJob(const std::shared_ptr<Title> &title, double time,
@@ -393,6 +446,8 @@ private:
     bool editor_focus_active_ = false;
     std::atomic_bool worker_stop_{false};
     std::atomic<quint64> cache_epoch_{1};
+    struct WorkerPipeline;
+    std::unique_ptr<WorkerPipeline> worker_pipeline_;
     std::thread worker_thread_;
     mutable std::mutex worker_wait_mutex_;
     std::condition_variable worker_cv_;

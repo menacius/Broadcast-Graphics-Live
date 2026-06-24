@@ -33,8 +33,6 @@ enum class CanvasHelperColorRole {
     GraphicsSafe
 };
 
-bool use_gpu();
-void set_use_gpu(bool enabled);
 bool cache_enabled();
 void set_cache_enabled(bool enabled);
 int cache_ram_limit_mb();
@@ -49,6 +47,8 @@ int logging_level();
 void set_logging_level(int level);
 bool logging_mirror_to_obs();
 void set_logging_mirror_to_obs(bool enabled);
+bool cache_playback_logging_enabled();
+void set_cache_playback_logging_enabled(bool enabled);
 QString logging_file_path();
 void set_logging_file_path(const QString &path);
 bool gpu_available();

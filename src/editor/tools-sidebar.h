@@ -52,6 +52,8 @@ public:
     void set_background_color(const QColor &color);
     void set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
     void set_background_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
+    void set_foreground_mixed(bool mixed);
+    void set_background_mixed(bool mixed);
     QColor foreground_color() const { return foreground_color_; }
     QColor background_color() const { return background_color_; }
 
@@ -79,6 +81,8 @@ private:
     SwatchFill background_fill_;
     QColor foreground_color_ = QColor(34, 34, 34);
     QColor background_color_ = QColor(255, 255, 255);
+    bool foreground_mixed_ = false;
+    bool background_mixed_ = false;
 };
 /* ══════════════════════════════════════════════════════════════════
  *  ToolsSidebar – Photoshop-style icon-only tool palette
@@ -96,6 +100,8 @@ public:
     void set_background_color(const QColor &color);
     void set_foreground_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
     void set_background_gradient(const QColor &start, const QColor &end, int gradient_type = 0);
+    void set_foreground_mixed(bool mixed);
+    void set_background_mixed(bool mixed);
 
     void activate_selection_tool();
     void activate_direct_selection_tool();

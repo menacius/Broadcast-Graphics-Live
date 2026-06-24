@@ -32,11 +32,14 @@
 #include <QHash>
 #include <QElapsedTimer>
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <set>
+#include <limits>
 
 namespace gsp { struct LiveCornerGeometry; }
+struct TitleGpuRenderSession;
 
 class QEvent;
 class QMouseEvent;
@@ -46,6 +49,7 @@ class QContextMenuEvent;
 class QTimer;
 class QResizeEvent;
 class QPaintEvent;
+class QPaintEngine;
 class QDragEnterEvent;
 class QDropEvent;
 class QDragMoveEvent;
@@ -60,6 +64,7 @@ class CanvasPreview : public QWidget {
 
 public:
     explicit CanvasPreview(QWidget *parent = nullptr);
+    ~CanvasPreview() override;
 
     struct ViewState {
         int zoom_percent = 100;
@@ -72,6 +77,8 @@ public:
     ViewState view_state() const;
     void restore_view_state(const ViewState &state);
     void set_playhead(double t);
+    void set_display_refresh_rate(double hz);
+    void refresh_runtime_dynamic_content();
     void set_selected_layer(const std::string &lid);
     void set_selected_layers(const std::vector<std::string> &ids);
     void set_safe_guides_visible(bool visible);
@@ -94,6 +101,7 @@ public:
     void set_snap_to_canvas_bounds(bool enabled);
     void set_snap_to_spacing(bool enabled);
     void refresh_preview();
+    bool prepare_cached_playback_frame(double time);
     void clear_rendered_frame();
     QImage current_rendered_frame() const;
     void set_zoom_percent(int percent);
@@ -161,6 +169,7 @@ signals:
 
 protected:
     bool event(QEvent *ev) override;
+    QPaintEngine *paintEngine() const override;
     void paintEvent(QPaintEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseMoveEvent(QMouseEvent *ev) override;
@@ -178,6 +187,15 @@ protected:
     void resizeEvent(QResizeEvent *ev) override;
 
 private:
+    enum class CanvasPaintPass { All, Underlay, Overlay };
+    struct GpuDisplayState;
+    void paint_canvas(QPainter &p, CanvasPaintPass pass);
+    bool ensure_gpu_display();
+    void destroy_gpu_display();
+    void update_gpu_display_textures(const QImage *underlay, const QImage *overlay,
+                                     const QImage *selection_mask);
+    static void gpu_display_draw(void *data, uint32_t cx, uint32_t cy);
+
     enum class DragMode {
         None,
         Marquee,
@@ -274,7 +292,8 @@ private:
     QPointF path_canvas_to_normalized(const Layer &layer, const QPointF &canvas_pt) const;
     void clear_path_point_selection();
 
-    void render_to_pixmap();
+    void render_to_frame();
+    void render_dirty_frame_if_due();
     void begin_adaptive_interaction();
     void end_adaptive_interaction();
     double adaptive_preview_scale() const;
@@ -293,6 +312,8 @@ private:
     bool active_draw_tool_can_manipulate_selected() const;
     void set_cursor_for_drag_mode(DragMode mode, bool dragging);
     bool gradient_handles_visible() const;
+    bool selected_text_fill(const Layer &layer, RichTextFill &fill) const;
+    bool apply_selected_text_gradient_fill(Layer &layer, const RichTextFill &fill);
     bool layer_supports_gradient_handles(const Layer &layer) const;
     GradientHandleGeometry gradient_handle_geometry(const Layer &layer) const;
     DragMode hit_test_gradient_handles(const Layer &layer, const QPointF &view_pt) const;
@@ -367,8 +388,12 @@ private:
     void configure_inline_text_editor(const Layer &layer);
     bool sync_inline_text_layer(bool mark_dirty);
     void refresh_inline_text_edit(bool mark_dirty, bool emit_changed);
+    void suspend_inline_text_edit_for_gradient();
+    void resume_inline_text_edit_after_gradient();
     double inline_text_visual_scale(const Layer &layer) const;
     QRectF inline_text_document_local_rect(const Layer &layer) const;
+    std::vector<QPolygonF> inline_text_selection_view_polygons() const;
+    bool inline_text_caret_view_polygon(QPolygonF &polygon) const;
     std::shared_ptr<Layer> layer_at_view_pos(const QPointF &view_pt) const;
     std::shared_ptr<Layer> text_layer_at_view_pos(const QPointF &view_pt) const;
     void update_hover_layer(const QPointF &view_pt);
@@ -397,20 +422,32 @@ private:
     bool panning_ = false;
     QPointF pan_start_view_;
     QPointF pan_start_offset_;
-    QPixmap frame_pixmap_;
-    QPoint frame_pixmap_canvas_offset_;
-    QSize frame_pixmap_canvas_size_;
+    QImage frame_image_;
+    std::unique_ptr<GpuDisplayState> gpu_display_;
+    TitleGpuRenderSession *gpu_render_session_ = nullptr;
+    uint64_t gpu_model_revision_ = 0;
+    bool gpu_model_dirty_ = true;
+    QString gpu_underlay_key_;
+    mutable bool gpu_overlay_dirty_ = true;
+    QImage gpu_overlay_cache_;
+    QPoint frame_image_canvas_offset_;
+    QSize frame_image_canvas_size_;
     bool dirty_ = true;
     QTimer *render_coalesce_timer_ = nullptr;
     QTimer *adaptive_full_quality_timer_ = nullptr;
     QElapsedTimer last_render_clock_;
     int render_interval_ms_ = 16;
+    int display_refresh_interval_ms_ = 16;
+    bool playback_frame_pending_ = false;
+    QImage prefetched_cache_frame_;
+    double prefetched_cache_time_ = -1.0;
+    qint64 last_runtime_clock_second_ = std::numeric_limits<qint64>::min();
     bool render_in_progress_ = false;
     bool adaptive_rendering_enabled_ = true;
     AdaptiveQualityMode adaptive_quality_mode_ = AdaptiveQualityMode::Auto;
     bool adaptive_interaction_active_ = false;
     bool force_live_full_quality_render_ = false;
-    double frame_pixmap_preview_scale_ = 1.0;
+    double frame_image_preview_scale_ = 1.0;
     int last_full_quality_render_cost_ms_ = 0;
     QHash<QString, QImage> editor_quality_cache_;
     bool safe_guides_visible_ = false;
@@ -462,6 +499,7 @@ private:
     bool committing_inline_text_ = false;
     bool updating_inline_text_editor_ = false;
     bool refreshing_inline_text_ = false;
+    bool inline_text_suspended_for_gradient_ = false;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
     QRectF shape_draw_current_rect_;
@@ -516,7 +554,9 @@ private:
     QRectF drag_start_selection_bounds_;
     struct GradientDragState {
         bool active = false;
+        bool inline_text = false;
         bool radial = false;
+        RichTextFill fill;
         QRectF local_rect;
         QPointF center;
         QPointF start;

@@ -2,7 +2,13 @@
 #include "effect-preset-catalog.h"
 #include "title-localization.h"
 #include "cache-manager.h"
+#include "title-cache-policy.h"
 #include "title-source.h"
+#include "title-preferences.h"
+#include "title-logger.h"
+
+#include <obs.h>
+#include <graphics/graphics.h>
 
 #include <QApplication>
 #include <QClipboard>
@@ -12,9 +18,31 @@
 #include <QImage>
 #include <QMimeData>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
+#include <QWindow>
+#include <QScreen>
+#include <QPaintEngine>
 
 #include <algorithm>
+#include <mutex>
+#include <cmath>
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <obs-nix-platform.h>
+#endif
+#if defined(ENABLE_WAYLAND) && QT_VERSION < QT_VERSION_CHECK(6, 9, 0) && \
+    __has_include(<qpa/qplatformnativeinterface.h>)
+#define OBS_GSP_HAS_QPA_NATIVE_INTERFACE 1
+#include <qpa/qplatformnativeinterface.h>
+#endif
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#endif
 
 namespace {
 constexpr int kCanvasRulerThickness = 24;
@@ -171,13 +199,83 @@ std::string unique_canvas_layer_name(const Title &title, const std::string &base
 }
 }
 
+struct CanvasPreview::GpuDisplayState {
+    obs_display_t *display = nullptr;
+    gs_texture_t *underlay = nullptr;
+    gs_texture_t *overlay = nullptr;
+    gs_texture_t *selection_mask = nullptr;
+    uint32_t underlay_w = 0;
+    uint32_t underlay_h = 0;
+    uint32_t overlay_w = 0;
+    uint32_t overlay_h = 0;
+    uint32_t selection_mask_w = 0;
+    uint32_t selection_mask_h = 0;
+    uint32_t display_w = 0;
+    uint32_t display_h = 0;
+    QRect artwork_rect_px;
+    bool destroying = false;
+    std::mutex mutex;
+};
+
+static bool canvas_qt_to_gs_window(QWindow *window, gs_window &gswindow)
+{
+    if (!window)
+        return false;
+#ifdef _WIN32
+    gswindow.hwnd = reinterpret_cast<HWND>(window->winId());
+    return gswindow.hwnd != nullptr;
+#elif defined(__APPLE__)
+    gswindow.view = (id)window->winId();
+    return gswindow.view != nullptr;
+#else
+    switch (obs_get_nix_platform()) {
+    case OBS_NIX_PLATFORM_X11_EGL:
+        gswindow.id = window->winId();
+        gswindow.display = obs_get_nix_platform_display();
+        return gswindow.display != nullptr;
+#ifdef ENABLE_WAYLAND
+    case OBS_NIX_PLATFORM_WAYLAND:
+#if QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
+#ifdef OBS_GSP_HAS_QPA_NATIVE_INTERFACE
+        if (QPlatformNativeInterface *native = QGuiApplication::platformNativeInterface())
+            gswindow.display = native->nativeResourceForWindow("surface", window);
+#else
+        return false;
+#endif
+#else
+        gswindow.display = reinterpret_cast<void *>(window->winId());
+#endif
+        return gswindow.display != nullptr;
+#endif
+    default:
+        return false;
+    }
+#endif
+}
+
+static QImage gpu_upload_image(const QImage &source)
+{
+    if (source.isNull())
+        return QImage();
+    QImage image = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (!image.isNull() && image.bytesPerLine() != image.width() * 4)
+        image = image.copy();
+    return image;
+}
+
 CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
 {
     setMinimumSize(400, 225);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setAutoFillBackground(false);
+    setAttribute(Qt::WA_PaintOnScreen, true);
+    setAttribute(Qt::WA_StaticContents, true);
+    setAttribute(Qt::WA_DontCreateNativeAncestors, true);
+    setAttribute(Qt::WA_NativeWindow, true);
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
+    gpu_display_ = std::make_unique<GpuDisplayState>();
+    gpu_render_session_ = title_gpu_render_session_create();
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAcceptDrops(true);
@@ -211,11 +309,15 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     connect(adaptive_full_quality_timer_, &QTimer::timeout, this, [this]() {
         if (!adaptive_interaction_active_)
             return;
+        /* Never refine while a canvas manipulation is still active. The old
+         * timer expired 140 ms after mouse-down, which silently returned long
+         * drags to full resolution and made Adaptive Rendering appear broken. */
+        if (drag_mode_ != DragMode::None) {
+            adaptive_full_quality_timer_->start();
+            return;
+        }
         adaptive_interaction_active_ = false;
-        // Auto refines to full quality after interaction. Fixed modes keep their
-        // selected raster scale, but still perform one clean post-interaction
-        // render so the editor-local cache is populated from the settled model.
-        if (frame_pixmap_preview_scale_ < 0.999) {
+        if (frame_image_preview_scale_ < 0.999) {
             force_live_full_quality_render_ =
                 adaptive_quality_mode_ == AdaptiveQualityMode::Auto;
             dirty_ = true;
@@ -226,19 +328,33 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_ = new QTextEdit(this);
     inline_text_editor_->hide();
     inline_text_editor_->setAcceptRichText(true);
+    inline_text_editor_->setTextInteractionFlags(Qt::TextEditorInteraction);
     inline_text_editor_->setFrameShape(QFrame::NoFrame);
     inline_text_editor_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     inline_text_editor_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     inline_text_editor_->setLineWrapMode(QTextEdit::FixedPixelWidth);
-    inline_text_editor_->setCursorWidth(2);
+    inline_text_editor_->setCursorWidth(0);
     inline_text_editor_->setContentsMargins(0, 0, 0, 0);
     inline_text_editor_->viewport()->setContentsMargins(0, 0, 0, 0);
     inline_text_editor_->setAttribute(Qt::WA_TranslucentBackground, true);
     inline_text_editor_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
+    QPalette inline_palette = inline_text_editor_->palette();
+    /* The editor itself stays transparent so the canvas remains the visual
+     * source of truth. Selection inversion is applied later in display space;
+     * clear every palette group so an inactive/focus-changing QTextEdit cannot
+     * reintroduce a native white selection rectangle on some Qt styles. */
+    const QColor transparent_selection(0, 0, 0, 0);
+    for (QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive,
+                                        QPalette::Disabled}) {
+        inline_palette.setColor(group, QPalette::Highlight, transparent_selection);
+        inline_palette.setColor(group, QPalette::HighlightedText, transparent_selection);
+    }
+    inline_text_editor_->setPalette(inline_palette);
     inline_text_editor_->setStyleSheet(
         "QTextEdit{background:transparent;border:0px;padding:0px;"
-        "color:rgba(255,255,255,0);selection-background-color:rgba(255,255,255,0);"
-        "selection-color:rgba(255,255,255,0);}");
+        "color:rgba(255,255,255,0);"
+        "selection-background-color:rgba(0,0,0,0);"
+        "selection-color:rgba(0,0,0,0);}");
     inline_text_editor_->installEventFilter(this);
     connect(inline_text_editor_->document(), &QTextDocument::contentsChanged, this, [this]() {
         if (updating_inline_text_editor_ || refreshing_inline_text_) return;
@@ -247,6 +363,9 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     if (auto *layout = inline_text_editor_->document()->documentLayout()) {
         connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged, this, [this](const QSizeF &) {
             if (updating_inline_text_editor_ || refreshing_inline_text_) return;
+            /* The document can publish its final unconstrained size after the
+             * textChanged signal. Re-run the established edit refresh so point
+             * text keeps growing instead of stopping at the previous box edge. */
             refresh_inline_text_edit(true, true);
         });
         connect(layout, &QAbstractTextDocumentLayout::update, this, [this](const QRectF &) {
@@ -259,6 +378,7 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
         if (committing_inline_text_ || updating_inline_text_editor_ || inline_text_layer_id_.empty()) return;
         const std::string layer_id = inline_text_layer_id_;
         sync_inline_text_layer(false);
+        invalidate_canvas_overlay_caches();
         if (inline_text_editor_) {
             inline_text_editor_->viewport()->update();
             update(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
@@ -269,6 +389,226 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     connect(inline_text_editor_, &QTextEdit::selectionChanged, this, emit_cursor_changed);
 }
 
+CanvasPreview::~CanvasPreview()
+{
+    destroy_gpu_display();
+    title_gpu_render_session_destroy(gpu_render_session_);
+    gpu_render_session_ = nullptr;
+}
+
+QPaintEngine *CanvasPreview::paintEngine() const
+{
+    if (gpu_display_ && gpu_display_->display)
+        return nullptr;
+    return QWidget::paintEngine();
+}
+
+bool CanvasPreview::ensure_gpu_display()
+{
+    if (!gpu_display_)
+        gpu_display_ = std::make_unique<GpuDisplayState>();
+    if (gpu_display_->display)
+        return true;
+    if (gpu_display_->destroying || !isVisible())
+        return false;
+
+    (void)winId();
+    QWindow *window = windowHandle();
+    if (!window || !window->isExposed())
+        return false;
+
+    const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
+    gs_init_data info = {};
+    info.cx = static_cast<uint32_t>(std::max(1, qRound(width() * dpr)));
+    info.cy = static_cast<uint32_t>(std::max(1, qRound(height() * dpr)));
+    info.format = GS_BGRA;
+    info.zsformat = GS_ZS_NONE;
+    if (!canvas_qt_to_gs_window(window, info.window))
+        return false;
+
+    gpu_display_->display = obs_display_create(&info, 0xFF000000);
+    if (!gpu_display_->display)
+        return false;
+    gpu_display_->display_w = info.cx;
+    gpu_display_->display_h = info.cy;
+    obs_display_add_draw_callback(gpu_display_->display,
+                                  &CanvasPreview::gpu_display_draw, this);
+    return true;
+}
+
+void CanvasPreview::destroy_gpu_display()
+{
+    if (!gpu_display_)
+        return;
+    gpu_display_->destroying = true;
+    if (gpu_display_->display) {
+        obs_display_remove_draw_callback(gpu_display_->display,
+                                         &CanvasPreview::gpu_display_draw, this);
+        obs_display_destroy(gpu_display_->display);
+        gpu_display_->display = nullptr;
+    }
+
+    obs_enter_graphics();
+    std::lock_guard<std::mutex> lock(gpu_display_->mutex);
+    if (gpu_display_->underlay)
+        gs_texture_destroy(gpu_display_->underlay);
+    if (gpu_display_->overlay)
+        gs_texture_destroy(gpu_display_->overlay);
+    if (gpu_display_->selection_mask)
+        gs_texture_destroy(gpu_display_->selection_mask);
+    gpu_display_->underlay = nullptr;
+    gpu_display_->overlay = nullptr;
+    gpu_display_->selection_mask = nullptr;
+    obs_leave_graphics();
+}
+
+void CanvasPreview::update_gpu_display_textures(const QImage *underlay_source,
+                                                const QImage *overlay_source,
+                                                const QImage *selection_mask_source)
+{
+    if (!gpu_display_ || !gpu_display_->display)
+        return;
+
+    const QImage underlay = underlay_source ? gpu_upload_image(*underlay_source) : QImage();
+    const QImage overlay = overlay_source ? gpu_upload_image(*overlay_source) : QImage();
+    const QImage selection_mask = selection_mask_source
+        ? gpu_upload_image(*selection_mask_source)
+        : QImage();
+    const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
+
+    QRect artwork_rect;
+    if (title_) {
+        const double scale = view_scale();
+        const QPointF origin = view_origin();
+        artwork_rect = QRect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                             qRound(title_->width * scale * dpr),
+                             qRound(title_->height * scale * dpr));
+    }
+
+    auto upload_texture = [](gs_texture_t *&texture, uint32_t &stored_w,
+                             uint32_t &stored_h, const QImage &image) {
+        if (image.isNull()) {
+            if (texture)
+                gs_texture_destroy(texture);
+            texture = nullptr;
+            stored_w = stored_h = 0;
+            return;
+        }
+        const uint32_t w = static_cast<uint32_t>(image.width());
+        const uint32_t h = static_cast<uint32_t>(image.height());
+        if (!texture || stored_w != w || stored_h != h) {
+            if (texture)
+                gs_texture_destroy(texture);
+            const uint8_t *data[1] = {image.constBits()};
+            texture = gs_texture_create(w, h, GS_BGRA, 1, data, GS_DYNAMIC);
+            stored_w = texture ? w : 0;
+            stored_h = texture ? h : 0;
+        } else {
+            gs_texture_set_image(texture, image.constBits(),
+                                 static_cast<uint32_t>(image.bytesPerLine()), false);
+        }
+    };
+
+    obs_enter_graphics();
+    {
+        std::lock_guard<std::mutex> lock(gpu_display_->mutex);
+        if (underlay_source) {
+            upload_texture(gpu_display_->underlay, gpu_display_->underlay_w,
+                           gpu_display_->underlay_h, underlay);
+        }
+        if (overlay_source) {
+            upload_texture(gpu_display_->overlay, gpu_display_->overlay_w,
+                           gpu_display_->overlay_h, overlay);
+        }
+        if (selection_mask_source) {
+            upload_texture(gpu_display_->selection_mask,
+                           gpu_display_->selection_mask_w,
+                           gpu_display_->selection_mask_h, selection_mask);
+        }
+        gpu_display_->artwork_rect_px = artwork_rect;
+    }
+    obs_leave_graphics();
+}
+
+void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
+{
+    auto *canvas = static_cast<CanvasPreview *>(data);
+    if (!canvas || !canvas->gpu_display_)
+        return;
+    auto &state = *canvas->gpu_display_;
+    std::lock_guard<std::mutex> lock(state.mutex);
+
+    gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+    if (!effect)
+        return;
+    gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+    if (!image)
+        return;
+
+    auto draw_texture = [&](gs_texture_t *texture, const QRect &rect) {
+        if (!texture || rect.isEmpty())
+            return;
+        gs_effect_set_texture(image, texture);
+        gs_matrix_push();
+        gs_matrix_identity();
+        gs_matrix_translate3f(static_cast<float>(rect.x()),
+                              static_cast<float>(rect.y()), 0.0f);
+        while (gs_effect_loop(effect, "Draw"))
+            gs_draw_sprite(texture, 0, static_cast<uint32_t>(rect.width()),
+                           static_cast<uint32_t>(rect.height()));
+        gs_matrix_pop();
+    };
+
+    gs_viewport_push();
+    gs_projection_push();
+    gs_blend_state_push();
+    gs_ortho(0.0f, static_cast<float>(cx), 0.0f, static_cast<float>(cy),
+             -100.0f, 100.0f);
+    gs_enable_blending(true);
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
+    draw_texture(state.underlay, QRect(0, 0, static_cast<int>(cx), static_cast<int>(cy)));
+    if (canvas->gpu_render_session_ && !state.artwork_rect_px.isEmpty()) {
+        gs_matrix_push();
+        gs_matrix_identity();
+        gs_matrix_translate3f(static_cast<float>(state.artwork_rect_px.x()),
+                              static_cast<float>(state.artwork_rect_px.y()), 0.0f);
+        const bool artwork_drawn = title_gpu_render_session_draw(
+            canvas->gpu_render_session_,
+            static_cast<uint32_t>(state.artwork_rect_px.width()),
+            static_cast<uint32_t>(state.artwork_rect_px.height()));
+        if (TitlePreferences::cache_playback_logging_enabled()) {
+            const std::string gpu_error = artwork_drawn
+                ? std::string()
+                : title_gpu_render_session_last_error(canvas->gpu_render_session_);
+            OGS_LOG_INFO("CachePlayback", QStringLiteral(
+                "consumer=editor-canvas stage=draw result=%1 output=%2x%3 rect=%4,%5,%6x%7 error=%8")
+                .arg(artwork_drawn ? QStringLiteral("ok") : QStringLiteral("failed"))
+                .arg(state.artwork_rect_px.width()).arg(state.artwork_rect_px.height())
+                .arg(state.artwork_rect_px.x()).arg(state.artwork_rect_px.y())
+                .arg(state.artwork_rect_px.width()).arg(state.artwork_rect_px.height())
+                .arg(gpu_error.empty() ? QStringLiteral("none")
+                                       : QString::fromStdString(gpu_error)));
+        }
+        gs_matrix_pop();
+    }
+    if (state.selection_mask) {
+        /* A white texel with inverse-destination/inverse-source blending
+         * produces 1 - destination; a transparent black texel leaves the
+         * destination untouched. Keep alpha unchanged so this is a true
+         * display-space inversion rather than a white alpha overlay. */
+        gs_blend_function_separate(GS_BLEND_INVDSTCOLOR, GS_BLEND_INVSRCCOLOR,
+                                   GS_BLEND_ZERO, GS_BLEND_ONE);
+        draw_texture(state.selection_mask,
+                     QRect(0, 0, static_cast<int>(cx), static_cast<int>(cy)));
+        gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+    }
+    draw_texture(state.overlay, QRect(0, 0, static_cast<int>(cx), static_cast<int>(cy)));
+
+    gs_blend_state_pop();
+    gs_projection_pop();
+    gs_viewport_pop();
+}
 
 
 void CanvasPreview::begin_text_edit_for_layer(const std::string &layer_id)
@@ -284,67 +624,61 @@ void CanvasPreview::begin_text_edit_for_layer(const std::string &layer_id)
 
 void CanvasPreview::apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask)
 {
+    (void)format;
+    (void)mask;
     if (!inline_text_editor_ || inline_text_layer_id_.empty() || inline_text_layer_id_ != layer_id)
         return;
     auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
-    const double visual_scale = layer ? inline_text_visual_scale(*layer) : 1.0;
-    QTextCharFormat qfmt;
-    if (mask & (RichTextCharFontFamily | RichTextCharFontStyle | RichTextCharFontSize |
-                RichTextCharBold | RichTextCharItalic | RichTextCharUnderline | RichTextCharStrikethrough)) {
-        QFont font = inline_text_editor_->currentFont();
-        if (mask & RichTextCharFontFamily) font.setFamily(QString::fromStdString(format.font_family));
-        if (mask & RichTextCharFontStyle) font.setStyleName(QString::fromStdString(format.font_style));
-        if (mask & RichTextCharFontSize) font.setPixelSize(std::max(1, (int)std::round(format.font_size * visual_scale)));
-        if (mask & RichTextCharBold) font.setBold(format.bold);
-        if (mask & RichTextCharItalic) font.setItalic(format.italic);
-        if (mask & RichTextCharUnderline) font.setUnderline(format.underline);
-        if (mask & RichTextCharStrikethrough) font.setStrikeOut(format.strikethrough);
-        qfmt.setFont(font);
-    }
-    if (mask & RichTextCharUnderline) qfmt.setFontUnderline(format.underline);
-    if (mask & RichTextCharStrikethrough) qfmt.setFontStrikeOut(format.strikethrough);
-    if (mask & RichTextCharKerning) qfmt.setFontKerning(format.kerning_mode != 2 && format.kerning);
-    if (mask & (RichTextCharKerning | RichTextCharTracking)) {
-        qfmt.setFontLetterSpacingType(QFont::AbsoluteSpacing);
-        qfmt.setFontLetterSpacing(format.tracking +
-                                  (format.kerning_mode == 2 ? format.manual_kerning : 0.0f));
-    }
-    if (mask & RichTextCharScaleX)
-        qfmt.setFontStretch(std::clamp((int)std::round(format.scale_x * 100.0f), 1, 4000));
-    if (mask & RichTextCharTextStyle) {
-        qfmt.setFontCapitalization(format.text_style == 1 ? QFont::AllUppercase
-                                  : (format.text_style == 2 ? QFont::SmallCaps : QFont::MixedCase));
-        if (format.text_style == 3)
-            qfmt.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
-        else if (format.text_style == 4)
-            qfmt.setVerticalAlignment(QTextCharFormat::AlignSubScript);
-        else
-            qfmt.setVerticalAlignment(QTextCharFormat::AlignNormal);
-    }
-    store_editor_rich_text_format_properties_masked(qfmt, format, mask);
-    qfmt.setProperty(RichTextPropAutoGenerated, false);
-    if (mask & RichTextCharFillColor) {
-        QColor transparent_color = rich_text_color_from_argb(format.fill.color);
-        transparent_color.setAlpha(0);
-        qfmt.setForeground(transparent_color);
-    }
+    if (!layer)
+        return;
 
-    QTextCursor cursor = inline_text_editor_->textCursor();
-    cursor.mergeCharFormat(qfmt);
-    inline_text_editor_->mergeCurrentCharFormat(qfmt);
-    inline_text_editor_->setTextCursor(cursor);
-    if (layer) {
-        const QString editor_text = inline_text_editor_->toPlainText();
-        layer->rich_text.selection = {rich_byte_offset_from_qtext_position(editor_text, std::max(0, cursor.anchor())),
-                                     rich_byte_offset_from_qtext_position(editor_text, std::max(0, cursor.position()))};
-        if (!cursor.hasSelection()) {
-            layer->rich_text.typing_format = rich_text_format_from_qtext_format(cursor.charFormat(),
-                                                                               layer->rich_text.default_format,
-                                                                               visual_scale);
-            layer->rich_text.has_typing_format = true;
+    /* The Properties panel has already updated the canonical RichTextDocument.
+     * Rebuild the transparent Qt editing adapter from that model instead of
+     * incrementally merging QTextCharFormat fragments. This preserves sparse
+     * masks, mixed styles/colors and independent H/V scale. */
+    const QTextCursor saved_cursor = inline_text_editor_->textCursor();
+    const int anchor = saved_cursor.anchor();
+    const int position = saved_cursor.position();
+    const double visual_scale = inline_text_visual_scale(*layer);
+    const bool previous_updating = updating_inline_text_editor_;
+    updating_inline_text_editor_ = true;
+    {
+        QSignalBlocker blocker(inline_text_editor_);
+        rich_text_document_ensure_canonical(*layer);
+        const double local_time = std::max(0.0, playhead_ - layer->in_time);
+        const RichTextDocument editor_model =
+            rich_text_document_for_editor_time(*layer, local_time);
+        populate_qtext_document_from_rich_text(inline_text_editor_->document(),
+                                               editor_model, visual_scale);
+        QTextCursor restored(inline_text_editor_->document());
+        const int text_len = inline_text_editor_->toPlainText().size();
+        restored.setPosition(std::clamp(anchor, 0, text_len));
+        restored.setPosition(std::clamp(position, 0, text_len), QTextCursor::KeepAnchor);
+        inline_text_editor_->setTextCursor(restored);
+        if (!restored.hasSelection()) {
+            const RichTextCharFormat effective_typing =
+                rich_text_effective_typing_format(layer->rich_text);
+            QTextCharFormat typing = qtext_format_from_rich_text_format(
+                effective_typing, visual_scale);
+            apply_editor_rich_text_baseline_delta(
+                typing, effective_typing, layer->rich_text.default_format.baseline_shift,
+                visual_scale);
+            typing.setProperty(RichTextPropManualMask,
+                               (uint)(layer->rich_text.typing_format_mask & RichTextCharAll));
+            typing.setProperty(RichTextPropAutoGenerated, false);
+            inline_text_editor_->setCurrentCharFormat(typing);
         }
+        inline_text_editor_->document()->setModified(false);
     }
-    refresh_inline_text_edit(true, true);
+    inline_text_last_visual_scale_ = visual_scale;
+    updating_inline_text_editor_ = previous_updating;
+    invalidate_canvas_overlay_caches();
+    dirty_ = true;
+    gpu_model_dirty_ = true;
+    position_text_editor();
+    update();
+    inline_text_editor_->viewport()->update();
+    update(inline_text_editor_->geometry().adjusted(-4, -4, 4, 4));
 }
 
 
@@ -357,13 +691,43 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
 {
     commit_text_edit(true);
     title_ = t;
+    gpu_model_dirty_ = true;
+    playback_frame_pending_ = false;
+    prefetched_cache_frame_ = QImage();
+    prefetched_cache_time_ = -1.0;
+    last_runtime_clock_second_ = std::numeric_limits<qint64>::min();
     editor_quality_cache_.clear();
     invalidate_canvas_overlay_caches();
     dirty_ = true;
     adaptive_interaction_active_ = false;
     force_live_full_quality_render_ = false;
-    frame_pixmap_preview_scale_ = 1.0;
+    frame_image_preview_scale_ = 1.0;
     last_full_quality_render_cost_ms_ = 0;
+
+    /* Prime the immutable GPU model immediately when a title is opened. The
+     * native OBS display can issue its first draw callback before QWidget's
+     * deferred paint scheduler reaches render_to_frame(). Session update does
+     * no GPU draw/upload here; it only prepares pending layer resources.
+     *
+     * Do not mark the model clean after this early snapshot. open_title() still
+     * reflects the selected layer into the properties/effects panels after
+     * set_title() returns, and that setup can finalize rich-text state without
+     * constituting a user edit. A queued refresh below runs after that editor
+     * initialization cycle and guarantees that the first normal display tick
+     * receives the final text model even when caching is disabled. */
+    const std::shared_ptr<Title> primed_title = title_;
+    if (primed_title && gpu_render_session_) {
+        ++gpu_model_revision_;
+        title_gpu_render_session_update(gpu_render_session_, *primed_title,
+                                        playhead_, gpu_model_revision_);
+    }
+    QTimer::singleShot(0, this, [this, primed_title]() {
+        if (!primed_title || title_ != primed_title)
+            return;
+        gpu_model_dirty_ = true;
+        dirty_ = true;
+        update();
+    });
     if (!preserve_view) {
         pan_offset_ = QPointF(0, 0);
         if (title_) fit_canvas(fit_zoom_up_to_100_);
@@ -400,8 +764,43 @@ void CanvasPreview::set_playhead(double t)
     playhead_ = t;
     if (canvas_overlay_changes_with_playhead(old_playhead, playhead_))
         invalidate_canvas_overlay_caches();
+    /* A transport tick already arrives at the project/OBS frame cadence. Do
+     * not throttle it again with the editor's adaptive render interval. */
+    playback_frame_pending_ = true;
     dirty_ = true;
     position_text_editor();
+    update();
+}
+
+void CanvasPreview::set_display_refresh_rate(double hz)
+{
+    if (!std::isfinite(hz) || hz < 1.0)
+        hz = 60.0;
+    display_refresh_interval_ms_ = std::max(
+        1, static_cast<int>(std::lround(1000.0 / std::clamp(hz, 24.0, 240.0))));
+}
+
+void CanvasPreview::refresh_runtime_dynamic_content()
+{
+    if (!title_)
+        return;
+
+    bool has_ticker = false;
+    bool has_clock = false;
+    for (const auto &layer : title_->layers) {
+        if (!layer)
+            continue;
+        has_ticker = has_ticker || layer->type == LayerType::Ticker;
+        has_clock = has_clock || layer->type == LayerType::Clock;
+    }
+    if (!has_ticker && !has_clock)
+        return;
+
+    const qint64 clock_second = QDateTime::currentSecsSinceEpoch();
+    if (!has_ticker && clock_second == last_runtime_clock_second_)
+        return;
+    last_runtime_clock_second_ = clock_second;
+    dirty_ = true;
     update();
 }
 
@@ -443,6 +842,7 @@ void CanvasPreview::set_safe_guides_visible(bool visible)
     settings.setValue(QString::fromUtf8(kEditorSafeGuidesVisibleKey), visible);
     settings.endGroup();
     settings.sync();
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -482,6 +882,7 @@ void CanvasPreview::set_rulers_visible(bool visible)
     rulers_visible_ = visible;
     save_ruler_guide_settings();
     position_text_editor();
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -490,6 +891,7 @@ void CanvasPreview::set_guides_visible(bool visible)
     if (guides_visible_ == visible) return;
     guides_visible_ = visible;
     save_ruler_guide_settings();
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -498,6 +900,7 @@ void CanvasPreview::set_guides_locked(bool locked)
     if (guides_locked_ == locked) return;
     guides_locked_ = locked;
     save_ruler_guide_settings();
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -506,6 +909,7 @@ void CanvasPreview::set_show_guide_coordinates(bool visible)
     if (show_guide_coordinates_ == visible) return;
     show_guide_coordinates_ = visible;
     save_ruler_guide_settings();
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -514,6 +918,7 @@ void CanvasPreview::set_canvas_border_visible(bool visible)
     if (canvas_border_visible_ == visible) return;
     canvas_border_visible_ = visible;
     save_ruler_guide_settings();
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -524,19 +929,45 @@ void CanvasPreview::clear_user_guides()
     horizontal_guides_.clear();
     clear_snap_feedback();
     save_ruler_guide_settings();
+    invalidate_canvas_overlay_caches();
     update();
+}
+
+bool CanvasPreview::prepare_cached_playback_frame(double time)
+{
+    prefetched_cache_frame_ = QImage();
+    prefetched_cache_time_ = -1.0;
+    if (!title_)
+        return false;
+
+    CacheManager &cache = CacheManager::instance();
+    const TitleCacheability cacheability = cache.titleCacheability(title_);
+    if (adaptive_interaction_active_ || !cache.cacheEnabled() ||
+        cacheability == TitleCacheability::NonCacheable)
+        return true;
+
+    QImage cached = cache.requestFrame(title_, time, true);
+    if (cached.isNull())
+        return false;
+
+    prefetched_cache_frame_ = cached;
+    prefetched_cache_time_ = time;
+    return true;
 }
 
 void CanvasPreview::refresh_preview()
 {
+    gpu_model_dirty_ = true;
+    prefetched_cache_frame_ = QImage();
+    prefetched_cache_time_ = -1.0;
     // Model edits invalidate only the editor-local reduced-quality cache. The
     // full-quality OBS/prerender cache retains its own independent lifecycle.
     editor_quality_cache_.clear();
     invalidate_canvas_overlay_caches();
     dirty_ = true;
     position_text_editor();
-    if (!inline_text_layer_id_.empty())
-        render_to_pixmap();
+    /* Inline edits and canvas manipulation are presented by the display-rate
+     * scheduler; never force a synchronous artwork render from an input event. */
     update();
     if (inline_text_editor_ && inline_text_editor_->isVisible()) {
         inline_text_editor_->viewport()->update();
@@ -548,31 +979,29 @@ void CanvasPreview::refresh_preview()
 
 void CanvasPreview::clear_rendered_frame()
 {
-    frame_pixmap_ = QPixmap();
-    frame_pixmap_canvas_offset_ = QPoint();
-    frame_pixmap_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
-    frame_pixmap_preview_scale_ = 1.0;
+    frame_image_ = QImage();
+    frame_image_canvas_offset_ = QPoint();
+    frame_image_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
+    frame_image_preview_scale_ = 1.0;
+    if (title_ && gpu_render_session_) {
+        ++gpu_model_revision_;
+        title_gpu_render_session_update(gpu_render_session_, *title_, playhead_,
+                                        gpu_model_revision_);
+        gpu_model_dirty_ = false;
+    }
     invalidate_canvas_overlay_caches();
     dirty_ = false;
+    playback_frame_pending_ = false;
     update();
 }
 
 QImage CanvasPreview::current_rendered_frame() const
 {
-    if (frame_pixmap_.isNull())
-        return QImage();
-
-    const QSize canvas_size = frame_pixmap_canvas_size_.isValid()
-        ? frame_pixmap_canvas_size_
-        : frame_pixmap_.size();
-    QImage image(canvas_size, QImage::Format_ARGB32_Premultiplied);
-    image.fill(Qt::transparent);
-    QPainter painter(&image);
-    const QSize logical_payload_size(
-        std::max(1, (int)std::round(frame_pixmap_.width() / std::max(0.125, frame_pixmap_preview_scale_))),
-        std::max(1, (int)std::round(frame_pixmap_.height() / std::max(0.125, frame_pixmap_preview_scale_))));
-    painter.drawPixmap(QRect(frame_pixmap_canvas_offset_, logical_payload_size), frame_pixmap_);
-    return image;
+    /* Explicit inspection/export path only. Normal editor presentation never
+     * maps the GPU frame back to system memory. */
+    return gpu_render_session_
+        ? title_gpu_render_session_readback(gpu_render_session_)
+        : QImage();
 }
 
 
@@ -632,7 +1061,10 @@ void CanvasPreview::begin_adaptive_interaction()
     if (!adaptive_rendering_enabled_)
         return;
     adaptive_interaction_active_ = true;
-    if (adaptive_full_quality_timer_)
+    /* Fixed quality modes remain at their selected scale. Auto uses the timer
+     * only as an idle safety net; mouse/key release remains the normal end. */
+    if (adaptive_full_quality_timer_ &&
+        adaptive_quality_mode_ == AdaptiveQualityMode::Auto)
         adaptive_full_quality_timer_->start();
 }
 
@@ -641,7 +1073,7 @@ void CanvasPreview::end_adaptive_interaction()
     if (adaptive_full_quality_timer_)
         adaptive_full_quality_timer_->stop();
 
-    const bool was_reduced_quality = frame_pixmap_preview_scale_ < 0.999;
+    const bool was_reduced_quality = frame_image_preview_scale_ < 0.999;
     adaptive_interaction_active_ = false;
     if (adaptive_rendering_enabled_ && adaptive_quality_mode_ == AdaptiveQualityMode::Auto && was_reduced_quality)
         force_live_full_quality_render_ = true;
@@ -663,7 +1095,7 @@ double CanvasPreview::adaptive_preview_scale() const
     if (!adaptive_interaction_active_)
         return 1.0;
 
-    double scale = 1.0;
+    double scale = last_full_quality_render_cost_ms_ <= 0 ? 0.5 : 1.0;
     // Stay at full quality for titles already capable of interactive rendering.
     if (last_full_quality_render_cost_ms_ > 75) scale = 0.25;
     else if (last_full_quality_render_cost_ms_ > 45) scale = 0.375;
@@ -802,6 +1234,8 @@ void CanvasPreview::set_direct_selection_tool_active()
 void CanvasPreview::set_shape_tool_active(ShapeType shape_type)
 {
     if (pen_path_active_) finish_pen_path(false);
+    if (shape_type == ShapeType::Line || shape_type == ShapeType::Path)
+        shape_type = ShapeType::Rectangle;
     active_tool_ = CanvasTool::Shape;
     active_shape_type_ = shape_type;
     drawing_shape_ = false;
@@ -832,6 +1266,7 @@ void CanvasPreview::set_text_tool_active(LayerType type)
     if (type != LayerType::Text && type != LayerType::Clock && type != LayerType::Ticker)
         type = LayerType::Text;
     active_tool_ = CanvasTool::Text;
+    resume_inline_text_edit_after_gradient();
     active_text_layer_type_ = type;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
@@ -873,7 +1308,7 @@ void CanvasPreview::set_color_picker_tool_active()
 void CanvasPreview::set_gradient_tool_active()
 {
     if (pen_path_active_) finish_pen_path(false);
-    commit_text_edit(true);
+    suspend_inline_text_edit_for_gradient();
     active_tool_ = CanvasTool::Gradient;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
@@ -1103,6 +1538,18 @@ QPointF CanvasPreview::constrain_path_direction(const QPointF &anchor, const QPo
 
 bool CanvasPreview::event(QEvent *ev)
 {
+    if (ev && gpu_display_ && gpu_display_->display) {
+        if (ev->type() == QEvent::Show)
+            obs_display_set_enabled(gpu_display_->display, true);
+        else if (ev->type() == QEvent::Hide)
+            obs_display_set_enabled(gpu_display_->display, false);
+        else if (ev->type() == QEvent::PaletteChange ||
+                 ev->type() == QEvent::ApplicationPaletteChange)
+            gpu_underlay_key_.clear();
+        else if (ev->type() == QEvent::ScreenChangeInternal)
+            obs_display_update_color_space(gpu_display_->display);
+    }
+
     /* The editor owns Ctrl+Z/Ctrl+Shift+Z actions with a WidgetWithChildren
      * shortcut context.  Claim those shortcuts while a Pen path is in
      * progress so the unfinished path uses its own lightweight history
@@ -1930,6 +2377,7 @@ void CanvasPreview::invalidate_canvas_overlay_caches() const
 {
     invalidate_selection_overlay_cache();
     invalidate_hover_overlay_cache();
+    gpu_overlay_dirty_ = true;
 }
 
 bool CanvasPreview::layer_overlay_changes_with_playhead(const Layer &layer) const
@@ -2098,14 +2546,53 @@ bool CanvasPreview::gradient_handles_visible() const
     return active_tool_ == CanvasTool::Gradient || gradient_editor_active_;
 }
 
+bool CanvasPreview::selected_text_fill(const Layer &layer, RichTextFill &fill) const
+{
+    if (!is_canvas_text_layer(layer) || inline_text_layer_id_ != layer.id)
+        return false;
+
+    const double local_time = std::max(0.0, playhead_ - layer.in_time);
+    const RichTextCharFormatSummary summary =
+        summarize_rich_text_char_format(layer, true, local_time);
+    if (!summary.valid || (summary.mixed & RichTextCharFillColor) != 0)
+        return false;
+    fill = summary.format.fill;
+    return true;
+}
+
+bool CanvasPreview::apply_selected_text_gradient_fill(
+    Layer &layer, const RichTextFill &fill)
+{
+    if (!is_canvas_text_layer(layer) || inline_text_layer_id_ != layer.id)
+        return false;
+
+    const double local_time = std::max(0.0, playhead_ - layer.in_time);
+    RichTextCharFormatSummary summary =
+        summarize_rich_text_char_format(layer, true, local_time);
+    RichTextCharFormat format = summary.valid
+        ? summary.format
+        : rich_text_effective_typing_format(layer.rich_text);
+    format.fill = fill;
+    apply_rich_text_format_to_layer_range(
+        layer, format, RichTextCharFillColor, true);
+    apply_active_text_char_format(
+        layer.id, format, RichTextCharFillColor);
+    return true;
+}
+
 bool CanvasPreview::layer_supports_gradient_handles(const Layer &layer) const
 {
-    if (!gradient_handles_visible() || layer.locked || !layer.visible || layer.fill_type != 1)
+    if (!gradient_handles_visible() || layer.locked || !layer.visible)
         return false;
     if (playhead_ < layer.in_time || playhead_ > layer.out_time)
         return false;
-    return layer.type == LayerType::SolidRect || layer.type == LayerType::Shape ||
-           is_canvas_text_layer(layer);
+    if (is_canvas_text_layer(layer) && inline_text_layer_id_ == layer.id) {
+        RichTextFill fill;
+        return selected_text_fill(layer, fill) && fill.type == 1;
+    }
+    return layer.fill_type == 1 &&
+           (layer.type == LayerType::SolidRect ||
+            layer.type == LayerType::Shape || is_canvas_text_layer(layer));
 }
 
 CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(const Layer &layer) const
@@ -2114,24 +2601,39 @@ CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(co
     if (!layer_supports_gradient_handles(layer))
         return g;
 
-    const QRectF box = layer_local_rect(layer);
+    QRectF box = layer_local_rect(layer);
+    if (is_canvas_text_layer(layer))
+        box = text_rect_for_style(box, layer);
     if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
         return g;
 
-    g.valid = true;
-    g.radial = layer.gradient_type == 1;
-    g.local_rect = box;
-    g.center = QPointF(box.left() + (double)layer.gradient_center_x * box.width(),
-                       box.top() + (double)layer.gradient_center_y * box.height());
+    RichTextFill fill;
+    const bool inline_text_fill = selected_text_fill(layer, fill);
+    if (!inline_text_fill) {
+        fill.type = layer.fill_type;
+        fill.gradient_type = layer.gradient_type;
+        fill.gradient_center_x = layer.gradient_center_x;
+        fill.gradient_center_y = layer.gradient_center_y;
+        fill.gradient_focal_x = layer.gradient_focal_x;
+        fill.gradient_focal_y = layer.gradient_focal_y;
+        fill.gradient_scale = layer.gradient_scale;
+        fill.gradient_angle = layer.gradient_angle;
+    }
 
-    const double scale = std::clamp((double)layer.gradient_scale, 0.01, 100.0);
-    const double angle = degrees_to_radians(layer.gradient_angle);
+    g.valid = true;
+    g.radial = fill.gradient_type == 1;
+    g.local_rect = box;
+    g.center = QPointF(box.left() + (double)fill.gradient_center_x * box.width(),
+                       box.top() + (double)fill.gradient_center_y * box.height());
+
+    const double scale = std::clamp((double)fill.gradient_scale, 0.01, 100.0);
+    const double angle = degrees_to_radians(fill.gradient_angle);
     const QPointF axis(std::cos(angle), std::sin(angle));
     if (g.radial) {
         const double radius = std::max(box.width(), box.height()) * 0.5 * scale;
         g.radius = g.center + axis * std::max(1.0, radius);
-        g.focal = QPointF(box.left() + (double)layer.gradient_focal_x * box.width(),
-                          box.top() + (double)layer.gradient_focal_y * box.height());
+        g.focal = QPointF(box.left() + (double)fill.gradient_focal_x * box.width(),
+                          box.top() + (double)fill.gradient_focal_y * box.height());
         g.start = g.center;
         g.end = g.radius;
     } else {
@@ -2223,6 +2725,17 @@ void CanvasPreview::begin_gradient_drag(const Layer &layer)
         return;
 
     gradient_drag_.active = true;
+    gradient_drag_.inline_text = selected_text_fill(layer, gradient_drag_.fill);
+    if (!gradient_drag_.inline_text) {
+        gradient_drag_.fill.type = layer.fill_type;
+        gradient_drag_.fill.gradient_type = layer.gradient_type;
+        gradient_drag_.fill.gradient_center_x = layer.gradient_center_x;
+        gradient_drag_.fill.gradient_center_y = layer.gradient_center_y;
+        gradient_drag_.fill.gradient_focal_x = layer.gradient_focal_x;
+        gradient_drag_.fill.gradient_focal_y = layer.gradient_focal_y;
+        gradient_drag_.fill.gradient_scale = layer.gradient_scale;
+        gradient_drag_.fill.gradient_angle = layer.gradient_angle;
+    }
     gradient_drag_.radial = g.radial;
     gradient_drag_.local_rect = g.local_rect;
     gradient_drag_.center = g.center;
@@ -2230,12 +2743,12 @@ void CanvasPreview::begin_gradient_drag(const Layer &layer)
     gradient_drag_.end = g.end;
     gradient_drag_.radius = g.radius;
     gradient_drag_.focal = g.focal;
-    gradient_drag_.center_x = layer.gradient_center_x;
-    gradient_drag_.center_y = layer.gradient_center_y;
-    gradient_drag_.focal_x = layer.gradient_focal_x;
-    gradient_drag_.focal_y = layer.gradient_focal_y;
-    gradient_drag_.scale = layer.gradient_scale;
-    gradient_drag_.angle = layer.gradient_angle;
+    gradient_drag_.center_x = gradient_drag_.fill.gradient_center_x;
+    gradient_drag_.center_y = gradient_drag_.fill.gradient_center_y;
+    gradient_drag_.focal_x = gradient_drag_.fill.gradient_focal_x;
+    gradient_drag_.focal_y = gradient_drag_.fill.gradient_focal_y;
+    gradient_drag_.scale = gradient_drag_.fill.gradient_scale;
+    gradient_drag_.angle = gradient_drag_.fill.gradient_angle;
 }
 
 bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
@@ -2260,15 +2773,16 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         return QPointF((pt.x() - box.left()) / box.width(),
                        (pt.y() - box.top()) / box.height());
     };
+    RichTextFill fill = gradient_drag_.fill;
     auto assign_center = [&](const QPointF &pt) {
         const QPointF n = normalized(pt);
-        layer->gradient_center_x = (float)n.x();
-        layer->gradient_center_y = (float)n.y();
+        fill.gradient_center_x = (float)n.x();
+        fill.gradient_center_y = (float)n.y();
     };
     auto assign_focal = [&](const QPointF &pt) {
         const QPointF n = normalized(pt);
-        layer->gradient_focal_x = (float)n.x();
-        layer->gradient_focal_y = (float)n.y();
+        fill.gradient_focal_x = (float)n.x();
+        fill.gradient_focal_y = (float)n.y();
     };
     auto assign_axis = [&](const QPointF &a, const QPointF &b) {
         const QPointF c((a.x() + b.x()) * 0.5, (a.y() + b.y()) * 0.5);
@@ -2278,9 +2792,9 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         double angle = radians_to_degrees(std::atan2(delta.y(), delta.x()));
         if (modifiers.testFlag(Qt::ShiftModifier))
             angle = std::round(angle / CANVAS_ROTATION_SNAP_DEGREES) * CANVAS_ROTATION_SNAP_DEGREES;
-        layer->gradient_angle = (float)normalize_degrees(angle);
+        fill.gradient_angle = (float)normalize_degrees(angle);
         const double base = std::max(1.0, std::hypot(box.width(), box.height()));
-        layer->gradient_scale = (float)std::clamp(distance / base, 0.01, 100.0);
+        fill.gradient_scale = (float)std::clamp(distance / base, 0.01, 100.0);
     };
 
     clear_snap_feedback();
@@ -2299,12 +2813,23 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         double angle = radians_to_degrees(std::atan2(delta.y(), delta.x()));
         if (modifiers.testFlag(Qt::ShiftModifier))
             angle = std::round(angle / CANVAS_ROTATION_SNAP_DEGREES) * CANVAS_ROTATION_SNAP_DEGREES;
-        layer->gradient_angle = (float)normalize_degrees(angle);
-        layer->gradient_scale = (float)std::clamp(radius / base, 0.01, 100.0);
+        fill.gradient_angle = (float)normalize_degrees(angle);
+        fill.gradient_scale = (float)std::clamp(radius / base, 0.01, 100.0);
     } else if (drag_mode_ == DragMode::GradientStart) {
         assign_axis(local, gradient_drag_.end);
     } else if (drag_mode_ == DragMode::GradientEnd) {
         assign_axis(gradient_drag_.start, local);
+    }
+
+    if (gradient_drag_.inline_text) {
+        apply_selected_text_gradient_fill(*layer, fill);
+    } else {
+        layer->gradient_center_x = fill.gradient_center_x;
+        layer->gradient_center_y = fill.gradient_center_y;
+        layer->gradient_focal_x = fill.gradient_focal_x;
+        layer->gradient_focal_y = fill.gradient_focal_y;
+        layer->gradient_scale = fill.gradient_scale;
+        layer->gradient_angle = fill.gradient_angle;
     }
 
     begin_adaptive_interaction();
@@ -2325,30 +2850,65 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
     if (!(layer->type == LayerType::SolidRect || layer->type == LayerType::Shape || is_canvas_text_layer(*layer)))
         return false;
 
-    const QRectF box = layer_local_rect(*layer);
+    QRectF box = layer_local_rect(*layer);
+    if (is_canvas_text_layer(*layer))
+        box = text_rect_for_style(box, *layer);
     if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
         return false;
 
-    layer->fill_type = 1;
-    if (layer->gradient_type < 0 || layer->gradient_type > 2)
-        layer->gradient_type = 0;
+    RichTextFill fill;
+    const bool inline_text_fill =
+        is_canvas_text_layer(*layer) && inline_text_layer_id_ == layer->id;
+    if (inline_text_fill) {
+        const double local_time = std::max(0.0, playhead_ - layer->in_time);
+        const RichTextCharFormatSummary summary =
+            summarize_rich_text_char_format(*layer, true, local_time);
+        fill = summary.valid ? summary.format.fill
+                             : rich_text_effective_typing_format(layer->rich_text).fill;
+    }
+    if (!inline_text_fill) {
+        fill.type = layer->fill_type;
+        fill.gradient_type = layer->gradient_type;
+        fill.gradient_center_x = layer->gradient_center_x;
+        fill.gradient_center_y = layer->gradient_center_y;
+        fill.gradient_focal_x = layer->gradient_focal_x;
+        fill.gradient_focal_y = layer->gradient_focal_y;
+        fill.gradient_scale = layer->gradient_scale;
+        fill.gradient_angle = layer->gradient_angle;
+    }
+    fill.type = 1;
+    if (fill.gradient_type < 0 || fill.gradient_type > 2)
+        fill.gradient_type = 0;
     const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
     gradient_tool_dragging_ = true;
     gradient_tool_start_local_ = local;
     drag_start_selection_bounds_ = selected_canvas_bounds();
-    drag_mode_ = layer->gradient_type == 1 ? DragMode::GradientRadius : DragMode::GradientEnd;
+    drag_mode_ = fill.gradient_type == 1 ? DragMode::GradientRadius : DragMode::GradientEnd;
 
     auto normalized = [&](const QPointF &pt) {
         return QPointF((pt.x() - box.left()) / box.width(),
                        (pt.y() - box.top()) / box.height());
     };
     const QPointF n = normalized(local);
-    layer->gradient_center_x = (float)n.x();
-    layer->gradient_center_y = (float)n.y();
-    layer->gradient_focal_x = (float)n.x();
-    layer->gradient_focal_y = (float)n.y();
-    layer->gradient_scale = 0.01f;
-    layer->gradient_angle = modifiers.testFlag(Qt::ShiftModifier) ? 0.0f : layer->gradient_angle;
+    fill.gradient_center_x = (float)n.x();
+    fill.gradient_center_y = (float)n.y();
+    fill.gradient_focal_x = (float)n.x();
+    fill.gradient_focal_y = (float)n.y();
+    fill.gradient_scale = 0.01f;
+    fill.gradient_angle = modifiers.testFlag(Qt::ShiftModifier) ? 0.0f : fill.gradient_angle;
+
+    if (inline_text_fill) {
+        apply_selected_text_gradient_fill(*layer, fill);
+    } else {
+        layer->fill_type = fill.type;
+        layer->gradient_type = fill.gradient_type;
+        layer->gradient_center_x = fill.gradient_center_x;
+        layer->gradient_center_y = fill.gradient_center_y;
+        layer->gradient_focal_x = fill.gradient_focal_x;
+        layer->gradient_focal_y = fill.gradient_focal_y;
+        layer->gradient_scale = fill.gradient_scale;
+        layer->gradient_angle = fill.gradient_angle;
+    }
 
     begin_gradient_drag(*layer);
     begin_adaptive_interaction();
@@ -3532,6 +4092,9 @@ void CanvasPreview::clear_snap_feedback()
 {
     if (snap_feedback_.empty()) return;
     snap_feedback_.clear();
+    /* Snap guides and labels are baked into gpu_overlay_cache_. Repainting
+     * without invalidation only uploads the old overlay again. */
+    invalidate_canvas_overlay_caches();
     update();
 }
 
@@ -4152,7 +4715,7 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
     invalidate_canvas_overlay_caches();
     update();
 }
-void CanvasPreview::render_to_pixmap()
+void CanvasPreview::render_to_frame()
 {
     if (render_in_progress_)
         return;
@@ -4160,119 +4723,198 @@ void CanvasPreview::render_to_pixmap()
     QElapsedTimer render_cost;
     render_cost.start();
 
-    if (!title_) {
-        frame_pixmap_ = QPixmap();
-        frame_pixmap_canvas_offset_ = QPoint();
-        frame_pixmap_canvas_size_ = QSize();
-        frame_pixmap_preview_scale_ = 1.0;
-        render_in_progress_ = false;
-        return;
-    }
+    frame_image_ = QImage();
+    frame_image_canvas_offset_ = QPoint();
+    frame_image_canvas_size_ = title_ ? QSize(title_->width, title_->height) : QSize();
+    frame_image_preview_scale_ = 1.0;
 
-    /* An empty title must clear the previous cached pixmap immediately.  A
-     * cache miss intentionally keeps the last valid image for normal playback,
-     * but after deleting the final layer that behaviour leaves a stale picture
-     * on the editor canvas. */
-    if (title_->layers.empty()) {
-        frame_pixmap_ = QPixmap();
-        frame_pixmap_canvas_offset_ = QPoint();
-        frame_pixmap_canvas_size_ = QSize(title_->width, title_->height);
-        frame_pixmap_preview_scale_ = 1.0;
-        dirty_ = false;
-        render_in_progress_ = false;
-        update();
-        return;
-    }
+    if (title_ && gpu_render_session_) {
+        /* Timeline playback changes only the session time. Model snapshots are
+         * replaced only after an actual edit, avoiding a deep copy of every
+         * layer/keyframe on each preview frame. */
+        if (drag_changed_)
+            gpu_model_dirty_ = true;
+        if (gpu_model_dirty_)
+            ++gpu_model_revision_;
+        const bool resize_drag = drag_mode_ == DragMode::ResizeNW ||
+            drag_mode_ == DragMode::ResizeN || drag_mode_ == DragMode::ResizeNE ||
+            drag_mode_ == DragMode::ResizeE || drag_mode_ == DragMode::ResizeSE ||
+            drag_mode_ == DragMode::ResizeS || drag_mode_ == DragMode::ResizeSW ||
+            drag_mode_ == DragMode::ResizeW;
+        /* Move/rotate are pure GPU matrix edits. Resize is also presented
+         * through the existing GPU texture when the layer contract permits it;
+         * the render session selectively refreshes rasters whose local layout
+         * actually depends on the resized box. */
+        const bool transform_only_update = drag_changed_ &&
+            (drag_mode_ == DragMode::Move || drag_mode_ == DragMode::Rotate ||
+             resize_drag);
 
-    const CachePlaybackSettings settings = CacheManager::instance().playbackSettings();
-    QImage image;
-    /* While editing text, always render the preview from the live model. The
-     * frame cache is intentionally bypassed here because rich-text auto styling
-     * changes can happen without a text-content change, and the inline editor is
-     * visually transparent over the canvas-rendered text. */
-    const bool live_corner_radius_drag =
-        corner_radius_drag_.active &&
-        (drag_mode_ == DragMode::CornerRadius || drag_mode_ == DragMode::CornerRadiusTL ||
-         drag_mode_ == DragMode::CornerRadiusTR || drag_mode_ == DragMode::CornerRadiusBR ||
-         drag_mode_ == DragMode::CornerRadiusBL);
-    const bool live_geometry_drag =
-        drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
-        drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY;
-    /* Every model-changing canvas gesture must preview the current live title
-     * immediately.  Previously only corner-radius manipulation bypassed the
-     * cache, so move/scale/rotate/gradient/origin drags kept displaying the
-     * previous cached frame until the invalidation timer completed. */
-    /* Clock/ticker titles may now use a cached z-order-safe static prefix.
-     * requestFrame() composites the live suffix over that prefix, while direct
-     * manipulation still bypasses every cache so edits remain immediate. */
-    const bool model_is_interactive = !inline_text_layer_id_.empty() || live_corner_radius_drag ||
-        live_geometry_drag || adaptive_interaction_active_ || force_live_full_quality_render_;
-    const double preview_scale = adaptive_preview_scale();
-    if (adaptive_rendering_enabled_ && preview_scale < 0.999) {
-        // Editor-only reduced-resolution rasterization. Fixed quality modes also
-        // use a private editor cache, deliberately separate from CacheManager,
-        // so reduced frames can never leak into OBS output or global prerender.
-        const bool fixed_quality = adaptive_quality_mode_ != AdaptiveQualityMode::Auto;
-        // Never read or populate the settled-frame cache while the model is
-        // changing. A fixed-quality mode must use the same live interactive path
-        // as Auto; otherwise repeated nudges can display a stale frame and pay
-        // cache/hash overhead on every key event.
-        const bool allow_editor_cache = fixed_quality && !adaptive_interaction_active_;
-        const QString editor_cache_key = QStringLiteral("%1:%2:%3")
-            .arg(QString::fromStdString(title_->id))
-            .arg(qRound64(playhead_ * 1000.0))
-            .arg(qRound(preview_scale * 1000.0));
-        if (allow_editor_cache)
-            image = editor_quality_cache_.value(editor_cache_key);
-        if (image.isNull()) {
-            // Reduced editor previews use a draft render while interacting.
-            // Expensive temporal/blur effects are temporarily bypassed because
-            // they dominate render time but do not improve transform feedback.
-            image = render_title_to_image_scaled(*title_, playhead_, preview_scale,
-                                                 adaptive_interaction_active_);
-            if (allow_editor_cache && !image.isNull()) {
-                if (editor_quality_cache_.size() >= 240)
-                    editor_quality_cache_.clear();
-                editor_quality_cache_.insert(editor_cache_key, image);
+        bool submitted_cached_frame = false;
+        bool preserve_previous_cached_frame = false;
+        CacheManager &cache = CacheManager::instance();
+        const CachePlaybackSettings playback = cache.playbackSettings();
+        const TitleCacheability cacheability = cache.titleCacheability(title_);
+        const bool direct_interaction = drag_changed_ || adaptive_interaction_active_;
+
+        /* The editor and OBS source must present the same cache payload. The
+         * previous editor path used requestFrame() only as a transport gate and
+         * then rebuilt the live GPU graph, which could diverge from the actual
+         * prerender. Cache frames are full-quality canvas payloads, so disable
+         * adaptive draft scaling before submitting their sparse coordinates. */
+        QImage cached;
+        QString gpu_cache_token;
+        if (!direct_interaction && cache.cacheEnabled() &&
+            cacheability != TitleCacheability::NonCacheable) {
+            gpu_cache_token = cache.requestFrameGpuToken(
+                title_, playhead_, false);
+            if (gpu_cache_token.isEmpty()) {
+                if (!prefetched_cache_frame_.isNull() &&
+                    std::abs(prefetched_cache_time_ - playhead_) < 1e-9) {
+                    cached = prefetched_cache_frame_;
+                } else {
+                    cached = cache.requestFrame(title_, playhead_,
+                                                playback.cached_frames_only);
+                }
+            }
+            prefetched_cache_frame_ = QImage();
+            prefetched_cache_time_ = -1.0;
+            if (!gpu_cache_token.isEmpty()) {
+                title_gpu_render_session_set_preview_quality(
+                    gpu_render_session_, 1.0, false);
+                frame_image_preview_scale_ = 1.0;
+                if (cacheability == TitleCacheability::PartiallyCacheable) {
+                    const TitleDynamicLayerAnalysis analysis =
+                        analyze_title_dynamic_layers(*title_);
+                    if (analysis.has_cacheable_prefix) {
+                        submitted_cached_frame =
+                            title_gpu_render_session_submit_gpu_cached_prefix(
+                                gpu_render_session_, *title_,
+                                gpu_cache_token.toStdString(), playhead_,
+                                analysis.first_dynamic_layer,
+                                gpu_model_revision_);
+                    }
+                } else {
+                    submitted_cached_frame =
+                        title_gpu_render_session_submit_gpu_cached_frame(
+                            gpu_render_session_, *title_,
+                            gpu_cache_token.toStdString(),
+                            gpu_model_revision_);
+                }
+            } else if (!cached.isNull()) {
+                title_gpu_render_session_set_preview_quality(
+                    gpu_render_session_, 1.0, false);
+                frame_image_preview_scale_ = 1.0;
+                if (cacheability == TitleCacheability::PartiallyCacheable) {
+                    const TitleDynamicLayerAnalysis analysis =
+                        analyze_title_dynamic_layers(*title_);
+                    if (analysis.has_cacheable_prefix) {
+                        submitted_cached_frame =
+                            title_gpu_render_session_submit_cached_prefix(
+                                gpu_render_session_, *title_, cached, playhead_,
+                                analysis.first_dynamic_layer,
+                                gpu_model_revision_);
+                    }
+                } else {
+                    submitted_cached_frame =
+                        title_gpu_render_session_submit_final_frame(
+                            gpu_render_session_, *title_, cached,
+                            gpu_model_revision_);
+                }
+                if (!submitted_cached_frame) {
+                    cache.rejectFramePayload(title_, playhead_);
+                    if (playback.cached_frames_only &&
+                        playback_frame_pending_ && !gpu_model_dirty_)
+                        preserve_previous_cached_frame = true;
+                }
+            } else if (playback.cached_frames_only &&
+                       playback_frame_pending_ && !gpu_model_dirty_) {
+                /* Match the source contract: while transport waits for an exact
+                 * cached frame, keep the last published texture rather than
+                 * silently switching to a different live render. */
+                preserve_previous_cached_frame = true;
+            }
+
+            if (TitlePreferences::cache_playback_logging_enabled()) {
+                const QString action = submitted_cached_frame
+                    ? (!gpu_cache_token.isEmpty()
+                           ? QStringLiteral("submit-gpu-ram")
+                           : cacheability == TitleCacheability::PartiallyCacheable
+                               ? QStringLiteral("submit-prefix")
+                               : QStringLiteral("submit-final"))
+                    : preserve_previous_cached_frame
+                        ? QStringLiteral("hold-previous")
+                        : cached.isNull() ? QStringLiteral("cache-miss")
+                                          : QStringLiteral("cache-rejected");
+                OGS_LOG_INFO("CachePlayback", QStringLiteral(
+                    "consumer=editor-canvas action=%1 title=%2 time=%3 cacheKey=%4 size=%5x%6 cachedOnly=%7")
+                    .arg(action)
+                    .arg(QString::fromStdString(title_->id))
+                    .arg(playhead_, 0, 'f', 6)
+                    .arg(cached.isNull() ? 0 : cached.cacheKey())
+                    .arg(cached.width()).arg(cached.height())
+                    .arg(playback.cached_frames_only));
             }
         }
-    } else if (model_is_interactive) {
-        image = CacheManager::instance().renderUncachedFrame(title_, playhead_);
-    } else {
-        image = CacheManager::instance().requestFrame(title_, playhead_, settings.cached_frames_only);
+
+        if (direct_interaction || !cache.cacheEnabled() ||
+            cacheability == TitleCacheability::NonCacheable) {
+            prefetched_cache_frame_ = QImage();
+            prefetched_cache_time_ = -1.0;
+        }
+
+        if (!submitted_cached_frame && !preserve_previous_cached_frame) {
+            const double adaptive_scale = adaptive_preview_scale();
+            const bool adaptive_draft = adaptive_rendering_enabled_ &&
+                adaptive_scale < 0.999;
+            title_gpu_render_session_set_preview_quality(gpu_render_session_,
+                                                         adaptive_scale,
+                                                         adaptive_draft);
+            frame_image_preview_scale_ = adaptive_scale;
+            title_gpu_render_session_update(gpu_render_session_, *title_, playhead_,
+                                            gpu_model_revision_,
+                                            transform_only_update);
+        }
+        if (!preserve_previous_cached_frame)
+            gpu_model_dirty_ = false;
     }
-    if (!image.isNull()) {
-        bool ok_x = false, ok_y = false, ok_w = false, ok_h = false;
-        const int crop_x = image.text(QStringLiteral("obs_gsp_canvas_x")).toInt(&ok_x);
-        const int crop_y = image.text(QStringLiteral("obs_gsp_canvas_y")).toInt(&ok_y);
-        const int canvas_w = image.text(QStringLiteral("obs_gsp_canvas_width")).toInt(&ok_w);
-        const int canvas_h = image.text(QStringLiteral("obs_gsp_canvas_height")).toInt(&ok_h);
-        const bool sparse = ok_x && ok_y && ok_w && ok_h && crop_x >= 0 && crop_y >= 0 &&
-            canvas_w > 0 && canvas_h > 0 &&
-            crop_x + image.width() <= canvas_w && crop_y + image.height() <= canvas_h;
-        bool ok_preview_scale = false;
-        const double preview_scale = image.text(QStringLiteral("obs_gsp_preview_scale")).toDouble(&ok_preview_scale);
-        frame_pixmap_preview_scale_ = ok_preview_scale ? std::clamp(preview_scale, 0.125, 1.0) : 1.0;
-        frame_pixmap_ = QPixmap::fromImage(image);
-        frame_pixmap_canvas_offset_ = sparse ? QPoint(crop_x, crop_y) : QPoint();
-        frame_pixmap_canvas_size_ = sparse ? QSize(canvas_w, canvas_h) :
-            (frame_pixmap_preview_scale_ < 0.999 && title_ ? QSize(title_->width, title_->height) : image.size());
-    }
+
     dirty_ = false;
+    playback_frame_pending_ = false;
     force_live_full_quality_render_ = false;
     const int cost_ms = std::max(1, (int)render_cost.elapsed());
-    if (frame_pixmap_preview_scale_ >= 0.999)
-        last_full_quality_render_cost_ms_ = cost_ms;
-    // Adapt the presentation cadence to actual render cost. Fast titles remain
-    // 60 fps; complex titles are capped so input and OBS never starve.
-    // During direct manipulation prioritize input latency over reproducing each
-    // intermediate frame. Coalescing keeps at most one pending render; the next
-    // live render is delayed by the actual render cost so large layers cannot
-    // monopolize the GUI thread with back-to-back uncached frames.
-    render_interval_ms_ = adaptive_interaction_active_ ? std::clamp(cost_ms + 4, 16, 100)
-                                                       : std::clamp(cost_ms + 2, 16, 50);
+    last_full_quality_render_cost_ms_ = cost_ms;
+    /* GPU presentation can remain at display cadence. Coalescing protects the
+     * UI only while a changed layer raster is being regenerated. */
+    render_interval_ms_ = std::clamp(cost_ms + 1, 16, 34);
     last_render_clock_.restart();
     render_in_progress_ = false;
+}
+
+
+void CanvasPreview::render_dirty_frame_if_due()
+{
+    if (!dirty_ || render_in_progress_)
+        return;
+
+    const qint64 elapsed = last_render_clock_.isValid()
+        ? last_render_clock_.elapsed() : render_interval_ms_;
+    const bool direct_canvas_manipulation =
+        adaptive_interaction_active_ || force_live_full_quality_render_ ||
+        QApplication::mouseButtons() != Qt::NoButton ||
+        !inline_text_layer_id_.empty() ||
+        (drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
+         drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY);
+    const int cadence_ms = playback_frame_pending_ ? 0
+        : (direct_canvas_manipulation ? display_refresh_interval_ms_
+                                      : render_interval_ms_);
+
+    if ((!gpu_render_session_ && frame_image_.isNull()) || elapsed >= cadence_ms) {
+        render_to_frame();
+        return;
+    }
+
+    if (render_coalesce_timer_ && !render_coalesce_timer_->isActive())
+        render_coalesce_timer_->start(std::max(1, cadence_ms - static_cast<int>(elapsed)));
 }
 
 
@@ -4543,28 +5185,14 @@ void CanvasPreview::draw_static_checkerboard(QPainter &p, const QRect &canvas_re
     p.restore();
 }
 
-void CanvasPreview::paintEvent(QPaintEvent *)
+void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
 {
-    QPainter p(this);
     const QPalette pal = palette();
-    p.fillRect(rect(), pal.color(QPalette::Window));
+    if (pass != CanvasPaintPass::Overlay)
+        p.fillRect(rect(), pal.color(QPalette::Window));
 
     if (!title_) return;
 
-    if (!drawing_shape_ && title_has_dynamic_text_layer(title_)) dirty_ = true;
-    if (dirty_) {
-        const qint64 elapsed = last_render_clock_.isValid() ? last_render_clock_.elapsed() : render_interval_ms_;
-        const bool direct_canvas_manipulation =
-            adaptive_interaction_active_ || force_live_full_quality_render_ ||
-            (drag_mode_ != DragMode::None && drag_mode_ != DragMode::Marquee &&
-             drag_mode_ != DragMode::GuideX && drag_mode_ != DragMode::GuideY);
-        if (!render_in_progress_ &&
-            (frame_pixmap_.isNull() || direct_canvas_manipulation || elapsed >= render_interval_ms_)) {
-            render_to_pixmap();
-        } else if (render_coalesce_timer_ && !render_coalesce_timer_->isActive()) {
-            render_coalesce_timer_->start(std::max(1, render_interval_ms_ - (int)elapsed));
-        }
-    }
 
     /* A null frame means that the title is visually empty, not that the canvas
      * itself should disappear. Draw the checkerboard, rulers, guides and other
@@ -4578,22 +5206,25 @@ void CanvasPreview::paintEvent(QPaintEvent *)
 
     const QRectF canvas_rect_f(ox, oy, dw, dh);
     const QRect canvas_rect_px = canvas_rect_f.toAlignedRect();
-    draw_static_checkerboard(p, canvas_rect_px);
+    if (pass != CanvasPaintPass::Overlay)
+        draw_static_checkerboard(p, canvas_rect_px);
+    if (pass == CanvasPaintPass::Underlay)
+        return;
 
-    if (!frame_pixmap_.isNull()) {
-        const int pix_x = ox + static_cast<int>(std::round(frame_pixmap_canvas_offset_.x() * scale));
-        const int pix_y = oy + static_cast<int>(std::round(frame_pixmap_canvas_offset_.y() * scale));
-        const double logical_pix_w = frame_pixmap_preview_scale_ > 0.0
-            ? frame_pixmap_.width() / frame_pixmap_preview_scale_ : frame_pixmap_.width();
-        const double logical_pix_h = frame_pixmap_preview_scale_ > 0.0
-            ? frame_pixmap_.height() / frame_pixmap_preview_scale_ : frame_pixmap_.height();
+    if (pass == CanvasPaintPass::All && !frame_image_.isNull()) {
+        const int pix_x = ox + static_cast<int>(std::round(frame_image_canvas_offset_.x() * scale));
+        const int pix_y = oy + static_cast<int>(std::round(frame_image_canvas_offset_.y() * scale));
+        const double logical_pix_w = frame_image_preview_scale_ > 0.0
+            ? frame_image_.width() / frame_image_preview_scale_ : frame_image_.width();
+        const double logical_pix_h = frame_image_preview_scale_ > 0.0
+            ? frame_image_.height() / frame_image_preview_scale_ : frame_image_.height();
         const int pix_w = static_cast<int>(std::round(logical_pix_w * scale));
         const int pix_h = static_cast<int>(std::round(logical_pix_h * scale));
-        const bool scaled_artwork = pix_w != frame_pixmap_.width() || pix_h != frame_pixmap_.height();
+        const bool scaled_artwork = pix_w != frame_image_.width() || pix_h != frame_image_.height();
         const bool adaptive_motion = adaptive_rendering_enabled_ && adaptive_interaction_active_;
         p.save();
         p.setRenderHint(QPainter::SmoothPixmapTransform, scaled_artwork && !adaptive_motion);
-        p.drawPixmap(pix_x, pix_y, pix_w, pix_h, frame_pixmap_);
+        p.drawImage(QRect(pix_x, pix_y, pix_w, pix_h), frame_image_);
         p.restore();
     }
 
@@ -4628,23 +5259,6 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     p.restore();
 
     draw_empty_image_placeholders(p);
-
-    if (inline_text_editor_ && inline_text_editor_->isVisible()) {
-        const QPoint viewport_origin = inline_text_editor_->viewport()->mapTo(this, QPoint(0, 0));
-        const std::vector<QRectF> selection_rects = text_edit_selection_viewport_rects(inline_text_editor_);
-        if (!selection_rects.empty()) {
-            p.save();
-            p.setClipRect(inline_text_editor_->viewport()->rect().translated(viewport_origin));
-            p.setCompositionMode(QPainter::CompositionMode_Difference);
-            p.setPen(Qt::NoPen);
-            p.setBrush(Qt::white);
-            for (QRectF selection_rect : selection_rects) {
-                selection_rect.translate(viewport_origin);
-                p.drawRect(selection_rect);
-            }
-            p.restore();
-        }
-    }
 
     if (safe_guides_visible_) {
         auto draw_guide = [&](double inset, const QColor &color) {
@@ -4770,6 +5384,17 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     draw_toolbar_preview(p);
     draw_snap_cursor_indicator(p);
 
+    QPolygonF text_caret;
+    if (inline_text_caret_view_polygon(text_caret)) {
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setPen(Qt::NoPen);
+        p.setBrush(editor_canvas_helper_color(
+            TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox));
+        p.drawPolygon(text_caret);
+        p.restore();
+    }
+
     if (drag_mode_ == DragMode::Rotate) {
         QPointF pivot = canvas_to_view(drag_rotation_pivot_canvas_);
         double start_angle = std::atan2(drag_start_view_.y() - pivot.y(), drag_start_view_.x() - pivot.x());
@@ -4803,6 +5428,103 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     draw_canvas_border(p, QRectF(ox, oy, dw, dh));
     draw_rulers(p, QRectF(ox, oy, dw, dh), scale, origin);
 }
+
+void CanvasPreview::paintEvent(QPaintEvent *)
+{
+    /* Artwork is a native OBS display texture, so underlay/overlay QImage cache
+     * changes are not a prerequisite for rendering a dirty GPU frame. */
+    render_dirty_frame_if_due();
+    if (ensure_gpu_display()) {
+        const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
+        const QSize pixel_size(std::max(1, qRound(width() * dpr)),
+                               std::max(1, qRound(height() * dpr)));
+        const QPointF origin = title_ ? view_origin() : QPointF();
+        const double scale = title_ ? view_scale() : 1.0;
+        const QString underlay_key = QStringLiteral("%1|%2x%3|%4|%5|%6|%7|%8|%9|%10")
+            .arg(QString::number(static_cast<qulonglong>(
+                     reinterpret_cast<quintptr>(title_.get())), 16))
+            .arg(pixel_size.width()).arg(pixel_size.height())
+            .arg(dpr, 0, 'f', 4)
+            .arg(title_ ? title_->width : 0).arg(title_ ? title_->height : 0)
+            .arg(scale, 0, 'f', 8)
+            .arg(origin.x(), 0, 'f', 4).arg(origin.y(), 0, 'f', 4)
+            .arg(QString::number(palette().cacheKey()) + QLatin1Char(':') +
+                 QString::number(checkerboard_pattern_));
+
+        QImage underlay;
+        const bool update_underlay = gpu_underlay_key_ != underlay_key;
+        if (update_underlay) {
+            underlay = QImage(pixel_size, QImage::Format_ARGB32_Premultiplied);
+            underlay.setDevicePixelRatio(dpr);
+            underlay.fill(Qt::transparent);
+            QPainter painter(&underlay);
+            paint_canvas(painter, CanvasPaintPass::Underlay);
+        }
+
+        /* Every interaction path that changes handles, guides, tooltips or
+         * marquee geometry explicitly invalidates the overlay. Do not force a
+         * full-window QImage repaint/upload merely because a mouse button is
+         * held; that was a major source of editor UI latency. */
+        const bool update_overlay = gpu_overlay_dirty_ ||
+            gpu_overlay_cache_.size() != pixel_size ||
+            std::abs(gpu_overlay_cache_.devicePixelRatio() - dpr) > 0.001;
+        if (update_overlay) {
+            gpu_overlay_cache_ = QImage(pixel_size, QImage::Format_ARGB32_Premultiplied);
+            gpu_overlay_cache_.setDevicePixelRatio(dpr);
+            gpu_overlay_cache_.fill(Qt::transparent);
+            QPainter painter(&gpu_overlay_cache_);
+            paint_canvas(painter, CanvasPaintPass::Overlay);
+            gpu_overlay_dirty_ = false;
+        }
+
+        QImage selection_mask;
+        if (update_overlay) {
+            selection_mask = QImage(pixel_size, QImage::Format_ARGB32_Premultiplied);
+            selection_mask.setDevicePixelRatio(dpr);
+            selection_mask.fill(Qt::transparent);
+            if (inline_text_editor_ && inline_text_editor_->isVisible()) {
+                const std::vector<QPolygonF> selection_polygons =
+                    inline_text_selection_view_polygons();
+                if (!selection_polygons.empty()) {
+                    QPainter selection_painter(&selection_mask);
+                    selection_painter.setRenderHint(QPainter::Antialiasing, false);
+                    selection_painter.setClipRect(rect());
+                    selection_painter.setPen(Qt::NoPen);
+                    selection_painter.setBrush(Qt::white);
+                    for (const QPolygonF &selection_polygon : selection_polygons)
+                        selection_painter.drawPolygon(selection_polygon);
+                }
+            }
+        }
+
+        update_gpu_display_textures(update_underlay ? &underlay : nullptr,
+                                    update_overlay ? &gpu_overlay_cache_ : nullptr,
+                                    update_overlay ? &selection_mask : nullptr);
+        if (update_underlay)
+            gpu_underlay_key_ = underlay_key;
+
+        const uint32_t display_w = static_cast<uint32_t>(pixel_size.width());
+        const uint32_t display_h = static_cast<uint32_t>(pixel_size.height());
+        if (gpu_display_->display_w != display_w || gpu_display_->display_h != display_h) {
+            obs_display_resize(gpu_display_->display, display_w, display_h);
+            gpu_display_->display_w = display_w;
+            gpu_display_->display_h = display_h;
+        }
+        return;
+    }
+
+    /* GPU-only editor contract: never fall back to the retired CPU artwork
+     * compositor. A failed native OBS display is surfaced explicitly instead
+     * of silently switching rendering backends. */
+    QPainter painter(this);
+    painter.fillRect(rect(), palette().color(QPalette::Window));
+    painter.setPen(palette().color(QPalette::Text));
+    painter.drawText(rect().adjusted(24, 24, -24, -24),
+                     Qt::AlignCenter | Qt::TextWordWrap,
+                     QStringLiteral("GPU canvas initialization failed. "
+                                    "OBS Graphics Studio Pro requires the OBS GPU renderer."));
+}
+
 double CanvasPreview::toolbar_draw_aspect_ratio() const
 {
     if (active_tool_ == CanvasTool::Text) {
@@ -5004,17 +5726,21 @@ void CanvasPreview::draw_empty_image_placeholders(QPainter &p)
 
 bool CanvasPreview::sample_color_at_view(const QPointF &view_pt, QColor &color)
 {
-    if (!title_) return false;
-    if (dirty_ || frame_pixmap_.isNull())
-        render_to_pixmap();
-    if (frame_pixmap_.isNull()) return false;
+    if (!title_ || !gpu_render_session_)
+        return false;
+    if (dirty_)
+        render_to_frame();
+
+    /* Color picking is an explicit inspection operation, so it is allowed to
+     * perform one final-frame readback. Normal canvas presentation remains
+     * GPU-resident and never populates frame_image_. */
+    const QImage image = current_rendered_frame();
+    if (image.isNull())
+        return false;
 
     const QPointF canvas = view_to_canvas(view_pt);
-    const QImage image = frame_pixmap_.toImage();
-    if (image.isNull()) return false;
-
-    const int x = (int)std::floor(canvas.x()) - frame_pixmap_canvas_offset_.x();
-    const int y = (int)std::floor(canvas.y()) - frame_pixmap_canvas_offset_.y();
+    const int x = static_cast<int>(std::floor(canvas.x()));
+    const int y = static_cast<int>(std::floor(canvas.y()));
     if (x < 0 || y < 0 || x >= image.width() || y >= image.height()) {
         color = QColor(Qt::transparent);
         return true;
@@ -5424,6 +6150,12 @@ void CanvasPreview::update_shape_drawing(const QPointF &view_pt, Qt::KeyboardMod
                                            .united(snap_cursor_update_rect())
                                            .united(final_snap_cursor_update_rect())
                                            .united(canvas_drag_tooltip_update_rect());
+    /* The GPU canvas keeps editor chrome in a cached overlay texture. The
+     * toolbar-drawing preview is overlay-only state, so changing its rectangle
+     * must invalidate that texture explicitly; QWidget::update() alone only
+     * schedules a paint event and otherwise reuses the previous transparent
+     * overlay until mouse release creates the real layer. */
+    gpu_overlay_dirty_ = true;
     QRect repaint_rect = old_update_rect.united(last_toolbar_preview_update_rect_);
     if (repaint_rect.isEmpty())
         repaint_rect = this->rect();
@@ -6505,6 +7237,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
             clear_snap_feedback();
             snap_cursor_visible_ = false;
             final_snap_cursor_visible_ = false;
+            invalidate_canvas_overlay_caches();
             update();
         }
         ev->accept();
@@ -6580,6 +7313,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         final_snap_cursor_visible_ = false;
         last_toolbar_preview_update_rect_ = QRect();
         clear_snap_feedback();
+        gpu_overlay_dirty_ = true;
         update(repaint_rect.isEmpty() ? rect() : repaint_rect);
 
         if (was_text_tool)
@@ -6609,6 +7343,8 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         gradient_drag_ = GradientDragState{};
         drag_mode_ = DragMode::None;
         emit layer_geometry_changed();
+        invalidate_canvas_overlay_caches();
+        update();
         ev->accept();
         return;
     }
@@ -6674,6 +7410,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         clear_snap_feedback();
         save_ruler_guide_settings();
         unsetCursor();
+        invalidate_canvas_overlay_caches();
         update();
         ev->accept();
         return;
@@ -6693,6 +7430,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         corner_radius_drag_ = CornerRadiusDragState{};
         clear_snap_feedback();
         unsetCursor();
+        invalidate_canvas_overlay_caches();
         update();
         ev->accept();
         return;
@@ -6713,6 +7451,11 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         end_adaptive_interaction();
         emit layer_geometry_changed();
     }
+    /* Drag tooltips and snap labels are part of the cached GPU overlay. The
+     * drag state is already cleared here, so invalidate before repainting or
+     * the last interaction overlay can remain indefinitely on the canvas. */
+    invalidate_canvas_overlay_caches();
+    update();
     ev->accept();
 }
 
@@ -6742,6 +7485,7 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
             guides.erase(guides.begin() + guide_index);
             clear_snap_feedback();
             save_ruler_guide_settings();
+            invalidate_canvas_overlay_caches();
             update();
         }
     }
@@ -6797,12 +7541,14 @@ void CanvasPreview::wheelEvent(QWheelEvent *ev)
     ev->accept();
 }
 
-void CanvasPreview::resizeEvent(QResizeEvent *)
+void CanvasPreview::resizeEvent(QResizeEvent *event)
 {
+    QWidget::resizeEvent(event);
     dirty_ = true;
     invalidate_canvas_overlay_caches();
     if (fit_zoom_active_) fit_canvas(fit_zoom_up_to_100_);
     position_text_editor();
+    gpu_underlay_key_.clear();
 }
 
 /* ══════════════════════════════════════════════════════════════════

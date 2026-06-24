@@ -410,7 +410,7 @@ bool effect_type_from_id(const QString &id, LayerEffectType *type)
 
 QString effect_presets_root_path()
 {
-    char *path = obs_module_file("effects-and-presets");
+    char *path = obs_module_file("effect-transitions");
     if (!path)
         return {};
     const QString result = QString::fromUtf8(path);

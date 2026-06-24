@@ -4,12 +4,29 @@
 
 **OBS Graphics Studio Pro** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.1-alpha`**
+**Current development version: `v0.8.2-alpha`**
 
 > [!WARNING]
-> `v0.8.1-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+> `v0.8.2-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
 
 OBS Graphics Studio Pro is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
+
+## Development approach
+
+This project is the result of **vibe coding**. **Antonios Dimopoulos** defines the product vision, broadcast workflows, desired behavior, interface decisions, architecture goals, and acceptance criteria, while AI-assisted development tools help translate those requirements into C++/Qt implementation. He knows considerably more about what he wants to build than he does about C++.
+
+That development model makes validation especially important. This alpha should be treated as experimental: code changes need diff review, structural and build checks, focused automated tests, and real OBS runtime testing before they can be considered reliable for production use.
+
+## What changed in `v0.8.2-alpha`
+
+Compared with the current GitHub `main` snapshot, this development archive advances the unified GPU pipeline through the Phase 12D–15 work:
+
+- The editor text canvas uses the same immutable layout and GPU SDF text artwork path as the OBS source, including GPU-derived caret/selection geometry and corrected outer/mid/inner text strokes with independent Behind/Front ordering.
+- Alpha, inverted-alpha, luma, and inverted-luma track mattes moved into the shared GPU graph, including nested matte dependencies, scene masks, effects-before/after-mask ordering, and bounded retained matte textures.
+- Prerendered RAM frames are reconstructed directly from shared, content-addressed 128×128 GPU tile textures. SSD output uses final-frame-only triple-buffered staging, a separate writer queue, and content-addressed LZ4-compressed 256×256 tiles shared between frames.
+- RAM allocation is dynamically clamped from 16 MB up to 50% of installed physical memory, according to the user preference.
+- Phase 15 runtime visibility recovery restored the last known working Phase 14 artwork path after premature legacy removal caused text, vectors, masks, and effects to disappear. Cache ABI v24 invalidates blank frames from that failed renderer generation.
+- The standalone Line primitive was removed from the shape-tool list; line artwork remains available through open Pen paths.
 
 ---
 
@@ -43,7 +60,6 @@ OBS Graphics Studio Pro is an independent third-party project and is not affilia
   - Star
   - Polygon
   - Diamond
-  - Line
 - Direct canvas selection, movement, resizing, rotation, anchor/origin editing, and multi-selection.
 - Pen Tool for open and closed straight or cubic Bézier paths.
 - Direct Selection Tool for anchor points, Bézier direction handles, marquee point selection, live-corner editing, and compound-path contours.
@@ -178,15 +194,19 @@ OBS Graphics Studio Pro includes a background frame-cache system intended to kee
 
 ### Cache architecture
 
-- Raw image payloads in the RAM cache.
-- Optional disk cache with LZ4-compressed frame data.
-- Configurable RAM limit and disk-cache location.
-- Background render queue with title, timeline, editor, and live-cue priorities.
-- Work-area and full-timeline prerendering.
-- Live-cue frame preparation before playback.
-- Per-frame states for queued, rendering, RAM-resident, disk-resident, stale, and disabled content.
-- Content hashes, frame-state tracking, invalidation, payload sharing, and sparse alpha-bounded cached frames.
-- Cache data can persist between editor sessions when the underlying title state remains valid.
+- GPU-resident RAM frames reference shared, content-addressed 128×128 OBS tile textures; transparent tiles are omitted and live/editor consumers reconstruct frames directly on the GPU without a routine CPU image round-trip.
+- The RAM preference is clamped dynamically between **16 MB** and **50% of installed physical memory**.
+- The disk tier stores small `.ogsf` frame manifests that reference independently LZ4-compressed, SHA-256-addressed 256×256 `.ogst` BGRA tiles.
+- Fully transparent tiles are omitted, while identical non-empty tiles can be shared across frames and titles in the active cache directory.
+- Final SSD readback uses a three-slot staging ring. Only the completed frame or a safe final dirty region is mapped; layers, masks, effects, and other intermediate surfaces are not read back.
+- LZ4 compression, temporary-file writes, atomic replacement, manifest updates, and byte accounting run on a dedicated writer queue rather than the GPU render loop.
+- Dirty-region invalidation expands animated bounds for effects and falls back to full-frame staging for rotations, parented graphs, track mattes, scene masks, blur/halo effects, and other cases where a local rectangle is unsafe.
+- A bounded compatibility `QImage` hydration path remains for SSD-loaded frames whose GPU texture has been evicted.
+- Background render scheduling covers title, timeline, editor, and live-cue priorities, including work-area and full-timeline prerendering.
+- Per-frame states track queued, rendering, GPU-RAM-resident, disk-resident, stale, and disabled content.
+- Content hashes, renderer ABI versions, state tracking, invalidation, payload sharing, and startup index validation prevent incompatible or orphaned cache data from being reused.
+- Cache data can persist between editor sessions when the title state and renderer ABI remain valid.
+- Phase 12C text layers retain bounded R8 SDF glyph-atlas pages and their last valid layer target, so normal frame presentation does not rerun full `QTextDocument`/`QPainter` text rasterization.
 - Transition rendering avoids work entirely for layers without an active transition.
 - Per-character/word/sentence transition surfaces are cropped to their actual visual bounds instead of allocating full-layer images per unit.
 - Blur variants and other transition caches are bounded by entry count and memory size to prevent unbounded growth during live cueing or prerendering.
@@ -210,10 +230,14 @@ The current implementation uses one cached prefix rather than multiple independe
 
 ## Current status and limitations
 
-- The current release line is **`v0.8.1-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
+- The current release line is **`v0.8.2-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
 - Remaining pre-beta work includes the final planned features, UI consistency and visual polish, broader workflow validation, performance verification, and focused bug hunting across editor, dock, cache, and OBS playback paths.
-- The primary cross-platform composition and text-rendering path uses Cairo, Pango, and PangoCairo.
-- GPU effect-pipeline infrastructure exists, but the migration of all rendering and effects to a fully GPU-native path is not complete.
+- Supported Text and Clock layers use the Phase 12C/12D GPU text backend: immutable shaped glyph data feeds bounded R8 SDF atlas pages, GPU glyph quads, multiple per-range fills/gradients/strokes, globally correct Behind/Front stroke composition, persistent double-buffered layer textures, and shared editor caret/selection geometry.
+- The Phase 13 GPU mask graph handles alpha/luma variants, nested track-matte dependencies, scene masks, effect ordering, parent transforms, and bounded retained matte textures without CPU mask compositing.
+- The Phase 14 cache path keeps prerendered RAM frames GPU-resident and performs SSD readback only at the final-frame boundary through triple-buffered staging and a tiled content-addressed disk format.
+- Phase 15 intentionally retains the last known working Phase 14 artwork pipeline. A first attempt to remove all legacy artwork paths was rolled back after real runtime output showed only image layers; complete removal remains gated on verified parity for text, images, vectors, masks, and effects in editor, OBS live output, and cached playback.
+- Cairo/Pango, Qt raster adapters, and `render_layer_unmasked()` compatibility branches therefore remain for unsupported or not-yet-migrated artwork cases, including color-font glyphs, Ticker output, active per-character/word/sentence text transitions, and runtime fallback recovery.
+- The unified GPU compositor handles transforms, masks, effects, blending, temporal motion blur, preview/program presentation, GPU RAM frames, and final disk-cache readback, but the migration of every source adapter to a fully GPU-native representation is not complete.
 - Partial dynamic caching currently supports one safe static prefix below the first dynamic output.
 - Complex rich text, masks, effects, motion blur, large images, and high-resolution timelines can still require significant CPU, RAM, GPU, and disk resources.
 - Template and title schemas may evolve before a stable release.
@@ -298,6 +322,14 @@ Build and install with the helper script:
 .\build-windows.ps1 -ObsSdkDir $env:OBS_SDK_DIR
 ```
 
+The helper stores manifest-mode packages under
+`$env:VCPKG_ROOT\manifest-installed\obs-graphics-studio-pro` instead of
+`build\vcpkg_installed`. This deliberately keeps Autotools/MSYS dependencies
+such as `libiconv` out of project paths containing spaces. Override it with
+`-VcpkgInstalledDir C:\vcpkg-installed\obs-gsp` or the
+`OBS_GSP_VCPKG_INSTALLED_DIR` environment variable when needed; the selected
+path must not contain whitespace.
+
 Build with validation tests:
 
 ```powershell
@@ -323,6 +355,7 @@ Manual configuration:
 cmake -B build -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows `
+  -DVCPKG_INSTALLED_DIR="$env:VCPKG_ROOT/manifest-installed/obs-graphics-studio-pro" `
   -DOBS_SDK_DIR="$env:OBS_SDK_DIR" `
   -DOBS_GSP_BUILD_TESTS=ON
 
@@ -402,7 +435,7 @@ build/obs-graphics-studio-pro/
 │       ├── obs-graphics-studio-pro.dll
 │       └── dependency DLLs on Windows
 └── data/
-    ├── effects/
+    ├── effect-transitions/
     ├── icons/
     └── locale/
 ```
@@ -503,7 +536,7 @@ OBS-Graphics-Studio-Pro/
 ├── README.md
 ├── build-windows.ps1
 ├── data/
-│   ├── effects/          # OBS shader/effect assets
+│   ├── effect-transitions/ # Effect/transition presets and OBS shader assets
 │   ├── icons/            # UI SVG assets
 │   └── locale/           # OBS/Qt localization strings
 ├── docs/                 # Architecture and implementation notes
@@ -547,10 +580,24 @@ Enable the lightweight validation targets with:
 -DOBS_GSP_BUILD_TESTS=ON
 ```
 
-Current CTest targets include:
+Current CTest targets include model, cache, renderer, mask, and phase-contract coverage such as:
 
 - `rich_text_model_test`
+- `text_layout_contract_test`
 - `animation_model_test`
+- `transition_model_test`
+- `cache_time_contract_test`
+- `system_memory_contract_test`
+- `cache_frame_payload_test`
+- `cache_tile_payload_test`
+- `disk_cache_tiling_contract_test`
+- `live_text_cue_utils_test`
+- `title_snapshot_test`
+- `gpu_rounded_image_clip_test`
+- `gpu_mask_contract_test`
+- `gpu_ram_cache_tiling_contract_test`
+- `gpu_prerender_phase14_contract_test`
+- `phase15_visibility_recovery_contract_test`
 
 Run them with:
 

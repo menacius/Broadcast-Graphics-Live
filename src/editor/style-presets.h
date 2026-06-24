@@ -55,9 +55,8 @@ public:
 
     /* Inline application support: these convert a saved preset to the rich-text
      * character format used by the on-canvas editor. The returned mask uses the
-     * same bit layout as RichTextCharFormatMask, but stays in the preset module
-     * so the Styles dock can apply presets to the active text selection without
-     * depending on PropertiesPanel internals. */
+     * canonical RichTextCharFormatMask values, so the Styles dock and the
+     * editor/core cannot silently drift to different bit layouts. */
     static bool textPresetToCharFormat(const StylePreset &preset, RichTextCharFormat &format);
     static bool gradientPresetToCharFormat(const StylePreset &preset, RichTextCharFormat &format);
     static uint32_t textPresetCharMask();

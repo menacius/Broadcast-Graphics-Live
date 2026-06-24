@@ -24,25 +24,6 @@
 namespace obsgsp {
 namespace {
 
-constexpr uint32_t kPresetCharFontFamily = 1u << 0;
-constexpr uint32_t kPresetCharFontSize = 1u << 1;
-constexpr uint32_t kPresetCharBold = 1u << 2;
-constexpr uint32_t kPresetCharItalic = 1u << 3;
-constexpr uint32_t kPresetCharUnderline = 1u << 4;
-constexpr uint32_t kPresetCharStrikethrough = 1u << 5;
-constexpr uint32_t kPresetCharTracking = 1u << 6;
-constexpr uint32_t kPresetCharScaleX = 1u << 7;
-constexpr uint32_t kPresetCharScaleY = 1u << 8;
-constexpr uint32_t kPresetCharBaselineShift = 1u << 9;
-constexpr uint32_t kPresetCharFillColor = 1u << 10;
-constexpr uint32_t kPresetCharFontStyle = 1u << 11;
-constexpr uint32_t kPresetCharKerning = 1u << 12;
-constexpr uint32_t kPresetCharTextStyle = 1u << 13;
-constexpr uint32_t kPresetCharLigatures = 1u << 14;
-constexpr uint32_t kPresetCharStylisticAlternates = 1u << 15;
-constexpr uint32_t kPresetCharFractions = 1u << 16;
-constexpr uint32_t kPresetCharOpenTypeFeatures = 1u << 17;
-constexpr uint32_t kPresetCharLanguage = 1u << 18;
 QString kindToString(StylePresetKind kind)
 {
     return kind == StylePresetKind::Text ? QStringLiteral("text") : QStringLiteral("gradient");
@@ -464,15 +445,15 @@ bool StylePresetLibrary::gradientPresetToCharFormat(const StylePreset &preset, R
 
 uint32_t StylePresetLibrary::textPresetCharMask()
 {
-    return kPresetCharFontFamily | kPresetCharFontStyle | kPresetCharFontSize |
-           kPresetCharBold | kPresetCharItalic | kPresetCharUnderline |
-           kPresetCharStrikethrough | kPresetCharTracking | kPresetCharScaleX |
-           kPresetCharScaleY | kPresetCharBaselineShift | kPresetCharFillColor;
+    return RichTextCharFontFamily | RichTextCharFontStyle | RichTextCharFontSize |
+           RichTextCharBold | RichTextCharItalic | RichTextCharUnderline |
+           RichTextCharStrikethrough | RichTextCharTracking | RichTextCharScaleX |
+           RichTextCharScaleY | RichTextCharBaselineShift | RichTextCharFillColor;
 }
 
 uint32_t StylePresetLibrary::gradientPresetCharMask()
 {
-    return kPresetCharFillColor;
+    return RichTextCharFillColor;
 }
 
 QPixmap StylePresetLibrary::thumbnail(const StylePreset &preset, const QSize &size)

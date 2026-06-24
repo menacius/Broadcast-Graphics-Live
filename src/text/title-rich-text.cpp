@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <utility>
 
 #ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
@@ -68,86 +69,502 @@ static RichTextParagraphFormat layer_paragraph_format(const Layer &layer)
 
 #endif
 
+static bool same_fill(const RichTextFill &a, const RichTextFill &b)
+{
+    return a.type == b.type && a.color == b.color &&
+           a.gradient_type == b.gradient_type &&
+           a.gradient_spread == b.gradient_spread &&
+           a.gradient_start_color == b.gradient_start_color &&
+           a.gradient_end_color == b.gradient_end_color &&
+           a.gradient_start_pos == b.gradient_start_pos &&
+           a.gradient_end_pos == b.gradient_end_pos &&
+           a.gradient_start_opacity == b.gradient_start_opacity &&
+           a.gradient_end_opacity == b.gradient_end_opacity &&
+           a.gradient_opacity == b.gradient_opacity &&
+           a.gradient_angle == b.gradient_angle &&
+           a.gradient_center_x == b.gradient_center_x &&
+           a.gradient_center_y == b.gradient_center_y &&
+           a.gradient_scale == b.gradient_scale &&
+           a.gradient_focal_x == b.gradient_focal_x &&
+           a.gradient_focal_y == b.gradient_focal_y;
+}
+
+static bool same_stroke(const RichTextStroke &a, const RichTextStroke &b)
+{
+    return a.enabled == b.enabled && a.width == b.width &&
+           a.opacity == b.opacity && a.on_front == b.on_front &&
+           a.alignment == b.alignment && a.antialias == b.antialias &&
+           a.join_style == b.join_style && same_fill(a.fill, b.fill);
+}
+
+static size_t clamped_end(size_t start, size_t length, size_t limit)
+{
+    start = std::min(start, limit);
+    return length > limit - start ? limit : start + length;
+}
+
+uint32_t rich_text_char_format_difference_mask(const RichTextCharFormat &a,
+                                               const RichTextCharFormat &b,
+                                               uint32_t mask)
+{
+    uint32_t diff = 0;
+    if ((mask & RichTextCharFontFamily) && a.font_family != b.font_family) diff |= RichTextCharFontFamily;
+    if ((mask & RichTextCharFontStyle) && a.font_style != b.font_style) diff |= RichTextCharFontStyle;
+    if ((mask & RichTextCharFontSize) && a.font_size != b.font_size) diff |= RichTextCharFontSize;
+    if ((mask & RichTextCharBold) && a.bold != b.bold) diff |= RichTextCharBold;
+    if ((mask & RichTextCharItalic) && a.italic != b.italic) diff |= RichTextCharItalic;
+    if ((mask & RichTextCharUnderline) && a.underline != b.underline) diff |= RichTextCharUnderline;
+    if ((mask & RichTextCharStrikethrough) && a.strikethrough != b.strikethrough) diff |= RichTextCharStrikethrough;
+    if ((mask & RichTextCharKerning) &&
+        (a.kerning != b.kerning || a.kerning_mode != b.kerning_mode ||
+         a.manual_kerning != b.manual_kerning)) diff |= RichTextCharKerning;
+    if ((mask & RichTextCharTracking) && a.tracking != b.tracking) diff |= RichTextCharTracking;
+    if ((mask & RichTextCharScaleX) && a.scale_x != b.scale_x) diff |= RichTextCharScaleX;
+    if ((mask & RichTextCharScaleY) && a.scale_y != b.scale_y) diff |= RichTextCharScaleY;
+    if ((mask & RichTextCharBaselineShift) && a.baseline_shift != b.baseline_shift) diff |= RichTextCharBaselineShift;
+    if ((mask & RichTextCharFillColor) && !same_fill(a.fill, b.fill)) diff |= RichTextCharFillColor;
+    if ((mask & RichTextCharTextStyle) && a.text_style != b.text_style) diff |= RichTextCharTextStyle;
+    if ((mask & RichTextCharLigatures) && a.ligatures != b.ligatures) diff |= RichTextCharLigatures;
+    if ((mask & RichTextCharStylisticAlternates) && a.stylistic_alternates != b.stylistic_alternates)
+        diff |= RichTextCharStylisticAlternates;
+    if ((mask & RichTextCharFractions) && a.fractions != b.fractions) diff |= RichTextCharFractions;
+    if ((mask & RichTextCharOpenTypeFeatures) && a.opentype_features != b.opentype_features)
+        diff |= RichTextCharOpenTypeFeatures;
+    if ((mask & RichTextCharLanguage) && a.language != b.language) diff |= RichTextCharLanguage;
+    if ((mask & RichTextCharStroke) && !same_stroke(a.stroke, b.stroke)) diff |= RichTextCharStroke;
+    return diff;
+}
+
+void rich_text_merge_char_format(RichTextCharFormat &target,
+                                 const RichTextCharFormat &source, uint32_t mask)
+{
+    if (mask & RichTextCharFontFamily) target.font_family = source.font_family;
+    if (mask & RichTextCharFontStyle) target.font_style = source.font_style;
+    if (mask & RichTextCharFontSize) target.font_size = source.font_size;
+    if (mask & RichTextCharBold) target.bold = source.bold;
+    if (mask & RichTextCharItalic) target.italic = source.italic;
+    if (mask & RichTextCharUnderline) target.underline = source.underline;
+    if (mask & RichTextCharStrikethrough) target.strikethrough = source.strikethrough;
+    if (mask & RichTextCharKerning) {
+        target.kerning = source.kerning;
+        target.kerning_mode = source.kerning_mode;
+        target.manual_kerning = source.manual_kerning;
+    }
+    if (mask & RichTextCharTracking) target.tracking = source.tracking;
+    if (mask & RichTextCharScaleX) target.scale_x = source.scale_x;
+    if (mask & RichTextCharScaleY) target.scale_y = source.scale_y;
+    if (mask & RichTextCharBaselineShift) target.baseline_shift = source.baseline_shift;
+    if (mask & RichTextCharFillColor) target.fill = source.fill;
+    if (mask & RichTextCharTextStyle) target.text_style = source.text_style;
+    if (mask & RichTextCharLigatures) target.ligatures = source.ligatures;
+    if (mask & RichTextCharStylisticAlternates) target.stylistic_alternates = source.stylistic_alternates;
+    if (mask & RichTextCharFractions) target.fractions = source.fractions;
+    if (mask & RichTextCharOpenTypeFeatures) target.opentype_features = source.opentype_features;
+    if (mask & RichTextCharLanguage) target.language = source.language;
+    if (mask & RichTextCharStroke) target.stroke = source.stroke;
+}
+
+
+RichTextFontScaleMetrics rich_text_font_scale_metrics(float scale_x, float scale_y)
+{
+    const float sx = std::clamp(scale_x, 0.01f, 100.0f);
+    const float sy = std::clamp(scale_y, 0.01f, 100.0f);
+    RichTextFontScaleMetrics result;
+    result.vertical_factor = sy;
+    result.horizontal_stretch_percent = std::clamp(
+        static_cast<int>(std::lround((sx / sy) * 100.0f)), 1, 4000);
+    return result;
+}
+
+uint32_t rich_text_paragraph_format_difference_mask(const RichTextParagraphFormat &a,
+                                                    const RichTextParagraphFormat &b,
+                                                    uint32_t mask)
+{
+    uint32_t diff = 0;
+    if ((mask & RichTextParagraphAlignH) && a.align_h != b.align_h) diff |= RichTextParagraphAlignH;
+    if ((mask & RichTextParagraphAlignV) && a.align_v != b.align_v) diff |= RichTextParagraphAlignV;
+    if ((mask & RichTextParagraphIndentLeft) && a.indent_left != b.indent_left)
+        diff |= RichTextParagraphIndentLeft;
+    if ((mask & RichTextParagraphIndentRight) && a.indent_right != b.indent_right)
+        diff |= RichTextParagraphIndentRight;
+    if ((mask & RichTextParagraphIndentFirstLine) && a.indent_first_line != b.indent_first_line)
+        diff |= RichTextParagraphIndentFirstLine;
+    if ((mask & RichTextParagraphLineSpacing) && a.line_spacing != b.line_spacing)
+        diff |= RichTextParagraphLineSpacing;
+    if ((mask & RichTextParagraphSpaceBefore) && a.space_before != b.space_before)
+        diff |= RichTextParagraphSpaceBefore;
+    if ((mask & RichTextParagraphSpaceAfter) && a.space_after != b.space_after)
+        diff |= RichTextParagraphSpaceAfter;
+    if ((mask & RichTextParagraphHyphenate) && a.hyphenate != b.hyphenate)
+        diff |= RichTextParagraphHyphenate;
+    return diff;
+}
+
+void rich_text_merge_paragraph_format(RichTextParagraphFormat &target,
+                                      const RichTextParagraphFormat &source, uint32_t mask)
+{
+    if (mask & RichTextParagraphAlignH) target.align_h = source.align_h;
+    if (mask & RichTextParagraphAlignV) target.align_v = source.align_v;
+    if (mask & RichTextParagraphIndentLeft) target.indent_left = source.indent_left;
+    if (mask & RichTextParagraphIndentRight) target.indent_right = source.indent_right;
+    if (mask & RichTextParagraphIndentFirstLine) target.indent_first_line = source.indent_first_line;
+    if (mask & RichTextParagraphLineSpacing) target.line_spacing = source.line_spacing;
+    if (mask & RichTextParagraphSpaceBefore) target.space_before = source.space_before;
+    if (mask & RichTextParagraphSpaceAfter) target.space_after = source.space_after;
+    if (mask & RichTextParagraphHyphenate) target.hyphenate = source.hyphenate;
+}
+
 static bool same_format(const RichTextCharFormat &a, const RichTextCharFormat &b)
 {
-    return a.font_family == b.font_family && a.font_style == b.font_style &&
-           a.font_size == b.font_size && a.bold == b.bold && a.italic == b.italic &&
-           a.underline == b.underline && a.strikethrough == b.strikethrough &&
-           a.kerning == b.kerning && a.kerning_mode == b.kerning_mode &&
-           a.manual_kerning == b.manual_kerning && a.tracking == b.tracking &&
-           a.scale_x == b.scale_x && a.scale_y == b.scale_y &&
-           a.baseline_shift == b.baseline_shift && a.text_style == b.text_style &&
-           a.ligatures == b.ligatures && a.stylistic_alternates == b.stylistic_alternates &&
-           a.fractions == b.fractions && a.opentype_features == b.opentype_features &&
-           a.language == b.language && a.fill.type == b.fill.type &&
-           a.fill.color == b.fill.color && a.fill.gradient_type == b.fill.gradient_type &&
-           a.fill.gradient_spread == b.fill.gradient_spread &&
-           a.fill.gradient_start_color == b.fill.gradient_start_color &&
-           a.fill.gradient_end_color == b.fill.gradient_end_color &&
-           a.fill.gradient_start_pos == b.fill.gradient_start_pos &&
-           a.fill.gradient_end_pos == b.fill.gradient_end_pos &&
-           a.fill.gradient_start_opacity == b.fill.gradient_start_opacity &&
-           a.fill.gradient_end_opacity == b.fill.gradient_end_opacity &&
-           a.fill.gradient_opacity == b.fill.gradient_opacity &&
-           a.fill.gradient_angle == b.fill.gradient_angle &&
-           a.fill.gradient_center_x == b.fill.gradient_center_x &&
-           a.fill.gradient_center_y == b.fill.gradient_center_y &&
-           a.fill.gradient_scale == b.fill.gradient_scale &&
-           a.fill.gradient_focal_x == b.fill.gradient_focal_x &&
-           a.fill.gradient_focal_y == b.fill.gradient_focal_y;
+    return rich_text_char_format_difference_mask(a, b) == 0;
+}
+
+static bool utf8_continuation(unsigned char c)
+{
+    return (c & 0xC0u) == 0x80u;
+}
+
+bool rich_text_utf8_is_boundary(const std::string &text, size_t byte_offset)
+{
+    return byte_offset == 0 || byte_offset >= text.size() ||
+           !utf8_continuation(static_cast<unsigned char>(text[byte_offset]));
+}
+
+size_t rich_text_utf8_previous_boundary(const std::string &text, size_t byte_offset)
+{
+    byte_offset = std::min(byte_offset, text.size());
+    while (byte_offset > 0 && byte_offset < text.size() &&
+           utf8_continuation(static_cast<unsigned char>(text[byte_offset])))
+        --byte_offset;
+    return byte_offset;
+}
+
+size_t rich_text_utf8_next_boundary(const std::string &text, size_t byte_offset)
+{
+    byte_offset = std::min(byte_offset, text.size());
+    while (byte_offset < text.size() &&
+           utf8_continuation(static_cast<unsigned char>(text[byte_offset])))
+        ++byte_offset;
+    return byte_offset;
+}
+
+static size_t utf8_codepoint_end(const std::string &text, size_t start)
+{
+    if (start >= text.size()) return text.size();
+    size_t end = start + 1;
+    while (end < text.size() && utf8_continuation(static_cast<unsigned char>(text[end])))
+        ++end;
+    return end;
+}
+
+static size_t utf8_codepoint_start_before(const std::string &text, size_t end)
+{
+    if (end == 0) return 0;
+    size_t start = std::min(end, text.size()) - 1;
+    while (start > 0 && utf8_continuation(static_cast<unsigned char>(text[start])))
+        --start;
+    return start;
+}
+
+static std::vector<std::pair<size_t, size_t>> paragraph_spans(const std::string &text)
+{
+    std::vector<std::pair<size_t, size_t>> spans;
+    const size_t text_len = text.size();
+    size_t start = 0;
+    while (start <= text_len) {
+        size_t end = start;
+        while (end < text_len && text[end] != '\n' && text[end] != '\r')
+            ++end;
+        spans.emplace_back(start, end - start);
+        if (end >= text_len) break;
+        if (text[end] == '\r' && end + 1 < text_len && text[end + 1] == '\n')
+            start = end + 2;
+        else
+            start = end + 1;
+    }
+    return spans;
+}
+
+static const RichTextBlock *paragraph_block_for_start(const std::vector<RichTextBlock> &blocks,
+                                                      size_t start)
+{
+    const RichTextBlock *previous = nullptr;
+    for (const auto &block : blocks) {
+        if (block.start == start)
+            return &block;
+        if (block.start <= start && start <= clamped_end(block.start, block.length, SIZE_MAX))
+            return &block;
+        if (block.start <= start && (!previous || block.start > previous->start))
+            previous = &block;
+    }
+    return previous;
+}
+
+static RichTextParagraphFormat paragraph_format_for_start(const std::vector<RichTextBlock> &blocks,
+                                                           size_t start,
+                                                           const RichTextParagraphFormat &fallback,
+                                                           uint32_t *resolved_mask = nullptr)
+{
+    RichTextParagraphFormat result = fallback;
+    const RichTextBlock *block = paragraph_block_for_start(blocks, start);
+    const uint32_t mask = block ? (block->mask & RichTextParagraphAll) : 0;
+    if (block)
+        rich_text_merge_paragraph_format(result, block->format, mask);
+    if (resolved_mask)
+        *resolved_mask = mask;
+    return result;
+}
+
+RichTextParagraphFormat rich_text_paragraph_format_at(const RichTextDocument &doc,
+                                                      size_t paragraph_byte_offset)
+{
+    return paragraph_format_for_start(doc.blocks,
+                                      rich_text_utf8_previous_boundary(
+                                          doc.plain_text,
+                                          std::min(paragraph_byte_offset, doc.plain_text.size())),
+                                      doc.default_paragraph_format);
+}
+
+RichTextCharFormat rich_text_format_at(const RichTextDocument &doc, size_t byte_offset)
+{
+    RichTextCharFormat result = doc.default_format;
+    const size_t offset = rich_text_utf8_previous_boundary(doc.plain_text,
+                                                            std::min(byte_offset, doc.plain_text.size()));
+    for (const auto &range : doc.ranges) {
+        if (offset >= range.start && offset < clamped_end(range.start, range.length, doc.plain_text.size()))
+            rich_text_merge_char_format(result, range.format, range.mask);
+    }
+    return result;
+}
+
+uint32_t rich_text_format_mask_at(const RichTextDocument &doc, size_t byte_offset)
+{
+    uint32_t mask = 0;
+    const size_t offset = rich_text_utf8_previous_boundary(
+        doc.plain_text, std::min(byte_offset, doc.plain_text.size()));
+    for (const auto &range : doc.ranges) {
+        if (offset >= range.start &&
+            offset < clamped_end(range.start, range.length, doc.plain_text.size()))
+            mask |= range.mask;
+    }
+    return mask & RichTextCharAll;
+}
+
+uint32_t rich_text_paragraph_format_mask_at(const RichTextDocument &doc,
+                                            size_t paragraph_byte_offset)
+{
+    if (doc.blocks.empty())
+        return 0;
+    const size_t text_len = doc.plain_text.size();
+    const size_t offset = rich_text_utf8_previous_boundary(
+        doc.plain_text, std::min(paragraph_byte_offset, text_len));
+    for (const auto &block : doc.blocks) {
+        const size_t end = clamped_end(block.start, block.length, text_len);
+        const bool empty_final_block = block.length == 0 && block.start == text_len;
+        if ((offset >= block.start && offset < end) ||
+            empty_final_block ||
+            (offset == text_len && end == text_len))
+            return block.mask & RichTextParagraphAll;
+    }
+    return 0;
+}
+
+void rich_text_document_apply_paragraph_format(RichTextDocument &doc,
+                                               size_t selection_start,
+                                               size_t selection_end,
+                                               const RichTextParagraphFormat &format,
+                                               uint32_t mask)
+{
+    doc.normalize();
+    mask &= RichTextParagraphAll;
+    if (mask == 0 || doc.blocks.empty())
+        return;
+
+    const size_t text_len = doc.plain_text.size();
+    selection_start = rich_text_utf8_previous_boundary(
+        doc.plain_text, std::min(selection_start, text_len));
+    selection_end = rich_text_utf8_next_boundary(
+        doc.plain_text, std::min(selection_end, text_len));
+    if (selection_end < selection_start)
+        std::swap(selection_start, selection_end);
+
+    const bool collapsed = selection_start == selection_end;
+    for (auto &block : doc.blocks) {
+        const size_t block_end = clamped_end(block.start, block.length, text_len);
+        bool selected = false;
+        if (collapsed) {
+            selected = selection_start >= block.start &&
+                       (selection_start < block_end ||
+                        (selection_start == text_len && block_end == text_len));
+        } else {
+            selected = block.start < selection_end && block_end >= selection_start;
+            /* A selection ending exactly at the next paragraph start must not
+             * style that next paragraph. */
+            if (block.start == selection_end)
+                selected = false;
+        }
+        if (!selected)
+            continue;
+        RichTextParagraphFormat effective = doc.default_paragraph_format;
+        rich_text_merge_paragraph_format(effective, block.format, block.mask);
+        rich_text_merge_paragraph_format(effective, format, mask);
+        block.format = effective;
+        block.mask = (block.mask | mask) & RichTextParagraphAll;
+    }
+    doc.normalize();
+}
+
+void rich_text_document_clear_char_format_mask(RichTextDocument &doc, uint32_t mask)
+{
+    mask &= RichTextCharAll;
+    if (mask == 0)
+        return;
+    for (auto &range : doc.ranges)
+        range.mask &= ~mask;
+    doc.typing_format_mask &= ~mask;
+    if (doc.typing_format_mask == 0)
+        doc.has_typing_format = false;
+    doc.normalize();
+}
+
+void rich_text_document_clear_paragraph_format_mask(RichTextDocument &doc, uint32_t mask)
+{
+    mask &= RichTextParagraphAll;
+    if (mask == 0)
+        return;
+    for (auto &block : doc.blocks)
+        block.mask &= ~mask;
+    doc.normalize();
+}
+
+RichTextCharFormat rich_text_effective_typing_format(const RichTextDocument &doc)
+{
+    RichTextCharFormat result = doc.default_format;
+    if (doc.has_typing_format)
+        rich_text_merge_char_format(result, doc.typing_format,
+                                    doc.typing_format_mask & RichTextCharAll);
+    return result;
 }
 
 void RichTextDocument::normalize()
 {
+    version = 2;
     const size_t text_len = plain_text.size();
-    selection.anchor = std::min(selection.anchor, text_len);
-    selection.head = std::min(selection.head, text_len);
+    selection.anchor = rich_text_utf8_previous_boundary(plain_text, std::min(selection.anchor, text_len));
+    selection.head = rich_text_utf8_previous_boundary(plain_text, std::min(selection.head, text_len));
 
-    std::vector<RichTextRange> clipped;
-    clipped.reserve(ranges.size());
+    std::vector<RichTextRange> input;
+    input.reserve(ranges.size());
+    std::vector<size_t> boundaries{0, text_len};
     for (auto range : ranges) {
-        if (range.start >= text_len || range.length == 0) continue;
-        range.length = std::min(range.length, text_len - range.start);
-        if (same_format(range.format, default_format)) continue;
-        clipped.push_back(range);
+        if (range.length == 0 || range.start >= text_len || (range.mask & RichTextCharAll) == 0)
+            continue;
+        const size_t raw_end = clamped_end(range.start, range.length, text_len);
+        range.start = rich_text_utf8_previous_boundary(plain_text, range.start);
+        const size_t end = rich_text_utf8_next_boundary(plain_text, raw_end);
+        if (end <= range.start) continue;
+        range.length = end - range.start;
+        range.mask &= RichTextCharAll;
+        input.push_back(range);
+        boundaries.push_back(range.start);
+        boundaries.push_back(end);
     }
-    std::sort(clipped.begin(), clipped.end(), [](const auto &a, const auto &b) {
-        if (a.start != b.start) return a.start < b.start;
-        return a.length < b.length;
-    });
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+
     ranges.clear();
-    for (const auto &range : clipped) {
-        if (!ranges.empty()) {
-            auto &prev = ranges.back();
-            const size_t prev_end = prev.start + prev.length;
-            if (prev_end >= range.start && same_format(prev.format, range.format)) {
-                prev.length = std::max(prev_end, range.start + range.length) - prev.start;
-                continue;
+    for (size_t i = 0; i + 1 < boundaries.size(); ++i) {
+        const size_t start = boundaries[i];
+        const size_t end = boundaries[i + 1];
+        if (end <= start) continue;
+        RichTextCharFormat effective = default_format;
+        uint32_t explicit_mask = 0;
+        for (const auto &range : input) {
+            if (start >= range.start && start < clamped_end(range.start, range.length, text_len)) {
+                rich_text_merge_char_format(effective, range.format, range.mask);
+                explicit_mask |= range.mask;
             }
-            if (range.start < prev_end) {
-                RichTextRange adjusted = range;
-                adjusted.start = prev_end;
-                if (adjusted.start >= range.start + range.length) continue;
-                adjusted.length = range.start + range.length - adjusted.start;
-                ranges.push_back(adjusted);
+        }
+        explicit_mask &= RichTextCharAll;
+        if (explicit_mask == 0) continue;
+        if (!ranges.empty()) {
+            auto &previous = ranges.back();
+            if (clamped_end(previous.start, previous.length, text_len) == start &&
+                previous.mask == explicit_mask &&
+                same_format(previous.format, effective)) {
+                previous.length += end - start;
                 continue;
             }
         }
-        ranges.push_back(range);
+        ranges.push_back({start, end - start, effective, explicit_mask});
     }
 
+    const std::vector<RichTextBlock> previous_blocks = blocks;
     blocks.clear();
-    size_t start = 0;
-    while (start <= text_len) {
-        const size_t nl = plain_text.find('\n', start);
+    for (const auto &[start, length] : paragraph_spans(plain_text)) {
         RichTextBlock block;
         block.start = start;
-        block.length = (nl == std::string::npos) ? text_len - start : nl - start;
-        block.format = default_paragraph_format;
+        block.length = length;
+        block.format = paragraph_format_for_start(previous_blocks, start,
+                                                  default_paragraph_format, &block.mask);
         blocks.push_back(block);
-        if (nl == std::string::npos) break;
-        start = nl + 1;
     }
+
+    auto_default_style_cached_mask &= RichTextCharAll;
+    for (auto &rule : auto_style_rules)
+        rule.cached_mask &= RichTextCharAll;
+
+    typing_format_mask &= RichTextCharAll;
+    if (!has_typing_format) {
+        typing_format = default_format;
+        typing_format_mask = 0;
+    }
+}
+
+void rich_text_document_apply_format(RichTextDocument &doc, size_t start, size_t length,
+                                     const RichTextCharFormat &format, uint32_t mask)
+{
+    doc.normalize();
+    if (doc.plain_text.empty() || length == 0 || (mask & RichTextCharAll) == 0)
+        return;
+    const size_t text_len = doc.plain_text.size();
+    const size_t raw_start = std::min(start, text_len);
+    const size_t raw_end = clamped_end(raw_start, length, text_len);
+    start = rich_text_utf8_previous_boundary(doc.plain_text, raw_start);
+    const size_t end = rich_text_utf8_next_boundary(doc.plain_text,
+                                                     raw_end);
+    if (end <= start) return;
+
+    std::vector<size_t> boundaries{0, text_len, start, end};
+    for (const auto &range : doc.ranges) {
+        boundaries.push_back(range.start);
+        boundaries.push_back(clamped_end(range.start, range.length, text_len));
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+
+    std::vector<RichTextRange> next;
+    for (size_t i = 0; i + 1 < boundaries.size(); ++i) {
+        const size_t seg_start = boundaries[i];
+        const size_t seg_end = boundaries[i + 1];
+        if (seg_end <= seg_start) continue;
+        RichTextCharFormat effective = rich_text_format_at(doc, seg_start);
+        uint32_t effective_mask = 0;
+        for (const auto &range : doc.ranges) {
+            if (seg_start >= range.start &&
+                seg_start < clamped_end(range.start, range.length, text_len))
+                effective_mask |= range.mask;
+        }
+        if (seg_start >= start && seg_start < end) {
+            rich_text_merge_char_format(effective, format, mask);
+            effective_mask |= mask;
+        }
+        effective_mask &= RichTextCharAll;
+        if (effective_mask != 0)
+            next.push_back({seg_start, seg_end - seg_start, effective, effective_mask});
+    }
+    doc.ranges = std::move(next);
+    doc.normalize();
 }
 
 #ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
@@ -159,19 +576,13 @@ RichTextDocument rich_text_document_from_layer_defaults(const Layer &layer)
     doc.default_paragraph_format = layer_paragraph_format(layer);
     doc.selection = {doc.plain_text.size(), doc.plain_text.size()};
     doc.typing_format = doc.default_format;
-    doc.has_typing_format = true;
+    doc.typing_format_mask = 0;
+    doc.has_typing_format = false;
     doc.normalize();
     return doc;
 }
 
-void rich_text_document_sync_layer_defaults(RichTextDocument &doc, const Layer &layer)
-{
-    doc.default_format = layer_char_format(layer);
-    doc.default_paragraph_format = layer_paragraph_format(layer);
-    if (!doc.has_typing_format)
-        doc.typing_format = doc.default_format;
-    doc.normalize();
-}
+
 
 static void set_static_argb_channels(AnimatedProperty &a, AnimatedProperty &r,
                                      AnimatedProperty &g, AnimatedProperty &b,
@@ -191,7 +602,10 @@ void rich_text_document_sync_layer_mirrors(Layer &layer)
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
     layer.rich_text.normalize();
 
-    const RichTextCharFormat &f = layer.rich_text.has_typing_format ? layer.rich_text.typing_format : layer.rich_text.default_format;
+    /* Layer scalar fields are compatibility mirrors for the document defaults.
+     * Cursor/typing state is editor-session data and must never rewrite the
+     * persistent layer-wide style or alter non-rich fallback rendering. */
+    const RichTextCharFormat &f = layer.rich_text.default_format;
     layer.text_content = layer.rich_text.plain_text;
     layer.font_family = f.font_family;
     layer.font_style = f.font_style;
@@ -252,30 +666,54 @@ void rich_text_document_sync_layer_mirrors(Layer &layer)
 
 #endif
 
-void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text,
-                                     const RichTextCharFormat *insertion_format)
+static void rich_text_document_replace_text_impl(RichTextDocument &doc,
+                                                 const std::string &next_text,
+                                                 const RichTextCharFormat *insertion_format,
+                                                 uint32_t insertion_mask)
 {
+    doc.normalize();
     const std::string old = doc.plain_text;
     if (old == next_text) {
         doc.normalize();
         return;
     }
 
+    /* Diff on complete UTF-8 codepoints. A byte-prefix diff can stop in the
+     * middle of Greek, emoji or combining text and corrupt both ranges and
+     * transaction strings. */
     size_t prefix = 0;
-    const size_t min_len = std::min(old.size(), next_text.size());
-    while (prefix < min_len && old[prefix] == next_text[prefix]) ++prefix;
+    while (prefix < old.size() && prefix < next_text.size()) {
+        const size_t old_end = utf8_codepoint_end(old, prefix);
+        const size_t next_end = utf8_codepoint_end(next_text, prefix);
+        const size_t old_len = old_end - prefix;
+        const size_t next_len = next_end - prefix;
+        if (old_len != next_len || old.compare(prefix, old_len, next_text, prefix, next_len) != 0)
+            break;
+        prefix = old_end;
+    }
+
     size_t old_suffix = old.size();
     size_t new_suffix = next_text.size();
-    while (old_suffix > prefix && new_suffix > prefix && old[old_suffix - 1] == next_text[new_suffix - 1]) {
-        --old_suffix;
-        --new_suffix;
+    while (old_suffix > prefix && new_suffix > prefix) {
+        const size_t old_start = utf8_codepoint_start_before(old, old_suffix);
+        const size_t new_start = utf8_codepoint_start_before(next_text, new_suffix);
+        const size_t old_len = old_suffix - old_start;
+        const size_t new_len = new_suffix - new_start;
+        if (old_len != new_len || old.compare(old_start, old_len, next_text, new_start, new_len) != 0)
+            break;
+        old_suffix = old_start;
+        new_suffix = new_start;
     }
 
     const size_t removed_len = old_suffix - prefix;
     const size_t inserted_len = new_suffix - prefix;
+    const RichTextSelection before_selection = doc.selection;
+    const RichTextCharFormat inherited_format = insertion_format ? *insertion_format : doc.default_format;
+    insertion_mask = insertion_format ? (insertion_mask & RichTextCharAll) : 0;
+
     std::vector<RichTextRange> next_ranges;
     for (auto range : doc.ranges) {
-        const size_t range_end = range.start + range.length;
+        const size_t range_end = clamped_end(range.start, range.length, old.size());
         if (range_end <= prefix) {
             next_ranges.push_back(range);
         } else if (range.start >= old_suffix) {
@@ -283,32 +721,106 @@ void rich_text_document_replace_text(RichTextDocument &doc, const std::string &n
             next_ranges.push_back(range);
         } else {
             if (range.start < prefix)
-                next_ranges.push_back({range.start, prefix - range.start, range.format});
+                next_ranges.push_back({range.start, prefix - range.start, range.format, range.mask});
             if (range_end > old_suffix)
-                next_ranges.push_back({prefix + inserted_len, range_end - old_suffix, range.format});
+                next_ranges.push_back({prefix + inserted_len, range_end - old_suffix, range.format, range.mask});
         }
     }
-    if (inserted_len > 0)
-        next_ranges.push_back({prefix, inserted_len, insertion_format ? *insertion_format : doc.default_format});
+    if (inserted_len > 0 && insertion_mask != 0)
+        next_ranges.push_back({prefix, inserted_len, inherited_format, insertion_mask});
+
+    /* Rebuild paragraph starts from the edited text, but source each sparse
+     * paragraph override from the corresponding paragraph in the old text.
+     * Merely shifting block starts loses the style when characters are inserted
+     * at the beginning of a paragraph without adding a line break. */
+    const std::vector<RichTextBlock> previous_blocks = doc.blocks;
+    std::vector<RichTextBlock> next_blocks;
+    for (const auto &[new_start, new_length] : paragraph_spans(next_text)) {
+        size_t source_pos = 0;
+        if (new_start < prefix) {
+            source_pos = new_start;
+        } else if (new_start >= prefix + inserted_len) {
+            source_pos = new_start - inserted_len + removed_len;
+        } else {
+            /* Newly inserted paragraphs inherit the paragraph at the edit
+             * point. At an exact paragraph boundary this intentionally selects
+             * that paragraph rather than the preceding one. */
+            source_pos = prefix;
+        }
+        source_pos = std::min(source_pos, old.size());
+        RichTextBlock block;
+        block.start = new_start;
+        block.length = new_length;
+        block.format = paragraph_format_for_start(previous_blocks, source_pos,
+                                                  doc.default_paragraph_format,
+                                                  &block.mask);
+        next_blocks.push_back(block);
+    }
 
     const RichTextSelection after_selection{prefix + inserted_len, prefix + inserted_len};
     if (insertion_format) {
         doc.typing_format = *insertion_format;
+        doc.typing_format_mask = insertion_mask;
         doc.has_typing_format = true;
     }
 
     doc.plain_text = next_text;
     doc.ranges = std::move(next_ranges);
+    doc.blocks = std::move(next_blocks);
     doc.selection = after_selection;
 
-    /* Transactions are editor-runtime state only. Do not accumulate byte-sliced
-     * Unicode substrings here; they can be invalid UTF-8 and are not required
-     * for saving/rendering the canonical rich-text model. */
-    doc.transactions.clear();
+    RichTextTransaction transaction;
+    transaction.type = "replace_text";
+    transaction.position = prefix;
+    transaction.removed_text = old.substr(prefix, removed_len);
+    transaction.inserted_text = next_text.substr(prefix, inserted_len);
+    transaction.before_selection = before_selection;
+    transaction.after_selection = after_selection;
+    doc.transactions.push_back(std::move(transaction));
+    if (doc.transactions.size() > 100)
+        doc.transactions.erase(doc.transactions.begin(), doc.transactions.begin() + (doc.transactions.size() - 100));
+
     doc.normalize();
 }
 
+void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text)
+{
+    rich_text_document_replace_text_impl(doc, next_text, nullptr, 0);
+}
 
+void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text,
+                                     const RichTextCharFormat &insertion_format,
+                                     uint32_t insertion_mask)
+{
+    rich_text_document_replace_text_impl(doc, next_text, &insertion_format,
+                                         insertion_mask);
+}
+
+
+RichTextDocument rich_text_document_with_evaluated_defaults(
+    RichTextDocument document, const RichTextEvaluatedDefaults &defaults)
+{
+    document.normalize();
+    document.default_format.font_size = std::max(1, defaults.font_size);
+    document.default_format.tracking = defaults.tracking;
+    document.default_format.scale_x = defaults.scale_x;
+    document.default_format.scale_y = defaults.scale_y;
+    document.default_format.baseline_shift = defaults.baseline_shift;
+    if (document.default_format.fill.type == 0)
+        document.default_format.fill.color = defaults.solid_fill_color;
+    document.default_paragraph_format.align_h = defaults.align_h;
+    document.default_paragraph_format.align_v = defaults.align_v;
+    document.default_paragraph_format.indent_left = defaults.indent_left;
+    document.default_paragraph_format.indent_right = defaults.indent_right;
+    document.default_paragraph_format.indent_first_line =
+        defaults.indent_first_line;
+    document.default_paragraph_format.line_spacing = defaults.line_spacing;
+    document.default_paragraph_format.space_before = defaults.space_before;
+    document.default_paragraph_format.space_after = defaults.space_after;
+    document.default_paragraph_format.hyphenate = defaults.hyphenate;
+    document.normalize();
+    return document;
+}
 
 #ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
 void rich_text_document_ensure_canonical(Layer &layer)
@@ -318,16 +830,15 @@ void rich_text_document_ensure_canonical(Layer &layer)
 
     if (layer.rich_text.empty()) {
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
-    } else {
-        rich_text_document_sync_layer_defaults(layer.rich_text, layer);
-        if (layer.rich_text.plain_text.empty() && !layer.text_content.empty())
-            layer.rich_text.plain_text = layer.text_content;
     }
+    /* Once a canonical document exists it owns defaults and text content.
+     * Scalar Layer fields are mirrors only; importing them back here created an
+     * accidental two-way sync and allowed cursor formatting to overwrite the
+     * document-wide style. */
 
     /* No legacy rich text HTML path: the canonical model is plain_text +
      * manual ranges + automatic rules. This avoids QTextDocument HTML
      * round-tripping, stale spans, and mismatched Properties/Canvas state. */
-    layer.rich_text_html.clear();
     layer.rich_text.normalize();
     layer.text_content = layer.rich_text.plain_text;
     rich_text_document_sync_layer_mirrors(layer);
@@ -371,18 +882,7 @@ static size_t utf8_byte_offset_for_codepoint_index(const std::string &text, size
     return std::min(pos, text.size());
 }
 
-static bool custom_marker_matches_at(const std::string &text, size_t pos, const std::string &custom_chars)
-{
-    if (custom_chars.empty() || pos >= text.size()) return false;
-    for (size_t cpos = 0; cpos < custom_chars.size();) {
-        const size_t adv = std::max<size_t>(1, utf8_codepoint_advance(custom_chars, cpos));
-        if (adv > 0 && cpos + adv <= custom_chars.size() &&
-            pos + adv <= text.size() && text.compare(pos, adv, custom_chars, cpos, adv) == 0)
-            return true;
-        cpos += adv;
-    }
-    return false;
-}
+
 
 static size_t find_nth_marker(const std::string &text, const std::string &marker, size_t occurrence, const std::string &custom_chars);
 
@@ -545,8 +1045,8 @@ static std::vector<std::pair<size_t, size_t>> auto_style_rule_ranges(const RichT
 
     /* Backwards compatibility for files/rules from the original start_to_char UI. */
     if (rule.condition_type == "start_to_char") {
-        const size_t start = std::min(rule.start, text_len);
-        const size_t end = std::min(start + rule.length, text_len);
+        const size_t start = utf8_byte_offset_for_codepoint_index(text, rule.start);
+        const size_t end = byte_offset_after_character_count(text, start, rule.length).pos;
         if (end > start) ranges.push_back({start, end});
         return ranges;
     }
@@ -605,31 +1105,14 @@ static std::vector<std::pair<size_t, size_t>> auto_style_rule_ranges(const RichT
 
 static void merge_auto_format_bits(RichTextCharFormat &target, const RichTextCharFormat &source, uint32_t mask)
 {
-    if (mask & (1u << 0)) target.font_family = source.font_family;
-    if (mask & (1u << 11)) target.font_style = source.font_style;
-    if (mask & (1u << 1)) target.font_size = source.font_size;
-    if (mask & (1u << 2)) target.bold = source.bold;
-    if (mask & (1u << 3)) target.italic = source.italic;
-    if (mask & (1u << 4)) target.underline = source.underline;
-    if (mask & (1u << 5)) target.strikethrough = source.strikethrough;
-    if (mask & (1u << 12)) { target.kerning = source.kerning; target.kerning_mode = source.kerning_mode; target.manual_kerning = source.manual_kerning; }
-    if (mask & (1u << 6)) target.tracking = source.tracking;
-    if (mask & (1u << 7)) target.scale_x = source.scale_x;
-    if (mask & (1u << 8)) target.scale_y = source.scale_y;
-    if (mask & (1u << 9)) target.baseline_shift = source.baseline_shift;
-    if (mask & (1u << 10)) target.fill = source.fill;
-    if (mask & (1u << 13)) target.text_style = source.text_style;
-    if (mask & (1u << 14)) target.ligatures = source.ligatures;
-    if (mask & (1u << 15)) target.stylistic_alternates = source.stylistic_alternates;
-    if (mask & (1u << 16)) target.fractions = source.fractions;
-    if (mask & (1u << 17)) target.opentype_features = source.opentype_features;
-    if (mask & (1u << 18)) target.language = source.language;
+    rich_text_merge_char_format(target, source, mask);
 }
 
 RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc,
                                                     const RichTextAutoStyleResolver &resolver)
 {
     RichTextDocument out = doc;
+    out.normalize();
     if (!out.auto_style_enabled)
         return out;
 
@@ -659,9 +1142,10 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
     std::vector<bool> blocked_for_future_rules(text_len, false);
 
     auto merge_masked_range = [&](size_t start, size_t length, const RichTextCharFormat &format, uint32_t mask, const std::string &mode) {
-        start = std::min(start, text_len);
-        length = std::min(length, text_len - start);
-        const size_t end = std::min(text_len, start + length);
+        const size_t raw_start = std::min(start, text_len);
+        const size_t raw_end = clamped_end(raw_start, length, text_len);
+        start = rich_text_utf8_previous_boundary(out.plain_text, raw_start);
+        const size_t end = rich_text_utf8_next_boundary(out.plain_text, raw_end);
         for (size_t i = start; i < end; ++i) {
             if (blocked_for_future_rules[i])
                 continue;
@@ -680,19 +1164,21 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
     };
 
     auto mark_blocked = [&](size_t start, size_t length) {
-        start = std::min(start, text_len);
-        length = std::min(length, text_len - start);
-        for (size_t i = start; i < start + length; ++i)
+        const size_t raw_start = std::min(start, text_len);
+        const size_t raw_end = clamped_end(raw_start, length, text_len);
+        start = rich_text_utf8_previous_boundary(out.plain_text, raw_start);
+        const size_t end = rich_text_utf8_next_boundary(out.plain_text, raw_end);
+        for (size_t i = start; i < end; ++i)
             blocked_for_future_rules[i] = true;
     };
 
-    std::vector<std::vector<std::pair<size_t, size_t>>> resolved_rule_ranges(doc.auto_style_rules.size());
-    for (size_t ri = 0; ri < doc.auto_style_rules.size(); ++ri)
-        resolved_rule_ranges[ri] = auto_style_rule_ranges(doc.auto_style_rules[ri], out.plain_text);
+    std::vector<std::vector<std::pair<size_t, size_t>>> resolved_rule_ranges(out.auto_style_rules.size());
+    for (size_t ri = 0; ri < out.auto_style_rules.size(); ++ri)
+        resolved_rule_ranges[ri] = auto_style_rule_ranges(out.auto_style_rules[ri], out.plain_text);
 
-    std::vector<std::vector<bool>> excluded_by_rule(doc.auto_style_rules.size(), std::vector<bool>(text_len, false));
-    for (size_t ri = 0; ri < doc.auto_style_rules.size(); ++ri) {
-        const auto &rule = doc.auto_style_rules[ri];
+    std::vector<std::vector<bool>> excluded_by_rule(out.auto_style_rules.size(), std::vector<bool>(text_len, false));
+    for (size_t ri = 0; ri < out.auto_style_rules.size(); ++ri) {
+        const auto &rule = out.auto_style_rules[ri];
         if (!rule.enabled || rule.style_preset_id.empty())
             continue;
         RichTextCharFormat fmt = rule.cached_format;
@@ -729,8 +1215,8 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
         }
 
         if (rule.conflict_mode == "exclude_other_rules" && !rule.excludes_rule_ids.empty()) {
-            for (size_t other = 0; other < doc.auto_style_rules.size(); ++other) {
-                const std::string &other_id = doc.auto_style_rules[other].rule_id;
+            for (size_t other = 0; other < out.auto_style_rules.size(); ++other) {
+                const std::string &other_id = out.auto_style_rules[other].rule_id;
                 const std::string other_index_id = std::to_string(other + 1);
                 const bool should_exclude = std::find(rule.excludes_rule_ids.begin(), rule.excludes_rule_ids.end(), other_id) != rule.excludes_rule_ids.end() ||
                                             std::find(rule.excludes_rule_ids.begin(), rule.excludes_rule_ids.end(), other_index_id) != rule.excludes_rule_ids.end();
@@ -752,12 +1238,12 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
 
     /* Manual inline styles are intentionally applied last, so user-authored
      * character formatting overrides automatic rules. */
-    for (const auto &range : doc.ranges) {
+    for (const auto &range : out.ranges) {
         if (range.length == 0 || range.start >= text_len)
             continue;
-        const size_t end = std::min(text_len, range.start + range.length);
+        const size_t end = clamped_end(range.start, range.length, text_len);
         for (size_t i = range.start; i < end; ++i)
-            formats[i] = range.format;
+            rich_text_merge_char_format(formats[i], range.format, range.mask);
     }
 
     out.ranges.clear();
@@ -766,8 +1252,9 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
         size_t end = start + 1;
         while (end < text_len && same_format(formats[end], formats[start]))
             ++end;
-        if (!same_format(formats[start], out.default_format))
-            out.ranges.push_back({start, end - start, formats[start]});
+        const uint32_t mask = rich_text_char_format_difference_mask(formats[start], out.default_format);
+        if (mask != 0)
+            out.ranges.push_back({start, end - start, formats[start], mask});
         start = end;
     }
     return out;

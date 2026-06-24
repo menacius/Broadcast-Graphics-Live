@@ -1,3 +1,4 @@
+#include "system-memory.h"
 #include "title-editor-internal.h"
 #include "title-logger.h"
 #include "style-presets.h"
@@ -427,14 +428,20 @@ TitleEditor::TitleEditor(QWidget *parent)
         if (dock_layout_transition_ || !isVisible() || isMinimized() || !isActiveWindow())
             return;
 
-        // High-refresh presentation is reserved for interactive UI/canvas work.
-        // Playback frames continue to advance only from play_timer_ at project FPS.
+        // High-refresh presentation is reserved for interactive UI/canvas work
+        // and live clock/ticker refresh while transport is stopped. Playback
+        // frames continue to advance only from play_timer_ at project FPS.
         const bool pointer_drag = QApplication::mouseButtons() != Qt::NoButton;
-        if (!pointer_drag && active_text_edit_layer_id_.empty())
+        const bool runtime_dynamic = !playing_ && title_has_dynamic_text_layer(title_);
+        if (!pointer_drag && active_text_edit_layer_id_.empty() && !runtime_dynamic)
             return;
 
-        if (canvas_)
-            canvas_->update();
+        if (canvas_) {
+            if (runtime_dynamic)
+                canvas_->refresh_runtime_dynamic_content();
+            else
+                canvas_->update();
+        }
         if (timeline_ && pointer_drag && timeline_->underMouse())
             timeline_->update();
     });
@@ -458,6 +465,10 @@ TitleEditor::TitleEditor(QWidget *parent)
             return;
         CacheManager::instance().invalidateAll(title_);
         CacheManager::instance().reprioritize(title_, playhead_);
+        /* Editing invalidates every affected frame. Restore the editor's
+         * full-timeline prerender intent instead of leaving only a small
+         * playhead neighbourhood queued. */
+        CacheManager::instance().queueWholeTimeline(title_);
         if (timeline_) timeline_->update();
     });
 
@@ -467,8 +478,6 @@ TitleEditor::TitleEditor(QWidget *parent)
     clock_timer_->setInterval(100);
     connect(clock_timer_, &QTimer::timeout, this, [this]() {
         update_title_bar();
-        if (canvas_ && title_has_dynamic_text_layer(title_) && isVisible() && !isMinimized())
-            canvas_->update();
     });
     clock_timer_->start();
 
@@ -600,6 +609,9 @@ void TitleEditor::handle_gradient_editor_tool_request(bool active)
             tool_before_gradient_editor_ = current_editor_tool_;
             gradient_editor_tool_override_active_ = true;
         }
+        /* CanvasPreview suspends (rather than commits) the inline QTextEdit,
+         * so the selected rich-text range remains canonical while the popup
+         * and on-canvas handles edit the same gradient. */
         activate_editor_tool(EditorTool::Gradient);
         return;
     }
@@ -624,7 +636,8 @@ QWidget *TitleEditor::create_styles_panel()
         if (title_ && !sel_layer_id_.empty()) {
             if (auto layer = title_->find_layer(sel_layer_id_)) {
                 if (active_text_edit_layer_id_ == layer->id) {
-                    RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer, true);
+                    RichTextCharFormatSummary summary = summarize_rich_text_char_format(
+                        *layer, true, std::max(0.0, playhead_ - layer->in_time));
                     if (summary.valid) {
                         Layer inline_style = *layer;
                         inline_style.font_family = summary.format.font_family;
@@ -684,7 +697,31 @@ QWidget *TitleEditor::create_styles_panel()
                 if (canvas_) canvas_->update();
                 return;
             }
+            RichTextCharFormat preset_char = layer_char_format_for_editor(*layer);
+            if (!obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, preset_char))
+                return;
+            RichTextParagraphFormat preset_paragraph = layer_paragraph_format_for_editor(*layer);
+            const auto payload = preset.payload;
+            preset_paragraph.align_h = payload.value(QStringLiteral("alignH")).toInt(preset_paragraph.align_h);
+            preset_paragraph.align_v = std::clamp(
+                payload.value(QStringLiteral("alignV")).toInt(preset_paragraph.align_v), 0, 3);
+            preset_paragraph.line_spacing = float(payload.value(QStringLiteral("leading")).toDouble(preset_paragraph.line_spacing));
+            preset_paragraph.space_before = float(payload.value(QStringLiteral("paragraphBefore")).toDouble(preset_paragraph.space_before));
+            preset_paragraph.space_after = float(payload.value(QStringLiteral("paragraphAfter")).toDouble(preset_paragraph.space_after));
+            preset_paragraph.indent_left = float(payload.value(QStringLiteral("paragraphLeft")).toDouble(preset_paragraph.indent_left));
+            preset_paragraph.indent_right = float(payload.value(QStringLiteral("paragraphRight")).toDouble(preset_paragraph.indent_right));
+            preset_paragraph.indent_first_line = float(payload.value(QStringLiteral("paragraphFirst")).toDouble(preset_paragraph.indent_first_line));
             if (obsgsp::StylePresetLibrary::applyTextPreset(preset, *layer)) {
+                apply_rich_text_format_to_layer_range(
+                    *layer, preset_char,
+                    obsgsp::StylePresetLibrary::textPresetCharMask(), false);
+                apply_rich_text_paragraph_format_to_layer(
+                    *layer, preset_paragraph,
+                    RichTextParagraphAlignH | RichTextParagraphAlignV |
+                        RichTextParagraphLineSpacing | RichTextParagraphSpaceBefore |
+                        RichTextParagraphSpaceAfter | RichTextParagraphIndentLeft |
+                        RichTextParagraphIndentRight | RichTextParagraphIndentFirstLine,
+                    false);
                 on_title_modified(false);
                 update_layer_panels(layer, playhead_);
                 if (layers_) layers_->refresh();
@@ -701,7 +738,8 @@ QWidget *TitleEditor::create_styles_panel()
             if (auto layer = title_->find_layer(sel_layer_id_)) {
                 if (active_text_edit_layer_id_ == layer->id &&
                     (layer->type == LayerType::Text || layer->type == LayerType::Clock || layer->type == LayerType::Ticker)) {
-                    RichTextCharFormatSummary summary = summarize_rich_text_char_format(*layer, true);
+                    RichTextCharFormatSummary summary = summarize_rich_text_char_format(
+                        *layer, true, std::max(0.0, playhead_ - layer->in_time));
                     if (summary.valid) {
                         Layer inline_gradient = *layer;
                         inline_gradient.fill_type = summary.format.fill.type;
@@ -750,7 +788,21 @@ QWidget *TitleEditor::create_styles_panel()
                 if (canvas_) canvas_->update();
                 return;
             }
+            const bool rich_text_layer = layer->type == LayerType::Text ||
+                                         layer->type == LayerType::Clock ||
+                                         layer->type == LayerType::Ticker;
+            RichTextCharFormat preset_fill;
+            if (rich_text_layer) {
+                preset_fill = layer_char_format_for_editor(*layer);
+                if (!obsgsp::StylePresetLibrary::gradientPresetToCharFormat(preset, preset_fill))
+                    return;
+            }
             if (obsgsp::StylePresetLibrary::applyGradientPreset(preset, *layer)) {
+                if (rich_text_layer) {
+                    apply_rich_text_format_to_layer_range(
+                        *layer, preset_fill,
+                        obsgsp::StylePresetLibrary::gradientPresetCharMask(), false);
+                }
                 on_title_modified(false);
                 update_layer_panels(layer, playhead_);
                 update_sidebar_color_swatches(layer);
@@ -1778,16 +1830,11 @@ static void set_text_layer_direction_defaults(Layer &layer, bool paragraph_box, 
     layer.max_text_box_height = 9999.0f;
     layer.rich_text.default_paragraph_format.align_h = layer.align_h;
     layer.rich_text.default_paragraph_format.align_v = layer.align_v;
-    for (auto &block : layer.rich_text.blocks) {
-        block.format.align_h = layer.align_h;
-        block.format.align_v = layer.align_v;
-    }
 }
 
 static void set_new_text_layer_contents_empty(Layer &layer)
 {
     layer.text_content.clear();
-    layer.rich_text_html.clear();
     layer.rich_text = rich_text_document_from_layer_defaults(layer);
     layer.rich_text.plain_text.clear();
     layer.rich_text.ranges.clear();
@@ -1861,6 +1908,8 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
 void TitleEditor::create_shape_layer_from_canvas(ShapeType shape_type, const QPointF &canvas_pt)
 {
     if (!title_) return;
+    if (shape_type == ShapeType::Line || shape_type == ShapeType::Path)
+        shape_type = ShapeType::Rectangle;
 
     auto layer = create_basic_layer(LayerType::Shape, shape_display_name(shape_type));
     if (!layer) return;
@@ -1977,8 +2026,6 @@ void TitleEditor::create_text_layer_from_canvas(LayerType type, const QPointF &c
     if (type == LayerType::Text) {
         set_new_text_layer_contents_empty(*layer);
         set_text_layer_direction_defaults(*layer, false, false);
-    } else {
-        layer->rich_text_html.clear();
     }
 
     canvas_created_shape_layer_id_ = layer->id;
@@ -2419,13 +2466,6 @@ void TitleEditor::build_ui()
         commit_title_name_edit(true);
     });
     title_bar_layout->addWidget(title_name_edit_, 0, Qt::AlignVCenter);
-    gpu_warning_lbl_ = new QLabel(title_bar);
-    QFont gpu_warning_font = gpu_warning_lbl_->font();
-    gpu_warning_font.setBold(true);
-    gpu_warning_lbl_->setFont(gpu_warning_font);
-    gpu_warning_lbl_->setStyleSheet(QStringLiteral("color:%1;").arg(QColor(0xFF, 0xCA, 0x4A).name(QColor::HexRgb)));
-    gpu_warning_lbl_->hide();
-    title_bar_layout->addWidget(gpu_warning_lbl_, 0, Qt::AlignVCenter);
     title_bar_layout->addStretch(1);
     root->addWidget(title_bar);
 
@@ -2869,7 +2909,9 @@ void TitleEditor::build_ui()
     connect(&CacheManager::instance(), &CacheManager::frameReady, this,
             [this](const QString &title_id, int frame) {
                 if (!title_ || title_id != QString::fromStdString(title_->id)) return;
-                const int current_frame = (int)std::round(playhead_ * CacheManager::instance().effectiveFrameRate());
+                const int current_frame =
+                    CacheManager::instance().frameIndexForTitleTime(
+                        *title_, playhead_);
                 if (canvas_ && frame == current_frame) canvas_->refresh_preview();
                 if (timeline_) timeline_->update();
             });
@@ -4456,18 +4498,6 @@ void TitleEditor::set_live_editing_enabled(bool enabled)
         save_live_edit();
 }
 
-void TitleEditor::set_gpu_pipeline_enabled(bool enabled)
-{
-    if (TitlePreferences::use_gpu() == enabled)
-        return;
-
-    TitlePreferences::set_use_gpu(enabled);
-    TitlePreferences::notify_changed(this);
-    update_title_bar();
-    if (canvas_)
-        canvas_->refresh_preview();
-}
-
 void TitleEditor::save_live_edit()
 {
     if (!live_editing_ || !title_) return;
@@ -5033,11 +5063,32 @@ void TitleEditor::apply_picked_color_to_selection(const QColor &color)
         const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
                                              std::max(0.0, layer->out_time - layer->in_time));
         if (is_canvas_text_layer(*layer)) {
-            RichTextCharFormat fmt = layer_char_format_for_editor(*layer);
+            const bool apply_inline_range = active_text_edit_layer_id_ == layer->id;
+            RichTextCharFormat fmt;
+            if (apply_inline_range) {
+                /* The Color Swatches dock is outside the QTextEdit, but an
+                 * active inline selection remains the edit target. Use the
+                 * canonical selection summary instead of the layer mirrors;
+                 * the latter represent the whole-text defaults and previously
+                 * caused a swatch click to recolor the complete textbox. */
+                const RichTextCharFormatSummary summary =
+                    summarize_rich_text_char_format(*layer, true, local_time);
+                fmt = summary.valid ? summary.format
+                                    : layer_char_format_for_editor(*layer);
+            } else {
+                fmt = layer_char_format_for_editor(*layer);
+            }
             fmt.fill.type = 0;
             fmt.fill.color = argb;
-            apply_rich_text_format_to_layer_range(*layer, fmt, RichTextCharFillColor, false);
-            set_color_channels_at(*layer, true, local_time, argb);
+            apply_rich_text_format_to_layer_range(
+                *layer, fmt, RichTextCharFillColor, apply_inline_range);
+            if (apply_inline_range) {
+                if (canvas_)
+                    canvas_->apply_active_text_char_format(
+                        layer->id, fmt, RichTextCharFillColor);
+            } else {
+                set_color_channels_at(*layer, true, local_time, argb);
+            }
             last_changed = layer;
         } else if (layer->type == LayerType::Shape || layer->type == LayerType::SolidRect) {
             layer->fill_type = 0;
@@ -5355,14 +5406,6 @@ void TitleEditor::update_title_bar()
     }
     if (dirty_indicator_)
         dirty_indicator_->setVisible(dirty_);
-    if (gpu_warning_lbl_) {
-        const bool show_gpu_warning = TitlePreferences::use_gpu() && !TitlePreferences::gpu_available();
-        gpu_warning_lbl_->setVisible(show_gpu_warning);
-        gpu_warning_lbl_->setText(show_gpu_warning ? obsgs_tr("OBSTitles.GPUFallbackWarning") : QString());
-        gpu_warning_lbl_->setToolTip(show_gpu_warning
-            ? QString::fromUtf8(TitlePreferences::gpu_unavailable_reason())
-            : QString());
-    }
 }
 
 void TitleEditor::begin_title_name_edit()
@@ -5571,20 +5614,6 @@ void TitleEditor::next_keyframe()
 }
 
 
-namespace {
-bool cached_preview_frame_available_for_playback(const std::shared_ptr<Title> &title, double time)
-{
-    if (!title)
-        return false;
-    /* This intentionally goes through the editor-facing cache API.  It can
-     * synchronously promote an already-rendered disk frame to RAM, queues the
-     * missing frame when needed, and returns a null image only when the user
-     * requested "Play after rendering" and that exact frame is not available
-     * yet.  Non-cacheable dynamic titles still return a live uncached frame, so
-     * clock/ticker previews are not blocked. */
-    return !CacheManager::instance().requestFrame(title, time, true).isNull();
-}
-}
 
 void TitleEditor::tick()
 {
@@ -5619,8 +5648,8 @@ void TitleEditor::tick()
             act_play_->setIcon(obs_icon("play.svg"));
         }
         const double next_playhead = snap_to_obs_frame(t);
-        if (cache_settings.cached_frames_only &&
-            !cached_preview_frame_available_for_playback(title_, next_playhead))
+        if (cache_settings.cached_frames_only && canvas_ &&
+            !canvas_->prepare_cached_playback_frame(next_playhead))
             return;
         on_playhead_changed(next_playhead);
         return;
@@ -5697,8 +5726,8 @@ void TitleEditor::tick()
         }
     }
     const double next_playhead = snap_to_obs_frame(t);
-    if (cache_settings.cached_frames_only &&
-        !cached_preview_frame_available_for_playback(title_, next_playhead)) {
+    if (cache_settings.cached_frames_only && canvas_ &&
+        !canvas_->prepare_cached_playback_frame(next_playhead)) {
         /* Play after rendering means the playhead must not outrun the cache.
          * Keep the current visible frame and let the realtime queue prepare the
          * exact next frame; the next timer tick will advance as soon as it is
@@ -5945,13 +5974,6 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     advanced_title->setFont(title_font);
     advanced_layout->addWidget(advanced_title);
 
-    auto *use_gpu = new QCheckBox(obsgs_tr("OBSTitles.UseGPU"), advanced_page);
-    use_gpu->setChecked(TitlePreferences::use_gpu());
-    use_gpu->setToolTip(obsgs_tr("OBSTitles.UseGPUTooltip"));
-    use_gpu->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
-                               .arg(text.name(QColor::HexRgb),
-                                    disabled_text.name(QColor::HexRgb)));
-    advanced_layout->addWidget(use_gpu);
     auto *cache_enabled = new QCheckBox(obsgs_tr("OBSTitles.EnableCachingPrerender"), advanced_page);
     cache_enabled->setChecked(CacheManager::instance().cacheEnabled());
     cache_enabled->setToolTip(obsgs_tr("OBSTitles.EnableCachingPrerenderTooltip"));
@@ -5963,10 +5985,13 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     cache_form->setContentsMargins(0, 0, 0, 0);
     cache_form->setSpacing(8);
     auto *ram_limit = new QSpinBox(advanced_page);
-    ram_limit->setRange(64, 32768);
-    ram_limit->setSingleStep(128);
+    const int maximum_ram_cache_mb = gsp::system_memory::maximum_cache_ram_mb();
+    ram_limit->setRange(gsp::system_memory::kMinimumCacheRamMb, maximum_ram_cache_mb);
+    ram_limit->setSingleStep(maximum_ram_cache_mb >= 2048 ? 128 : 16);
     ram_limit->setSuffix(QStringLiteral(" MB"));
     ram_limit->setValue(TitlePreferences::cache_ram_limit_mb());
+    ram_limit->setToolTip(obsgs_tr("OBSTitles.RamCacheLimitTooltip")
+        .arg(maximum_ram_cache_mb));
     cache_form->addRow(obsgs_tr("OBSTitles.RamCacheLimit"), ram_limit);
 
     auto *disk_path_row = new QWidget(advanced_page);
@@ -6053,6 +6078,14 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
                                        disabled_text.name(QColor::HexRgb)));
     logging_form->addRow(QString(), mirror_obs);
 
+    auto *cache_playback_logging = new QCheckBox(obsgs_tr("OBSTitles.CachePlaybackLogging"), logging_page);
+    cache_playback_logging->setChecked(TitlePreferences::cache_playback_logging_enabled());
+    cache_playback_logging->setToolTip(obsgs_tr("OBSTitles.CachePlaybackLoggingTooltip"));
+    cache_playback_logging->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
+                                               .arg(text.name(QColor::HexRgb),
+                                                    disabled_text.name(QColor::HexRgb)));
+    logging_form->addRow(QString(), cache_playback_logging);
+
     auto *logging_buttons_row = new QWidget(logging_page);
     auto *logging_buttons_layout = new QHBoxLayout(logging_buttons_row);
     logging_buttons_layout->setContentsMargins(0, 0, 0, 0);
@@ -6084,17 +6117,6 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
 
     tabs->setCurrentRow(0);
     connect(tabs, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
-    connect(use_gpu, &QCheckBox::toggled, dialog, [editor, update_appearance](bool enabled) {
-        if (editor) {
-            editor->set_gpu_pipeline_enabled(enabled);
-            return;
-        }
-        if (TitlePreferences::use_gpu() == enabled)
-            return;
-        TitlePreferences::set_use_gpu(enabled);
-        TitlePreferences::notify_changed(nullptr);
-        update_appearance();
-    });
     connect(cache_enabled, &QCheckBox::toggled, dialog, [](bool enabled) {
         OGS_LOG_INFO("Preferences", QStringLiteral("Set cache enabled=%1").arg(enabled));
         CacheManager::instance().setCacheEnabled(enabled);
@@ -6150,6 +6172,10 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         TitlePreferences::set_logging_mirror_to_obs(enabled);
         OGS_LOG_INFO("Preferences", QStringLiteral("Set logging mirror to OBS=%1").arg(enabled));
     });
+    connect(cache_playback_logging, &QCheckBox::toggled, dialog, [](bool enabled) {
+        TitlePreferences::set_cache_playback_logging_enabled(enabled);
+        OGS_LOG_INFO("Preferences", QStringLiteral("Set cache playback logging=%1").arg(enabled));
+    });
     connect(open_log_folder, &QPushButton::clicked, dialog, []() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(TitlePreferences::logging_file_path()).absolutePath()));
     });
@@ -6203,6 +6229,8 @@ void TitleEditor::update_display_refresh_pacing()
         hz = 60.0;
     hz = std::clamp(hz, 24.0, 240.0);
     display_refresh_hz_ = hz;
+    if (canvas_)
+        canvas_->set_display_refresh_rate(hz);
 
     // Only GUI/canvas editing follows the monitor cadence. Playback remains
     // locked to the project/OBS frame rate through play_timer_.
@@ -6792,19 +6820,38 @@ void TitleEditor::update_sidebar_color_swatches(std::shared_ptr<Layer> layer)
                                      std::max(0.0, layer->out_time - layer->in_time));
         const bool is_text_like = layer->type == LayerType::Text || layer->type == LayerType::Clock ||
                                   layer->type == LayerType::Ticker;
-        const uint32_t fg = is_text_like ? eval_text_color(*layer, lt) : eval_fill_color(*layer, lt);
+        RichTextFill text_fill;
+        bool text_fill_mixed = false;
+        if (is_text_like) {
+            const bool inline_selection = active_text_edit_layer_id_ == layer->id;
+            const RichTextCharFormatSummary summary =
+                summarize_rich_text_char_format(*layer, inline_selection, lt);
+            text_fill = summary.valid ? summary.format.fill
+                                      : layer_char_format_for_editor(*layer).fill;
+            text_fill_mixed = summary.valid &&
+                ((summary.mixed & RichTextCharFillColor) != 0);
+        }
+        const uint32_t fg = is_text_like ? text_fill.color : eval_fill_color(*layer, lt);
         const uint32_t bg = eval_outline_color(*layer, lt);
         // Show the actual active fill in the sidebar swatch for every layer type that
         // supports gradients, including Text / Clock / Ticker. Previously text-like
         // layers were forced to a solid color fallback, so their gradient state was
         // stored on the layer but never visible in the sidebar swatch.
-        if (layer->fill_type == 1) {
-            tools_sidebar_->set_foreground_gradient(color_from_argb(layer->gradient_start_color),
-                                                    color_from_argb(layer->gradient_end_color),
-                                                    layer->gradient_type);
+        const int displayed_fill_type = is_text_like ? text_fill.type : layer->fill_type;
+        if (displayed_fill_type == 1) {
+            const uint32_t start = is_text_like ? text_fill.gradient_start_color
+                                                : layer->gradient_start_color;
+            const uint32_t end = is_text_like ? text_fill.gradient_end_color
+                                              : layer->gradient_end_color;
+            const int gradient_type = is_text_like ? text_fill.gradient_type
+                                                   : layer->gradient_type;
+            tools_sidebar_->set_foreground_gradient(color_from_argb(start),
+                                                    color_from_argb(end),
+                                                    gradient_type);
         } else {
             tools_sidebar_->set_foreground_color(color_from_argb(fg));
         }
+        tools_sidebar_->set_foreground_mixed(text_fill_mixed);
         if (layer->stroke_fill_type == 2) {
             tools_sidebar_->set_background_gradient(color_from_argb(layer->stroke_gradient_start_color),
                                                     color_from_argb(layer->stroke_gradient_end_color),
@@ -6812,6 +6859,7 @@ void TitleEditor::update_sidebar_color_swatches(std::shared_ptr<Layer> layer)
         } else {
             tools_sidebar_->set_background_color(color_from_argb(bg));
         }
+        tools_sidebar_->set_background_mixed(false);
     } else {
         if (default_new_layer_style_.fill_type == 1) {
             tools_sidebar_->set_foreground_gradient(color_from_argb(default_new_layer_style_.gradient_start_color),
@@ -6820,6 +6868,7 @@ void TitleEditor::update_sidebar_color_swatches(std::shared_ptr<Layer> layer)
         } else {
             tools_sidebar_->set_foreground_color(default_foreground_color_);
         }
+        tools_sidebar_->set_foreground_mixed(false);
         if (default_new_layer_style_.stroke_fill_type == 2) {
             tools_sidebar_->set_background_gradient(color_from_argb(default_new_layer_style_.stroke_gradient_start_color),
                                                     color_from_argb(default_new_layer_style_.stroke_gradient_end_color),
@@ -6827,6 +6876,7 @@ void TitleEditor::update_sidebar_color_swatches(std::shared_ptr<Layer> layer)
         } else {
             tools_sidebar_->set_background_color(default_background_color_);
         }
+        tools_sidebar_->set_background_mixed(false);
     }
 }
 

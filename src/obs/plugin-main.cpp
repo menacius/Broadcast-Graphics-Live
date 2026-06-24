@@ -153,13 +153,18 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
     title_hotkeys_unregister();
-    if (TitlePreferences::clear_cache_on_exit()) {
-        OGS_LOG_INFO("Plugin", QStringLiteral("Clearing frame cache on module unload"));
-        CacheManager::instance().clearAll();
-    }
     TitleDataStore::instance().save();
     obs_frontend_remove_event_callback(on_frontend_event, nullptr);
     destroy_dock_ui();
+    /* Stop publication before rotating cache generations. This prevents an
+     * in-flight prerender job from holding cache locks while shutdown clears the
+     * index, and avoids deleting files on the OBS frontend thread. */
+    CacheManager::instance().shutdownWorker();
+    if (TitlePreferences::clear_cache_on_exit()) {
+        OGS_LOG_INFO("Plugin", QStringLiteral("Detaching frame cache on module unload"));
+        CacheManager::instance().clearAll();
+    }
+    release_title_gpu_render_resources();
     blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin unloaded.");
     OGS_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
 }
@@ -206,14 +211,22 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
          * that point, so writing it is both unnecessary and vulnerable to
          * transient filesystem/antivirus locks. Real collection switches occur
          * after the frontend is ready and still save the outgoing collection. */
-        if (g_frontend_ready)
+        if (g_frontend_ready) {
+            /* Keep source output blocked for the whole cleanup→changed gap;
+             * otherwise a video tick in that interval can rebuild and publish
+             * the outgoing collection after it was just invalidated. */
+            title_source_begin_scene_collection_transition();
             TitleDataStore::instance().save();
+        } else {
+            title_source_invalidate_all_presentations();
+        }
         title_hotkeys_unregister();
     }
 
     if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED && g_frontend_ready) {
         OGS_LOG_INFO("Plugin", QStringLiteral("Scene collection changed"));
         TitleDataStore::instance().load();
+        title_source_end_scene_collection_transition();
         title_hotkeys_register();
         if (g_dock)
             g_dock->update_scene_collection_title();
@@ -221,10 +234,9 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 
     if (event == OBS_FRONTEND_EVENT_EXIT) {
         OGS_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
-        if (TitlePreferences::clear_cache_on_exit()) {
-            OGS_LOG_INFO("Plugin", QStringLiteral("Clearing frame cache on OBS exit"));
-            CacheManager::instance().clearAll();
-        }
+        /* Cache shutdown/rotation is performed once from obs_module_unload(),
+         * after the prerender worker has stopped. Doing it here as well caused
+         * duplicate clears while sources and the worker were still active. */
         g_frontend_ready = false;
         title_hotkeys_unregister();
         TitleDataStore::instance().save();
