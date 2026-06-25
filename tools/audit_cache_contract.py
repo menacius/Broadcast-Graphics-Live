@@ -30,7 +30,7 @@ for path in source_files:
                 f"merge conflict marker remains in {path.relative_to(ROOT)}:{line_number}"
             )
 
-metadata_key_occurrences = len(re.findall(r'"obs_gsp_canvas_(?:x|y|width|height)"', all_source))
+metadata_key_occurrences = len(re.findall(r'"obs_bgs_canvas_(?:x|y|width|height)"', all_source))
 if metadata_key_occurrences != 4:
     errors.append(
         f"cache placement metadata must have one definition per key; found {metadata_key_occurrences} literals"
@@ -131,7 +131,7 @@ if order_definition_count != 1:
     errors.append("exposed live-text layer ordering is not defined exactly once")
 if normalize_definition_count != 1:
     errors.append("live-text row normalization is not defined exactly once")
-if "namespace gsp::live_text" not in live_text_utils:
+if "namespace bgs::live_text" not in live_text_utils:
     errors.append("shared live-text cue contract header is missing its namespace")
 else:
     notes.append("dock, hotkeys, source, and cache share one live-text cue ordering contract")
@@ -141,7 +141,7 @@ else:
 cmake = read("CMakeLists.txt")
 source_groups: list[tuple[str, str]] = []
 for group_name, body in re.findall(
-    r"set\((OBS_GSP_[A-Z_]+_(?:SOURCES|HEADERS))\s+(.*?)\n\)", cmake, re.S
+    r"set\((OBS_BGS_[A-Z_]+_(?:SOURCES|HEADERS))\s+(.*?)\n\)", cmake, re.S
 ):
     for source_path in re.findall(r"(?m)^\s*(src/\S+)", body):
         source_groups.append((source_path, group_name))

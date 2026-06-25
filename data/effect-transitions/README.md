@@ -16,8 +16,8 @@ Each preset declares its virtual location with a slash-separated `category` fiel
 
 Supported files:
 
-- `.ogseffect` — layer effects; the category must begin with `Effects` or `Animation Presets`.
-- `.osgtranst` — text transitions; the category must begin with `Transitions/Text`.
-- `.osgtransg` — general transitions; the category must begin with `Transitions/General`.
+- `.obgeffect` — layer effects; the category must begin with `Effects` or `Animation Presets`.
+- `.obgtranst` — text transitions; the category must begin with `Transitions/Text`.
+- `.obgtransg` — general transitions; the category must begin with `Transitions/General`.
 
 The Effects & Presets dock builds its folder tree from these metadata paths. Empty categories are not created.

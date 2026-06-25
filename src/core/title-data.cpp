@@ -9,6 +9,7 @@
 
 #include <QSaveFile>
 #include <QString>
+#include <QFileInfo>
 
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -49,6 +50,14 @@ constexpr int kMaxCanvasDimension = 16384;
 static double finite_or(double value, double fallback)
 {
     return std::isfinite(value) ? value : fallback;
+}
+
+static void append_unique_import_diagnostic(std::vector<std::string> &items, const std::string &value)
+{
+    if (value.empty())
+        return;
+    if (std::find(items.begin(), items.end(), value) == items.end())
+        items.push_back(value);
 }
 
 static int normalize_gradient_type(int type)
@@ -1617,7 +1626,8 @@ std::string layer_render_fingerprint(const Layer &layer)
 }
 
 static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedded_assets = false,
-                                               std::string *error = nullptr)
+                                               std::string *error = nullptr,
+                                               TitleImportDiagnostics *diagnostics = nullptr)
 {
     auto l = std::make_shared<Layer>();
     if (!j.is_object())
@@ -1642,8 +1652,17 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
         for (size_t i = 0; i < count; ++i) {
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
+            const int raw_effect_type = json_int(effect_json, "type", 0);
+            if (raw_effect_type < 0 || raw_effect_type > 13) {
+                if (diagnostics) {
+                    append_unique_import_diagnostic(
+                        diagnostics->missing_effects,
+                        l->name + ": unknown effect type " + std::to_string(raw_effect_type));
+                }
+                continue;
+            }
             LayerEffect effect;
-            effect.type = (LayerEffectType)std::clamp(json_int(effect_json, "type", 0), 0, 13);
+            effect.type = (LayerEffectType)raw_effect_type;
             effect.enabled = json_bool(effect_json, "enabled", true);
             switch (effect.type) {
             case LayerEffectType::DropShadow:
@@ -2328,6 +2347,12 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (object_member(j, "embedded_image") && !restore_embedded_image_asset(j, l->image_path) && require_embedded_assets) {
         if (error) *error = "Could not restore an embedded image asset from the template file.";
     }
+    if (diagnostics && l->type == LayerType::Image && !l->image_path.empty() &&
+        !QFileInfo::exists(QString::fromStdString(l->image_path))) {
+        append_unique_import_diagnostic(
+            diagnostics->missing_images,
+            l->name + ": " + l->image_path);
+    }
     l->lock_aspect_ratio = json_bool(j, "lock_aspect_ratio", l->type == LayerType::Image);
     l->image_box_lock_aspect_ratio = json_bool(j, "image_box_lock_aspect_ratio", false);
     l->scale_filter = (ImageScaleFilter)std::clamp(json_int(j, "scale_filter", (int)ImageScaleFilter::Bilinear),
@@ -2427,7 +2452,8 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
 }
 
 static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_ids,
-                                               bool require_embedded_assets = false, std::string *error = nullptr)
+                                               bool require_embedded_assets = false, std::string *error = nullptr,
+                                               TitleImportDiagnostics *diagnostics = nullptr)
 {
     auto t = std::make_shared<Title>();
     if (!jt.is_object())
@@ -2475,7 +2501,7 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
         const size_t count = std::min(jt["layers"].size(), kMaxLayersPerTitle);
         t->layers.reserve(count);
         for (size_t i = 0; i < count; ++i) {
-            t->layers.push_back(layer_from_json(jt["layers"][i], require_embedded_assets, error));
+            t->layers.push_back(layer_from_json(jt["layers"][i], require_embedded_assets, error, diagnostics));
             if (require_embedded_assets && error && !error->empty())
                 return t;
         }
@@ -2593,7 +2619,7 @@ bool TitleDataStore::write_snapshot_atomic(
                 root.push_back(title_to_json(*title));
         }
     } catch (const std::exception &e) {
-        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to serialize titles file: %s", e.what());
+        blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to serialize titles file: %s", e.what());
         return false;
     }
 
@@ -2601,7 +2627,7 @@ bool TitleDataStore::write_snapshot_atomic(
     try {
         payload = root.dump(2, ' ', false, json::error_handler_t::replace);
     } catch (const std::exception &e) {
-        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to encode titles file: %s", e.what());
+        blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to encode titles file: %s", e.what());
         return false;
     }
 
@@ -2615,7 +2641,7 @@ bool TitleDataStore::write_snapshot_atomic(
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) {
         blog(LOG_WARNING,
-             "[OBS Graphics Studio Pro] Failed to open titles file for atomic saving: %s",
+             "[Broadcast Graphics Live] Failed to open titles file for atomic saving: %s",
              file.errorString().toUtf8().constData());
         return false;
     }
@@ -2624,7 +2650,7 @@ bool TitleDataStore::write_snapshot_atomic(
     const qint64 written = file.write(payload.data(), expected);
     if (written != expected) {
         blog(LOG_WARNING,
-             "[OBS Graphics Studio Pro] Failed while writing titles file: %s",
+             "[Broadcast Graphics Live] Failed while writing titles file: %s",
              file.errorString().toUtf8().constData());
         file.cancelWriting();
         return false;
@@ -2632,7 +2658,7 @@ bool TitleDataStore::write_snapshot_atomic(
 
     if (!file.commit()) {
         blog(LOG_WARNING,
-             "[OBS Graphics Studio Pro] Failed to atomically replace titles file: %s",
+             "[Broadcast Graphics Live] Failed to atomically replace titles file: %s",
              file.errorString().toUtf8().constData());
         return false;
     }
@@ -2744,7 +2770,7 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
         export_metadata.screenshot_png_base64 = t->preview_screenshot_png_base64;
 
     json root;
-    root["format"] = "obs-graphics-studio-pro-title-template";
+    root["format"] = "broadcast-graphics-live-title-template";
     root["version"] = 3;
     root["template_title"] = export_metadata.title;
     root["description"] = export_metadata.description;
@@ -2793,9 +2819,12 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     return true;
 }
 
-std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std::string *error)
+std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std::string *error,
+                                                        TitleImportDiagnostics *diagnostics)
 {
     if (error) error->clear();
+    if (diagnostics)
+        *diagnostics = TitleImportDiagnostics{};
     try {
         json root;
         if (!read_json_file(path, root, error))
@@ -2810,7 +2839,7 @@ std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std
         else
             throw std::runtime_error("Unsupported template file format.");
 
-        auto imported = title_from_json(jt, true, true, error);
+        auto imported = title_from_json(jt, true, true, error, diagnostics);
         if (imported && root.is_object()) {
             json meta = root.value("metadata", json::object());
             if (imported->name.empty())
@@ -2887,7 +2916,7 @@ void TitleDataStore::load()
 
         if (preserved_existing_store) {
             blog(LOG_WARNING,
-                 "[OBS Graphics Studio Pro] Failed to reload titles for the current scene collection; "
+                 "[Broadcast Graphics Live] Failed to reload titles for the current scene collection; "
                  "keeping the already loaded titles in memory: %s",
                  error.c_str());
             return;
@@ -2895,9 +2924,9 @@ void TitleDataStore::load()
 
         notify_change();
         if (error == "Could not open the file.")
-            blog(LOG_INFO, "[OBS Graphics Studio Pro] No saved titles found for this scene collection, starting fresh.");
+            blog(LOG_INFO, "[Broadcast Graphics Live] No saved titles found for this scene collection, starting fresh.");
         else
-            blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to read scene collection titles file: %s", error.c_str());
+            blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to read scene collection titles file: %s", error.c_str());
         return;
     }
 
@@ -2922,7 +2951,7 @@ void TitleDataStore::load()
             loaded_count = titles_.size();
         }
         notify_change();
-        blog(LOG_INFO, "[OBS Graphics Studio Pro] Loaded %zu title(s) for this scene collection.", loaded_count);
+        blog(LOG_INFO, "[Broadcast Graphics Live] Loaded %zu title(s) for this scene collection.", loaded_count);
     } catch (const std::exception &e) {
         bool preserved_existing_store = false;
         {
@@ -2937,13 +2966,13 @@ void TitleDataStore::load()
 
         if (preserved_existing_store) {
             blog(LOG_WARNING,
-                 "[OBS Graphics Studio Pro] Failed to parse the current scene collection titles file; "
+                 "[Broadcast Graphics Live] Failed to parse the current scene collection titles file; "
                  "keeping the already loaded titles in memory: %s",
                  e.what());
             return;
         }
 
         notify_change();
-        blog(LOG_WARNING, "[OBS Graphics Studio Pro] Failed to parse scene collection titles file: %s", e.what());
+        blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to parse scene collection titles file: %s", e.what());
     }
 }

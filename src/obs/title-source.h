@@ -1,7 +1,7 @@
 /*
  * title-source.h
  *
- * OBS source type "obs_graphics_studio_pro_source".
+ * OBS source type "broadcast_graphics_live_source".
  * Renders a Title through the unified GPU compositor used by OBS live output,
  * the editor preview and final cache readback.
  */

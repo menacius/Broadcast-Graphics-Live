@@ -59,6 +59,7 @@ public slots:
     void open_background_color_selector();
     void swap_foreground_background_colors();
     void remember_next_color_popup_position(const QPoint &global_pos);
+    bool apply_external_picked_color(const QColor &color, bool commit);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
@@ -85,6 +86,9 @@ private:
     bool loading_values_ = false;
     bool numeric_label_dragging_ = false;
     std::string active_text_edit_layer_id_;
+    std::string external_gradient_layer_id_;
+    int external_gradient_stop_index_ = -1;
+    bool external_gradient_stroke_ = false;
 
     QGroupBox       *text_box_     = nullptr;
     QGroupBox       *type_options_box_ = nullptr;

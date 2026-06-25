@@ -785,13 +785,13 @@ static std::vector<VisibleTimelineRow> visible_timeline_rows(const std::shared_p
 static QString timeline_blend_mode_short(EffectBlendMode mode)
 {
     switch (mode) {
-    case EffectBlendMode::Multiply: return obsgs_tr("OBSTitles.BlendShortMultiply");
-    case EffectBlendMode::Additive: return obsgs_tr("OBSTitles.BlendShortAdditive");
-    case EffectBlendMode::Screen: return obsgs_tr("OBSTitles.BlendShortScreen");
-    case EffectBlendMode::Overlay: return obsgs_tr("OBSTitles.BlendShortOverlay");
-    case EffectBlendMode::Color: return obsgs_tr("OBSTitles.BlendShortColor");
+    case EffectBlendMode::Multiply: return bgl_tr("OBSTitles.BlendShortMultiply");
+    case EffectBlendMode::Additive: return bgl_tr("OBSTitles.BlendShortAdditive");
+    case EffectBlendMode::Screen: return bgl_tr("OBSTitles.BlendShortScreen");
+    case EffectBlendMode::Overlay: return bgl_tr("OBSTitles.BlendShortOverlay");
+    case EffectBlendMode::Color: return bgl_tr("OBSTitles.BlendShortColor");
     case EffectBlendMode::Normal:
-    default: return obsgs_tr("OBSTitles.BlendShortNormal");
+    default: return bgl_tr("OBSTitles.BlendShortNormal");
     }
 }
 
@@ -799,18 +799,18 @@ static QString timeline_layer_switches_text(const Title &title, const Layer &lay
 {
     QStringList tags;
     if (layer.mask_mode != MaskMode::None && !layer.mask_source_id.empty())
-        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? obsgs_tr("OBSTitles.TrackMatteInvAlpha") :
-                 layer.mask_mode == MaskMode::Luma ? obsgs_tr("OBSTitles.TrackMatteLuma") :
-                 layer.mask_mode == MaskMode::InvertedLuma ? obsgs_tr("OBSTitles.TrackMatteInvLuma") :
-                 obsgs_tr("OBSTitles.TrackMatteAlpha"));
+        tags << (layer.mask_mode == MaskMode::InvertedAlpha ? bgl_tr("OBSTitles.TrackMatteInvAlpha") :
+                 layer.mask_mode == MaskMode::Luma ? bgl_tr("OBSTitles.TrackMatteLuma") :
+                 layer.mask_mode == MaskMode::InvertedLuma ? bgl_tr("OBSTitles.TrackMatteInvLuma") :
+                 bgl_tr("OBSTitles.TrackMatteAlpha"));
     if (!layer.parent_id.empty()) {
-        QString parent_name = obsgs_tr("OBSTitles.Parent");
+        QString parent_name = bgl_tr("OBSTitles.Parent");
         if (auto parent = title.find_layer(layer.parent_id))
             parent_name = QString::fromStdString(parent->name);
-        tags << obsgs_tr("OBSTitles.ParentNamed").arg(parent_name);
+        tags << bgl_tr("OBSTitles.ParentNamed").arg(parent_name);
     }
     if (layer.blend_mode != EffectBlendMode::Normal)
-        tags << obsgs_tr("OBSTitles.ModeNamed").arg(timeline_blend_mode_short(layer.blend_mode));
+        tags << bgl_tr("OBSTitles.ModeNamed").arg(timeline_blend_mode_short(layer.blend_mode));
     return tags.join(QStringLiteral("  ·  "));
 }
 
@@ -947,8 +947,8 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 p.drawLine(loop_x0, 18, loop_x0, H);
                 p.drawLine(loop_x1, 18, loop_x1, H);
                 p.setPen(loop_color.lightness() < 128 ? loop_color.lighter(170) : loop_color.darker(170));
-                p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, obsgs_tr("OBSTitles.LoopIn"));
-                p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, obsgs_tr("OBSTitles.LoopOut"));
+                p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, bgl_tr("OBSTitles.LoopIn"));
+                p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, bgl_tr("OBSTitles.LoopOut"));
             }
         }
         if (title_ && title_->playback_mode == 2) {
@@ -961,7 +961,7 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             marker << QPoint(pause_x - 6, 12) << QPoint(pause_x + 6, 12) << QPoint(pause_x, 22);
             p.drawPolygon(marker);
             p.setPen(pause_color.lightness() < 128 ? pause_color.lighter(170) : pause_color.darker(170));
-            p.drawText(pause_x + 4, 22, 100, 16, Qt::AlignVCenter, obsgs_tr("OBSTitles.Pause"));
+            p.drawText(pause_x + 4, 22, 100, 16, Qt::AlignVCenter, bgl_tr("OBSTitles.Pause"));
             p.setBrush(Qt::NoBrush);
         }
         p.restore();
@@ -1208,12 +1208,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
         const bool editable = has_transition && !layer->locked;
 
         QMenu transition_menu(this);
-        QAction *edit_action = transition_menu.addAction(obsgs_tr("OBSTitles.EditTransition"));
+        QAction *edit_action = transition_menu.addAction(bgl_tr("OBSTitles.EditTransition"));
         transition_menu.addSeparator();
-        QAction *copy_action = transition_menu.addAction(obsgs_tr("OBSTitles.Copy"));
-        QAction *cut_action = transition_menu.addAction(obsgs_tr("OBSTitles.Cut"));
-        QAction *paste_action = transition_menu.addAction(obsgs_tr("OBSTitles.Paste"));
-        QAction *delete_action = transition_menu.addAction(obsgs_tr("OBSTitles.Delete"));
+        QAction *copy_action = transition_menu.addAction(bgl_tr("OBSTitles.Copy"));
+        QAction *cut_action = transition_menu.addAction(bgl_tr("OBSTitles.Cut"));
+        QAction *paste_action = transition_menu.addAction(bgl_tr("OBSTitles.Paste"));
+        QAction *delete_action = transition_menu.addAction(bgl_tr("OBSTitles.Delete"));
         edit_action->setEnabled(editable);
         copy_action->setEnabled(has_transition);
         cut_action->setEnabled(editable);
@@ -1259,12 +1259,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
     prune_keyframe_selection();
 
     QMenu menu(this);
-    menu.setTitle(has_hit ? obsgs_tr("OBSTitles.KeyframeEasing") : obsgs_tr("OBSTitles.Paste"));
+    menu.setTitle(has_hit ? bgl_tr("OBSTitles.KeyframeEasing") : bgl_tr("OBSTitles.Paste"));
 
-    QAction *copy_action = menu.addAction(obsgs_tr("OBSTitles.Copy"));
-    QAction *cut_action = menu.addAction(obsgs_tr("OBSTitles.Cut"));
-    QAction *paste_action = menu.addAction(obsgs_tr("OBSTitles.Paste"));
-    QAction *delete_action = menu.addAction(obsgs_tr("OBSTitles.Delete"));
+    QAction *copy_action = menu.addAction(bgl_tr("OBSTitles.Copy"));
+    QAction *cut_action = menu.addAction(bgl_tr("OBSTitles.Cut"));
+    QAction *paste_action = menu.addAction(bgl_tr("OBSTitles.Paste"));
+    QAction *delete_action = menu.addAction(bgl_tr("OBSTitles.Delete"));
     const bool has_selection = !selected_keyframes_.empty();
     copy_action->setEnabled(has_selection);
     cut_action->setEnabled(has_selection);
@@ -1293,8 +1293,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
                                  const std::vector<int> &indices) {
         QAction *action = target_menu->addAction(swatch_icon(easing), label);
         action->setToolTip(easing == EasingType::Hold
-            ? obsgs_tr("OBSTitles.HoldEasingTooltip")
-            : obsgs_tr("OBSTitles.EasingTooltip"));
+            ? bgl_tr("OBSTitles.HoldEasingTooltip")
+            : bgl_tr("OBSTitles.EasingTooltip"));
         action->setCheckable(true);
         action->setChecked(prop && std::all_of(indices.begin(), indices.end(), [&](int idx) {
             return idx >= 0 && idx < (int)prop.keyframe_count() &&
@@ -1308,12 +1308,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
         auto *group = new QActionGroup(target_menu);
         group->setExclusive(true);
         for (auto [label, easing] : std::initializer_list<std::pair<QString, EasingType>>{
-                 {obsgs_tr("OBSTitles.Linear"), EasingType::Linear},
-                 {obsgs_tr("OBSTitles.EasyEase"), EasingType::EaseInOut},
-                 {obsgs_tr("OBSTitles.EaseIn"), EasingType::EaseIn},
-                 {obsgs_tr("OBSTitles.EaseOut"), EasingType::EaseOut},
-                 {obsgs_tr("OBSTitles.Hold"), EasingType::Hold},
-                 {obsgs_tr("OBSTitles.CustomBezier"), EasingType::Bezier},
+                 {bgl_tr("OBSTitles.Linear"), EasingType::Linear},
+                 {bgl_tr("OBSTitles.EasyEase"), EasingType::EaseInOut},
+                 {bgl_tr("OBSTitles.EaseIn"), EasingType::EaseIn},
+                 {bgl_tr("OBSTitles.EaseOut"), EasingType::EaseOut},
+                 {bgl_tr("OBSTitles.Hold"), EasingType::Hold},
+                 {bgl_tr("OBSTitles.CustomBezier"), EasingType::Bezier},
              }) {
             add_easing_action(target_menu, label, prop, easing, indices)->setActionGroup(group);
         }
@@ -1321,7 +1321,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
 
     if (has_hit && layer && hit_prop) {
         menu.addSeparator();
-        QMenu *easing_menu = menu.addMenu(obsgs_tr("OBSTitles.Easing"));
+        QMenu *easing_menu = menu.addMenu(bgl_tr("OBSTitles.Easing"));
         QAction *header = easing_menu->addAction(QString("%1 · %2")
             .arg(QString::fromStdString(layer->name))
             .arg(property_label(hit_prop.name())));
@@ -1330,12 +1330,12 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
         const bool has_previous_segment = hit_idx > 0;
         const bool has_next_segment = hit_idx + 1 < (int)hit_prop.keyframe_count();
         if (!has_previous_segment && !has_next_segment) {
-            QAction *message = easing_menu->addAction(obsgs_tr("OBSTitles.AddKeyframeForEasing"));
+            QAction *message = easing_menu->addAction(bgl_tr("OBSTitles.AddKeyframeForEasing"));
             message->setEnabled(false);
         } else {
             QAction *scope = easing_menu->addAction(has_previous_segment && has_next_segment
-                ? obsgs_tr("OBSTitles.EasingBothSegments")
-                : has_next_segment ? obsgs_tr("OBSTitles.EasingNextSegment") : obsgs_tr("OBSTitles.EasingPreviousSegment"));
+                ? bgl_tr("OBSTitles.EasingBothSegments")
+                : has_next_segment ? bgl_tr("OBSTitles.EasingNextSegment") : bgl_tr("OBSTitles.EasingPreviousSegment"));
             scope->setEnabled(false);
             easing_menu->addSeparator();
 
@@ -1354,10 +1354,10 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
 
             if (has_previous_segment && has_next_segment) {
                 easing_menu->addSeparator();
-                QMenu *advanced = easing_menu->addMenu(obsgs_tr("OBSTitles.ApplyOneSide"));
-                QMenu *previous = advanced->addMenu(obsgs_tr("OBSTitles.PreviousSegment"));
+                QMenu *advanced = easing_menu->addMenu(bgl_tr("OBSTitles.ApplyOneSide"));
+                QMenu *previous = advanced->addMenu(bgl_tr("OBSTitles.PreviousSegment"));
                 add_easing_group(previous, hit_prop, {hit_idx - 1});
-                QMenu *next = advanced->addMenu(obsgs_tr("OBSTitles.NextSegment"));
+                QMenu *next = advanced->addMenu(bgl_tr("OBSTitles.NextSegment"));
                 add_easing_group(next, hit_prop, {hit_idx});
             }
         }
@@ -1663,12 +1663,12 @@ void TimelineWidget::clear_transition_drop_preview()
 
 void TimelineWidget::dragEnterEvent(QDragEnterEvent *ev)
 {
-    if (ev && gsp::transitions::mime_has_transition_preset(ev->mimeData())) {
+    if (ev && bgs::transitions::mime_has_transition_preset(ev->mimeData())) {
         ev->setDropAction(Qt::CopyAction);
         ev->accept();
         return;
     }
-    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+    if (ev && bgs::effects::mime_has_effect_preset(ev->mimeData())) {
         ev->setDropAction(Qt::CopyAction);
         ev->accept();
         return;
@@ -1678,7 +1678,7 @@ void TimelineWidget::dragEnterEvent(QDragEnterEvent *ev)
 
 void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
 {
-    if (ev && gsp::transitions::mime_has_transition_preset(ev->mimeData())) {
+    if (ev && bgs::transitions::mime_has_transition_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint pos = ev->position().toPoint();
 #else
@@ -1700,7 +1700,7 @@ void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
         }
         return;
     }
-    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+    if (ev && bgs::effects::mime_has_effect_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint pos = ev->position().toPoint();
 #else
@@ -1719,7 +1719,7 @@ void TimelineWidget::dragMoveEvent(QDragMoveEvent *ev)
 
 void TimelineWidget::dropEvent(QDropEvent *ev)
 {
-    if (ev && gsp::transitions::mime_has_transition_preset(ev->mimeData())) {
+    if (ev && bgs::transitions::mime_has_transition_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint pos = ev->position().toPoint();
 #else
@@ -1727,7 +1727,7 @@ void TimelineWidget::dropEvent(QDropEvent *ev)
 #endif
         std::shared_ptr<Layer> layer;
         LayerTransitionEdge edge = LayerTransitionEdge::In;
-        const QString file_path = gsp::transitions::transition_preset_path_from_mime(ev->mimeData());
+        const QString file_path = bgs::transitions::transition_preset_path_from_mime(ev->mimeData());
         if (transition_drop_target_at_pos(pos, &layer, &edge) && !file_path.isEmpty()) {
             clear_transition_drop_preview();
             select_layer_from_mouse(layer->id, Qt::NoModifier);
@@ -1741,14 +1741,14 @@ void TimelineWidget::dropEvent(QDropEvent *ev)
         ev->ignore();
         return;
     }
-    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+    if (ev && bgs::effects::mime_has_effect_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint pos = ev->position().toPoint();
 #else
         const QPoint pos = ev->pos();
 #endif
         const auto layer = layer_strip_at_pos(pos);
-        const QString file_path = gsp::effects::effect_preset_path_from_mime(ev->mimeData());
+        const QString file_path = bgs::effects::effect_preset_path_from_mime(ev->mimeData());
         if (layer && !file_path.isEmpty()) {
             emit effect_preset_dropped(file_path, layer->id);
             ev->setDropAction(Qt::CopyAction);

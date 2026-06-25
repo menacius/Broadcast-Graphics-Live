@@ -1,6 +1,6 @@
 # Rich text redesign audit
 
-This audit guided the structured text model used by OBS Graphics Studio Pro.
+This audit guided the structured text model used by Broadcast Graphics Live.
 
 ## Mature editor patterns studied
 

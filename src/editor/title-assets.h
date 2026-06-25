@@ -13,14 +13,14 @@
 #include <QString>
 #include <QSvgRenderer>
 
-static inline QColor obsgs_icon_color()
+static inline QColor bgl_icon_color()
 {
     const QPalette palette = qApp ? qApp->palette() : QPalette();
-    const QColor window = palette.color(QPalette::Window);
-    return window.lightness() < 128 ? QColor(0xf2, 0xf2, 0xf2) : QColor(0x20, 0x20, 0x20);
+    const QColor button_text = palette.color(QPalette::Active, QPalette::ButtonText);
+    return button_text.isValid() ? button_text : QColor(0x20, 0x20, 0x20);
 }
 
-static inline QIcon obsgs_icon(const char *file_name, const QColor &color)
+static inline QIcon bgl_icon(const char *file_name, const QColor &color)
 {
     QString rel = QStringLiteral("icons/") + QString::fromUtf8(file_name);
     char *path = obs_module_file(rel.toUtf8().constData());
@@ -55,7 +55,7 @@ static inline QIcon obsgs_icon(const char *file_name, const QColor &color)
     return icon;
 }
 
-static inline QIcon obsgs_icon(const char *file_name)
+static inline QIcon bgl_icon(const char *file_name)
 {
-    return obsgs_icon(file_name, obsgs_icon_color());
+    return bgl_icon(file_name, bgl_icon_color());
 }

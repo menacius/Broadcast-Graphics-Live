@@ -8,10 +8,10 @@
 
 class QMimeData;
 
-namespace gsp::effects {
+namespace bgs::effects {
 
-inline constexpr const char *kEffectPresetMimeType = "application/x-obs-gsp-effect-preset";
-inline constexpr const char *kEffectPresetExtension = ".ogseffect";
+inline constexpr const char *kEffectPresetMimeType = "application/x-obs-bgs-effect-preset";
+inline constexpr const char *kEffectPresetExtension = ".obgeffect";
 
 struct EffectPresetDescriptor {
     QString file_path;
@@ -35,4 +35,4 @@ QByteArray encode_effect_preset_mime(const QString &file_path);
 QString effect_preset_path_from_mime(const QMimeData *mime_data);
 bool mime_has_effect_preset(const QMimeData *mime_data);
 
-} // namespace gsp::effects
+} // namespace bgs::effects

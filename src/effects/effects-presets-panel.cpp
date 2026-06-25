@@ -37,15 +37,15 @@ enum class PresetKind { None = 0, Effect = 1, Transition = 2 };
 QString category_display_name(const QString &segment, const QString &category_key)
 {
     if (segment.compare(QStringLiteral("Animation Presets"), Qt::CaseInsensitive) == 0)
-        return obsgs_tr("OBSTitles.AnimationPresets");
+        return bgl_tr("OBSTitles.AnimationPresets");
     if (segment.compare(QStringLiteral("Transitions"), Qt::CaseInsensitive) == 0)
-        return obsgs_tr("OBSTitles.Transitions");
+        return bgl_tr("OBSTitles.Transitions");
     if (segment.compare(QStringLiteral("Effects"), Qt::CaseInsensitive) == 0)
-        return obsgs_tr("OBSTitles.Effects");
+        return bgl_tr("OBSTitles.Effects");
     if (category_key == QStringLiteral("transitions/text"))
-        return obsgs_tr("OBSTitles.TextTransitions");
+        return bgl_tr("OBSTitles.TextTransitions");
     if (category_key == QStringLiteral("transitions/general"))
-        return obsgs_tr("OBSTitles.GeneralTransitions");
+        return bgl_tr("OBSTitles.GeneralTransitions");
     return segment;
 }
 
@@ -57,8 +57,8 @@ protected:
     QStringList mimeTypes() const override
     {
         return {
-            QString::fromUtf8(gsp::effects::kEffectPresetMimeType),
-            QString::fromUtf8(gsp::transitions::kTransitionPresetMimeType),
+            QString::fromUtf8(bgs::effects::kEffectPresetMimeType),
+            QString::fromUtf8(bgs::transitions::kTransitionPresetMimeType),
         };
     }
 
@@ -73,11 +73,11 @@ protected:
         auto *mime = new QMimeData;
         const PresetKind kind = static_cast<PresetKind>(items.front()->data(0, kPresetKindRole).toInt());
         if (kind == PresetKind::Transition) {
-            mime->setData(QString::fromUtf8(gsp::transitions::kTransitionPresetMimeType),
-                          gsp::transitions::encode_transition_preset_mime(file_path));
+            mime->setData(QString::fromUtf8(bgs::transitions::kTransitionPresetMimeType),
+                          bgs::transitions::encode_transition_preset_mime(file_path));
         } else if (kind == PresetKind::Effect) {
-            mime->setData(QString::fromUtf8(gsp::effects::kEffectPresetMimeType),
-                          gsp::effects::encode_effect_preset_mime(file_path));
+            mime->setData(QString::fromUtf8(bgs::effects::kEffectPresetMimeType),
+                          bgs::effects::encode_effect_preset_mime(file_path));
         } else {
             delete mime;
             return nullptr;
@@ -97,7 +97,7 @@ QString panel_style()
     const QColor highlighted_text = palette.color(QPalette::HighlightedText);
 
     return QStringLiteral(
-        "QWidget#OBSGraphicsStudioProEffectsPresetsPanel{background:%1;color:%2;}"
+        "QWidget#BroadcastGraphicsLiveEffectsPresetsPanel{background:%1;color:%2;}"
         "QLineEdit{background:%3;color:%2;border:1px solid %4;border-radius:3px;padding:5px 7px;}"
         "QLineEdit:focus{border-color:%5;}"
         "QTreeWidget{background:%3;color:%2;border:1px solid %4;outline:0;}"
@@ -114,8 +114,8 @@ QString panel_style()
 EffectsPresetsPanel::EffectsPresetsPanel(QWidget *parent)
     : QWidget(parent)
 {
-    setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsPresetsPanel"));
-    setMinimumWidth(240);
+    setObjectName(QStringLiteral("BroadcastGraphicsLiveEffectsPresetsPanel"));
+    setMinimumWidth(150);
     setStyleSheet(panel_style());
 
     auto *layout = new QVBoxLayout(this);
@@ -124,11 +124,11 @@ EffectsPresetsPanel::EffectsPresetsPanel(QWidget *parent)
 
     search_ = new QLineEdit(this);
     search_->setClearButtonEnabled(true);
-    search_->setPlaceholderText(obsgs_tr("OBSTitles.SearchEffectsPresets"));
+    search_->setPlaceholderText(bgl_tr("OBSTitles.SearchEffectsPresets"));
     layout->addWidget(search_);
 
     tree_ = new EffectPresetTreeWidget(this);
-    tree_->setObjectName(QStringLiteral("OBSGraphicsStudioProEffectsPresetsTree"));
+    tree_->setObjectName(QStringLiteral("BroadcastGraphicsLiveEffectsPresetsTree"));
     tree_->setHeaderHidden(true);
     tree_->setUniformRowHeights(true);
     tree_->setAnimated(false);
@@ -189,7 +189,7 @@ void EffectsPresetsPanel::reload()
         tree_->clear();
     }
 
-    const QString root_path = gsp::effects::effect_presets_root_path();
+    const QString root_path = bgs::effects::effect_presets_root_path();
     const QStringList root_categories = {
         QStringLiteral("Animation Presets"),
         QStringLiteral("Transitions"),
@@ -206,9 +206,9 @@ void EffectsPresetsPanel::reload()
 
     if (!root_path.isEmpty()) {
         const QStringList filters = {
-            QStringLiteral("*") + QString::fromUtf8(gsp::effects::kEffectPresetExtension),
-            QStringLiteral("*") + QString::fromUtf8(gsp::transitions::kTextTransitionExtension),
-            QStringLiteral("*") + QString::fromUtf8(gsp::transitions::kGeneralTransitionExtension),
+            QStringLiteral("*") + QString::fromUtf8(bgs::effects::kEffectPresetExtension),
+            QStringLiteral("*") + QString::fromUtf8(bgs::transitions::kTextTransitionExtension),
+            QStringLiteral("*") + QString::fromUtf8(bgs::transitions::kGeneralTransitionExtension),
         };
         entries.reserve(std::min(256, kMaxCatalogPresetFiles));
         QDirIterator iterator(root_path, filters, QDir::Files | QDir::Readable,
@@ -225,16 +225,16 @@ void EffectsPresetsPanel::reload()
             const QString suffix = QStringLiteral(".") + file.suffix().toLower();
             PresetEntry entry;
             entry.file_path = file.absoluteFilePath();
-            if (suffix == QString::fromUtf8(gsp::effects::kEffectPresetExtension)) {
-                gsp::effects::EffectPresetDescriptor descriptor;
-                if (!gsp::effects::load_effect_preset_file(entry.file_path, &descriptor))
+            if (suffix == QString::fromUtf8(bgs::effects::kEffectPresetExtension)) {
+                bgs::effects::EffectPresetDescriptor descriptor;
+                if (!bgs::effects::load_effect_preset_file(entry.file_path, &descriptor))
                     continue;
                 entry.display_name = descriptor.display_name;
                 entry.category_path = descriptor.category_path;
                 entry.kind = PresetKind::Effect;
             } else {
-                gsp::transitions::TransitionPresetDescriptor descriptor;
-                if (!gsp::transitions::load_transition_preset_file(entry.file_path, &descriptor))
+                bgs::transitions::TransitionPresetDescriptor descriptor;
+                if (!bgs::transitions::load_transition_preset_file(entry.file_path, &descriptor))
                     continue;
                 entry.display_name = descriptor.display_name;
                 entry.category_path = descriptor.category_path;
@@ -291,7 +291,7 @@ void EffectsPresetsPanel::reload()
         if (!parent)
             continue;
         auto *preset_item = new QTreeWidgetItem(parent, QStringList(entry.display_name));
-        preset_item->setIcon(0, obsgs_icon(
+        preset_item->setIcon(0, bgl_icon(
             entry.kind == PresetKind::Transition ? "timeline-modes.svg" : "lightning.svg"));
         preset_item->setData(0, kPresetPathRole, entry.file_path);
         preset_item->setData(0, kPresetKindRole, static_cast<int>(entry.kind));

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace gsp::gpu_text {
+namespace bgs::gpu_text {
 
 struct TextStrokeCoverageExtents {
     float outside = 0.0f;
@@ -24,4 +24,4 @@ std::vector<uint8_t> build_glyph_sdf(const uint8_t *alpha, int width,
                                      int &output_width,
                                      int &output_height);
 
-} // namespace gsp::gpu_text
+} // namespace bgs::gpu_text

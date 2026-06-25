@@ -14,7 +14,7 @@ and composition path changes.
    and strikethrough without invalidating the shaped layout. Immutable cursor
    boundaries stored on each cluster split ligatures into exact paint slices,
    so one shaped cluster can retain multiple gradient and stroke styles.
-4. `gsp::gpu_text::Renderer` reconstructs the exact shaped font face and adds
+4. `bgs::gpu_text::Renderer` reconstructs the exact shaped font face and adds
    only missing glyphs to a bounded session-local atlas.
 5. Each grayscale glyph mask is converted to an R8 signed-distance field.
 6. Adjacent compatible glyph/decorations are batched without reordering the

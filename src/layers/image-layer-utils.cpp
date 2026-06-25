@@ -63,7 +63,7 @@ double finite_nonnegative_or(double value, double fallback)
 
 } // namespace
 
-namespace gsp {
+namespace bgs {
 
 ImageDisplaySize calculate_image_display_size(ImageBoxMode mode, bool auto_fit,
                                                double box_width, double box_height,
@@ -203,4 +203,4 @@ bool apply_exposed_image_cue_value(Layer &layer, const std::string &path)
     return true;
 }
 
-} // namespace gsp
+} // namespace bgs

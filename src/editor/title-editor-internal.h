@@ -138,19 +138,21 @@
 constexpr const char *kEditorLayoutSettingsGroup = "TitleEditorLayout";
 constexpr const char *kEditorGeometryKey = "geometry";
 constexpr const char *kEditorWindowStateKey = "windowState";
+constexpr const char *kEditorLayoutVersionKey = "layoutVersion";
+constexpr int kEditorLayoutVersion = 2;
 constexpr const char *kEditorPanelsLockedKey = "panelsLocked";
 constexpr const char *kEditorCanvasTransparencyKey = "canvasTransparency";
 constexpr const char *kEditorSafeGuidesVisibleKey = "safeGuidesVisible";
-constexpr const char *kGraphicPropertiesDockObjectName = "OBSGraphicsStudioProGraphicPropertiesDock";
-constexpr const char *kLayerPropertiesDockObjectName = "OBSGraphicsStudioProLayerPropertiesDock";
-constexpr const char *kEffectsDockObjectName = "OBSGraphicsStudioProEffectsDock";
-constexpr const char *kEffectsPresetsDockObjectName = "OBSGraphicsStudioProEffectsPresetsDock";
-constexpr const char *kStylesDockObjectName = "OBSGraphicsStudioProStylesDock";
-constexpr const char *kColorSwatchesDockObjectName = "OBSGraphicsStudioProColorSwatchesDock";
-constexpr const char *kTimelineDockObjectName = "OBSGraphicsStudioProTimelineDock";
-constexpr const char *kPrerenderDockObjectName = "OBSGraphicsStudioProPrerenderDock";
+constexpr const char *kGraphicPropertiesDockObjectName = "BroadcastGraphicsLiveGraphicPropertiesDock";
+constexpr const char *kLayerPropertiesDockObjectName = "BroadcastGraphicsLiveLayerPropertiesDock";
+constexpr const char *kEffectsDockObjectName = "BroadcastGraphicsLiveEffectsDock";
+constexpr const char *kEffectsPresetsDockObjectName = "BroadcastGraphicsLiveEffectsPresetsDock";
+constexpr const char *kStylesDockObjectName = "BroadcastGraphicsLiveStylesDock";
+constexpr const char *kColorSwatchesDockObjectName = "BroadcastGraphicsLiveColorSwatchesDock";
+constexpr const char *kTimelineDockObjectName = "BroadcastGraphicsLiveTimelineDock";
+constexpr const char *kPrerenderDockObjectName = "BroadcastGraphicsLivePrerenderDock";
 
-static QString obsgs_color_dialog_style()
+static QString bgl_color_dialog_style()
 {
     const QPalette pal = qApp->palette();
     const QColor window = pal.color(QPalette::Window);
@@ -193,7 +195,7 @@ static QString obsgs_color_dialog_style()
     return css;
 }
 
-static void obsgs_apply_color_dialog_theme(color_widgets::ColorDialog *dialog)
+static void bgl_apply_color_dialog_theme(color_widgets::ColorDialog *dialog)
 {
     if (!dialog)
         return;
@@ -202,34 +204,34 @@ static void obsgs_apply_color_dialog_theme(color_widgets::ColorDialog *dialog)
     dialog->setPalette(pal);
     for (QWidget *child : dialog->findChildren<QWidget *>())
         child->setPalette(pal);
-    dialog->setStyleSheet(obsgs_color_dialog_style());
+    dialog->setStyleSheet(bgl_color_dialog_style());
 }
 
-static QColor obsgs_pick_color(const QColor &initial, QWidget *parent, const QString &title, bool alpha = true)
+static QColor bgl_pick_color(const QColor &initial, QWidget *parent, const QString &title, bool alpha = true)
 {
     color_widgets::ColorDialog picker(parent);
     picker.setWindowTitle(title);
     picker.setAlphaEnabled(alpha);
     picker.setButtonMode(color_widgets::ColorDialog::OkCancel);
     picker.setColor(initial.isValid() ? initial : QColor(Qt::white));
-    obsgs_apply_color_dialog_theme(&picker);
+    bgl_apply_color_dialog_theme(&picker);
     return picker.exec() == QDialog::Accepted ? picker.color() : QColor();
 }
 
-static QStringList obsgs_load_recent_color_hexes()
+static QStringList bgl_load_recent_color_hexes()
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Color"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Color"));
     return settings.value(QStringLiteral("recentColorHexes")).toStringList();
 }
 
-static void obsgs_save_recent_color_hexes(const QStringList &hexes)
+static void bgl_save_recent_color_hexes(const QStringList &hexes)
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Color"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Color"));
     settings.setValue(QStringLiteral("recentColorHexes"), hexes);
     settings.sync();
 }
 
-static QString obsgs_color_swatch_tooltip(const QString &name, const QColor &color, const QString &hex)
+static QString bgl_color_swatch_tooltip(const QString &name, const QColor &color, const QString &hex)
 {
     const QString safe_name = (name.trimmed().isEmpty() ? hex : name.trimmed()).toHtmlEscaped();
     const QString safe_hex = hex.toHtmlEscaped();
@@ -341,7 +343,7 @@ private:
     int last_columns_ = 0;
 };
 
-static void obsgs_prepare_embedded_color_dialog(color_widgets::ColorDialog *dialog, const QColor &initial, bool alpha = true)
+static void bgl_prepare_embedded_color_dialog(color_widgets::ColorDialog *dialog, const QColor &initial, bool alpha = true)
 {
     if (!dialog)
         return;
@@ -353,7 +355,7 @@ static void obsgs_prepare_embedded_color_dialog(color_widgets::ColorDialog *dial
     dialog->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     if (auto *button_box = dialog->findChild<QDialogButtonBox *>())
         button_box->hide();
-    obsgs_apply_color_dialog_theme(dialog);
+    bgl_apply_color_dialog_theme(dialog);
 }
 
 static QPoint clamp_popup_position_to_screen(const QPoint &desired, const QSize &popup_size, QWidget *anchor)
@@ -382,9 +384,9 @@ public:
           drag_started_(std::move(drag_started)), drag_finished_(std::move(drag_finished))
     {
         if (!spin_box_) return;
-        if (!spin_box_->property("gspDefaultValue").isValid())
-            spin_box_->setProperty("gspDefaultValue", spin_value());
-        setToolTip(obsgs_tr("OBSTitles.DragNumericLabelTooltip"));
+        if (!spin_box_->property("bgsDefaultValue").isValid())
+            spin_box_->setProperty("bgsDefaultValue", spin_value());
+        setToolTip(bgl_tr("OBSTitles.DragNumericLabelTooltip"));
         setCursor(Qt::SizeHorCursor);
     }
 
@@ -426,7 +428,7 @@ protected:
 
         const double delta = event->globalPosition().x() - drag_start_x_;
         double next = drag_start_value_ + delta * spin_step();
-        const QVariant default_value = spin_box_->property("gspDefaultValue");
+        const QVariant default_value = spin_box_->property("bgsDefaultValue");
         if (default_value.isValid()) {
             const double target = default_value.toDouble();
             const double threshold = std::max(spin_step() * 3.0, 0.0001);
@@ -517,9 +519,9 @@ public:
           drag_started_(std::move(drag_started)), drag_finished_(std::move(drag_finished))
     {
         setCursor(Qt::PointingHandCursor);
-        if (spin_ && !spin_->property("gspDefaultValue").isValid())
-            spin_->setProperty("gspDefaultValue", spin_->value());
-        setToolTip(obsgs_tr("OBSTitles.DragNumericLabelTooltip"));
+        if (spin_ && !spin_->property("bgsDefaultValue").isValid())
+            spin_->setProperty("bgsDefaultValue", spin_->value());
+        setToolTip(bgl_tr("OBSTitles.DragNumericLabelTooltip"));
     }
 
     ~StrokeOptionsLabel() override
@@ -556,7 +558,7 @@ protected:
         if (std::abs(delta) >= 2.0)
             moved_ = true;
         double next = drag_start_value_ + delta * spin_->singleStep();
-        const QVariant default_value = spin_->property("gspDefaultValue");
+        const QVariant default_value = spin_->property("bgsDefaultValue");
         if (default_value.isValid()) {
             const double target = default_value.toDouble();
             const double threshold = std::max(spin_->singleStep() * 3.0, 0.0001);
@@ -952,7 +954,7 @@ protected:
 
         p.setPen(QColor(210, 210, 210));
         p.drawText(QRectF(ramp.left(), 6, ramp.width(), 20),
-                   obsgs_tr("OBSTitles.GradientStopsHint")
+                   bgl_tr("OBSTitles.GradientStopsHint")
                        .arg(stop_count()));
     }
 
@@ -1115,10 +1117,10 @@ private:
     static QString type_name(int type)
     {
         switch (type) {
-        case 1: return obsgs_tr("OBSTitles.Radial");
-        case 2: return obsgs_tr("OBSTitles.Conical");
+        case 1: return bgl_tr("OBSTitles.Radial");
+        case 2: return bgl_tr("OBSTitles.Conical");
         case 0:
-        default: return obsgs_tr("OBSTitles.Linear");
+        default: return bgl_tr("OBSTitles.Linear");
         }
     }
 
@@ -1560,13 +1562,13 @@ static QTextCharFormat qtext_format_from_rich_text_format(const RichTextCharForm
 
 static bool resolve_editor_auto_text_style_preset(const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask)
 {
-    static obsgsp::StylePresetLibrary library;
-    obsgsp::StylePreset preset;
-    if (!library.findById(QString::fromStdString(preset_id), &preset) || preset.kind != obsgsp::StylePresetKind::Text)
+    static obsbgs::StylePresetLibrary library;
+    obsbgs::StylePreset preset;
+    if (!library.findById(QString::fromStdString(preset_id), &preset) || preset.kind != obsbgs::StylePresetKind::Text)
         return false;
-    if (!obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, format))
+    if (!obsbgs::StylePresetLibrary::textPresetToCharFormat(preset, format))
         return false;
-    mask = obsgsp::StylePresetLibrary::textPresetCharMask();
+    mask = obsbgs::StylePresetLibrary::textPresetCharMask();
     return true;
 }
 
@@ -2660,10 +2662,10 @@ static const QColor C_KF_DOT   { 0xffd23f };
 static QIcon keyframe_diamond_icon(bool active, bool outlined = false)
 {
     if (active)
-        return obsgs_icon("keyframe-active.svg", C_KF_DOT);
+        return bgl_icon("keyframe-active.svg", C_KF_DOT);
     if (outlined)
-        return obsgs_icon("keyframe-outline.svg", C_KF_DOT);
-    return obsgs_icon("keyframe-inactive.svg");
+        return bgl_icon("keyframe-outline.svg", C_KF_DOT);
+    return bgl_icon("keyframe-inactive.svg");
 }
 
 
@@ -2744,7 +2746,7 @@ static QString layer_type_short(LayerType type)
 
 static QIcon obs_icon(const char *file_name)
 {
-    return obsgs_icon(file_name);
+    return bgl_icon(file_name);
 }
 
 constexpr double kToolIconPi = 3.14159265358979323846;
@@ -2752,16 +2754,16 @@ constexpr double kToolIconPi = 3.14159265358979323846;
 static QString shape_display_name(ShapeType shape_type)
 {
     switch (shape_type) {
-    case ShapeType::RoundedRectangle: return obsgs_tr("OBSTitles.RoundedRectangle");
-    case ShapeType::Ellipse: return obsgs_tr("OBSTitles.Ellipse");
-    case ShapeType::Triangle: return obsgs_tr("OBSTitles.Triangle");
-    case ShapeType::Star: return obsgs_tr("OBSTitles.Star");
-    case ShapeType::Polygon: return obsgs_tr("OBSTitles.Polygon");
-    case ShapeType::Diamond: return obsgs_tr("OBSTitles.Diamond");
-    case ShapeType::Line: return obsgs_tr("OBSTitles.Line");
-    case ShapeType::Path: return obsgs_tr("OBSTitles.Path");
+    case ShapeType::RoundedRectangle: return bgl_tr("OBSTitles.RoundedRectangle");
+    case ShapeType::Ellipse: return bgl_tr("OBSTitles.Ellipse");
+    case ShapeType::Triangle: return bgl_tr("OBSTitles.Triangle");
+    case ShapeType::Star: return bgl_tr("OBSTitles.Star");
+    case ShapeType::Polygon: return bgl_tr("OBSTitles.Polygon");
+    case ShapeType::Diamond: return bgl_tr("OBSTitles.Diamond");
+    case ShapeType::Line: return bgl_tr("OBSTitles.Line");
+    case ShapeType::Path: return bgl_tr("OBSTitles.Path");
     case ShapeType::Rectangle:
-    default: return obsgs_tr("OBSTitles.Rectangle");
+    default: return bgl_tr("OBSTitles.Rectangle");
     }
 }
 
@@ -2836,7 +2838,7 @@ static QPainterPath editor_layer_rounded_rect_path(const Layer &layer, const QRe
 
 static QPainterPath editor_scene_mask_shape_path(const Layer &layer, const QRectF &rect)
 {
-    return gsp::layer_shape_path(layer, rect);
+    return bgs::layer_shape_path(layer, rect);
 }
 
 static QPainterPath editor_corner_rect_path(const QRectF &rect, double top_left, double top_right,
@@ -3036,9 +3038,9 @@ static QIcon gradient_tool_icon()
 
 static QString text_tool_display_name(LayerType type)
 {
-    if (type == LayerType::Clock) return obsgs_tr("OBSTitles.Clock");
-    if (type == LayerType::Ticker) return obsgs_tr("OBSTitles.Ticker");
-    return obsgs_tr("OBSTitles.Text");
+    if (type == LayerType::Clock) return bgl_tr("OBSTitles.Clock");
+    if (type == LayerType::Ticker) return bgl_tr("OBSTitles.Ticker");
+    return bgl_tr("OBSTitles.Text");
 }
 
 static QIcon text_tool_icon(LayerType type)
@@ -3139,7 +3141,7 @@ private:
 
 static std::string editor_text_std(const char *key)
 {
-    return obsgs_tr(key).toStdString();
+    return bgl_tr(key).toStdString();
 }
 
 static QLocale locale_for_text_transform(const QString &text)
@@ -3959,44 +3961,44 @@ static QBrush background_gradient_fill_brush(const Layer &layer, const QRectF &b
 static QString effect_type_name(LayerEffectType type)
 {
     switch (type) {
-    case LayerEffectType::BackgroundColor: return obsgs_tr("OBSTitles.BackgroundColor");
-    case LayerEffectType::Outline: return obsgs_tr("OBSTitles.Outline");
-    case LayerEffectType::DropShadow: return obsgs_tr("OBSTitles.DropShadow");
-    case LayerEffectType::LongShadow: return obsgs_tr("OBSTitles.LongShadow");
-    case LayerEffectType::BrightnessContrast: return obsgs_tr("OBSTitles.BrightnessContrast");
-    case LayerEffectType::Saturation: return obsgs_tr("OBSTitles.Saturation");
-    case LayerEffectType::ColorOverlay: return obsgs_tr("OBSTitles.ColorOverlay");
-    case LayerEffectType::Glow: return obsgs_tr("OBSTitles.Glow");
-    case LayerEffectType::InnerGlow: return obsgs_tr("OBSTitles.InnerGlow");
-    case LayerEffectType::InnerShadow: return obsgs_tr("OBSTitles.InnerShadow");
-    case LayerEffectType::Blur: return obsgs_tr("OBSTitles.Blur");
-    case LayerEffectType::MotionBlur: return obsgs_tr("OBSTitles.MotionBlur");
-    case LayerEffectType::Bloom: return obsgs_tr("OBSTitles.Bloom");
-    case LayerEffectType::Emboss: return obsgs_tr("OBSTitles.Emboss");
+    case LayerEffectType::BackgroundColor: return bgl_tr("OBSTitles.BackgroundColor");
+    case LayerEffectType::Outline: return bgl_tr("OBSTitles.Outline");
+    case LayerEffectType::DropShadow: return bgl_tr("OBSTitles.DropShadow");
+    case LayerEffectType::LongShadow: return bgl_tr("OBSTitles.LongShadow");
+    case LayerEffectType::BrightnessContrast: return bgl_tr("OBSTitles.BrightnessContrast");
+    case LayerEffectType::Saturation: return bgl_tr("OBSTitles.Saturation");
+    case LayerEffectType::ColorOverlay: return bgl_tr("OBSTitles.ColorOverlay");
+    case LayerEffectType::Glow: return bgl_tr("OBSTitles.Glow");
+    case LayerEffectType::InnerGlow: return bgl_tr("OBSTitles.InnerGlow");
+    case LayerEffectType::InnerShadow: return bgl_tr("OBSTitles.InnerShadow");
+    case LayerEffectType::Blur: return bgl_tr("OBSTitles.Blur");
+    case LayerEffectType::MotionBlur: return bgl_tr("OBSTitles.MotionBlur");
+    case LayerEffectType::Bloom: return bgl_tr("OBSTitles.Bloom");
+    case LayerEffectType::Emboss: return bgl_tr("OBSTitles.Emboss");
     }
-    return obsgs_tr("OBSTitles.Effect");
+    return bgl_tr("OBSTitles.Effect");
 }
 
 static void add_shadow_blur_items(QComboBox *combo)
 {
     if (!combo) return;
-    combo->addItem(obsgs_tr("OBSTitles.BoxBlur"), (int)ShadowBlurType::Box);
-    combo->addItem(obsgs_tr("OBSTitles.GaussianBlur"), (int)ShadowBlurType::Gaussian);
-    combo->addItem(obsgs_tr("OBSTitles.StackFastBlur"), (int)ShadowBlurType::StackFast);
-    combo->addItem(obsgs_tr("OBSTitles.TriangularBlur"), (int)ShadowBlurType::Triangular);
-    combo->addItem(obsgs_tr("OBSTitles.DualKawaseBlur"), (int)ShadowBlurType::DualKawase);
-    combo->addItem(obsgs_tr("OBSTitles.AlphaMaskBlur"), (int)ShadowBlurType::AlphaMask);
+    combo->addItem(bgl_tr("OBSTitles.BoxBlur"), (int)ShadowBlurType::Box);
+    combo->addItem(bgl_tr("OBSTitles.GaussianBlur"), (int)ShadowBlurType::Gaussian);
+    combo->addItem(bgl_tr("OBSTitles.StackFastBlur"), (int)ShadowBlurType::StackFast);
+    combo->addItem(bgl_tr("OBSTitles.TriangularBlur"), (int)ShadowBlurType::Triangular);
+    combo->addItem(bgl_tr("OBSTitles.DualKawaseBlur"), (int)ShadowBlurType::DualKawase);
+    combo->addItem(bgl_tr("OBSTitles.AlphaMaskBlur"), (int)ShadowBlurType::AlphaMask);
 }
 
 static void add_blend_mode_items(QComboBox *combo)
 {
     if (!combo) return;
-    combo->addItem(obsgs_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
-    combo->addItem(obsgs_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
-    combo->addItem(obsgs_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
-    combo->addItem(obsgs_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
-    combo->addItem(obsgs_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
-    combo->addItem(obsgs_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
+    combo->addItem(bgl_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
+    combo->addItem(bgl_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
+    combo->addItem(bgl_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
+    combo->addItem(bgl_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
+    combo->addItem(bgl_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
+    combo->addItem(bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
 }
 
 static const LayerEffect *find_layer_effect(const Layer &layer, LayerEffectType type)
@@ -4502,11 +4504,11 @@ static QStringList font_styles_for_family(const QString &family)
     QFontDatabase fdb;
     QStringList styles = fdb.styles(family);
     if (styles.isEmpty()) {
-        styles << obsgs_tr("OBSTitles.Regular");
+        styles << bgl_tr("OBSTitles.Regular");
     } else {
         styles.removeDuplicates();
         styles.sort(Qt::CaseInsensitive);
-        int regular = styles.indexOf(obsgs_tr("OBSTitles.Regular"));
+        int regular = styles.indexOf(bgl_tr("OBSTitles.Regular"));
         if (regular > 0) {
             QString item = styles.takeAt(regular);
             styles.prepend(item);
@@ -4524,7 +4526,7 @@ static void populate_font_style_combo(QComboBox *combo, const QString &family, c
     for (const QString &style : styles)
         combo->addItem(style, style);
     int idx = preferred.isEmpty() ? -1 : combo->findText(preferred);
-    if (idx < 0) idx = combo->findText(obsgs_tr("OBSTitles.Regular"));
+    if (idx < 0) idx = combo->findText(bgl_tr("OBSTitles.Regular"));
     combo->setCurrentIndex(idx >= 0 ? idx : 0);
 }
 
@@ -4549,9 +4551,9 @@ static void style_gradient_button(QPushButton *button, uint32_t start_argb, uint
     button->setText(QString());
     const int type = normalized_gradient_type(gradient_type);
     const bool radial = type == 1;
-    QString type_name = obsgs_tr("OBSTitles.LinearGradient");
-    if (type == 1) type_name = obsgs_tr("OBSTitles.RadialGradient");
-    else if (type == 2) type_name = obsgs_tr("OBSTitles.ConicalGradient");
+    QString type_name = bgl_tr("OBSTitles.LinearGradient");
+    if (type == 1) type_name = bgl_tr("OBSTitles.RadialGradient");
+    else if (type == 2) type_name = bgl_tr("OBSTitles.ConicalGradient");
     button->setToolTip(type_name);
     const QString fill = radial
         ? QStringLiteral("qradialgradient(cx:0.5,cy:0.5,radius:0.65,fx:0.5,fy:0.5,stop:0 %1,stop:1 %2)")
@@ -4565,8 +4567,8 @@ static void style_gradient_button(QPushButton *button, uint32_t start_argb, uint
 static void style_color_button_mixed(QPushButton *button)
 {
     if (!button) return;
-    button->setText(obsgs_tr("OBSTitles.M"));
-    button->setToolTip(obsgs_tr("OBSTitles.MixedValues"));
+    button->setText(bgl_tr("OBSTitles.M"));
+    button->setToolTip(bgl_tr("OBSTitles.MixedValues"));
     button->setStyleSheet(
         "QPushButton{color:#f2c94c;background:#252525;border:1px dashed #8a7635;"
         "border-radius:3px;padding:3px 8px;font-weight:700;}");
@@ -4574,9 +4576,9 @@ static void style_color_button_mixed(QPushButton *button)
 
 static void remember_mixed_tooltip(QWidget *widget)
 {
-    if (!widget || widget->property("_gsp_mixed_original_tooltip").isValid())
+    if (!widget || widget->property("_bgs_mixed_original_tooltip").isValid())
         return;
-    widget->setProperty("_gsp_mixed_original_tooltip", widget->toolTip());
+    widget->setProperty("_bgs_mixed_original_tooltip", widget->toolTip());
 }
 
 static void set_mixed_tooltip(QWidget *widget, bool mixed)
@@ -4584,17 +4586,17 @@ static void set_mixed_tooltip(QWidget *widget, bool mixed)
     if (!widget) return;
     remember_mixed_tooltip(widget);
     widget->setToolTip(mixed
-        ? obsgs_tr("OBSTitles.MixedValues")
-        : widget->property("_gsp_mixed_original_tooltip").toString());
+        ? bgl_tr("OBSTitles.MixedValues")
+        : widget->property("_bgs_mixed_original_tooltip").toString());
 }
 
 static void set_mixed_style_suffix(QWidget *widget, bool mixed,
                                    const QString &suffix)
 {
     if (!widget) return;
-    if (!widget->property("_gsp_mixed_base_stylesheet").isValid())
-        widget->setProperty("_gsp_mixed_base_stylesheet", widget->styleSheet());
-    const QString base = widget->property("_gsp_mixed_base_stylesheet").toString();
+    if (!widget->property("_bgs_mixed_base_stylesheet").isValid())
+        widget->setProperty("_bgs_mixed_base_stylesheet", widget->styleSheet());
+    const QString base = widget->property("_bgs_mixed_base_stylesheet").toString();
     widget->setStyleSheet(mixed ? base + suffix : base);
 }
 
@@ -4621,14 +4623,14 @@ static void set_spin_mixed(QAbstractSpinBox *spin, bool mixed)
 {
     if (!spin) return;
     if (auto *edit = spin->findChild<QLineEdit *>()) {
-        if (!edit->property("_gsp_mixed_original_alignment").isValid())
-            edit->setProperty("_gsp_mixed_original_alignment", (int)edit->alignment());
+        if (!edit->property("_bgs_mixed_original_alignment").isValid())
+            edit->setProperty("_bgs_mixed_original_alignment", (int)edit->alignment());
         if (mixed) {
-            edit->setText(obsgs_tr("OBSTitles.M"));
+            edit->setText(bgl_tr("OBSTitles.M"));
             edit->setAlignment(Qt::AlignCenter);
         } else {
             edit->setAlignment((Qt::Alignment)edit->property(
-                "_gsp_mixed_original_alignment").toInt());
+                "_bgs_mixed_original_alignment").toInt());
         }
         set_mixed_style_suffix(edit, mixed,
             QStringLiteral("QLineEdit{color:#f2c94c;font-weight:700;}"));
@@ -4639,26 +4641,26 @@ static void set_spin_mixed(QAbstractSpinBox *spin, bool mixed)
 static void set_combo_mixed(QComboBox *combo, bool mixed)
 {
     if (!combo) return;
-    if (!combo->property("_gsp_mixed_original_placeholder").isValid())
-        combo->setProperty("_gsp_mixed_original_placeholder", combo->placeholderText());
+    if (!combo->property("_bgs_mixed_original_placeholder").isValid())
+        combo->setProperty("_bgs_mixed_original_placeholder", combo->placeholderText());
     if (combo->isEditable() && combo->lineEdit() &&
-        !combo->lineEdit()->property("_gsp_mixed_original_alignment").isValid()) {
-        combo->lineEdit()->setProperty("_gsp_mixed_original_alignment",
+        !combo->lineEdit()->property("_bgs_mixed_original_alignment").isValid()) {
+        combo->lineEdit()->setProperty("_bgs_mixed_original_alignment",
                                        (int)combo->lineEdit()->alignment());
     }
     if (mixed) {
         combo->setCurrentIndex(-1);
-        combo->setPlaceholderText(obsgs_tr("OBSTitles.M"));
+        combo->setPlaceholderText(bgl_tr("OBSTitles.M"));
         if (combo->isEditable() && combo->lineEdit()) {
-            combo->lineEdit()->setText(obsgs_tr("OBSTitles.M"));
+            combo->lineEdit()->setText(bgl_tr("OBSTitles.M"));
             combo->lineEdit()->setAlignment(Qt::AlignCenter);
         }
     } else {
         combo->setPlaceholderText(combo->property(
-            "_gsp_mixed_original_placeholder").toString());
+            "_bgs_mixed_original_placeholder").toString());
         if (combo->isEditable() && combo->lineEdit())
             combo->lineEdit()->setAlignment((Qt::Alignment)combo->lineEdit()->property(
-                "_gsp_mixed_original_alignment").toInt());
+                "_bgs_mixed_original_alignment").toInt());
     }
     set_mixed_style_suffix(combo, mixed,
         QStringLiteral("QComboBox{color:#f2c94c;font-weight:700;}"
@@ -4669,15 +4671,15 @@ static void set_combo_mixed(QComboBox *combo, bool mixed)
 static void set_button_mixed(QAbstractButton *button, bool mixed)
 {
     if (!button) return;
-    if (!button->property("_gsp_mixed_original_icon").isValid())
-        button->setProperty("_gsp_mixed_original_icon", button->icon());
+    if (!button->property("_bgs_mixed_original_icon").isValid())
+        button->setProperty("_bgs_mixed_original_icon", button->icon());
     if (mixed) {
         button->setChecked(false);
-        const QIcon original = button->property("_gsp_mixed_original_icon").value<QIcon>();
+        const QIcon original = button->property("_bgs_mixed_original_icon").value<QIcon>();
         if (!original.isNull())
             button->setIcon(mixed_tinted_icon(original));
     } else {
-        button->setIcon(button->property("_gsp_mixed_original_icon").value<QIcon>());
+        button->setIcon(button->property("_bgs_mixed_original_icon").value<QIcon>());
     }
     set_mixed_style_suffix(button, mixed,
         QStringLiteral("QAbstractButton{color:#f2c94c;font-weight:700;}"));
@@ -4780,13 +4782,13 @@ static void draw_keyframe_marker(QPainter &painter, const QPointF &center, Easin
 static QString easing_label(EasingType easing)
 {
     switch (easing) {
-    case EasingType::Linear: return obsgs_tr("OBSTitles.Linear");
-    case EasingType::EaseIn: return obsgs_tr("OBSTitles.EaseIn");
-    case EasingType::EaseOut: return obsgs_tr("OBSTitles.EaseOut");
-    case EasingType::EaseInOut: return obsgs_tr("OBSTitles.EasyEase");
-    case EasingType::Bezier: return obsgs_tr("OBSTitles.CustomBezier");
-    case EasingType::Hold: return obsgs_tr("OBSTitles.Hold");
-    default: return obsgs_tr("OBSTitles.Linear");
+    case EasingType::Linear: return bgl_tr("OBSTitles.Linear");
+    case EasingType::EaseIn: return bgl_tr("OBSTitles.EaseIn");
+    case EasingType::EaseOut: return bgl_tr("OBSTitles.EaseOut");
+    case EasingType::EaseInOut: return bgl_tr("OBSTitles.EasyEase");
+    case EasingType::Bezier: return bgl_tr("OBSTitles.CustomBezier");
+    case EasingType::Hold: return bgl_tr("OBSTitles.Hold");
+    default: return bgl_tr("OBSTitles.Linear");
     }
 }
 
@@ -4949,19 +4951,19 @@ static QString property_label(const std::string &name)
     };
     if (qname.startsWith(QStringLiteral("background_color_"))) {
         QString suffix = qname.mid(QStringLiteral("background_color_").size());
-        if (suffix == QStringLiteral("enabled")) return effect_label(obsgs_tr("OBSTitles.BackgroundColor"), obsgs_tr("OBSTitles.Enabled"));
-        if (suffix == QStringLiteral("opacity")) return effect_label(obsgs_tr("OBSTitles.BackgroundColor"), obsgs_tr("OBSTitles.Opacity"));
-        if (suffix.startsWith(QStringLiteral("padding_"))) return effect_label(obsgs_tr("OBSTitles.BackgroundColor"), suffix.replace(QStringLiteral("_"), QStringLiteral(" ")));
-        if (suffix.startsWith(QStringLiteral("corner_"))) return effect_label(obsgs_tr("OBSTitles.BackgroundColor"), suffix.replace(QStringLiteral("_"), QStringLiteral(" ")));
-        if (suffix.startsWith(QStringLiteral("stroke_"))) return effect_label(obsgs_tr("OBSTitles.BackgroundColor"), suffix.replace(QStringLiteral("_"), QStringLiteral(" ")));
-        if (suffix.startsWith(QStringLiteral("color_"))) return effect_label(obsgs_tr("OBSTitles.BackgroundColor"), obsgs_tr("OBSTitles.Color"));
+        if (suffix == QStringLiteral("enabled")) return effect_label(bgl_tr("OBSTitles.BackgroundColor"), bgl_tr("OBSTitles.Enabled"));
+        if (suffix == QStringLiteral("opacity")) return effect_label(bgl_tr("OBSTitles.BackgroundColor"), bgl_tr("OBSTitles.Opacity"));
+        if (suffix.startsWith(QStringLiteral("padding_"))) return effect_label(bgl_tr("OBSTitles.BackgroundColor"), suffix.replace(QStringLiteral("_"), QStringLiteral(" ")));
+        if (suffix.startsWith(QStringLiteral("corner_"))) return effect_label(bgl_tr("OBSTitles.BackgroundColor"), suffix.replace(QStringLiteral("_"), QStringLiteral(" ")));
+        if (suffix.startsWith(QStringLiteral("stroke_"))) return effect_label(bgl_tr("OBSTitles.BackgroundColor"), suffix.replace(QStringLiteral("_"), QStringLiteral(" ")));
+        if (suffix.startsWith(QStringLiteral("color_"))) return effect_label(bgl_tr("OBSTitles.BackgroundColor"), bgl_tr("OBSTitles.Color"));
     }
     if (qname.startsWith(QStringLiteral("outline_"))) {
         QString suffix = qname.mid(QStringLiteral("outline_").size());
-        if (suffix == QStringLiteral("enabled")) return effect_label(obsgs_tr("OBSTitles.Outline"), obsgs_tr("OBSTitles.Enabled"));
-        if (suffix == QStringLiteral("width")) return effect_label(obsgs_tr("OBSTitles.Outline"), obsgs_tr("OBSTitles.Width"));
-        if (suffix == QStringLiteral("opacity")) return effect_label(obsgs_tr("OBSTitles.Outline"), obsgs_tr("OBSTitles.Opacity"));
-        if (suffix.startsWith(QStringLiteral("color_"))) return effect_label(obsgs_tr("OBSTitles.Outline"), obsgs_tr("OBSTitles.Color"));
+        if (suffix == QStringLiteral("enabled")) return effect_label(bgl_tr("OBSTitles.Outline"), bgl_tr("OBSTitles.Enabled"));
+        if (suffix == QStringLiteral("width")) return effect_label(bgl_tr("OBSTitles.Outline"), bgl_tr("OBSTitles.Width"));
+        if (suffix == QStringLiteral("opacity")) return effect_label(bgl_tr("OBSTitles.Outline"), bgl_tr("OBSTitles.Opacity"));
+        if (suffix.startsWith(QStringLiteral("color_"))) return effect_label(bgl_tr("OBSTitles.Outline"), bgl_tr("OBSTitles.Color"));
     }
     for (const QString &prefix : {QStringLiteral("drop_shadow_"), QStringLiteral("long_shadow_"), QStringLiteral("inner_shadow_")}) {
         if (!qname.startsWith(prefix)) continue;
@@ -4970,52 +4972,52 @@ static QString property_label(const std::string &name)
         title.replace(QStringLiteral("_"), QStringLiteral(" "));
         return effect_label(title, suffix);
     }
-    if (name == "position") return obsgs_tr("OBSTitles.Position");
-    if (name == "scale") return obsgs_tr("OBSTitles.Scale");
-    if (name == "size") return obsgs_tr("OBSTitles.Size");
-    if (name == "origin") return obsgs_tr("OBSTitles.Origin");
-    if (name == "paragraph_indent_left") return obsgs_tr("OBSTitles.ParagraphIndentLeft");
-    if (name == "paragraph_indent_right") return obsgs_tr("OBSTitles.ParagraphIndentRight");
-    if (name == "paragraph_indent_first_line") return obsgs_tr("OBSTitles.ParagraphIndentFirstLine");
-    if (name == "font_size") return obsgs_tr("OBSTitles.Size");
-    if (name == "char_scale_x") return obsgs_tr("OBSTitles.HScale");
-    if (name == "char_scale_y") return obsgs_tr("OBSTitles.VScale");
-    if (name == "char_tracking") return obsgs_tr("OBSTitles.Tracking");
-    if (name == "baseline_shift") return obsgs_tr("OBSTitles.Baseline");
-    if (name == "paragraph_space_before") return obsgs_tr("OBSTitles.ParagraphSpaceBefore");
-    if (name == "paragraph_space_after") return obsgs_tr("OBSTitles.ParagraphSpaceAfter");
+    if (name == "position") return bgl_tr("OBSTitles.Position");
+    if (name == "scale") return bgl_tr("OBSTitles.Scale");
+    if (name == "size") return bgl_tr("OBSTitles.Size");
+    if (name == "origin") return bgl_tr("OBSTitles.Origin");
+    if (name == "paragraph_indent_left") return bgl_tr("OBSTitles.ParagraphIndentLeft");
+    if (name == "paragraph_indent_right") return bgl_tr("OBSTitles.ParagraphIndentRight");
+    if (name == "paragraph_indent_first_line") return bgl_tr("OBSTitles.ParagraphIndentFirstLine");
+    if (name == "font_size") return bgl_tr("OBSTitles.Size");
+    if (name == "char_scale_x") return bgl_tr("OBSTitles.HScale");
+    if (name == "char_scale_y") return bgl_tr("OBSTitles.VScale");
+    if (name == "char_tracking") return bgl_tr("OBSTitles.Tracking");
+    if (name == "baseline_shift") return bgl_tr("OBSTitles.Baseline");
+    if (name == "paragraph_space_before") return bgl_tr("OBSTitles.ParagraphSpaceBefore");
+    if (name == "paragraph_space_after") return bgl_tr("OBSTitles.ParagraphSpaceAfter");
     if (name == "text_color_a" || name == "text_color_r" ||
-        name == "text_color_g" || name == "text_color_b") return obsgs_tr("OBSTitles.TextColor");
+        name == "text_color_g" || name == "text_color_b") return bgl_tr("OBSTitles.TextColor");
     if (name == "fill_color_a" || name == "fill_color_r" ||
-        name == "fill_color_g" || name == "fill_color_b") return obsgs_tr("OBSTitles.FillColor");
+        name == "fill_color_g" || name == "fill_color_b") return bgl_tr("OBSTitles.FillColor");
     if (name == "shadow_color_a" || name == "shadow_color_r" ||
-        name == "shadow_color_g" || name == "shadow_color_b") return obsgs_tr("OBSTitles.ShadowColor");
+        name == "shadow_color_g" || name == "shadow_color_b") return bgl_tr("OBSTitles.ShadowColor");
     if (name == "background_color_a" || name == "background_color_r" ||
-        name == "background_color_g" || name == "background_color_b") return obsgs_tr("OBSTitles.BackgroundColor");
-    if (name == "background_enabled") return obsgs_tr("OBSTitles.EnableColorBackground");
-    if (name == "background_opacity") return obsgs_tr("OBSTitles.BackgroundOpacityLabel");
-    if (name == "background_padding_x") return obsgs_tr("OBSTitles.BackgroundHorizontalPaddingLabel");
-    if (name == "background_padding_y") return obsgs_tr("OBSTitles.BackgroundVerticalPaddingLabel");
-    if (name == "background_padding_left") return obsgs_tr("OBSTitles.LeftPadding");
-    if (name == "background_padding_right") return obsgs_tr("OBSTitles.RightPadding");
-    if (name == "background_padding_top") return obsgs_tr("OBSTitles.TopPadding");
-    if (name == "background_padding_bottom") return obsgs_tr("OBSTitles.BottomPadding");
-    if (name == "background_corner_radius") return obsgs_tr("OBSTitles.BackgroundCornerLabel");
-    if (name == "background_corner_radius_tl") return obsgs_tr("OBSTitles.CornerTL");
-    if (name == "background_corner_radius_tr") return obsgs_tr("OBSTitles.CornerTR");
-    if (name == "background_corner_radius_br") return obsgs_tr("OBSTitles.CornerBR");
-    if (name == "background_corner_radius_bl") return obsgs_tr("OBSTitles.CornerBL");
-    if (name == "background_stroke_width") return obsgs_tr("OBSTitles.BackgroundStrokeWidth");
-    if (name == "background_stroke_opacity") return obsgs_tr("OBSTitles.BackgroundStrokeOpacity");
-    if (name == "background_stroke_color_a" || name == "background_stroke_color_r" || name == "background_stroke_color_g" || name == "background_stroke_color_b") return obsgs_tr("OBSTitles.BackgroundStroke");
-    if (name == "shadow_enabled") return obsgs_tr("OBSTitles.ShadowEnable");
-    if (name == "shadow_opacity") return obsgs_tr("OBSTitles.ShadowOpacity");
-    if (name == "shadow_distance") return obsgs_tr("OBSTitles.ShadowDistance");
-    if (name == "shadow_angle") return obsgs_tr("OBSTitles.ShadowAngle");
-    if (name == "shadow_blur") return obsgs_tr("OBSTitles.ShadowBlur");
-    if (name == "shadow_spread") return obsgs_tr("OBSTitles.ShadowSpread");
-    if (name == "rotation") return obsgs_tr("OBSTitles.Rotation");
-    if (name == "opacity") return obsgs_tr("OBSTitles.Opacity");
+        name == "background_color_g" || name == "background_color_b") return bgl_tr("OBSTitles.BackgroundColor");
+    if (name == "background_enabled") return bgl_tr("OBSTitles.EnableColorBackground");
+    if (name == "background_opacity") return bgl_tr("OBSTitles.BackgroundOpacityLabel");
+    if (name == "background_padding_x") return bgl_tr("OBSTitles.BackgroundHorizontalPaddingLabel");
+    if (name == "background_padding_y") return bgl_tr("OBSTitles.BackgroundVerticalPaddingLabel");
+    if (name == "background_padding_left") return bgl_tr("OBSTitles.LeftPadding");
+    if (name == "background_padding_right") return bgl_tr("OBSTitles.RightPadding");
+    if (name == "background_padding_top") return bgl_tr("OBSTitles.TopPadding");
+    if (name == "background_padding_bottom") return bgl_tr("OBSTitles.BottomPadding");
+    if (name == "background_corner_radius") return bgl_tr("OBSTitles.BackgroundCornerLabel");
+    if (name == "background_corner_radius_tl") return bgl_tr("OBSTitles.CornerTL");
+    if (name == "background_corner_radius_tr") return bgl_tr("OBSTitles.CornerTR");
+    if (name == "background_corner_radius_br") return bgl_tr("OBSTitles.CornerBR");
+    if (name == "background_corner_radius_bl") return bgl_tr("OBSTitles.CornerBL");
+    if (name == "background_stroke_width") return bgl_tr("OBSTitles.BackgroundStrokeWidth");
+    if (name == "background_stroke_opacity") return bgl_tr("OBSTitles.BackgroundStrokeOpacity");
+    if (name == "background_stroke_color_a" || name == "background_stroke_color_r" || name == "background_stroke_color_g" || name == "background_stroke_color_b") return bgl_tr("OBSTitles.BackgroundStroke");
+    if (name == "shadow_enabled") return bgl_tr("OBSTitles.ShadowEnable");
+    if (name == "shadow_opacity") return bgl_tr("OBSTitles.ShadowOpacity");
+    if (name == "shadow_distance") return bgl_tr("OBSTitles.ShadowDistance");
+    if (name == "shadow_angle") return bgl_tr("OBSTitles.ShadowAngle");
+    if (name == "shadow_blur") return bgl_tr("OBSTitles.ShadowBlur");
+    if (name == "shadow_spread") return bgl_tr("OBSTitles.ShadowSpread");
+    if (name == "rotation") return bgl_tr("OBSTitles.Rotation");
+    if (name == "opacity") return bgl_tr("OBSTitles.Opacity");
     return QString::fromStdString(name);
 }
 
@@ -5036,7 +5038,7 @@ static QString property_value_text(const AnimatedProperty &prop, const Layer &la
                                 .arg(layer.origin_prop.static_value.y, 0, 'f', 2);
     if (prop.name == "char_scale_x" || prop.name == "char_scale_y") value *= 100.0;
     if (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") value *= 100.0;
-    if (prop.name == "shadow_enabled" || prop.name == "background_enabled") return value >= 0.5 ? obsgs_tr("OBSTitles.On") : obsgs_tr("OBSTitles.Off");
+    if (prop.name == "shadow_enabled" || prop.name == "background_enabled") return value >= 0.5 ? bgl_tr("OBSTitles.On") : bgl_tr("OBSTitles.Off");
     return QString::number(value, 'f', (prop.name == "opacity" || prop.name == "shadow_opacity" || prop.name == "background_opacity") ? 1 : 2);
 }
 

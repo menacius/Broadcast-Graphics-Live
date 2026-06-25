@@ -13,5 +13,5 @@ This build fixes the Auto Text Styling feature so rules are applied through the 
 
 ## Validation
 
-- `src/text/title-rich-text.cpp` was compiled in standalone mode with `g++ -std=c++17 -DOBS_GSP_RICH_TEXT_STANDALONE_TEST`.
+- `src/text/title-rich-text.cpp` was compiled in standalone mode with `g++ -std=c++17 -DOBS_BGS_RICH_TEXT_STANDALONE_TEST`.
 - Full OBS/CMake build was not available in this environment because `libobs` is not installed here.

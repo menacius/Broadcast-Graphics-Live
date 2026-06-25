@@ -6,7 +6,7 @@
 
 int main()
 {
-    using namespace gsp::system_memory;
+    using namespace bgs::system_memory;
     constexpr std::uint64_t mib = 1024ull * 1024ull;
     const std::uint64_t physical = total_physical_bytes();
     const int maximum = maximum_cache_ram_mb();

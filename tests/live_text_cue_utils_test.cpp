@@ -36,7 +36,7 @@ int main()
     title->live_text_column_order = {"image", "text"};
     title->live_text_rows = {{"old-image.png", "old-text"}};
 
-    auto exposed = gsp::live_text::exposed_text_layers(title);
+    auto exposed = bgs::live_text::exposed_text_layers(title);
     assert(exposed.size() == 2);
     assert(exposed[0] == image);
     assert(exposed[1] == text);
@@ -45,7 +45,7 @@ int main()
      * their former column indices. */
     title->live_text_column_order = {"image", "text"};
     std::vector<std::shared_ptr<Layer>> reordered = {text, image};
-    gsp::live_text::normalize_live_text_rows(title, reordered);
+    bgs::live_text::normalize_live_text_rows(title, reordered);
     assert(title->live_text_column_order ==
            std::vector<std::string>({"text", "image"}));
     assert(title->live_text_rows[0][0] == "old-text");
@@ -53,9 +53,9 @@ int main()
 
     image->exposed_single_value = true;
     title->live_text_rows.push_back({"second-text", "other-image.png"});
-    gsp::live_text::normalize_live_text_rows(title, reordered);
+    bgs::live_text::normalize_live_text_rows(title, reordered);
     assert(title->live_text_rows[1][1] == title->live_text_rows[0][1]);
-    assert(gsp::live_text::live_cue_layer_value(image) == "image-default.png");
+    assert(bgs::live_text::live_cue_layer_value(image) == "image-default.png");
 
     std::cout << "shared live-text cue ordering and row normalization passed\n";
     return 0;

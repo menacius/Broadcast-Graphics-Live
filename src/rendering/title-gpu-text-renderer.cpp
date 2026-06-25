@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-namespace gsp::gpu_text {
+namespace bgs::gpu_text {
 namespace {
 
 constexpr int kAtlasSize = 2048;
@@ -1016,7 +1016,7 @@ bool Renderer::render(Layer &layer)
         return false;
     if (!impl_->effect) {
         impl_->effect = gs_effect_create(kGpuTextEffect,
-                                         "obs-gsp-gpu-text.effect", nullptr);
+                                         "obs-bgs-gpu-text.effect", nullptr);
         if (!impl_->effect) {
             impl_->backend_available = false;
             impl_->last_error =
@@ -1202,4 +1202,4 @@ const char *Renderer::last_error() const
     return impl_->last_error.empty() ? nullptr : impl_->last_error.c_str();
 }
 
-} // namespace gsp::gpu_text
+} // namespace bgs::gpu_text

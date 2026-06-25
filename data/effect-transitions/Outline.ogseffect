@@ -1,9 +1,0 @@
-{
-  "format": "obs-gsp-effect-preset",
-  "version": 1,
-  "kind": "effect",
-  "id": "outline",
-  "name": "Outline",
-  "type": "outline",
-  "category": "Effects/Generate"
-}

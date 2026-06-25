@@ -27,9 +27,9 @@ program = r'''
 #include <limits>
 #include <vector>
 
-using gsp::gpu_text::build_glyph_sdf;
-using gsp::gpu_text::text_stroke_coverage_extents;
-using gsp::gpu_text::text_stroke_draw_phase;
+using bgs::gpu_text::build_glyph_sdf;
+using bgs::gpu_text::text_stroke_coverage_extents;
+using bgs::gpu_text::text_stroke_draw_phase;
 
 static int value_at(const std::vector<uint8_t> &pixels, int width, int x, int y)
 {
@@ -48,7 +48,7 @@ static float coverage_inside(float distance, float aa = 0.01f)
 }
 
 static float stroke_coverage(float signed_distance,
-                             const gsp::gpu_text::TextStrokeCoverageExtents &extent)
+                             const bgs::gpu_text::TextStrokeCoverageExtents &extent)
 {
     return std::clamp(
         coverage_inside(signed_distance + extent.outside) -
@@ -166,7 +166,7 @@ int main()
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix="obs-gsp-phase12c-sdf-") as directory:
+with tempfile.TemporaryDirectory(prefix="obs-bgs-phase12c-sdf-") as directory:
     temp = Path(directory)
     test_cpp = temp / "test.cpp"
     executable = temp / "test-gpu-text-sdf"

@@ -21,9 +21,9 @@
 
 namespace {
 
-using gsp::live_text::exposed_text_layers;
-using gsp::live_text::live_cue_layer_value;
-using gsp::live_text::normalize_live_text_rows;
+using bgs::live_text::exposed_text_layers;
+using bgs::live_text::live_cue_layer_value;
+using bgs::live_text::normalize_live_text_rows;
 
 enum class HotkeyAction {
     CueRow,
@@ -61,7 +61,7 @@ uint64_t g_change_callback_id = 0;
 bool g_hotkey_section_source_registered = false;
 QSet<QString> g_pending_cue_hydration;
 
-constexpr const char *kHotkeySectionSourceId = "obs_graphics_studio_pro_hotkey_section";
+constexpr const char *kHotkeySectionSourceId = "broadcast_graphics_live_hotkey_section";
 constexpr const char *kDockSettingsGroup = "TitleDock";
 constexpr const char *kBackgroundPersistenceKey = "backgroundPersistence";
 constexpr const char *kTextPersistenceKey = "textPersistence";
@@ -69,7 +69,7 @@ constexpr const char *kHotkeySettingsGroup = "Hotkeys";
 
 static void load_persisted_hotkey_bindings()
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kHotkeySettingsGroup));
     g_persisted_hotkey_bindings.clear();
     for (const auto &key : settings.childKeys())
@@ -79,7 +79,7 @@ static void load_persisted_hotkey_bindings()
 
 static void save_persisted_hotkey_bindings()
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kHotkeySettingsGroup));
     settings.remove(QString());
     for (const auto &[name, json] : g_persisted_hotkey_bindings)
@@ -134,7 +134,7 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
         const std::string &cue_value = title->live_text_rows[value_row][col];
         target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
-            gsp::apply_exposed_image_cue_value(*target, cue_value);
+            bgs::apply_exposed_image_cue_value(*target, cue_value);
             continue;
         }
         target->text_content = cue_value;
@@ -169,7 +169,7 @@ static std::string title_display_name(const std::shared_ptr<Title> &title)
 static std::string program_display_name()
 {
     const char *name = obs_module_text("OBSTitles.DockName");
-    return name && *name ? std::string(name) : std::string("OBS Graphics Studio Pro");
+    return name && *name ? std::string(name) : std::string("Broadcast Graphics Live");
 }
 
 static std::string title_section_name(const std::shared_ptr<Title> &title,
@@ -213,7 +213,7 @@ static void register_hotkey_section_source_type()
 
 static void load_persistence_settings(bool &background_persistence, bool &text_persistence)
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kDockSettingsGroup));
     background_persistence = settings.value(QString::fromUtf8(kBackgroundPersistenceKey), false).toBool();
     text_persistence = background_persistence &&
@@ -382,7 +382,7 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
 
         if (exposed.empty()) {
             descriptors.push_back({
-                "obs_graphics_studio_pro." + safe_title_id + ".cue.title",
+                "broadcast_graphics_live." + safe_title_id + ".cue.title",
                 obs_module_text("OBSTitles.Cue"),
                 title->id,
                 HotkeyAction::CueRow,
@@ -392,14 +392,14 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
         }
 
         descriptors.push_back({
-            "obs_graphics_studio_pro." + safe_title_id + ".cue.next",
+            "broadcast_graphics_live." + safe_title_id + ".cue.next",
             obs_module_text("OBSTitles.NextCue"),
             title->id,
             HotkeyAction::NextCue,
             -1,
         });
         descriptors.push_back({
-            "obs_graphics_studio_pro." + safe_title_id + ".cue.previous",
+            "broadcast_graphics_live." + safe_title_id + ".cue.previous",
             obs_module_text("OBSTitles.PreviousCue"),
             title->id,
             HotkeyAction::PreviousCue,
@@ -408,7 +408,7 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
 
         for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
             descriptors.push_back({
-                "obs_graphics_studio_pro." + safe_title_id + ".cue." + std::to_string(row + 1),
+                "broadcast_graphics_live." + safe_title_id + ".cue." + std::to_string(row + 1),
                 cue_description(row + 1),
                 title->id,
                 HotkeyAction::CueRow,

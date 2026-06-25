@@ -14,13 +14,16 @@
 
 namespace {
 
-constexpr const char *kSettingsOrg = "OBSGraphicsStudioPro";
+constexpr const char *kSettingsOrg = "BroadcastGraphicsLive";
 constexpr const char *kSettingsApp = "Dock";
 constexpr const char *kSettingsGroup = "Rendering";
+constexpr const char *kEditorGroup = "Editor";
 constexpr const char *kLoggingGroup = "Logging";
 constexpr const char *kTimelineColorGroup = "TimelineColors";
 constexpr const char *kAppearanceGroup = "Appearance";
 constexpr const char *kCanvasHelperColorGroup = "CanvasHelperColors";
+constexpr const char *kAutosaveEnabledKey = "autosaveEnabled";
+constexpr const char *kAutosaveIntervalMinutesKey = "autosaveIntervalMinutes";
 constexpr const char *kCacheEnabledKey = "cacheEnabled";
 constexpr const char *kCacheRamLimitMbKey = "cacheRamLimitMb";
 constexpr const char *kCacheDiskLocationKey = "cacheDiskLocation";
@@ -94,11 +97,49 @@ QString canvas_helper_color_key(TitlePreferences::CanvasHelperColorRole role)
 
 namespace TitlePreferences {
 
+bool autosave_enabled()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kEditorGroup));
+    const bool enabled = settings.value(QString::fromUtf8(kAutosaveEnabledKey), true).toBool();
+    settings.endGroup();
+    return enabled;
+}
+
+void set_autosave_enabled(bool enabled)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kEditorGroup));
+    settings.setValue(QString::fromUtf8(kAutosaveEnabledKey), enabled);
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
+int autosave_interval_minutes()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kEditorGroup));
+    const int minutes = settings.value(QString::fromUtf8(kAutosaveIntervalMinutesKey), 2).toInt();
+    settings.endGroup();
+    return std::clamp(minutes, 1, 60);
+}
+
+void set_autosave_interval_minutes(int minutes)
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kEditorGroup));
+    settings.setValue(QString::fromUtf8(kAutosaveIntervalMinutesKey), std::clamp(minutes, 1, 60));
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
 bool cache_enabled()
 {
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
-    const bool enabled = settings.value(QString::fromUtf8(kCacheEnabledKey), true).toBool();
+    const bool enabled = settings.value(QString::fromUtf8(kCacheEnabledKey), false).toBool();
     settings.endGroup();
     return enabled;
 }
@@ -119,7 +160,7 @@ int cache_ram_limit_mb()
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
     const int limit = settings.value(QString::fromUtf8(kCacheRamLimitMbKey), 512).toInt();
     settings.endGroup();
-    return gsp::system_memory::clamp_cache_ram_mb(limit);
+    return bgs::system_memory::clamp_cache_ram_mb(limit);
 }
 
 void set_cache_ram_limit_mb(int megabytes)
@@ -127,7 +168,7 @@ void set_cache_ram_limit_mb(int megabytes)
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kSettingsGroup));
     settings.setValue(QString::fromUtf8(kCacheRamLimitMbKey),
-                      gsp::system_memory::clamp_cache_ram_mb(megabytes));
+                      bgs::system_memory::clamp_cache_ram_mb(megabytes));
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);
@@ -143,7 +184,7 @@ QString cache_disk_location()
         return QDir::cleanPath(path);
     QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     if (base.isEmpty())
-        base = QDir::tempPath() + QStringLiteral("/OBSGraphicsStudioPro");
+        base = QDir::tempPath() + QStringLiteral("/BroadcastGraphicsLive");
     return QDir(base).filePath(QStringLiteral("frame-cache"));
 }
 
@@ -180,7 +221,7 @@ bool logging_enabled()
 {
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kLoggingGroup));
-    const bool enabled = settings.value(QString::fromUtf8(kLoggingEnabledKey), true).toBool();
+    const bool enabled = settings.value(QString::fromUtf8(kLoggingEnabledKey), false).toBool();
     settings.endGroup();
     return enabled;
 }
@@ -262,8 +303,8 @@ QString logging_file_path()
         return QDir::cleanPath(path);
     QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (base.isEmpty())
-        base = QDir::tempPath() + QStringLiteral("/OBSGraphicsStudioPro");
-    return QDir(base).filePath(QStringLiteral("logs/obs-graphics-studio-pro.log"));
+        base = QDir::tempPath() + QStringLiteral("/BroadcastGraphicsLive");
+    return QDir(base).filePath(QStringLiteral("logs/broadcast-graphics-live.log"));
 }
 
 void set_logging_file_path(const QString &path)

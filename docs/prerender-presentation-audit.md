@@ -9,7 +9,7 @@ The latest diagnostic logs showed that cache generation and lookup were generall
 
 - The OBS source logged completed cache payload submission (`consumer=source action=submit-final`) and GPU draws with non-zero submitted/uploaded/published serials.
 - The editor logged many cache hits, including sparse `1x1` transparent frames and cropped lower-third frames, while its GPU draw path repeatedly remained at `submittedSerial=0 ... useSubmitted=0`.
-- In `obs-graphics-studio-pro(13)(2).log`, there were 227 editor cache-hit results and 1,292 GPU draws with no submitted cache texture. In `obs-graphics-studio-pro(14)(2).log`, there were 150 editor cache-hit results and 448 such draws.
+- In `broadcast-graphics-live(13)(2).log`, there were 227 editor cache-hit results and 1,292 GPU draws with no submitted cache texture. In `broadcast-graphics-live(14)(2).log`, there were 150 editor cache-hit results and 448 such draws.
 
 This means the editor was using `requestFrame()` as an availability gate but then rendering the live GPU graph again instead of presenting the returned prerender payload. A valid cache hit therefore did not guarantee visual parity with the source.
 

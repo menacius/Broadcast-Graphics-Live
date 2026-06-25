@@ -6,4 +6,4 @@ The editor measures the latest full-quality render cost. Titles that already ren
 
 Input events are coalesced and the reduced preview is stretched to the title's logical canvas dimensions. After 140 ms without interaction, the editor performs a forced uncached full-quality refinement from the live model, preventing stale cache content from replacing the edited frame.
 
-The setting is stored under `OBSGraphicsStudioPro/Dock/titleEditor/adaptiveRendering` and defaults to enabled.
+The setting is stored under `BroadcastGraphicsLive/Dock/titleEditor/adaptiveRendering` and defaults to disabled.

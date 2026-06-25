@@ -15,7 +15,7 @@
 #include <unistd.h>
 #endif
 
-namespace gsp::system_memory {
+namespace bgs::system_memory {
 namespace {
 constexpr std::uint64_t kMiB = 1024ull * 1024ull;
 constexpr std::uint64_t kFallbackPhysicalBytes = 8ull * 1024ull * kMiB;
@@ -60,4 +60,4 @@ int clamp_cache_ram_mb(int megabytes)
     return std::clamp(megabytes, kMinimumCacheRamMb, maximum_cache_ram_mb());
 }
 
-} // namespace gsp::system_memory
+} // namespace bgs::system_memory

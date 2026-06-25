@@ -6,12 +6,12 @@
 
 #include <algorithm>
 
-namespace gsp::cache_frame_payload {
+namespace bgs::cache_frame_payload {
 
-inline constexpr const char *kCanvasX = "obs_gsp_canvas_x";
-inline constexpr const char *kCanvasY = "obs_gsp_canvas_y";
-inline constexpr const char *kCanvasWidth = "obs_gsp_canvas_width";
-inline constexpr const char *kCanvasHeight = "obs_gsp_canvas_height";
+inline constexpr const char *kCanvasX = "obs_bgs_canvas_x";
+inline constexpr const char *kCanvasY = "obs_bgs_canvas_y";
+inline constexpr const char *kCanvasWidth = "obs_bgs_canvas_width";
+inline constexpr const char *kCanvasHeight = "obs_bgs_canvas_height";
 
 struct Placement {
     int x = 0;
@@ -85,4 +85,4 @@ inline bool resolve_placement(const QImage &image, int expected_canvas_width,
     return false;
 }
 
-} // namespace gsp::cache_frame_payload
+} // namespace bgs::cache_frame_payload

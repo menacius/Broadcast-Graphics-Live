@@ -32,15 +32,15 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     spn_duration_ = new TimecodeSpinBox(this);
     spn_duration_->setRange(0.1, 3600.0);
     spn_duration_->setFixedHeight(22);
-    add_form_row(fl, obsgs_tr("OBSTitles.LengthLabel"), spn_duration_);
+    add_form_row(fl, bgl_tr("OBSTitles.LengthLabel"), spn_duration_);
 
     cmb_cue_end_behavior_ = new QComboBox(this);
-    cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowLastFrame"), 0);
-    cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowNothing"), 1);
-    cmb_cue_end_behavior_->addItem(obsgs_tr("OBSTitles.CueEndShowFirstFrame"), 2);
-    cmb_cue_end_behavior_->setToolTip(obsgs_tr("OBSTitles.CueEndBehaviorTooltip"));
+    cmb_cue_end_behavior_->addItem(bgl_tr("OBSTitles.CueEndShowLastFrame"), 0);
+    cmb_cue_end_behavior_->addItem(bgl_tr("OBSTitles.CueEndShowNothing"), 1);
+    cmb_cue_end_behavior_->addItem(bgl_tr("OBSTitles.CueEndShowFirstFrame"), 2);
+    cmb_cue_end_behavior_->setToolTip(bgl_tr("OBSTitles.CueEndBehaviorTooltip"));
     cmb_cue_end_behavior_->setFixedHeight(22);
-    add_form_row(fl, obsgs_tr("OBSTitles.CueEndBehaviorLabel"), cmb_cue_end_behavior_);
+    add_form_row(fl, bgl_tr("OBSTitles.CueEndBehaviorLabel"), cmb_cue_end_behavior_);
 
     auto *playback_row = new QWidget(this);
     auto *playback_layout = new QHBoxLayout(playback_row);
@@ -60,43 +60,43 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
         grp_playback_mode_->addButton(button, id);
         playback_layout->addWidget(button);
     };
-    add_playback_button(0, "play-once.svg", obsgs_tr("OBSTitles.PlayOnce"));
-    add_playback_button(1, "restart-loop.svg", obsgs_tr("OBSTitles.RestartLoop"));
-    add_playback_button(2, "ping-pong-loop.svg", obsgs_tr("OBSTitles.PingPongLoop"));
-    add_playback_button(3, "pause-at-timeline-position.svg", obsgs_tr("OBSTitles.PauseAtTimelinePosition"));
+    add_playback_button(0, "play-once.svg", bgl_tr("OBSTitles.PlayOnce"));
+    add_playback_button(1, "restart-loop.svg", bgl_tr("OBSTitles.RestartLoop"));
+    add_playback_button(2, "ping-pong-loop.svg", bgl_tr("OBSTitles.PingPongLoop"));
+    add_playback_button(3, "pause-at-timeline-position.svg", bgl_tr("OBSTitles.PauseAtTimelinePosition"));
     playback_layout->addStretch(1);
-    add_form_row(fl, obsgs_tr("OBSTitles.PlaybackModeLabel"), playback_row);
+    add_form_row(fl, bgl_tr("OBSTitles.PlaybackModeLabel"), playback_row);
 
     spn_pause_frame_ = new TimecodeSpinBox(this);
     spn_pause_frame_->setRange(0.0, 3600.0);
-    spn_pause_frame_->setToolTip(obsgs_tr("OBSTitles.PauseFrameTooltip"));
+    spn_pause_frame_->setToolTip(bgl_tr("OBSTitles.PauseFrameTooltip"));
     spn_pause_frame_->setFixedHeight(22);
-    add_form_row(fl, obsgs_tr("OBSTitles.PauseFrameLabel"), spn_pause_frame_);
+    add_form_row(fl, bgl_tr("OBSTitles.PauseFrameLabel"), spn_pause_frame_);
 
 
     spn_loop_start_ = new TimecodeSpinBox(this);
     spn_loop_start_->setRange(0.0, 3600.0);
-    spn_loop_start_->setToolTip(obsgs_tr("OBSTitles.LoopStartTooltip"));
+    spn_loop_start_->setToolTip(bgl_tr("OBSTitles.LoopStartTooltip"));
     spn_loop_start_->setFixedHeight(22);
 
     spn_loop_end_ = new TimecodeSpinBox(this);
     spn_loop_end_->setRange(0.0, 3600.0);
-    spn_loop_end_->setToolTip(obsgs_tr("OBSTitles.LoopEndTooltip"));
+    spn_loop_end_->setToolTip(bgl_tr("OBSTitles.LoopEndTooltip"));
     spn_loop_end_->setFixedHeight(22);
 
     loop_area_row_ = new QWidget(this);
     auto *loop_area_layout = new QHBoxLayout(loop_area_row_);
     loop_area_layout->setContentsMargins(0, 0, 0, 0);
     loop_area_layout->setSpacing(4);
-    auto *loop_start_label = new QLabel(obsgs_tr("OBSTitles.StartLabel"), loop_area_row_);
-    auto *loop_end_label = new QLabel(obsgs_tr("OBSTitles.EndLabel"), loop_area_row_);
+    auto *loop_start_label = new QLabel(bgl_tr("OBSTitles.StartLabel"), loop_area_row_);
+    auto *loop_end_label = new QLabel(bgl_tr("OBSTitles.EndLabel"), loop_area_row_);
     spn_loop_start_->setMinimumWidth(78);
     spn_loop_end_->setMinimumWidth(78);
     loop_area_layout->addWidget(loop_start_label);
     loop_area_layout->addWidget(spn_loop_start_, 1);
     loop_area_layout->addWidget(loop_end_label);
     loop_area_layout->addWidget(spn_loop_end_, 1);
-    add_form_row(fl, obsgs_tr("OBSTitles.LoopAreaLabel"), loop_area_row_);
+    add_form_row(fl, bgl_tr("OBSTitles.LoopAreaLabel"), loop_area_row_);
 
     connect(grp_playback_mode_, QOverload<QAbstractButton *>::of(&QButtonGroup::buttonClicked),
             this, [this](QAbstractButton *button) {

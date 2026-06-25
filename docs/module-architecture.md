@@ -1,6 +1,6 @@
-# OBS Graphics Studio Pro module architecture
+# Broadcast Graphics Live module architecture
 
-This document defines the incremental module split for OBS Graphics Studio Pro. The
+This document defines the incremental module split for Broadcast Graphics Live. The
 first pass moves the existing monolithic files into ownership-oriented source
 folders while preserving the legacy include names and runtime behavior. New work
 should land in the owning module below instead of expanding editor/source files

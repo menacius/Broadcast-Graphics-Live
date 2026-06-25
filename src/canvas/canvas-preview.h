@@ -32,13 +32,15 @@
 #include <QHash>
 #include <QElapsedTimer>
 #include <memory>
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <string>
 #include <vector>
 #include <set>
 #include <limits>
 
-namespace gsp { struct LiveCornerGeometry; }
+namespace bgs { struct LiveCornerGeometry; }
 struct TitleGpuRenderSession;
 
 class QEvent;
@@ -161,6 +163,7 @@ signals:
     void text_edit_changed(const std::string &layer_id);
     void text_edit_cursor_changed(const std::string &layer_id);
     void text_edit_committed(const std::string &layer_id);
+    void color_picker_previewed(const QColor &color);
     void color_picked(const QColor &color, bool foreground);
     void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
     void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
@@ -234,6 +237,14 @@ private:
         int point_index = -1;
     };
 
+    struct GradientHandleTarget {
+        enum class Kind { LayerFill, TextFillRanges };
+        Kind kind = Kind::LayerFill;
+        RichTextFill fill;
+        std::vector<std::pair<size_t, size_t>> text_ranges;
+        bool selection_target = false;
+        size_t display_index = 0;
+    };
     struct GradientHandleGeometry {
         bool valid = false;
         bool radial = false;
@@ -243,6 +254,7 @@ private:
         QPointF end;
         QPointF radius;
         QPointF focal;
+        GradientHandleTarget target;
     };
     struct SelectionOverlayLayerGeometry {
         const Layer *layer = nullptr;
@@ -314,15 +326,20 @@ private:
     bool gradient_handles_visible() const;
     bool selected_text_fill(const Layer &layer, RichTextFill &fill) const;
     bool apply_selected_text_gradient_fill(Layer &layer, const RichTextFill &fill);
+    std::vector<GradientHandleTarget> gradient_handle_targets(const Layer &layer) const;
     bool layer_supports_gradient_handles(const Layer &layer) const;
-    GradientHandleGeometry gradient_handle_geometry(const Layer &layer) const;
-    DragMode hit_test_gradient_handles(const Layer &layer, const QPointF &view_pt) const;
+    GradientHandleGeometry gradient_handle_geometry(const Layer &layer,
+                                                     const GradientHandleTarget &target) const;
+    DragMode hit_test_gradient_handles(const Layer &layer, const QPointF &view_pt,
+                                       GradientHandleTarget *target = nullptr) const;
     void draw_gradient_handles(QPainter &p, const Layer &layer);
-    void begin_gradient_drag(const Layer &layer);
+    void begin_gradient_drag(const Layer &layer, const GradientHandleTarget &target);
+    bool apply_gradient_target_fill(Layer &layer, const GradientHandleTarget &target,
+                                    const RichTextFill &fill);
     bool apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers);
     bool layer_supports_corner_radius_handles(const Layer &layer) const;
-    QPointF corner_radius_handle_view_pos(const Layer &layer, const gsp::LiveCornerGeometry &corner) const;
+    QPointF corner_radius_handle_view_pos(const Layer &layer, const bgs::LiveCornerGeometry &corner) const;
     int hit_test_corner_radius_handle_index(const Layer &layer, const QPointF &view_pt) const;
     std::shared_ptr<Layer> hit_test_selected_corner_layer(const QPointF &view_pt, int &point_index) const;
     DragMode hit_test_corner_radius_handles(const Layer &layer, const QPointF &view_pt) const;
@@ -443,7 +460,7 @@ private:
     double prefetched_cache_time_ = -1.0;
     qint64 last_runtime_clock_second_ = std::numeric_limits<qint64>::min();
     bool render_in_progress_ = false;
-    bool adaptive_rendering_enabled_ = true;
+    bool adaptive_rendering_enabled_ = false;
     AdaptiveQualityMode adaptive_quality_mode_ = AdaptiveQualityMode::Auto;
     bool adaptive_interaction_active_ = false;
     bool force_live_full_quality_render_ = false;
@@ -514,6 +531,7 @@ private:
     QPointF gradient_tool_start_local_;
     QPointF color_picker_tooltip_pos_;
     QColor color_picker_tooltip_color_;
+    QImage color_picker_source_image_;
 
     struct SnapSettings {
         bool enabled = true;
@@ -554,8 +572,9 @@ private:
     QRectF drag_start_selection_bounds_;
     struct GradientDragState {
         bool active = false;
-        bool inline_text = false;
         bool radial = false;
+        std::string layer_id;
+        GradientHandleTarget target;
         RichTextFill fill;
         QRectF local_rect;
         QPointF center;

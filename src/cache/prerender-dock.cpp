@@ -50,16 +50,16 @@ void PrerenderDock::buildUi()
     form->setContentsMargins(0, 0, 0, 0);
 
     start_mode_ = new QComboBox(this);
-    start_mode_->addItems({obsgs_tr("OBSTitles.FromCurrentTime"), obsgs_tr("OBSTitles.FromBeginning")});
-    form->addRow(obsgs_tr("OBSTitles.Start"), start_mode_);
+    start_mode_->addItems({bgl_tr("OBSTitles.FromCurrentTime"), bgl_tr("OBSTitles.FromBeginning")});
+    form->addRow(bgl_tr("OBSTitles.Start"), start_mode_);
 
     playback_mode_ = new QComboBox(this);
-    playback_mode_->addItems({obsgs_tr("OBSTitles.Loop"), obsgs_tr("OBSTitles.PingPongLoop"), obsgs_tr("OBSTitles.PlayOnce"), obsgs_tr("OBSTitles.PlaybackMode")});
-    form->addRow(obsgs_tr("OBSTitles.Mode"), playback_mode_);
+    playback_mode_->addItems({bgl_tr("OBSTitles.Loop"), bgl_tr("OBSTitles.PingPongLoop"), bgl_tr("OBSTitles.PlayOnce"), bgl_tr("OBSTitles.PlaybackMode")});
+    form->addRow(bgl_tr("OBSTitles.Mode"), playback_mode_);
 
-    QSettings prerender_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings prerender_settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
 
-    cached_only_ = new QCheckBox(obsgs_tr("OBSTitles.PlayAfterRendering"), this);
+    cached_only_ = new QCheckBox(bgl_tr("OBSTitles.PlayAfterRendering"), this);
     form->addRow(QString(), cached_only_);
 
     start_mode_->setCurrentIndex(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderStartModeKey), 0).toInt(), 0, start_mode_->count() - 1));
@@ -75,22 +75,22 @@ void PrerenderDock::buildUi()
         grid->addWidget(button, row, col);
         return button;
     };
-    add_button(obsgs_tr("OBSTitles.ClearRamCache"), 0, 0, []() { CacheManager::instance().clearRam(); });
-    add_button(obsgs_tr("OBSTitles.ClearDiskCache"), 0, 1, []() { CacheManager::instance().clearDisk(); });
-    add_button(obsgs_tr("OBSTitles.ClearAllCache"), 1, 0, []() { CacheManager::instance().clearAll(); });
-    pause_resume_ = add_button(obsgs_tr("OBSTitles.PausePrerender"), 1, 1, [this]() {
+    add_button(bgl_tr("OBSTitles.ClearRamCache"), 0, 0, []() { CacheManager::instance().clearRam(); });
+    add_button(bgl_tr("OBSTitles.ClearDiskCache"), 0, 1, []() { CacheManager::instance().clearDisk(); });
+    add_button(bgl_tr("OBSTitles.ClearAllCache"), 1, 0, []() { CacheManager::instance().clearAll(); });
+    pause_resume_ = add_button(bgl_tr("OBSTitles.PausePrerender"), 1, 1, [this]() {
         if (CacheManager::instance().prerenderPaused())
             CacheManager::instance().resumePrerender();
         else
             CacheManager::instance().pausePrerender();
         updateStatus();
     });
-    cache_work_area_ = add_button(obsgs_tr("OBSTitles.CacheWorkArea"), 2, 0, [this]() {
+    cache_work_area_ = add_button(bgl_tr("OBSTitles.CacheWorkArea"), 2, 0, [this]() {
         applySettings();
         if (title_) CacheManager::instance().queueWorkArea(title_);
         emit cacheWorkAreaRequested();
     });
-    cache_timeline_ = add_button(obsgs_tr("OBSTitles.CacheEntireTimeline"), 2, 1, [this]() {
+    cache_timeline_ = add_button(bgl_tr("OBSTitles.CacheEntireTimeline"), 2, 1, [this]() {
         applySettings();
         if (title_) CacheManager::instance().queueWholeTimeline(title_);
         emit cacheEntireTimelineRequested();
@@ -126,7 +126,7 @@ void PrerenderDock::applySettings()
     settings.play_every_frame = false;
     CacheManager::instance().setPlaybackSettings(settings);
 
-    QSettings prerender_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings prerender_settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     if (start_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderStartModeKey), start_mode_->currentIndex());
     if (playback_mode_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlaybackModeKey), playback_mode_->currentIndex());
     if (cached_only_) prerender_settings.setValue(QString::fromUtf8(kPrerenderPlayAfterRenderingKey), cached_only_->isChecked());
@@ -136,11 +136,11 @@ void PrerenderDock::updateStatus()
 {
     if (pause_resume_)
         pause_resume_->setText(CacheManager::instance().prerenderPaused()
-                                   ? obsgs_tr("OBSTitles.ResumePrerender")
-                                   : obsgs_tr("OBSTitles.PausePrerender"));
+                                   ? bgl_tr("OBSTitles.ResumePrerender")
+                                   : bgl_tr("OBSTitles.PausePrerender"));
     if (!status_) return;
     if (!title_) {
-        status_->setText(obsgs_tr("OBSTitles.NoTitleLoaded"));
+        status_->setText(bgl_tr("OBSTitles.NoTitleLoaded"));
         if (diagnostics_) diagnostics_->clear();
         return;
     }
@@ -155,7 +155,7 @@ void PrerenderDock::updateStatus()
     if (!message.isEmpty()) {
         status_->setText(message);
     } else {
-        status_->setText(obsgs_tr("OBSTitles.PrerenderQueueStatus"));
+        status_->setText(bgl_tr("OBSTitles.PrerenderQueueStatus"));
     }
     if (diagnostics_) {
         const LiveCueCacheStats stats = CacheManager::instance().liveCueStats();
@@ -165,7 +165,7 @@ void PrerenderDock::updateStatus()
                 return QStringLiteral("%1 MB").arg(mib, 0, 'f', 1);
             return QStringLiteral("%1 GB").arg(mib / 1024.0, 0, 'f', 2);
         };
-        diagnostics_->setText(obsgs_tr("OBSTitles.CacheUsageDiagnostics")
+        diagnostics_->setText(bgl_tr("OBSTitles.CacheUsageDiagnostics")
                                   .arg(format_bytes(CacheManager::instance().ramBytesUsed()),
                                        format_bytes(CacheManager::instance().ramBytesLimit()),
                                        format_bytes(CacheManager::instance().diskBytesUsed()))

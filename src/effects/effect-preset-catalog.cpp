@@ -15,7 +15,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace gsp::effects {
+namespace bgs::effects {
 namespace {
 
 constexpr qint64 kMaxPresetFileBytes = 1024 * 1024;
@@ -430,7 +430,7 @@ bool load_effect_preset_file(const QString &file_path,
 
     const QFileInfo info(file_path);
     if (!is_effect_preset_file_in_library(file_path))
-        return fail(QStringLiteral("Effect preset files must be readable .ogseffect files stored directly in the Effects & Presets library folder."));
+        return fail(QStringLiteral("Effect preset files must be readable .obgeffect files stored directly in the Effects & Presets library folder."));
     if (info.size() < 0 || info.size() > kMaxPresetFileBytes)
         return fail(QStringLiteral("The effect preset file is too large."));
 
@@ -447,7 +447,7 @@ bool load_effect_preset_file(const QString &file_path,
     if (object.value(QStringLiteral("version")).toInt(1) != 1)
         return fail(QStringLiteral("Unsupported effect preset version."));
     const QString format = object.value(QStringLiteral("format")).toString();
-    if (!format.isEmpty() && format != QStringLiteral("obs-gsp-effect-preset"))
+    if (!format.isEmpty() && format != QStringLiteral("obs-bgs-effect-preset"))
         return fail(QStringLiteral("Unsupported effect preset format."));
 
     const QString kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("effect"));
@@ -502,4 +502,4 @@ bool mime_has_effect_preset(const QMimeData *mime_data)
     return !path.isEmpty() && is_effect_preset_file_in_library(path);
 }
 
-} // namespace gsp::effects
+} // namespace bgs::effects

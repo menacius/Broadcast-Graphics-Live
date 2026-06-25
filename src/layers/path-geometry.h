@@ -10,7 +10,7 @@
 #include <utility>
 #include <cstddef>
 
-namespace gsp {
+namespace bgs {
 
 struct LiveCornerGeometry {
     int point_index = -1;
@@ -58,4 +58,4 @@ QPainterPath restore_boolean_path_curves(const QPainterPath &path,
 /* Stable, compact identity used by cached shadows and other geometry caches. */
 QString path_geometry_signature(const Layer &layer);
 
-} // namespace gsp
+} // namespace bgs

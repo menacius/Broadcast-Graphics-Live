@@ -1,7 +1,7 @@
 /*
  * title-data.h
  *
- * Core data model for the OBS Graphics Studio Pro plugin.
+ * Core data model for the Broadcast Graphics Live plugin.
  *
  * A Title is composed of one or more Layers. Each layer has a set of
  * Properties (position, scale, opacity, colour, text …). Properties
@@ -95,6 +95,17 @@ std::string live_text_row_id(const Title &title, int row);
  * GPU compositor can reuse a layer texture across matrix-only edits. */
 std::string layer_render_fingerprint(const Layer &layer);
 
+struct TitleImportDiagnostics {
+    std::vector<std::string> missing_effects;
+    std::vector<std::string> missing_images;
+    std::vector<std::string> missing_fonts;
+
+    bool empty() const
+    {
+        return missing_effects.empty() && missing_images.empty() && missing_fonts.empty();
+    }
+};
+
 struct TitleTemplateExportMetadata {
     std::string title;
     std::string description;
@@ -125,7 +136,8 @@ public:
                                         const TitleTemplateExportMetadata &metadata,
                                         std::string *error = nullptr) const;
     std::shared_ptr<Title> import_title(const std::string &path,
-                                        std::string *error = nullptr);
+                                        std::string *error = nullptr,
+                                        TitleImportDiagnostics *diagnostics = nullptr);
 
     std::vector<std::shared_ptr<Title>> titles() const;
 

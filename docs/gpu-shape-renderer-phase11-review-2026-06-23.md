@@ -1,10 +1,10 @@
-# OBS Graphics Studio Pro — Phase 11 GPU Shape Renderer Review
+# Broadcast Graphics Live — Phase 11 GPU Shape Renderer Review
 
 Date: 2026-06-23
 
 ## Scope
 
-This pass revisits the disabled Phase 11 analytic GPU/SDF renderer in the uploaded `OBS_GSP_source_retention_fixed(1).zip` baseline. The goal is to reactivate the safe primitive subset without reintroducing the historical full-black resize frames or the shutdown deadlock.
+This pass revisits the disabled Phase 11 analytic GPU/SDF renderer in the uploaded `OBS_BGS_source_retention_fixed(1).zip` baseline. The goal is to reactivate the safe primitive subset without reintroducing the historical full-black resize frames or the shutdown deadlock.
 
 ## Confirmed issues in the disabled implementation
 

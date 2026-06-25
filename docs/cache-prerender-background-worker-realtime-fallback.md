@@ -24,7 +24,7 @@ This pass replaces the UI-timer cache renderer with an actual background worker 
 
 - RAM, disk, queue, playback settings and live-cue state maps are synchronized for concurrent worker/source/editor access.
 - Repeated disk membership checks use a manifest-backed in-memory index; realtime source/editor paths do not probe the filesystem per frame.
-- Disk frames use the existing versioned OGSF container. The build prefers an installed LZ4 package and otherwise fetches the pinned official LZ4 1.10.0 source automatically. BGRA payloads are compressed only when the result is smaller; raw version-2 and legacy version-1 frames remain readable.
+- Disk frames use the existing versioned BGLF container. The build prefers an installed LZ4 package and otherwise fetches the pinned official LZ4 1.10.0 source automatically. BGRA payloads are compressed only when the result is smaller; raw version-2 and legacy version-1 frames remain readable.
 - Frame dimensions and payload sizes are validated before allocation/decompression.
 
 ## Invalidation and identity

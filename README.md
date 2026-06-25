@@ -1,15 +1,17 @@
-# OBS Graphics Studio Pro
+# Broadcast Graphics Live
 
-<img width="1920" height="1044" alt="Screenshot 2026-06-21 012849" src="https://github.com/user-attachments/assets/3e01f3f6-2b03-400c-bf14-5a1c44cc6e29" />
+<p align="center">
+  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
+</p>
 
-**OBS Graphics Studio Pro** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
+**Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.2-alpha`**
+**Current development version: `v0.8.3-alpha`**
 
 > [!WARNING]
-> `v0.8.2-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+> `v0.8.3-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
 
-OBS Graphics Studio Pro is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
+Broadcast Graphics Live is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
 
 ## Development approach
 
@@ -17,10 +19,15 @@ This project is the result of **vibe coding**. **Antonios Dimopoulos** defines t
 
 That development model makes validation especially important. This alpha should be treated as experimental: code changes need diff review, structural and build checks, focused automated tests, and real OBS runtime testing before they can be considered reliable for production use.
 
-## What changed in `v0.8.2-alpha`
+## What changed in `v0.8.3-alpha`
 
 Compared with the current GitHub `main` snapshot, this development archive advances the unified GPU pipeline through the Phase 12D–15 work:
 
+- The project is fully renamed to **Broadcast Graphics Live**, including application branding, plugin/package identifiers, settings scopes, source IDs, namespaces, build variables, documentation, and the `.obgt` title-template extension.
+- Broadcast Graphics title templates use `.obgt`; effect presets use `.obgeffect`; text transitions use `.obgtranst`; and general transitions use `.obgtransg`.
+- The first-launch editor workspace now matches the broadcast layout reference: compact tools on the far left, title properties/color libraries/effects on the left, layer properties on the right, and a full-width bottom timeline.
+- Cache, diagnostic file logging, and editor Adaptive Resolution are disabled by default; each remains available as an explicit user option.
+- The About dialog now displays the supplied Broadcast Graphics Live logo. Its `#dddddd` artwork color is resolved at paint time from the active OBS theme icon color, while the SVG asset itself remains unchanged on disk.
 - The editor text canvas uses the same immutable layout and GPU SDF text artwork path as the OBS source, including GPU-derived caret/selection geometry and corrected outer/mid/inner text strokes with independent Behind/Front ordering.
 - Alpha, inverted-alpha, luma, and inverted-luma track mattes moved into the shared GPU graph, including nested matte dependencies, scene masks, effects-before/after-mask ordering, and bounded retained matte textures.
 - Prerendered RAM frames are reconstructed directly from shared, content-addressed 128×128 GPU tile textures. SSD output uses final-frame-only triple-buffered staging, a separate writer queue, and content-addressed LZ4-compressed 256×256 tiles shared between frames.
@@ -34,7 +41,7 @@ Compared with the current GitHub `main` snapshot, this development archive advan
 
 ### Native OBS integration
 
-- Native OBS input source: **OBS Graphics Studio Pro Title**.
+- Native OBS input source: **Broadcast Graphics Live Title**.
 - Dockable title and template manager inside OBS Studio.
 - Add the selected title directly to the active scene.
 - Scene-collection-specific title libraries.
@@ -117,7 +124,7 @@ Stackable effects currently represented by the editor and renderer include:
 
 Supported layer/effect blend modes include Normal, Multiply, Additive, Screen, Overlay, and Color.
 
-The editor also includes an **Effects & Presets** dock with an After Effects-style virtual folder tree and instant search. All `.ogseffect`, `.osgtranst`, and `.osgtransg` files live together in one physical library directory; each file declares its visible category path in its own slash-separated `category` metadata. The browser builds nested virtual folders from those paths and omits empty branches, so presets can be reorganized without moving files on disk.
+The editor also includes an **Effects & Presets** dock with an After Effects-style virtual folder tree and instant search. All `.obgeffect`, `.obgtranst`, and `.obgtransg` files live together in one physical library directory; each file declares its visible category path in its own slash-separated `category` metadata. The browser builds nested virtual folders from those paths and omits empty branches, so presets can be reorganized without moving files on disk.
 
 Effects can be applied by drag-and-drop onto a timeline layer strip, directly onto a canvas layer, or into the Effects stack for the selected layer. A common effect factory keeps button-based and drag-and-drop creation consistent.
 
@@ -135,7 +142,7 @@ Effects can be applied by drag-and-drop onto a timeline layer strip, directly on
 - Text blur transitions animate the actual blur radius down to zero rather than compositing a sharp glyph over a blurred halo.
 - General transition primitives include dissolve/fade, opacity and blur, scale change, directional slide, blur slide, wipe with feathering, and zoom blur.
 - Text transition primitives include fade, slide, blur slide, blur, scale, and wipe, with configurable grouping and direction instead of duplicated directional/unit presets.
-- `.osgtranst` is reserved for text transitions and `.osgtransg` for general transitions; category metadata is validated against the file type.
+- `.obgtranst` is reserved for text transitions and `.obgtransg` for general transitions; category metadata is validated against the file type.
 
 ### Timeline and animation
 
@@ -174,7 +181,7 @@ Effects can be applied by drag-and-drop onto a timeline layer strip, directly on
 ### Templates and style presets
 
 - Built-in starter templates.
-- Import and export through `.ogspt` title-template files.
+- Import and export through `.obgt` title-template files.
 - Template metadata:
   - Title
   - Description
@@ -190,7 +197,7 @@ Effects can be applied by drag-and-drop onto a timeline layer strip, directly on
 
 ## Caching and prerendering
 
-OBS Graphics Studio Pro includes a background frame-cache system intended to keep complex titles and live cues responsive during playback.
+Broadcast Graphics Live includes a background frame-cache system intended to keep complex titles and live cues responsive during playback.
 
 ### Cache architecture
 
@@ -230,7 +237,7 @@ The current implementation uses one cached prefix rather than multiple independe
 
 ## Current status and limitations
 
-- The current release line is **`v0.8.2-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
+- The current release line is **`v0.8.3-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
 - Remaining pre-beta work includes the final planned features, UI consistency and visual polish, broader workflow validation, performance verification, and focused bug hunting across editor, dock, cache, and OBS playback paths.
 - Supported Text and Clock layers use the Phase 12C/12D GPU text backend: immutable shaped glyph data feeds bounded R8 SDF atlas pages, GPU glyph quads, multiple per-range fills/gradients/strokes, globally correct Behind/Front stroke composition, persistent double-buffered layer textures, and shared editor caret/selection geometry.
 - The Phase 13 GPU mask graph handles alpha/luma variants, nested track-matte dependencies, scene masks, effect ordering, parent transforms, and bounded retained matte textures without CPU mask compositing.
@@ -255,7 +262,7 @@ The project follows Semantic Versioning for public development builds:
 - **`v0.9.0-rc.n`** — release-candidate builds under feature freeze, with only release-blocking fixes accepted.
 - **`v1.0.0`** — first stable release with a documented compatibility and migration baseline.
 
-The version displayed by the About dialog and plugin logs is generated from the root `CMakeLists.txt`. Update the numeric `project(... VERSION ...)` value and the `OBS_GSP_PRERELEASE` channel together when preparing a release.
+The version displayed by the About dialog and plugin logs is generated from the root `CMakeLists.txt`. Update the numeric `project(... VERSION ...)` value and the `OBS_BGS_PRERELEASE` channel together when preparing a release.
 
 ---
 
@@ -295,8 +302,8 @@ A clean configuration may therefore require network access unless the dependency
 Clone the repository:
 
 ```bash
-git clone https://github.com/menacius/OBS-Graphics-Studio-Pro.git
-cd OBS-Graphics-Studio-Pro
+git clone https://github.com/menacius/Broadcast-Graphics-Live.git
+cd Broadcast-Graphics-Live
 ```
 
 ### Windows
@@ -323,11 +330,11 @@ Build and install with the helper script:
 ```
 
 The helper stores manifest-mode packages under
-`$env:VCPKG_ROOT\manifest-installed\obs-graphics-studio-pro` instead of
+`$env:VCPKG_ROOT\manifest-installed\broadcast-graphics-live` instead of
 `build\vcpkg_installed`. This deliberately keeps Autotools/MSYS dependencies
 such as `libiconv` out of project paths containing spaces. Override it with
-`-VcpkgInstalledDir C:\vcpkg-installed\obs-gsp` or the
-`OBS_GSP_VCPKG_INSTALLED_DIR` environment variable when needed; the selected
+`-VcpkgInstalledDir C:\vcpkg-installed\obs-bgs` or the
+`OBS_BGS_VCPKG_INSTALLED_DIR` environment variable when needed; the selected
 path must not contain whitespace.
 
 Build with validation tests:
@@ -355,9 +362,9 @@ Manual configuration:
 cmake -B build -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows `
-  -DVCPKG_INSTALLED_DIR="$env:VCPKG_ROOT/manifest-installed/obs-graphics-studio-pro" `
+  -DVCPKG_INSTALLED_DIR="$env:VCPKG_ROOT/manifest-installed/broadcast-graphics-live" `
   -DOBS_SDK_DIR="$env:OBS_SDK_DIR" `
-  -DOBS_GSP_BUILD_TESTS=ON
+  -DOBS_BGS_BUILD_TESTS=ON
 
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
@@ -382,7 +389,7 @@ Configure and build:
 ```bash
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DOBS_GSP_BUILD_TESTS=ON
+  -DOBS_BGS_BUILD_TESTS=ON
 
 cmake --build build
 ctest --test-dir build --output-on-failure
@@ -429,10 +436,10 @@ The exact macOS bundle/install arrangement depends on the OBS build tree and pac
 CMake stages a directly copyable plugin directory at:
 
 ```text
-build/obs-graphics-studio-pro/
+build/broadcast-graphics-live/
 ├── bin/
 │   └── 64bit/
-│       ├── obs-graphics-studio-pro.dll
+│       ├── broadcast-graphics-live.dll
 │       └── dependency DLLs on Windows
 └── data/
     ├── effect-transitions/
@@ -443,9 +450,9 @@ build/obs-graphics-studio-pro/
 Typical Windows installation:
 
 ```text
-C:\ProgramData\obs-studio\plugins\obs-graphics-studio-pro\
+C:\ProgramData\obs-studio\plugins\broadcast-graphics-live\
 ├── bin\64bit\
-│   ├── obs-graphics-studio-pro.dll
+│   ├── broadcast-graphics-live.dll
 │   ├── Qt6Core.dll
 │   ├── Qt6Gui.dll
 │   ├── Qt6Widgets.dll
@@ -466,8 +473,8 @@ The Windows build helper copies vcpkg runtime DLLs into the plugin binary direct
 
 ## Basic workflow
 
-1. Open the **OBS Graphics Studio Pro** dock in OBS Studio.
-2. Create a blank title, select a starter template, or import an `.ogspt` template.
+1. Open the **Broadcast Graphics Live** dock in OBS Studio.
+2. Create a blank title, select a starter template, or import an `.obgt` template.
 3. Open the editor and build the composition with layers, text, images, shapes, masks, effects, and keyframes.
 4. Expose text, ticker, or image layers to the dock when the design needs operator-controlled live values.
 5. Add cue rows and optionally enable caching or playlist playback.
@@ -484,7 +491,7 @@ The Windows build helper copies vcpkg runtime DLLs into the plugin binary direct
 Title libraries are saved per OBS scene collection below the plugin configuration directory:
 
 ```text
-obs-graphics-studio-pro/
+broadcast-graphics-live/
 └── scene-collection-titles/
     └── <sanitized-scene-collection-name>-<hash>.json
 ```
@@ -493,13 +500,13 @@ Typical plugin configuration roots are:
 
 ```text
 Windows:
-%APPDATA%\obs-studio\plugin_config\obs-graphics-studio-pro\
+%APPDATA%\obs-studio\plugin_config\broadcast-graphics-live\
 
 Linux:
-~/.config/obs-studio/plugin_config/obs-graphics-studio-pro/
+~/.config/obs-studio/plugin_config/broadcast-graphics-live/
 
 macOS:
-~/Library/Application Support/obs-studio/plugin_config/obs-graphics-studio-pro/
+~/Library/Application Support/obs-studio/plugin_config/broadcast-graphics-live/
 ```
 
 The exact OBS configuration root can vary with portable installations and custom builds.
@@ -508,10 +515,10 @@ Writes use an atomic replacement path so an interrupted save does not intentiona
 
 ### Template files
 
-`.ogspt` exports use the format identifier:
+`.obgt` exports use the format identifier:
 
 ```text
-obs-graphics-studio-pro-title-template
+broadcast-graphics-live-title-template
 ```
 
 The current export schema writes version `3` and can contain:
@@ -530,7 +537,7 @@ Imported templates receive new title/layer identifiers so they can coexist with 
 ## Architecture
 
 ```text
-OBS-Graphics-Studio-Pro/
+Broadcast-Graphics-Live/
 ├── CMakeLists.txt
 ├── LICENSE
 ├── README.md
@@ -577,7 +584,7 @@ See [`docs/module-architecture.md`](docs/module-architecture.md) for the current
 Enable the lightweight validation targets with:
 
 ```bash
--DOBS_GSP_BUILD_TESTS=ON
+-DOBS_BGS_BUILD_TESTS=ON
 ```
 
 Current CTest targets include model, cache, renderer, mask, and phase-contract coverage such as:
@@ -629,7 +636,7 @@ When changing the project:
 
 Use the repository issue tracker for defects and feature proposals:
 
-- <https://github.com/menacius/OBS-Graphics-Studio-Pro/issues>
+- <https://github.com/menacius/Broadcast-Graphics-Live/issues>
 
 ---
 
@@ -645,9 +652,9 @@ The software is provided without warranty, as described by the GPL.
 
 ## Third-party software and assets
 
-OBS Graphics Studio Pro uses, links to, fetches, or redistributes components owned by other projects. Those components remain under their own licenses.
+Broadcast Graphics Live uses, links to, fetches, or redistributes components owned by other projects. Those components remain under their own licenses.
 
-| Component | Use in OBS Graphics Studio Pro | Upstream license / notice |
+| Component | Use in Broadcast Graphics Live | Upstream license / notice |
 |---|---|---|
 | [OBS Studio](https://github.com/obsproject/obs-studio) | Runtime host, `libobs`, graphics API, and frontend dock API | GPL-2.0-or-later; see the upstream `COPYING` file |
 | [Qt](https://www.qt.io/) Core, Widgets, and SVG | Dock, editor, widgets, SVG rendering, and application UI | Open-source Qt is generally available under LGPL-3.0 and/or GPL-3.0, with commercial licensing also available; verify the exact Qt package and module terms used for distribution |
@@ -681,6 +688,6 @@ This section is an attribution summary, not a replacement for the complete upstr
 
 ## Acknowledgements
 
-OBS Graphics Studio Pro is built on the work of the OBS Project, The Qt Company and Qt contributors, the Cairo and GNOME/Pango communities, the HarfBuzz project, Niels Lohmann and contributors, Mattia Basaglia and contributors, Yann Collet and LZ4 contributors, and Fonticons, Inc.
+Broadcast Graphics Live is built on the work of the OBS Project, The Qt Company and Qt contributors, the Cairo and GNOME/Pango communities, the HarfBuzz project, Niels Lohmann and contributors, Mattia Basaglia and contributors, Yann Collet and LZ4 contributors, and Fonticons, Inc.
 
 Their projects make native, cross-platform broadcast graphics inside OBS possible.

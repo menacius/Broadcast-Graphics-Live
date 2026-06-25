@@ -26,7 +26,7 @@
 #include <QSettings>
 #include <QStringList>
 
-#ifdef OBS_GSP_HAVE_LZ4
+#ifdef OBS_BGS_HAVE_LZ4
 #include <lz4.h>
 #endif
 
@@ -64,7 +64,7 @@ static const char *cache_playback_state_name(FrameCacheState state)
 static void log_cache_playback(const QString &message)
 {
     if (TitlePreferences::cache_playback_logging_enabled())
-        OGS_LOG_INFO("CachePlayback", message);
+        BGL_LOG_INFO("CachePlayback", message);
 }
 double cache_obs_frame_rate()
 {
@@ -79,9 +79,9 @@ int cache_last_frame_for_title(const Title &title, double fps)
     return std::max(0, (int)std::ceil(std::max(0.0, title.duration) * std::max(1.0, fps)) - 1);
 }
 
-constexpr quint32 kRawFrameMagic = 0x4f475346; // OGSF
+constexpr quint32 kRawFrameMagic = 0x4f475346; // BGLF
 constexpr quint16 kRawFrameVersion = 5;
-constexpr quint32 kTilePayloadMagic = 0x4f475354; // OGST
+constexpr quint32 kTilePayloadMagic = 0x4f475354; // BGLT
 constexpr quint16 kTilePayloadVersion = 1;
 constexpr quint16 kFrameCodecRaw = 0;
 constexpr quint16 kFrameCodecLz4 = 1;
@@ -89,7 +89,7 @@ constexpr quint16 kFrameCodecLz4 = 1;
  * Premultiplied Cairo frames are converted once on the worker, never during
  * realtime playback. */
 constexpr QImage::Format kDiskFrameFormat = QImage::Format_ARGB32;
-constexpr int kCacheTileSize = gsp::cache_tile_payload::kTileSize;
+constexpr int kCacheTileSize = bgs::cache_tile_payload::kTileSize;
 /* Bump whenever the GPU render graph, effect compositing, alpha contract,
  * bounds expansion, or cache/readback semantics change. This is part of the
  * visual cache identity and prevents stale prerenders from surviving renderer
@@ -124,7 +124,7 @@ static uint64_t gpu_cache_model_revision(const CacheFrameKey &key)
 static void set_sparse_frame_metadata(QImage &image, int x, int y,
                                       int canvas_width, int canvas_height)
 {
-    gsp::cache_frame_payload::set_placement(image, x, y,
+    bgs::cache_frame_payload::set_placement(image, x, y,
                                             canvas_width, canvas_height);
 }
 
@@ -170,8 +170,8 @@ static QRect alpha_bounds(const QImage &image)
 static bool sparse_frame_metadata(const QImage &image, int &x, int &y,
                                   int &canvas_width, int &canvas_height)
 {
-    gsp::cache_frame_payload::Placement placement;
-    if (!gsp::cache_frame_payload::read_placement(image, placement))
+    bgs::cache_frame_payload::Placement placement;
+    if (!bgs::cache_frame_payload::read_placement(image, placement))
         return false;
     x = placement.x;
     y = placement.y;
@@ -235,7 +235,7 @@ static void apply_persisted_live_cue_persistence(const std::shared_ptr<Title> &t
     if (!title)
         return;
 
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QStringLiteral("TitleDock"));
     const bool background = settings.value(QStringLiteral("backgroundPersistence"), false).toBool();
     const bool text = background && settings.value(QStringLiteral("textPersistence"), false).toBool();
@@ -468,16 +468,16 @@ bool DiskFrameCache::readFrameTileRefsLocked(
     stream >> magic >> version >> format
            >> canvas_width >> canvas_height >> tile_size >> tile_count;
     const quint64 max_tiles =
-        quint64((std::max(1, key.width) + gsp::cache_tile_payload::kTileSize - 1) /
-                gsp::cache_tile_payload::kTileSize) *
-        quint64((std::max(1, key.height) + gsp::cache_tile_payload::kTileSize - 1) /
-                gsp::cache_tile_payload::kTileSize);
+        quint64((std::max(1, key.width) + bgs::cache_tile_payload::kTileSize - 1) /
+                bgs::cache_tile_payload::kTileSize) *
+        quint64((std::max(1, key.height) + bgs::cache_tile_payload::kTileSize - 1) /
+                bgs::cache_tile_payload::kTileSize);
     if (stream.status() != QDataStream::Ok ||
         magic != kRawFrameMagic || version != kRawFrameVersion ||
         format != quint16(kDiskFrameFormat) ||
         canvas_width != quint32(key.width) ||
         canvas_height != quint32(key.height) ||
-        tile_size != quint32(gsp::cache_tile_payload::kTileSize) ||
+        tile_size != quint32(bgs::cache_tile_payload::kTileSize) ||
         tile_count > max_tiles)
         return false;
 
@@ -493,8 +493,8 @@ bool DiskFrameCache::readFrameTileRefsLocked(
         const QRect rect(x, y, int(width), int(height));
         if (stream.status() != QDataStream::Ok || digest.size() != 32 ||
             width == 0 || height == 0 ||
-            width > quint32(gsp::cache_tile_payload::kTileSize) ||
-            height > quint32(gsp::cache_tile_payload::kTileSize) ||
+            width > quint32(bgs::cache_tile_payload::kTileSize) ||
+            height > quint32(bgs::cache_tile_payload::kTileSize) ||
             !canvas_rect.contains(rect))
             return false;
         refs.push_back({rect, digest});
@@ -546,7 +546,7 @@ bool DiskFrameCache::readTileLocked(const TileRef &ref, QImage &image) const
     if (codec == kFrameCodecRaw) {
         raw = payload;
     } else {
-#ifdef OBS_GSP_HAVE_LZ4
+#ifdef OBS_BGS_HAVE_LZ4
         raw.resize(int(raw_size));
         const int decoded = LZ4_decompress_safe(
             payload.constData(), raw.data(), int(payload.size()), int(raw.size()));
@@ -567,7 +567,7 @@ bool DiskFrameCache::readTileLocked(const TileRef &ref, QImage &image) const
                     raw.constData() + qsizetype(y) * row_bytes,
                     size_t(row_bytes));
     }
-    if (gsp::cache_tile_payload::digest_for_tile(loaded) != ref.digest)
+    if (bgs::cache_tile_payload::digest_for_tile(loaded) != ref.digest)
         return false;
     image = std::move(loaded);
     return true;
@@ -583,7 +583,7 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
     if (!readFrameTileRefsLocked(key, refs))
         return false;
 
-    QVector<gsp::cache_tile_payload::Tile> tiles;
+    QVector<bgs::cache_tile_payload::Tile> tiles;
     tiles.reserve(refs.size());
     for (const TileRef &ref : refs) {
         QImage tile_image;
@@ -591,7 +591,7 @@ bool DiskFrameCache::get(const CacheFrameKey &key, QImage &image) const
             return false;
         tiles.push_back({ref.rect, std::move(tile_image), ref.digest});
     }
-    image = gsp::cache_tile_payload::compose_sparse_tiles(
+    image = bgs::cache_tile_payload::compose_sparse_tiles(
         tiles, key.width, key.height);
     return !image.isNull();
 }
@@ -641,13 +641,13 @@ bool DiskFrameCache::writeTileLocked(const QImage &image,
 
     const QImage frame = image.format() == kDiskFrameFormat
         ? image : image.convertToFormat(kDiskFrameFormat);
-    const QByteArray raw = gsp::cache_tile_payload::raw_bgra_bytes(frame);
+    const QByteArray raw = bgs::cache_tile_payload::raw_bgra_bytes(frame);
     if (raw.isEmpty() || raw.size() > std::numeric_limits<int>::max())
         return false;
 
     QByteArray payload = raw;
     quint16 codec = kFrameCodecRaw;
-#ifdef OBS_GSP_HAVE_LZ4
+#ifdef OBS_BGS_HAVE_LZ4
     if (raw.size() <= LZ4_MAX_INPUT_SIZE) {
         QByteArray compressed;
         const int raw_size = int(raw.size());
@@ -716,14 +716,14 @@ void DiskFrameCache::putLocked(const CacheFrameKey &key, const QImage &image)
     QDir().mkpath(cache_dir_);
     const QImage frame = image.format() == kDiskFrameFormat
         ? image : image.convertToFormat(kDiskFrameFormat);
-    gsp::cache_frame_payload::Placement placement;
-    if (!gsp::cache_frame_payload::read_placement(frame, placement) ||
+    bgs::cache_frame_payload::Placement placement;
+    if (!bgs::cache_frame_payload::read_placement(frame, placement) ||
         placement.canvas_width != key.width ||
         placement.canvas_height != key.height)
         return;
 
-    const QVector<gsp::cache_tile_payload::Tile> tiles =
-        gsp::cache_tile_payload::extract_nonempty_tiles(frame, placement);
+    const QVector<bgs::cache_tile_payload::Tile> tiles =
+        bgs::cache_tile_payload::extract_nonempty_tiles(frame, placement);
     quint64 created_tile_bytes = 0;
     QVector<QByteArray> created_tile_digests;
     QVector<QByteArray> new_digests;
@@ -765,7 +765,7 @@ void DiskFrameCache::putLocked(const CacheFrameKey &key, const QImage &image)
     stream << kRawFrameMagic << kRawFrameVersion
            << quint16(kDiskFrameFormat)
            << quint32(key.width) << quint32(key.height)
-           << quint32(gsp::cache_tile_payload::kTileSize)
+           << quint32(bgs::cache_tile_payload::kTileSize)
            << quint32(tiles.size());
     for (const auto &tile : tiles) {
         stream << qint32(tile.rect.x()) << qint32(tile.rect.y())
@@ -1139,7 +1139,7 @@ CacheManager::CacheManager(QObject *parent)
             : initial_ram_budget);
     worker_thread_ = std::thread(&CacheManager::workerLoop, this);
     wakeWorker();
-    OGS_LOG_INFO("Cache", QStringLiteral("CacheManager initialized enabled=%1 ramLimitMb=%2 disk=%3 worker=background")
+    BGL_LOG_INFO("Cache", QStringLiteral("CacheManager initialized enabled=%1 ramLimitMb=%2 disk=%3 worker=background")
                               .arg(cache_enabled_.load())
                               .arg(TitlePreferences::cache_ram_limit_mb())
                               .arg(disk_cache_.cacheDirectory()));
@@ -2062,7 +2062,7 @@ void CacheManager::rejectFramePayload(const std::shared_ptr<Title> &title,
         disk_cache_.remove(key);
         state_tracker_.setState(key, FrameCacheState::Stale);
     }
-    OGS_LOG_WARNING("CachePlayback", QStringLiteral(
+    BGL_LOG_WARNING("CachePlayback", QStringLiteral(
         "Rejected invalid cache payload title=%1 frame=%2 key=%3")
         .arg(key.title_id).arg(key.frame).arg(key.toString()));
     queueRealtimeJob(title, time, false, -1, QString(), known_content_hash);
@@ -2218,7 +2218,7 @@ void CacheManager::queueFrameWithHash(const std::shared_ptr<Title> &title, doubl
     job.cache_epoch = cache_epoch_.load();
     job.title_generation = titleGeneration(key.title_id);
     if (queue_.enqueue(job)) {
-        OGS_LOG_TRACE("Cache", QStringLiteral("Queued frame title=%1 frame=%2 time=%3 band=%4 key=%5")
+        BGL_LOG_TRACE("Cache", QStringLiteral("Queued frame title=%1 frame=%2 time=%3 band=%4 key=%5")
                                    .arg(key.title_id)
                                    .arg(key.frame)
                                    .arg(timeForFrame(key.frame), 0, 'f', 3)
@@ -2424,7 +2424,7 @@ void CacheManager::setCacheEnabled(bool enabled)
             queue_.setAcceptingJobs(true);
     }
     resetCancelledWorkState();
-    OGS_LOG_INFO("Cache", QStringLiteral("Cache enabled changed to %1").arg(enabled));
+    BGL_LOG_INFO("Cache", QStringLiteral("Cache enabled changed to %1").arg(enabled));
     TitlePreferences::set_cache_enabled(enabled);
 
     state_tracker_.clear();
@@ -2438,7 +2438,7 @@ void CacheManager::setInteractiveBypass(bool bypass)
     if (interactive_bypass_.load() == bypass)
         return;
     interactive_bypass_.store(bypass);
-    OGS_LOG_DEBUG("Cache", QStringLiteral("Interactive bypass changed to %1").arg(bypass));
+    BGL_LOG_DEBUG("Cache", QStringLiteral("Interactive bypass changed to %1").arg(bypass));
     /* Keep accepting live-cue work. The worker predicate pauses only normal
      * prerender jobs while the editor is manipulating the canvas. */
     queue_.setAcceptingJobs(cache_enabled_.load());
@@ -2452,7 +2452,7 @@ void CacheManager::setEditorPrerenderFocus(const QString &title_id, bool active)
         editor_focus_active_ = active && !title_id.isEmpty();
         editor_focus_title_id_ = editor_focus_active_ ? title_id : QString();
     }
-    OGS_LOG_DEBUG("Cache", QStringLiteral("Editor prerender focus active=%1 title=%2")
+    BGL_LOG_DEBUG("Cache", QStringLiteral("Editor prerender focus active=%1 title=%2")
                                .arg(active && !title_id.isEmpty())
                                .arg(title_id));
     wakeWorker();
@@ -2489,7 +2489,7 @@ void CacheManager::setDiskCacheLocation(const QString &path)
     }
     TitlePreferences::set_cache_disk_location(clean);
     resetCancelledWorkState();
-    OGS_LOG_INFO("Cache", QStringLiteral("Disk cache location changed to %1").arg(clean));
+    BGL_LOG_INFO("Cache", QStringLiteral("Disk cache location changed to %1").arg(clean));
     state_tracker_.clear();
     wakeWorker();
     emit diagnosticsChanged();
@@ -2510,9 +2510,9 @@ TitleCacheability CacheManager::titleCacheability(const std::shared_ptr<Title> &
 QString CacheManager::titleCacheabilityMessage(const std::shared_ptr<Title> &title) const
 {
     if (!cache_enabled_.load())
-        return obsgs_tr("OBSTitles.CacheDisabledMessage");
+        return bgl_tr("OBSTitles.CacheDisabledMessage");
     if (titleCacheability(title) == TitleCacheability::NonCacheable)
-        return obsgs_tr("OBSTitles.PrerenderDynamicUnavailable");
+        return bgl_tr("OBSTitles.PrerenderDynamicUnavailable");
     return QString();
 }
 
@@ -2943,7 +2943,7 @@ void CacheManager::invalidateAll(const std::shared_ptr<Title> &title)
         return;
     }
     if (visualHashUnchanged(*title)) {
-        OGS_LOG_TRACE("Cache", QStringLiteral("Skipped frame-cache invalidation for unchanged rendered title=%1; refreshing live-cue structure selectively")
+        BGL_LOG_TRACE("Cache", QStringLiteral("Skipped frame-cache invalidation for unchanged rendered title=%1; refreshing live-cue structure selectively")
                                       .arg(QString::fromStdString(title->id)));
         /* Structural cue-list edits do not change the title's currently rendered
          * pixels. Clearing every live-cue state here defeated stable row IDs and
@@ -2970,7 +2970,7 @@ void CacheManager::invalidateRange(const std::shared_ptr<Title> &title, double s
 {
     if (!title) return;
     if (visualHashUnchanged(*title)) {
-        OGS_LOG_TRACE("Cache", QStringLiteral("Skipped cache range invalidation for unchanged title=%1")
+        BGL_LOG_TRACE("Cache", QStringLiteral("Skipped cache range invalidation for unchanged title=%1")
                                       .arg(QString::fromStdString(title->id)));
         return;
     }
@@ -2988,7 +2988,7 @@ void CacheManager::invalidateLayer(const std::shared_ptr<Title> &title, const st
 {
     if (!title) return;
     if (visualHashUnchanged(*title)) {
-        OGS_LOG_TRACE("Cache", QStringLiteral("Skipped layer invalidation for unchanged title=%1 layer=%2")
+        BGL_LOG_TRACE("Cache", QStringLiteral("Skipped layer invalidation for unchanged title=%1 layer=%2")
                                       .arg(QString::fromStdString(title->id), QString::fromStdString(layer_id)));
         return;
     }
@@ -3060,7 +3060,7 @@ std::shared_ptr<Title> CacheManager::titleWithCueApplied(const std::shared_ptr<T
         const std::string cue_value = cue_title->live_text_rows[value_row][col];
         target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
-            gsp::apply_exposed_image_cue_value(*target, cue_value);
+            bgs::apply_exposed_image_cue_value(*target, cue_value);
             continue;
         }
         target->text_content = cue_value;
@@ -3394,7 +3394,7 @@ void CacheManager::pruneUnreferencedLiveCueRam(const QString &title_id)
     }
 
     if (removed_keys > 0) {
-        OGS_LOG_INFO("LiveCue", QStringLiteral("Pruned superseded live cue work title=%1 keys=%2 ramFrames=%3 queuedJobs=%4")
+        BGL_LOG_INFO("LiveCue", QStringLiteral("Pruned superseded live cue work title=%1 keys=%2 ramFrames=%3 queuedJobs=%4")
                                   .arg(title_id)
                                   .arg(removed_keys)
                                   .arg(removed_ram)
@@ -3595,7 +3595,7 @@ void CacheManager::queueLiveCueVariantSet(
     const QString title_id = QString::fromStdString(title->id);
     const QString row_id = liveCueRowIdentity(title, row);
     if (liveCueRowRenderPausedLocked(title_id, row_id) || liveCueStateRenderPausedLocked(state_key)) {
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped paused live cue state title=%1 row=%2 stateKey=%3")
+        BGL_LOG_DEBUG("LiveCue", QStringLiteral("Skipped paused live cue state title=%1 row=%2 stateKey=%3")
                                     .arg(title_id).arg(row).arg(state_key));
         return;
     }
@@ -3656,7 +3656,7 @@ void CacheManager::queueLiveCueVariantSet(
     const FrameCacheState existing_state = liveCueStoredState(state_key);
     const int existing_progress = liveCueStoredProgress(state_key);
     const bool busy = existing_state == FrameCacheState::Queued || existing_state == FrameCacheState::Rendering;
-    OGS_LOG_DEBUG("LiveCue", QStringLiteral("queueLiveCueState title=%1 row=%2 transition=%3 urgent=%4 state=%5 busy=%6 requiredFrames=%7 progress=%8 stateKey=%9")
+    BGL_LOG_DEBUG("LiveCue", QStringLiteral("queueLiveCueState title=%1 row=%2 transition=%3 urgent=%4 state=%5 busy=%6 requiredFrames=%7 progress=%8 stateKey=%9")
                                 .arg(title_id).arg(row)
                                 .arg(live_cue_transition_state_keys_.contains(state_key))
                                 .arg(urgent).arg((int)existing_state).arg(busy)
@@ -3737,7 +3737,7 @@ void CacheManager::queueLiveCueVariantSet(
         ++live_cue_stats_.misses;
         live_cue_states_[state_key] = FrameCacheState::Queued;
         live_cue_progress_percent_[state_key] = progress;
-        OGS_LOG_INFO("LiveCue", QStringLiteral("Queued live cue state title=%1 row=%2 transition=%3 queuedFrames=%4 requiredFrames=%5 progress=%6 stateKey=%7")
+        BGL_LOG_INFO("LiveCue", QStringLiteral("Queued live cue state title=%1 row=%2 transition=%3 queuedFrames=%4 requiredFrames=%5 progress=%6 stateKey=%7")
                                   .arg(title_id).arg(row)
                                   .arg(live_cue_transition_state_keys_.contains(state_key))
                                   .arg(queued).arg(static_cast<int>(required_keys.size()))
@@ -3763,12 +3763,12 @@ void CacheManager::queueLiveCue(const std::shared_ptr<Title> &title, int row, bo
     std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
     if (!cache_enabled_.load() || !title ||
         titleCacheability(title) == TitleCacheability::NonCacheable) {
-        OGS_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because title caching is unavailable").arg(row));
+        BGL_LOG_DEBUG("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because title caching is unavailable").arg(row));
         return;
     }
     const auto variants = liveCueVariants(title, row);
     if (variants.isEmpty()) {
-        OGS_LOG_WARNING("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because steady cue variant could not be created").arg(row));
+        BGL_LOG_WARNING("LiveCue", QStringLiteral("Skipped queueLiveCue row=%1 because steady cue variant could not be created").arg(row));
         return;
     }
     queueLiveCueVariantSet(title, row, liveCueStateKey(title, row), variants, urgent);
@@ -3817,7 +3817,7 @@ void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
         paused_rows.remove(row_id);
         if (paused_rows.isEmpty())
             live_cue_paused_row_ids_.remove(title_id);
-        OGS_LOG_INFO("LiveCue", QStringLiteral("Manual rebuild force-resumed paused live cue row title=%1 row=%2")
+        BGL_LOG_INFO("LiveCue", QStringLiteral("Manual rebuild force-resumed paused live cue row title=%1 row=%2")
                                    .arg(title_id).arg(row));
     }
     QVector<QString> rebuild_states;
@@ -3855,7 +3855,7 @@ void CacheManager::cacheLiveCueNow(const std::shared_ptr<Title> &title, int row)
         ++removed_frames;
     }
 
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Manual live cue cache rebuild title=%1 row=%2 removedFrames=%3 candidateFrames=%4 removedStates=%5")
+    BGL_LOG_INFO("LiveCue", QStringLiteral("Manual live cue cache rebuild title=%1 row=%2 removedFrames=%3 candidateFrames=%4 removedStates=%5")
                               .arg(title_id).arg(row)
                               .arg(removed_frames)
                               .arg(static_cast<int>(rebuild_keys.size()))
@@ -3930,7 +3930,7 @@ QImage CacheManager::requestLiveCueFrame(const std::shared_ptr<Title> &title, in
             queueLiveCue(title, row);
         }
     }
-    OGS_LOG_DEBUG("LiveCue", QStringLiteral("Live cue cache miss title=%1 row=%2 frame=%3 transition=%4 busy=%5 queue=%6 stateKey=%7")
+    BGL_LOG_DEBUG("LiveCue", QStringLiteral("Live cue cache miss title=%1 row=%2 frame=%3 transition=%4 busy=%5 queue=%6 stateKey=%7")
                                 .arg(key.title_id).arg(row).arg(key.frame)
                                 .arg(live_cue_transition_state_keys_.contains(state_key))
                                 .arg(busy).arg(queue_if_missing).arg(state_key));
@@ -4227,7 +4227,7 @@ bool CacheManager::prepareLiveCueForPlayback(const std::shared_ptr<Title> &title
         ++required_state_count;
     }
 
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Playback cache gate title=%1 row=%2 states=%3 ready=%4 requiredEndFrame=%5 storage=ram-or-ssd hydrate=%6")
+    BGL_LOG_INFO("LiveCue", QStringLiteral("Playback cache gate title=%1 row=%2 states=%3 ready=%4 requiredEndFrame=%5 storage=ram-or-ssd hydrate=%6")
                               .arg(QString::fromStdString(title->id)).arg(row)
                               .arg(required_state_count).arg(ready)
                               .arg(steady_last_frame)
@@ -4378,7 +4378,7 @@ void CacheManager::invalidateLiveCue(const std::shared_ptr<Title> &title, int ro
         queueLiveCueTransition(title, row, other);
         queueLiveCueTransition(title, other, row);
     }
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Invalidated live cue identity title=%1 row=%2 rowId=%3 removedStates=%4")
+    BGL_LOG_INFO("LiveCue", QStringLiteral("Invalidated live cue identity title=%1 row=%2 rowId=%3 removedStates=%4")
                               .arg(title_id).arg(row).arg(row_id)
                               .arg(static_cast<int>(affected_states.size())));
     emit diagnosticsChanged();
@@ -4429,7 +4429,7 @@ void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
 
     const QString title_id = QString::fromStdString(title->id);
     if (live_cue_structure_refresh_in_progress_.contains(title_id)) {
-        OGS_LOG_TRACE("LiveCue", QStringLiteral("Skipped re-entrant live cue structure refresh title=%1")
+        BGL_LOG_TRACE("LiveCue", QStringLiteral("Skipped re-entrant live cue structure refresh title=%1")
                                       .arg(title_id));
         return;
     }
@@ -4561,7 +4561,7 @@ void CacheManager::refreshLiveCueStructure(const std::shared_ptr<Title> &title)
     live_cue_row_fingerprints_[title_id] = current_fingerprints;
     live_cue_transition_signatures_[title_id] = transition_signature;
     pruneUnreferencedLiveCueRam(title_id);
-    OGS_LOG_INFO("LiveCue", QStringLiteral("Refreshed live cue structure title=%1 rows=%2 added=%3 changed=%4 removed=%5 removedStates=%6")
+    BGL_LOG_INFO("LiveCue", QStringLiteral("Refreshed live cue structure title=%1 rows=%2 added=%3 changed=%4 removed=%5 removedStates=%6")
                               .arg(title_id).arg(row_count)
                               .arg(static_cast<int>(added_ids.size()))
                               .arg(static_cast<int>(changed_ids.size()))
@@ -4644,7 +4644,7 @@ void CacheManager::setLiveCueRowRenderPaused(const std::shared_ptr<Title> &title
         }
     }
 
-    OGS_LOG_DEBUG("LiveCue", QStringLiteral("%1 live cue row render title=%2 row=%3 rowId=%4 states=%5")
+    BGL_LOG_DEBUG("LiveCue", QStringLiteral("%1 live cue row render title=%2 row=%3 rowId=%4 states=%5")
                                 .arg(paused ? QStringLiteral("Paused") : QStringLiteral("Resumed"))
                                 .arg(title_id).arg(row).arg(row_id)
                                 .arg(static_cast<int>(affected_states.size())));
@@ -4683,7 +4683,7 @@ void CacheManager::cancelTitleWork(const QString &title_id)
     }
     resetCancelledWorkState(title_id);
     wakeWorker();
-    OGS_LOG_DEBUG("Cache", QStringLiteral("Cancelled pending/in-flight title cache work title=%1").arg(title_id));
+    BGL_LOG_DEBUG("Cache", QStringLiteral("Cancelled pending/in-flight title cache work title=%1").arg(title_id));
 }
 
 void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
@@ -4729,7 +4729,7 @@ void CacheManager::removeTitleCache(const QString &title_id, bool remove_disk)
     live_cue_row_fingerprints_.remove(title_id);
     live_cue_transition_signatures_.remove(title_id);
     live_cue_paused_row_ids_.remove(title_id);
-    OGS_LOG_INFO("Cache", QStringLiteral("Removed title cache title=%1 ramFrames=%2 states=%3 disk=%4")
+    BGL_LOG_INFO("Cache", QStringLiteral("Removed title cache title=%1 ramFrames=%2 states=%3 disk=%4")
                             .arg(title_id).arg(static_cast<int>(ram_keys.size()))
                             .arg(static_cast<int>(state_keys.size())).arg(remove_disk));
     emit diagnosticsChanged();
@@ -5095,11 +5095,11 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
         pending.ticket.region != full_rect) {
         QImage merged = expand_sparse_frame(
             pending.previous, job.key.width, job.key.height);
-        gsp::cache_frame_payload::Placement placement;
+        bgs::cache_frame_payload::Placement placement;
         const QImage patch = staged.format() == kDiskFrameFormat
             ? staged : staged.convertToFormat(kDiskFrameFormat);
         if (!merged.isNull() && !patch.isNull() &&
-            gsp::cache_frame_payload::read_placement(patch, placement) &&
+            bgs::cache_frame_payload::read_placement(patch, placement) &&
             placement.canvas_width == job.key.width &&
             placement.canvas_height == job.key.height) {
             const qsizetype row_bytes = qsizetype(patch.width()) * 4;

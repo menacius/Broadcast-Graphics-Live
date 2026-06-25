@@ -297,8 +297,8 @@ require(
     SOURCE,
     (
         '#include "title-gpu-text-renderer.h"',
-        "std::unique_ptr<gsp::gpu_text::Layer> text_layer",
-        "std::unique_ptr<gsp::gpu_text::Renderer> text_renderer",
+        "std::unique_ptr<bgs::gpu_text::Layer> text_layer",
+        "std::unique_ptr<bgs::gpu_text::Renderer> text_renderer",
         "prepare_gpu_text_raster(",
         "render_gpu_text_raster(",
         "release_gpu_text_layer(",

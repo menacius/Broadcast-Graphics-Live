@@ -9,7 +9,7 @@
 #include <cstddef>
 #include <limits>
 
-namespace gsp {
+namespace bgs {
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kEpsilon = 1e-9;
@@ -1094,4 +1094,4 @@ QString path_geometry_signature(const Layer &layer)
     return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha1).toHex());
 }
 
-} // namespace gsp
+} // namespace bgs

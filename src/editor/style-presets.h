@@ -17,7 +17,7 @@ class QComboBox;
 class QListWidget;
 class QToolButton;
 
-namespace obsgsp {
+namespace obsbgs {
 
 enum class StylePresetKind {
     Text,
@@ -105,4 +105,4 @@ private:
     std::function<void(const StylePreset &)> apply_callback_;
 };
 
-} // namespace obsgsp
+} // namespace obsbgs

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace gsp::gpu_text {
+namespace bgs::gpu_text {
 
 struct PrepareOptions {
     float logical_width = 0.0f;
@@ -77,4 +77,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace gsp::gpu_text
+} // namespace bgs::gpu_text

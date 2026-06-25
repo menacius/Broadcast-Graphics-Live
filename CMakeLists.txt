@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(obs-graphics-studio-pro VERSION 0.8.2)
+project(broadcast-graphics-live VERSION 0.8.3)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
 # prerelease channel separately.
-set(OBS_GSP_PRERELEASE "alpha")
-set(OBS_GSP_VERSION "${PROJECT_VERSION}-${OBS_GSP_PRERELEASE}")
+set(OBS_BGS_PRERELEASE "alpha")
+set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -17,7 +17,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #   <plugins-root>/<plugin-name>/data/locale/*.ini
 # Keeping build artifacts in this shape makes the build tree directly copyable
 # into the OBS plugins directory and matches the Windows ProgramData layout.
-set(OBS_TITLES_PLUGIN_NAME "obs-graphics-studio-pro")
+set(OBS_TITLES_PLUGIN_NAME "broadcast-graphics-live")
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
   set(OBS_TITLES_ARCH_DIR "64bit")
   set(OBS_TITLES_VCPKG_DEFAULT_TRIPLET "x64-windows")
@@ -181,7 +181,7 @@ set(QT_LIBS Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VE
 
 # ── Find Cairo + Pango ──────────────────────────────────────────────
 find_package(PkgConfig QUIET)
-set(OBS_GSP_TEXT_RENDER_TARGETS "")
+set(OBS_BGS_TEXT_RENDER_TARGETS "")
 if(PKG_CONFIG_FOUND)
   # IMPORTED_TARGET is important on Windows/MSVC: it preserves the vcpkg
   # library directories and transitive link dependencies. Linking the raw
@@ -190,7 +190,7 @@ if(PKG_CONFIG_FOUND)
   pkg_check_modules(PANGO QUIET IMPORTED_TARGET pango)
   pkg_check_modules(PANGOCAIRO QUIET IMPORTED_TARGET pangocairo)
   if(TARGET PkgConfig::CAIRO AND TARGET PkgConfig::PANGO AND TARGET PkgConfig::PANGOCAIRO)
-    list(APPEND OBS_GSP_TEXT_RENDER_TARGETS
+    list(APPEND OBS_BGS_TEXT_RENDER_TARGETS
       PkgConfig::CAIRO
       PkgConfig::PANGO
       PkgConfig::PANGOCAIRO)
@@ -247,22 +247,22 @@ if(NOT CAIRO_FOUND OR NOT PANGO_FOUND OR NOT PANGOCAIRO_FOUND)
     set(PANGOCAIRO_INCLUDE_DIRS ${PANGOCAIRO_INCLUDE_DIR} ${PANGOCAIRO_PARENT_DIR})
     set(PANGOCAIRO_LIBRARIES ${PANGOCAIRO_LIBRARY})
 
-    add_library(OBS_GSP_CAIRO UNKNOWN IMPORTED)
-    set_target_properties(OBS_GSP_CAIRO PROPERTIES
+    add_library(OBS_BGS_CAIRO UNKNOWN IMPORTED)
+    set_target_properties(OBS_BGS_CAIRO PROPERTIES
       IMPORTED_LOCATION "${CAIRO_LIBRARY}"
       INTERFACE_INCLUDE_DIRECTORIES "${CAIRO_INCLUDE_DIRS}")
-    add_library(OBS_GSP_PANGO UNKNOWN IMPORTED)
-    set_target_properties(OBS_GSP_PANGO PROPERTIES
+    add_library(OBS_BGS_PANGO UNKNOWN IMPORTED)
+    set_target_properties(OBS_BGS_PANGO PROPERTIES
       IMPORTED_LOCATION "${PANGO_LIBRARY}"
       INTERFACE_INCLUDE_DIRECTORIES "${PANGO_INCLUDE_DIRS}"
       INTERFACE_LINK_LIBRARIES "${GLIB_LIBRARY};${GOBJECT_LIBRARY};${HARFBUZZ_LIBRARY}")
-    add_library(OBS_GSP_PANGOCAIRO UNKNOWN IMPORTED)
-    set_target_properties(OBS_GSP_PANGOCAIRO PROPERTIES
+    add_library(OBS_BGS_PANGOCAIRO UNKNOWN IMPORTED)
+    set_target_properties(OBS_BGS_PANGOCAIRO PROPERTIES
       IMPORTED_LOCATION "${PANGOCAIRO_LIBRARY}"
       INTERFACE_INCLUDE_DIRECTORIES "${PANGOCAIRO_INCLUDE_DIRS}"
-      INTERFACE_LINK_LIBRARIES "OBS_GSP_CAIRO;OBS_GSP_PANGO")
-    list(APPEND OBS_GSP_TEXT_RENDER_TARGETS
-      OBS_GSP_CAIRO OBS_GSP_PANGO OBS_GSP_PANGOCAIRO)
+      INTERFACE_LINK_LIBRARIES "OBS_BGS_CAIRO;OBS_BGS_PANGO")
+    list(APPEND OBS_BGS_TEXT_RENDER_TARGETS
+      OBS_BGS_CAIRO OBS_BGS_PANGO OBS_BGS_PANGOCAIRO)
 
     message(STATUS "Native Cairo found: ${CAIRO_LIBRARY}")
     message(STATUS "Native Pango found: ${PANGO_LIBRARY}")
@@ -294,43 +294,43 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(QtColorWidgets)
 
-set(OBS_GSP_QTCOLORWIDGETS_ROOT "${qtcolorwidgets_SOURCE_DIR}")
-set(OBS_GSP_QTCOLORWIDGETS_SOURCES
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/abstract_widget_list.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/bound_color_selector.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_2d_slider.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_delegate.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_dialog.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_dialog.ui"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_line_edit.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_list_widget.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_names.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_model.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_widget.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_widget.ui"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_preview.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_selector.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_utils.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_wheel.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_editor.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_list_model.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_slider.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/harmony_color_wheel.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/hue_slider.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/swatch.cpp"
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/resources/QtColorWidgets/color_widgets.qrc"
+set(OBS_BGS_QTCOLORWIDGETS_ROOT "${qtcolorwidgets_SOURCE_DIR}")
+set(OBS_BGS_QTCOLORWIDGETS_SOURCES
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/abstract_widget_list.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/bound_color_selector.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_2d_slider.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_delegate.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_dialog.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_dialog.ui"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_line_edit.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_list_widget.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_names.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_model.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_widget.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_palette_widget.ui"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_preview.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_selector.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_utils.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/color_wheel.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_editor.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_list_model.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/gradient_slider.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/harmony_color_wheel.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/hue_slider.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/src/QtColorWidgets/swatch.cpp"
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/resources/QtColorWidgets/color_widgets.qrc"
 )
-file(GLOB OBS_GSP_QTCOLORWIDGETS_HEADERS CONFIGURE_DEPENDS
-     "${OBS_GSP_QTCOLORWIDGETS_ROOT}/include/QtColorWidgets/*.hpp")
+file(GLOB OBS_BGS_QTCOLORWIDGETS_HEADERS CONFIGURE_DEPENDS
+     "${OBS_BGS_QTCOLORWIDGETS_ROOT}/include/QtColorWidgets/*.hpp")
 
 add_library(QtColorWidgets STATIC
-    ${OBS_GSP_QTCOLORWIDGETS_SOURCES}
-    ${OBS_GSP_QTCOLORWIDGETS_HEADERS}
+    ${OBS_BGS_QTCOLORWIDGETS_SOURCES}
+    ${OBS_BGS_QTCOLORWIDGETS_HEADERS}
 )
 target_compile_definitions(QtColorWidgets PUBLIC QTCOLORWIDGETS_STATICALLY_LINKED)
 target_include_directories(QtColorWidgets PUBLIC
-    "${OBS_GSP_QTCOLORWIDGETS_ROOT}/include")
+    "${OBS_BGS_QTCOLORWIDGETS_ROOT}/include")
 target_link_libraries(QtColorWidgets PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 set_target_properties(QtColorWidgets PROPERTIES
     CXX_STANDARD 11
@@ -338,13 +338,13 @@ set_target_properties(QtColorWidgets PROPERTIES
     POSITION_INDEPENDENT_CODE ON)
 
 # ── Sources ─────────────────────────────────────────────────────────
-set(OBS_GSP_CORE_SOURCES
+set(OBS_BGS_CORE_SOURCES
     src/core/title-data.cpp
     src/core/title-logger.cpp
     src/core/title-preferences.cpp
     src/core/system-memory.cpp
 )
-set(OBS_GSP_CORE_HEADERS
+set(OBS_BGS_CORE_HEADERS
     src/core/live-text-cue-utils.h
     src/core/title-data.h
     src/core/title-snapshot.h
@@ -354,73 +354,73 @@ set(OBS_GSP_CORE_HEADERS
     src/core/system-memory.h
 )
 
-set(OBS_GSP_LAYER_HEADERS
+set(OBS_BGS_LAYER_HEADERS
     src/layers/layer-model.h
     src/layers/image-layer-utils.h
     src/layers/path-geometry.h
     src/layers/layer-stack-widget.h
 )
 
-set(OBS_GSP_LAYER_SOURCES
+set(OBS_BGS_LAYER_SOURCES
     src/layers/image-layer-utils.cpp
     src/layers/path-geometry.cpp
     src/layers/layer-stack-widget.cpp
 )
 
-set(OBS_GSP_EFFECT_HEADERS
+set(OBS_BGS_EFFECT_HEADERS
     src/effects/layer-effects.h
     src/effects/effect-preset-catalog.h
     src/effects/effects-panel.h
     src/effects/effects-presets-panel.h
 )
 
-set(OBS_GSP_EFFECT_SOURCES
+set(OBS_BGS_EFFECT_SOURCES
     src/effects/effect-preset-catalog.cpp
     src/effects/effects-panel.cpp
     src/effects/effects-presets-panel.cpp
 )
 
-set(OBS_GSP_TIMELINE_SOURCES
+set(OBS_BGS_TIMELINE_SOURCES
     src/timeline/animation.cpp
     src/timeline/timeline-widget.cpp
 )
-set(OBS_GSP_TIMELINE_HEADERS
+set(OBS_BGS_TIMELINE_HEADERS
     src/timeline/animation.h
     src/timeline/timeline-widget.h
 )
 
-set(OBS_GSP_TRANSITION_SOURCES
+set(OBS_BGS_TRANSITION_SOURCES
     src/transitions/transition-preset-catalog.cpp
     src/transitions/transition-editor-dialog.cpp
 )
-set(OBS_GSP_TRANSITION_HEADERS
+set(OBS_BGS_TRANSITION_HEADERS
     src/transitions/layer-transition.h
     src/transitions/transition-preset-catalog.h
     src/transitions/transition-editor-dialog.h
 )
 
-set(OBS_GSP_TEXT_SOURCES
+set(OBS_BGS_TEXT_SOURCES
     src/text/title-rich-text.cpp
     src/text/title-text-layout.cpp
     src/text/title-text-layout-qt.cpp
 )
-set(OBS_GSP_TEXT_HEADERS
+set(OBS_BGS_TEXT_HEADERS
     src/text/title-rich-text.h
     src/text/title-text-layout.h
 )
 
-set(OBS_GSP_RENDERING_SOURCES
+set(OBS_BGS_RENDERING_SOURCES
     src/rendering/title-effect-registry.cpp
     src/rendering/title-gpu-text-renderer.cpp
     src/rendering/title-gpu-text-sdf.cpp
 )
-set(OBS_GSP_RENDERING_HEADERS
+set(OBS_BGS_RENDERING_HEADERS
     src/rendering/title-effect-registry.h
     src/rendering/title-gpu-text-renderer.h
     src/rendering/title-gpu-text-sdf.h
 )
 
-set(OBS_GSP_CACHE_SOURCES
+set(OBS_BGS_CACHE_SOURCES
     src/cache/cache-frame-key.cpp
     src/cache/cache-state-tracker.cpp
     src/cache/cache-manager.cpp
@@ -428,7 +428,7 @@ set(OBS_GSP_CACHE_SOURCES
     src/cache/ram-frame-cache.cpp
     src/cache/render-queue-manager.cpp
 )
-set(OBS_GSP_CACHE_HEADERS
+set(OBS_BGS_CACHE_HEADERS
     src/cache/cache-frame-payload.h
     src/cache/cache-tile-payload.h
     src/cache/cache-manager.h
@@ -437,24 +437,24 @@ set(OBS_GSP_CACHE_HEADERS
     src/cache/prerender-dock.h
 )
 
-set(OBS_GSP_CANVAS_SOURCES
+set(OBS_BGS_CANVAS_SOURCES
     src/canvas/canvas-preview-inline-text.cpp
     src/canvas/canvas-preview.cpp
 )
-set(OBS_GSP_CANVAS_HEADERS
+set(OBS_BGS_CANVAS_HEADERS
     src/canvas/canvas-preview.h
 )
 
-set(OBS_GSP_OBS_SOURCES
+set(OBS_BGS_OBS_SOURCES
     src/obs/plugin-main.cpp
     src/obs/title-source.cpp
 )
-set(OBS_GSP_OBS_HEADERS
+set(OBS_BGS_OBS_HEADERS
     src/obs/plugin-main.h
     src/obs/title-source.h
 )
 
-set(OBS_GSP_EDITOR_SOURCES
+set(OBS_BGS_EDITOR_SOURCES
     src/editor/title-hotkeys.cpp
     src/editor/timecode-spinbox.cpp
     src/editor/title-dock.cpp
@@ -464,7 +464,7 @@ set(OBS_GSP_EDITOR_SOURCES
     src/editor/style-presets.cpp
     src/editor/title-editor.cpp
 )
-set(OBS_GSP_EDITOR_HEADERS
+set(OBS_BGS_EDITOR_HEADERS
     src/editor/title-hotkeys.h
     src/editor/timecode-spinbox.h
     src/editor/title-dock.h
@@ -478,31 +478,31 @@ set(OBS_GSP_EDITOR_HEADERS
 )
 
 set(PLUGIN_SOURCES
-    ${OBS_GSP_CORE_SOURCES}
-    ${OBS_GSP_LAYER_SOURCES}
-    ${OBS_GSP_EFFECT_SOURCES}
-    ${OBS_GSP_TIMELINE_SOURCES}
-    ${OBS_GSP_TRANSITION_SOURCES}
-    ${OBS_GSP_TEXT_SOURCES}
-    ${OBS_GSP_RENDERING_SOURCES}
-    ${OBS_GSP_CACHE_SOURCES}
-    ${OBS_GSP_CANVAS_SOURCES}
-    ${OBS_GSP_OBS_SOURCES}
-    ${OBS_GSP_EDITOR_SOURCES}
+    ${OBS_BGS_CORE_SOURCES}
+    ${OBS_BGS_LAYER_SOURCES}
+    ${OBS_BGS_EFFECT_SOURCES}
+    ${OBS_BGS_TIMELINE_SOURCES}
+    ${OBS_BGS_TRANSITION_SOURCES}
+    ${OBS_BGS_TEXT_SOURCES}
+    ${OBS_BGS_RENDERING_SOURCES}
+    ${OBS_BGS_CACHE_SOURCES}
+    ${OBS_BGS_CANVAS_SOURCES}
+    ${OBS_BGS_OBS_SOURCES}
+    ${OBS_BGS_EDITOR_SOURCES}
 )
 
 set(PLUGIN_HEADERS
-    ${OBS_GSP_CORE_HEADERS}
-    ${OBS_GSP_LAYER_HEADERS}
-    ${OBS_GSP_EFFECT_HEADERS}
-    ${OBS_GSP_TIMELINE_HEADERS}
-    ${OBS_GSP_TRANSITION_HEADERS}
-    ${OBS_GSP_TEXT_HEADERS}
-    ${OBS_GSP_RENDERING_HEADERS}
-    ${OBS_GSP_CACHE_HEADERS}
-    ${OBS_GSP_CANVAS_HEADERS}
-    ${OBS_GSP_OBS_HEADERS}
-    ${OBS_GSP_EDITOR_HEADERS}
+    ${OBS_BGS_CORE_HEADERS}
+    ${OBS_BGS_LAYER_HEADERS}
+    ${OBS_BGS_EFFECT_HEADERS}
+    ${OBS_BGS_TIMELINE_HEADERS}
+    ${OBS_BGS_TRANSITION_HEADERS}
+    ${OBS_BGS_TEXT_HEADERS}
+    ${OBS_BGS_RENDERING_HEADERS}
+    ${OBS_BGS_CACHE_HEADERS}
+    ${OBS_BGS_CANVAS_HEADERS}
+    ${OBS_BGS_OBS_HEADERS}
+    ${OBS_BGS_EDITOR_HEADERS}
 )
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Source Files" FILES ${PLUGIN_SOURCES})
@@ -513,49 +513,49 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Header Files" FILES 
 # build the pinned official LZ4 1.10.0 source directly so compressed disk
 # caching does not silently degrade to raw BGRA on a clean build machine.
 find_package(lz4 CONFIG QUIET)
-set(OBS_GSP_LZ4_TARGET "")
+set(OBS_BGS_LZ4_TARGET "")
 if(TARGET lz4::lz4)
-  set(OBS_GSP_LZ4_TARGET lz4::lz4)
+  set(OBS_BGS_LZ4_TARGET lz4::lz4)
 elseif(TARGET LZ4::lz4)
-  set(OBS_GSP_LZ4_TARGET LZ4::lz4)
+  set(OBS_BGS_LZ4_TARGET LZ4::lz4)
 else()
-  find_path(OBS_GSP_LZ4_INCLUDE_DIR NAMES lz4.h)
-  find_library(OBS_GSP_LZ4_LIBRARY NAMES lz4 liblz4)
-  if(OBS_GSP_LZ4_INCLUDE_DIR AND OBS_GSP_LZ4_LIBRARY)
-    add_library(OBS_GSP_LZ4 UNKNOWN IMPORTED)
-    set_target_properties(OBS_GSP_LZ4 PROPERTIES
-      IMPORTED_LOCATION "${OBS_GSP_LZ4_LIBRARY}"
-      INTERFACE_INCLUDE_DIRECTORIES "${OBS_GSP_LZ4_INCLUDE_DIR}")
-    set(OBS_GSP_LZ4_TARGET OBS_GSP_LZ4)
+  find_path(OBS_BGS_LZ4_INCLUDE_DIR NAMES lz4.h)
+  find_library(OBS_BGS_LZ4_LIBRARY NAMES lz4 liblz4)
+  if(OBS_BGS_LZ4_INCLUDE_DIR AND OBS_BGS_LZ4_LIBRARY)
+    add_library(OBS_BGS_LZ4 UNKNOWN IMPORTED)
+    set_target_properties(OBS_BGS_LZ4 PROPERTIES
+      IMPORTED_LOCATION "${OBS_BGS_LZ4_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${OBS_BGS_LZ4_INCLUDE_DIR}")
+    set(OBS_BGS_LZ4_TARGET OBS_BGS_LZ4)
   else()
     FetchContent_Declare(
-      obs_gsp_lz4_source
+      obs_bgs_lz4_source
       GIT_REPOSITORY https://github.com/lz4/lz4.git
       GIT_TAG ebb370ca83af193212df4dcbadcc5d87bc0de2f0
       GIT_PROGRESS FALSE
     )
-    FetchContent_GetProperties(obs_gsp_lz4_source)
-    if(NOT obs_gsp_lz4_source_POPULATED)
-      FetchContent_Populate(obs_gsp_lz4_source)
+    FetchContent_GetProperties(obs_bgs_lz4_source)
+    if(NOT obs_bgs_lz4_source_POPULATED)
+      FetchContent_Populate(obs_bgs_lz4_source)
     endif()
 
-    add_library(obs_gsp_lz4 STATIC
-      "${obs_gsp_lz4_source_SOURCE_DIR}/lib/lz4.c")
-    target_include_directories(obs_gsp_lz4 PUBLIC
-      "${obs_gsp_lz4_source_SOURCE_DIR}/lib")
-    set_target_properties(obs_gsp_lz4 PROPERTIES
+    add_library(obs_bgs_lz4 STATIC
+      "${obs_bgs_lz4_source_SOURCE_DIR}/lib/lz4.c")
+    target_include_directories(obs_bgs_lz4 PUBLIC
+      "${obs_bgs_lz4_source_SOURCE_DIR}/lib")
+    set_target_properties(obs_bgs_lz4 PROPERTIES
       POSITION_INDEPENDENT_CODE ON)
-    set(OBS_GSP_LZ4_TARGET obs_gsp_lz4)
+    set(OBS_BGS_LZ4_TARGET obs_bgs_lz4)
   endif()
 endif()
 
 # ── Target ──────────────────────────────────────────────────────────
-add_library(obs-graphics-studio-pro MODULE
+add_library(broadcast-graphics-live MODULE
     ${PLUGIN_SOURCES}
     ${PLUGIN_HEADERS}
 )
 
-target_include_directories(obs-graphics-studio-pro PRIVATE
+target_include_directories(broadcast-graphics-live PRIVATE
     src
     src/core
     src/layers
@@ -573,40 +573,40 @@ target_include_directories(obs-graphics-studio-pro PRIVATE
     ${PANGOCAIRO_INCLUDE_DIRS}
 )
 
-target_link_libraries(obs-graphics-studio-pro PRIVATE
+target_link_libraries(broadcast-graphics-live PRIVATE
     OBS::libobs
     OBS::obs-frontend-api
     ${QT_LIBS}
     QtColorWidgets
-    ${OBS_GSP_TEXT_RENDER_TARGETS}
+    ${OBS_BGS_TEXT_RENDER_TARGETS}
     nlohmann_json::nlohmann_json
-    ${OBS_GSP_LZ4_TARGET}
+    ${OBS_BGS_LZ4_TARGET}
 )
 
 if(CAIRO_CFLAGS_OTHER)
-  target_compile_options(obs-graphics-studio-pro PRIVATE ${CAIRO_CFLAGS_OTHER})
+  target_compile_options(broadcast-graphics-live PRIVATE ${CAIRO_CFLAGS_OTHER})
 endif()
 if(PANGO_CFLAGS_OTHER)
-  target_compile_options(obs-graphics-studio-pro PRIVATE ${PANGO_CFLAGS_OTHER})
+  target_compile_options(broadcast-graphics-live PRIVATE ${PANGO_CFLAGS_OTHER})
 endif()
 if(PANGOCAIRO_CFLAGS_OTHER)
-  target_compile_options(obs-graphics-studio-pro PRIVATE ${PANGOCAIRO_CFLAGS_OTHER})
+  target_compile_options(broadcast-graphics-live PRIVATE ${PANGOCAIRO_CFLAGS_OTHER})
 endif()
 
 # ── Locale / data files ──────────────────────────────────────────────
-target_compile_definitions(obs-graphics-studio-pro PRIVATE
+target_compile_definitions(broadcast-graphics-live PRIVATE
     PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
-    PLUGIN_VERSION="${OBS_GSP_VERSION}"
+    PLUGIN_VERSION="${OBS_BGS_VERSION}"
 )
-if(OBS_GSP_LZ4_TARGET)
-    target_compile_definitions(obs-graphics-studio-pro PRIVATE OBS_GSP_HAVE_LZ4=1)
+if(OBS_BGS_LZ4_TARGET)
+    target_compile_definitions(broadcast-graphics-live PRIVATE OBS_BGS_HAVE_LZ4=1)
 endif()
 
 # ── OBS module helper (sets correct output name & install path) ──────
 # This macro is provided by the OBS cmake helpers:
-#   set_target_obs_bundle(obs-graphics-studio-pro)
+#   set_target_obs_bundle(broadcast-graphics-live)
 # If building standalone, stage artifacts in OBS' user-plugin folder layout.
-set_target_properties(obs-graphics-studio-pro PROPERTIES
+set_target_properties(broadcast-graphics-live PROPERTIES
     PREFIX ""
     LIBRARY_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
     RUNTIME_OUTPUT_DIRECTORY "${OBS_TITLES_PACKAGE_BIN_DIR}"
@@ -614,13 +614,13 @@ set_target_properties(obs-graphics-studio-pro PROPERTIES
 )
 foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
   string(TOUPPER "${config}" config_upper)
-  set_target_properties(obs-graphics-studio-pro PROPERTIES
+  set_target_properties(broadcast-graphics-live PROPERTIES
       LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
       RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${OBS_TITLES_PACKAGE_BIN_DIR}"
       ARCHIVE_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_BINARY_DIR}/lib/${config}")
 endforeach()
 
-add_custom_command(TARGET obs-graphics-studio-pro POST_BUILD
+add_custom_command(TARGET broadcast-graphics-live POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${OBS_TITLES_PACKAGE_DIR}/data"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -670,18 +670,18 @@ if(WIN32)
 
   if(OBS_TITLES_RUNTIME_DLLS)
     list(REMOVE_DUPLICATES OBS_TITLES_RUNTIME_DLLS)
-    add_custom_command(TARGET obs-graphics-studio-pro POST_BUILD
+    add_custom_command(TARGET broadcast-graphics-live POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 ${OBS_TITLES_RUNTIME_DLLS}
-                "$<TARGET_FILE_DIR:obs-graphics-studio-pro>"
+                "$<TARGET_FILE_DIR:broadcast-graphics-live>"
         COMMAND_EXPAND_LISTS
         COMMENT "Copying Windows runtime DLL dependencies")
     install(FILES ${OBS_TITLES_RUNTIME_DLLS}
             DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
   else()
     message(WARNING
-      "No vcpkg runtime DLLs were found to bundle with obs-graphics-studio-pro. "
-      "If OBS reports that obs-graphics-studio-pro failed to load, ensure Qt/Cairo/Pango "
+      "No vcpkg runtime DLLs were found to bundle with broadcast-graphics-live. "
+      "If OBS reports that broadcast-graphics-live failed to load, ensure Qt/Cairo/Pango "
       "runtime DLLs are next to the plugin binary or use build-windows.ps1.")
   endif()
 endif()
@@ -690,7 +690,7 @@ endif()
 # Install into the same user-plugin layout expected below the chosen prefix.
 # Example Windows prefix: C:/ProgramData/obs-studio/plugins
 # Example Linux prefix:   ~/.config/obs-studio/plugins
-install(TARGETS obs-graphics-studio-pro
+install(TARGETS broadcast-graphics-live
         RUNTIME DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR}
         LIBRARY DESTINATION ${OBS_TITLES_PLUGIN_NAME}/bin/${OBS_TITLES_ARCH_DIR})
 
@@ -703,16 +703,16 @@ install(DIRECTORY data/effect-transitions
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 
 # ── Print summary ────────────────────────────────────────────────────
-message(STATUS "OBS Graphics Studio Pro: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
+message(STATUS "Broadcast Graphics Live: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VERSION}")
 
-option(OBS_GSP_BUILD_TESTS "Build lightweight OBS Graphics Studio Pro validation tests" OFF)
-if(OBS_GSP_BUILD_TESTS)
+option(OBS_BGS_BUILD_TESTS "Build lightweight Broadcast Graphics Live validation tests" OFF)
+if(OBS_BGS_BUILD_TESTS)
   enable_testing()
   add_executable(rich_text_model_test
       tests/rich_text_model_test.cpp
       src/text/title-rich-text.cpp)
   target_include_directories(rich_text_model_test PRIVATE src src/core src/layers src/effects src/timeline src/text)
-  target_compile_definitions(rich_text_model_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
+  target_compile_definitions(rich_text_model_test PRIVATE OBS_BGS_RICH_TEXT_STANDALONE_TEST)
   add_test(NAME rich_text_model_test COMMAND rich_text_model_test)
 
   add_executable(text_layout_contract_test
@@ -720,7 +720,7 @@ if(OBS_GSP_BUILD_TESTS)
       src/text/title-rich-text.cpp
       src/text/title-text-layout.cpp)
   target_include_directories(text_layout_contract_test PRIVATE src src/core src/layers src/effects src/timeline src/text)
-  target_compile_definitions(text_layout_contract_test PRIVATE OBS_GSP_RICH_TEXT_STANDALONE_TEST)
+  target_compile_definitions(text_layout_contract_test PRIVATE OBS_BGS_RICH_TEXT_STANDALONE_TEST)
   add_test(NAME text_layout_contract_test COMMAND text_layout_contract_test)
 
   add_executable(animation_model_test

@@ -93,7 +93,7 @@
 #include <utility>
 #include "path-geometry.h"
 
-using gsp::live_text::exposed_text_layers;
+using bgs::live_text::exposed_text_layers;
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -516,7 +516,7 @@ static uint64_t request_source_presentation_reset(TitleSourceData *data,
         data->requested_presentation_generation.fetch_add(
             1, std::memory_order_acq_rel) + 1;
     if (TitlePreferences::cache_playback_logging_enabled()) {
-        OGS_LOG_INFO(
+        BGL_LOG_INFO(
             "CachePlayback",
             QStringLiteral("consumer=source action=request-presentation-reset title=%1 generation=%2 reason=%3")
                 .arg(QString::fromStdString(data->title_id))
@@ -556,7 +556,7 @@ static void apply_source_presentation_reset(TitleSourceData *data,
     data->cached_content_hash.clear();
 
     if (TitlePreferences::cache_playback_logging_enabled()) {
-        OGS_LOG_INFO(
+        BGL_LOG_INFO(
             "CachePlayback",
             QStringLiteral("consumer=source action=apply-presentation-reset title=%1 generation=%2 frontendGeneration=%3 reason=%4")
                 .arg(QString::fromStdString(data->title_id))
@@ -616,7 +616,13 @@ static bool layer_has_effect_animation(const Layer &layer)
 
 static bool layer_has_animation(const Layer &layer)
 {
-    return layer_has_effect_animation(layer) ||
+    const bool has_transition_animation = std::any_of(
+        layer.transitions.begin(), layer.transitions.end(),
+        [](const LayerTransition &transition) {
+            return transition.enabled && transition.duration > 0.000001;
+        });
+    return has_transition_animation ||
+           layer_has_effect_animation(layer) ||
            layer.position.is_animated() ||
            layer.scale.is_animated() ||
            layer.rotation.is_animated() ||
@@ -746,9 +752,20 @@ static bool title_has_ticker_layer(const std::shared_ptr<Title> &title)
 static bool title_has_animation(const std::shared_ptr<Title> &title)
 {
     if (!title) return false;
+    const double duration = std::max(0.0, title->duration);
     return std::any_of(title->layers.begin(), title->layers.end(),
-                       [](const std::shared_ptr<Layer> &layer) {
-                           return layer && layer_has_animation(*layer);
+                       [duration](const std::shared_ptr<Layer> &layer) {
+                           if (!layer)
+                               return false;
+                           /* Visibility windows are timeline animation too. A
+                            * clock-only title can otherwise be classified as
+                            * static and freeze at frame zero, preventing both
+                            * transition presets and in/out timing from running
+                            * during cue and uncue. */
+                           const bool timed_visibility =
+                               layer->in_time > 0.000001 ||
+                               layer->out_time < duration - 0.000001;
+                           return timed_visibility || layer_has_animation(*layer);
                        });
 }
 
@@ -971,7 +988,7 @@ static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &layer, cons
         return;
     layer->live_cue_hidden_if_empty = layer->exposed_hide_if_empty && value.empty();
     if (layer->type == LayerType::Image) {
-        gsp::apply_exposed_image_cue_value(*layer, value);
+        bgs::apply_exposed_image_cue_value(*layer, value);
         return;
     }
     replace_layer_text_preserving_rich_rules(layer, value);
@@ -1446,7 +1463,7 @@ static void cairo_add_star(cairo_t *cr, double cx, double cy, double rx, double 
 
 static QPainterPath painter_layer_shape_path(const Layer &layer, double w, double h)
 {
-    return gsp::layer_shape_path(layer, QRectF(0.0, 0.0, w, h));
+    return bgs::layer_shape_path(layer, QRectF(0.0, 0.0, w, h));
 }
 
 static void cairo_append_qpainter_path(cairo_t *cr, const QPainterPath &path,
@@ -3052,13 +3069,13 @@ static QTextCharFormat text_format_from_rich_format(const RichTextCharFormat &fo
 
 static bool resolve_auto_text_style_preset(const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask)
 {
-    static obsgsp::StylePresetLibrary library;
-    obsgsp::StylePreset preset;
-    if (!library.findById(QString::fromStdString(preset_id), &preset) || preset.kind != obsgsp::StylePresetKind::Text)
+    static obsbgs::StylePresetLibrary library;
+    obsbgs::StylePreset preset;
+    if (!library.findById(QString::fromStdString(preset_id), &preset) || preset.kind != obsbgs::StylePresetKind::Text)
         return false;
-    if (!obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, format))
+    if (!obsbgs::StylePresetLibrary::textPresetToCharFormat(preset, format))
         return false;
-    mask = obsgsp::StylePresetLibrary::textPresetCharMask();
+    mask = obsbgs::StylePresetLibrary::textPresetCharMask();
     return true;
 }
 
@@ -5069,7 +5086,7 @@ static void render_layer_rect(cairo_t *cr, const Title &title, const Layer &laye
             .arg(layer.shape_inner_radius, 0, 'f', 4)
             .arg(layer.shape_outer_radius, 0, 'f', 4)
             .arg(layer.shape_roundness, 0, 'f', 2)
-            .arg(layer.shape_inner_roundness, 0, 'f', 2) + QStringLiteral("|") + gsp::path_geometry_signature(layer);
+            .arg(layer.shape_inner_roundness, 0, 'f', 2) + QStringLiteral("|") + bgs::path_geometry_signature(layer);
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
         paint_qimage(cr, shadow.image, shadow.origin.x(), shadow.origin.y(), alpha);
     }
@@ -5156,7 +5173,7 @@ static ImageBoxLayout image_box_layout_for_layer(const Layer &layer, double box_
                                                   double image_w, double image_h)
 {
     ImageBoxLayout out;
-    const gsp::ImageDisplaySize display = gsp::calculate_image_display_size(
+    const bgs::ImageDisplaySize display = bgs::calculate_image_display_size(
         layer.image_box_mode, layer.image_size_auto_fit, box_w, box_h, image_w, image_h);
     out.w = display.width;
     out.h = display.height;
@@ -7019,7 +7036,7 @@ static bool prepare_temporal_gpu_resources(const QImage &upload,
     }
     if (!g_temporal_gpu.effect) {
         g_temporal_gpu.effect = gs_effect_create(
-            kTemporalAccumulateEffect, "obs-gsp-temporal-accumulate.effect", nullptr);
+            kTemporalAccumulateEffect, "obs-bgs-temporal-accumulate.effect", nullptr);
     }
     if (!g_temporal_gpu.source || !g_temporal_gpu.target ||
         !g_temporal_gpu.stage || !g_temporal_gpu.effect)
@@ -7771,9 +7788,9 @@ QImage render_title_to_image_scaled(const Title &title, double t, double scale,
                              std::max(1, qRound(title.height * clamped_scale)),
                              Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
-    image.setText(QStringLiteral("obs_gsp_preview_scale"),
+    image.setText(QStringLiteral("obs_bgs_preview_scale"),
                   QString::number(clamped_scale, 'f', 6));
-    gsp::cache_frame_payload::set_placement(
+    bgs::cache_frame_payload::set_placement(
         image, 0, 0, std::max(1, title.width), std::max(1, title.height));
     return image;
 }
@@ -7790,7 +7807,7 @@ static gs_texture_t *title_gpu_render_session_render_auxiliary_layer(
  * ══════════════════════════════════════════════════════════════════ */
 static const char *source_get_name(void *)
 {
-    return obsgs_tr_c("OBSTitles.SourceName");
+    return bgl_tr_c("OBSTitles.SourceName");
 }
 
 static void *source_create(obs_data_t *settings, obs_source_t *source)
@@ -7908,7 +7925,7 @@ static void source_update(void *priv, obs_data_t *settings)
         data->force_cue_state_sync = title_changed &&
             (title->current_cue_row >= 0 || title->pending_cue_row >= 0);
         if (data->force_cue_state_sync) {
-            OGS_LOG_INFO("LiveCue", QStringLiteral("Rebinding active cue after title switch old=%1 new=%2 current=%3 pending=%4 revision=%5")
+            BGL_LOG_INFO("LiveCue", QStringLiteral("Rebinding active cue after title switch old=%1 new=%2 current=%3 pending=%4 revision=%5")
                          .arg(QString::fromStdString(previous_title_id))
                          .arg(QString::fromStdString(data->title_id))
                          .arg(title->current_cue_row)
@@ -8159,7 +8176,8 @@ static void source_video_tick(void *priv, float seconds)
     const bool has_timeline_animation = title_has_animation(title);
     const bool static_clock_title = has_clock_layer && !has_timeline_animation;
 
-    if (data->playing && !static_clock_title) {
+    if (data->playing && (!static_clock_title ||
+                          data->cue_phase != TitleSourceData::CuePhase::FreeRun)) {
         double dt = (double)seconds;
         double duration = std::max(0.001, title->duration);
         double loop_start = std::clamp(title->loop_start, 0.0, title->duration);
@@ -8365,7 +8383,7 @@ static void source_video_tick(void *priv, float seconds)
                                      current_cache_frame)) {
         data->dirty = true;
         if (TitlePreferences::cache_playback_logging_enabled()) {
-            OGS_LOG_INFO(
+            BGL_LOG_INFO(
                 "CachePlayback",
                 QStringLiteral("consumer=source action=frame-ready-wakeup title=%1 time=%2 frame=%3")
                     .arg(QString::fromStdString(data->title_id))
@@ -8403,8 +8421,17 @@ static void source_video_tick(void *priv, float seconds)
                 data->cue_phase == TitleSourceData::CuePhase::OutroOnly)
                 cached_cue_row = data->active_cue_row;
 
-            const QString gpu_cache_token = cache.requestFrameGpuToken(
-                title, data->playhead, false, data->cached_content_hash);
+            /* Live-cue prerenders use a cue-applied title snapshot and
+             * therefore a different content-addressed GPU key from the base
+             * title. Asking for the base key here could successfully return a
+             * resident frame with the wrong text/persistence state, so choose
+             * the same cue-aware key family as the QImage fallback. */
+            const QString gpu_cache_token = cached_cue_row >= 0 &&
+                    cached_cue_row < static_cast<int>(title->live_text_rows.size())
+                ? cache.requestLiveCueFrameGpuToken(
+                      title, cached_cue_row, data->playhead, false)
+                : cache.requestFrameGpuToken(
+                      title, data->playhead, false, data->cached_content_hash);
             QImage cached;
             if (gpu_cache_token.isEmpty()) {
                 if (cached_cue_row >= 0 &&
@@ -8419,7 +8446,7 @@ static void source_video_tick(void *priv, float seconds)
             }
 
             if (TitlePreferences::cache_playback_logging_enabled()) {
-                OGS_LOG_INFO("CachePlayback", QStringLiteral("consumer=source title=%1 time=%2 cueRow=%3 payload=%4 cacheKey=%5 size=%6x%7 cachedOnly=%8")
+                BGL_LOG_INFO("CachePlayback", QStringLiteral("consumer=source title=%1 time=%2 cueRow=%3 payload=%4 cacheKey=%5 size=%6x%7 cachedOnly=%8")
                     .arg(QString::fromStdString(title->id)).arg(data->playhead, 0, 'f', 6)
                     .arg(cached_cue_row).arg(cached.isNull() ? QStringLiteral("null") : QStringLiteral("ready"))
                     .arg(cached.isNull() ? 0 : cached.cacheKey()).arg(cached.width()).arg(cached.height())
@@ -8446,7 +8473,7 @@ static void source_video_tick(void *priv, float seconds)
                             data->visual_model_revision);
                 }
                 if (TitlePreferences::cache_playback_logging_enabled()) {
-                    OGS_LOG_INFO("CachePlayback", QStringLiteral(
+                    BGL_LOG_INFO("CachePlayback", QStringLiteral(
                         "consumer=source action=%1 title=%2 time=%3 gpuToken=%4")
                         .arg(submitted_cached_frame
                                  ? QStringLiteral("submit-gpu-ram")
@@ -8466,7 +8493,7 @@ static void source_video_tick(void *priv, float seconds)
                                 data->playhead, analysis.first_dynamic_layer,
                                 data->visual_model_revision);
                         if (TitlePreferences::cache_playback_logging_enabled())
-                            OGS_LOG_INFO("CachePlayback", QStringLiteral("consumer=source action=%1 title=%2 time=%3 firstDynamicLayer=%4 cacheKey=%5")
+                            BGL_LOG_INFO("CachePlayback", QStringLiteral("consumer=source action=%1 title=%2 time=%3 firstDynamicLayer=%4 cacheKey=%5")
                                 .arg(submitted_cached_frame ? QStringLiteral("submit-prefix")
                                                            : QStringLiteral("reject-prefix"))
                                 .arg(QString::fromStdString(title->id)).arg(data->playhead, 0, 'f', 6)
@@ -8478,7 +8505,7 @@ static void source_video_tick(void *priv, float seconds)
                             data->gpu_render_session, *title, cached,
                             data->visual_model_revision);
                     if (TitlePreferences::cache_playback_logging_enabled())
-                        OGS_LOG_INFO("CachePlayback", QStringLiteral("consumer=source action=%1 title=%2 time=%3 cacheKey=%4")
+                        BGL_LOG_INFO("CachePlayback", QStringLiteral("consumer=source action=%1 title=%2 time=%3 cacheKey=%4")
                             .arg(submitted_cached_frame ? QStringLiteral("submit-final")
                                                        : QStringLiteral("reject-final"))
                             .arg(QString::fromStdString(title->id)).arg(data->playhead, 0, 'f', 6).arg(cached.cacheKey()));
@@ -8506,7 +8533,7 @@ static void source_video_tick(void *priv, float seconds)
             } else if (playback.cached_frames_only &&
                        data->first_frame_pending &&
                        TitlePreferences::cache_playback_logging_enabled()) {
-                OGS_LOG_WARNING("CachePlayback", QStringLiteral(
+                BGL_LOG_WARNING("CachePlayback", QStringLiteral(
                     "consumer=source action=bootstrap-live-poster title=%1 time=%2 reason=no-published-cache-frame")
                     .arg(QString::fromStdString(title->id))
                     .arg(data->playhead, 0, 'f', 6));
@@ -8891,7 +8918,7 @@ struct TitleGpuRenderSession {
         QRectF image_clip_rect;
         bool pending_upload = false;
         bool gpu_text = false;
-        std::unique_ptr<gsp::gpu_text::Layer> text_layer;
+        std::unique_ptr<bgs::gpu_text::Layer> text_layer;
         bool gpu_primitive = false;
         int primitive_shape_type = 0;
         int primitive_vertex_count = 0;
@@ -9029,7 +9056,7 @@ struct TitleGpuRenderSession {
     gs_effect_t *blit_effect = nullptr;
     gs_effect_t *copy_effect = nullptr;
     gs_effect_t *primitive_shape_effect = nullptr;
-    std::unique_ptr<gsp::gpu_text::Renderer> text_renderer;
+    std::unique_ptr<bgs::gpu_text::Renderer> text_renderer;
     gs_effect_t *blend_effect = nullptr;
     gs_effect_t *mask_effect = nullptr;
     std::unique_ptr<TitleEffectRegistry> effect_registry;
@@ -9543,9 +9570,9 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
 
     if (!session->text_renderer)
         session->text_renderer =
-            std::make_unique<gsp::gpu_text::Renderer>();
+            std::make_unique<bgs::gpu_text::Renderer>();
     if (!entry.text_layer)
-        entry.text_layer = std::make_unique<gsp::gpu_text::Layer>();
+        entry.text_layer = std::make_unique<bgs::gpu_text::Layer>();
 
     const double box_local_x =
         -eval_origin_x(layer, local_time) * box_width - surface_rect.x();
@@ -9563,7 +9590,7 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
                                            clip_pad, clip_pad)
                                  .intersected(target_bounds);
 
-    gsp::gpu_text::PrepareOptions options;
+    bgs::gpu_text::PrepareOptions options;
     options.logical_width = static_cast<float>(surface_rect.width());
     options.logical_height = static_cast<float>(surface_rect.height());
     options.text_offset_x = static_cast<float>(text_offset_x);
@@ -9618,7 +9645,7 @@ static bool ensure_gpu_session_objects(TitleGpuRenderSession *session,
     }
     if (!session->blit_effect)
         session->blit_effect = gs_effect_create(kGpuFrameBlitEffect,
-                                                "obs-gsp-gpu-frame-blit.effect", nullptr);
+                                                "obs-bgs-gpu-frame-blit.effect", nullptr);
     if (!session->blit_effect) {
         session->last_error = "Could not compile mandatory GPU frame-blit shader.";
         return false;
@@ -9732,7 +9759,7 @@ static bool render_gpu_primitive_raster(TitleGpuRenderSession *session,
     if (!session->primitive_shape_effect)
         session->primitive_shape_effect = gs_effect_create(
             kGpuPrimitiveShapeEffect,
-            "obs-gsp-gpu-primitive-shape.effect", nullptr);
+            "obs-bgs-gpu-primitive-shape.effect", nullptr);
     if (!session->primitive_shape_effect) {
         session->primitive_backend_unavailable = true;
         entry.key.clear();
@@ -10303,7 +10330,7 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
         return false;
     if (!session->copy_effect)
         session->copy_effect = gs_effect_create(
-            kGpuLayerCopyEffect, "obs-gsp-gpu-layer-copy.effect", nullptr);
+            kGpuLayerCopyEffect, "obs-bgs-gpu-layer-copy.effect", nullptr);
     if (!session->copy_effect) {
         session->last_error = "Could not compile GPU layer-copy shader.";
         return false;
@@ -10503,7 +10530,7 @@ static gs_texture_t *apply_gpu_mask(TitleGpuRenderSession *session,
         return layer_texture;
     if (!session->mask_effect)
         session->mask_effect = gs_effect_create(
-            kGpuMaskEffect, "obs-gsp-gpu-mask.effect", nullptr);
+            kGpuMaskEffect, "obs-bgs-gpu-mask.effect", nullptr);
     if (!session->mask_effect) {
         session->last_error = "Could not compile GPU mask shader.";
         return nullptr;
@@ -10763,7 +10790,7 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
         return false;
     if (!session->blend_effect)
         session->blend_effect = gs_effect_create(
-            kGpuFrameBlendEffect, "obs-gsp-gpu-frame-blend.effect", nullptr);
+            kGpuFrameBlendEffect, "obs-bgs-gpu-frame-blend.effect", nullptr);
     if (!session->blend_effect) {
         session->last_error = "Could not compile GPU frame-blend shader.";
         return false;
@@ -10792,7 +10819,7 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
 static bool gpu_cached_image_rect(const QImage &image, const Title &title,
                                   QRect &destination)
 {
-    return gsp::cache_frame_payload::resolve_placement(
+    return bgs::cache_frame_payload::resolve_placement(
         image, std::max(1, title.width), std::max(1, title.height),
         destination);
 }
@@ -10975,7 +11002,7 @@ static void evict_global_gpu_frame_cache_locked()
 }
 
 static std::string gpu_ram_tile_digest_key(
-    const gsp::cache_tile_payload::Tile &tile)
+    const bgs::cache_tile_payload::Tile &tile)
 {
     if (tile.digest.isEmpty())
         return std::string();
@@ -10983,7 +11010,7 @@ static std::string gpu_ram_tile_digest_key(
 }
 
 static bool acquire_gpu_ram_tile_locked(
-    const gsp::cache_tile_payload::Tile &tile, std::string &digest_key)
+    const bgs::cache_tile_payload::Tile &tile, std::string &digest_key)
 {
     digest_key = gpu_ram_tile_digest_key(tile);
     if (digest_key.empty() || tile.image.isNull() ||
@@ -11047,7 +11074,7 @@ static void release_acquired_gpu_ram_tiles_locked(
 
 static bool store_global_gpu_frame_tiles_locked(
     const std::string &cache_key,
-    const QVector<gsp::cache_tile_payload::Tile> &extracted,
+    const QVector<bgs::cache_tile_payload::Tile> &extracted,
     uint32_t canvas_width, uint32_t canvas_height)
 {
     if (cache_key.empty() || canvas_width == 0 || canvas_height == 0)
@@ -11300,7 +11327,7 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         }
         session->uploaded_final_serial = session->submitted_final_serial;
         if (TitlePreferences::cache_playback_logging_enabled()) {
-            OGS_LOG_INFO("CachePlayback", QStringLiteral(
+            BGL_LOG_INFO("CachePlayback", QStringLiteral(
                 "stage=gpu-upload-final serial=%1 texture=%2 textureSize=%3x%4 rect=%5,%6,%7x%8")
                 .arg(session->uploaded_final_serial)
                 .arg(reinterpret_cast<quintptr>(session->submitted_final_texture), 0, 16)
@@ -11317,7 +11344,7 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         }
         session->published_final_serial = session->uploaded_final_serial;
         if (TitlePreferences::cache_playback_logging_enabled()) {
-            OGS_LOG_INFO("CachePlayback", QStringLiteral(
+            BGL_LOG_INFO("CachePlayback", QStringLiteral(
                 "stage=gpu-publish-final serial=%1 rendered=%2 published=%3 presentationTarget=%4")
                 .arg(session->published_final_serial)
                 .arg(reinterpret_cast<quintptr>(rendered), 0, 16)
@@ -11855,7 +11882,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                 &text_failure);
             if (!gpu_text_prepared && !text_failure.empty() &&
                 TitlePreferences::cache_playback_logging_enabled()) {
-                OGS_LOG_WARNING("GpuText", QStringLiteral(
+                BGL_LOG_WARNING("GpuText", QStringLiteral(
                     "stage=phase12c-fallback layer=%1 reason=%2")
                     .arg(QString::fromStdString(layer.id),
                          QString::fromStdString(text_failure)));
@@ -12008,8 +12035,8 @@ bool title_gpu_frame_cache_store_image(
         canvas_width == 0 || canvas_height == 0)
         return false;
 
-    gsp::cache_frame_payload::Placement placement;
-    if (!gsp::cache_frame_payload::read_placement(sparse_image, placement)) {
+    bgs::cache_frame_payload::Placement placement;
+    if (!bgs::cache_frame_payload::read_placement(sparse_image, placement)) {
         if (sparse_image.width() != static_cast<int>(canvas_width) ||
             sparse_image.height() != static_cast<int>(canvas_height))
             return false;
@@ -12025,8 +12052,8 @@ bool title_gpu_frame_cache_store_image(
     /* Alpha scanning and hashing are CPU work. Complete them before taking the
      * OBS graphics context or the global cache mutex, otherwise a large frame
      * can stall live/editor presentation while its tiles are being analyzed. */
-    const QVector<gsp::cache_tile_payload::Tile> extracted =
-        gsp::cache_tile_payload::extract_nonempty_tiles(
+    const QVector<bgs::cache_tile_payload::Tile> extracted =
+        bgs::cache_tile_payload::extract_nonempty_tiles(
             sparse_image, placement, kGpuRamTileSize);
 
     obs_enter_graphics();
@@ -12203,7 +12230,7 @@ bool title_gpu_render_session_submit_final_frame(TitleGpuRenderSession *session,
     QRect destination;
     if (!gpu_cached_image_rect(image, title, destination)) {
         if (TitlePreferences::cache_playback_logging_enabled()) {
-            OGS_LOG_WARNING("CachePlayback", QStringLiteral(
+            BGL_LOG_WARNING("CachePlayback", QStringLiteral(
                 "stage=gpu-reject-final title=%1 image=%2x%3 canvas=%4x%5 reason=invalid-placement")
                 .arg(QString::fromStdString(title.id))
                 .arg(image.width()).arg(image.height())
@@ -12245,7 +12272,7 @@ bool title_gpu_render_session_submit_final_frame(TitleGpuRenderSession *session,
     session->submitted_final_pending = true;
     const uint64_t submission_serial = ++session->submitted_final_serial;
     if (TitlePreferences::cache_playback_logging_enabled()) {
-        OGS_LOG_INFO("CachePlayback", QStringLiteral(
+        BGL_LOG_INFO("CachePlayback", QStringLiteral(
             "stage=gpu-submit-final serial=%1 title=%2 modelRevision=%3 imageCacheKey=%4 size=%5x%6 rect=%7,%8,%9x%10")
             .arg(submission_serial)
             .arg(QString::fromStdString(title.id))
@@ -12272,7 +12299,7 @@ bool title_gpu_render_session_submit_cached_prefix(
     QRect destination;
     if (!gpu_cached_image_rect(cached_prefix, title, destination)) {
         if (TitlePreferences::cache_playback_logging_enabled()) {
-            OGS_LOG_WARNING("CachePlayback", QStringLiteral(
+            BGL_LOG_WARNING("CachePlayback", QStringLiteral(
                 "stage=gpu-reject-prefix title=%1 image=%2x%3 canvas=%4x%5 reason=invalid-placement")
                 .arg(QString::fromStdString(title.id))
                 .arg(cached_prefix.width()).arg(cached_prefix.height())
@@ -12484,7 +12511,7 @@ bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
     gs_effect_set_texture(image, texture);
     const uint64_t draw_serial = ++session->draw_serial;
     if (TitlePreferences::cache_playback_logging_enabled()) {
-        OGS_LOG_INFO("CachePlayback", QStringLiteral(
+        BGL_LOG_INFO("CachePlayback", QStringLiteral(
             "stage=gpu-draw title=%1 session=%2 drawSerial=%3 submittedSerial=%4 uploadedSerial=%5 publishedSerial=%6 texture=%7 output=%8x%9 dirty=%10 useSubmitted=%11")
             .arg(session->has_title
                      ? QString::fromStdString(session->title.id)
@@ -12674,7 +12701,7 @@ bool title_gpu_render_session_resolve_readback(
                             mapped + static_cast<size_t>(y) * linesize,
                             static_cast<size_t>(slot->width) * 4);
             }
-            gsp::cache_frame_payload::set_placement(
+            bgs::cache_frame_payload::set_placement(
                 result, slot->region.x(), slot->region.y(),
                 static_cast<int>(ticket.canvas_width),
                 static_cast<int>(ticket.canvas_height));
@@ -12903,7 +12930,7 @@ static gs_effect_t *scene_mask_effect_for_data(TitleSourceData *data)
     if (!data)
         return nullptr;
     if (!data->scene_mask_effect)
-        data->scene_mask_effect = gs_effect_create(kSceneMaskEffect, "obs-gsp-scene-mask.effect", nullptr);
+        data->scene_mask_effect = gs_effect_create(kSceneMaskEffect, "obs-bgs-scene-mask.effect", nullptr);
     return data->scene_mask_effect;
 }
 
@@ -13035,7 +13062,7 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
                                   ? "Unified GPU compositor could not render the title."
                                   : gpu_error.c_str()));
     if (!rendered) {
-        OGS_LOG_WARNING("GpuPipeline", QStringLiteral(
+        BGL_LOG_WARNING("GpuPipeline", QStringLiteral(
             "consumer=source action=draw-failed title=%1 failures=%2 error=%3")
             .arg(QString::fromStdString(title->id))
             .arg(data->consecutive_draw_failures + 1)
@@ -13123,10 +13150,10 @@ static obs_properties_t *source_get_properties(void *priv)
 
     /* Title selector */
     obs_property_t *p = obs_properties_add_list(
-        props, PROP_TITLE_ID, obsgs_tr_c("OBSTitles.TitleID"),
+        props, PROP_TITLE_ID, bgl_tr_c("OBSTitles.TitleID"),
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
-    obs_property_list_add_string(p, obsgs_tr_c("OBSTitles.NoTitle"), "");
+    obs_property_list_add_string(p, bgl_tr_c("OBSTitles.NoTitle"), "");
     for (auto &t : TitleDataStore::instance().titles())
         obs_property_list_add_string(p, t->name.c_str(), t->id.c_str());
     obs_property_set_modified_callback(p, source_title_property_modified);
@@ -13147,7 +13174,7 @@ static void source_get_defaults(obs_data_t *settings)
 void title_source_register()
 {
     static obs_source_info si = {};
-    si.id             = "obs_graphics_studio_pro_source";
+    si.id             = "broadcast_graphics_live_source";
     si.type           = OBS_SOURCE_TYPE_INPUT;
     si.output_flags   = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
     si.get_name       = source_get_name;
@@ -13166,5 +13193,5 @@ void title_source_register()
     si.get_defaults   = source_get_defaults;
 
     obs_register_source(&si);
-    blog(LOG_INFO, "[OBS Graphics Studio Pro] Source type registered.");
+    blog(LOG_INFO, "[Broadcast Graphics Live] Source type registered.");
 }

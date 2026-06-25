@@ -323,7 +323,7 @@ TextLayoutCache &shared_text_layout_cache()
 
 ImmutableTextLayout cached_text_layout(const TextLayoutRequest &request)
 {
-#if !defined(OBS_GSP_TEXT_LAYOUT_STANDALONE_TEST) && !defined(OBS_GSP_RICH_TEXT_STANDALONE_TEST)
+#if !defined(OBS_BGS_TEXT_LAYOUT_STANDALONE_TEST) && !defined(OBS_BGS_RICH_TEXT_STANDALONE_TEST)
     return shared_text_layout_cache().get_or_build(request, build_text_layout);
 #else
     (void)request;

@@ -33,6 +33,10 @@ enum class CanvasHelperColorRole {
     GraphicsSafe
 };
 
+bool autosave_enabled();
+void set_autosave_enabled(bool enabled);
+int autosave_interval_minutes();
+void set_autosave_interval_minutes(int minutes);
 bool cache_enabled();
 void set_cache_enabled(bool enabled);
 int cache_ram_limit_mb();

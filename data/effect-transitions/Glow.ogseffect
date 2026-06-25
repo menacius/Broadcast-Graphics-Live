@@ -1,9 +1,0 @@
-{
-  "format": "obs-gsp-effect-preset",
-  "version": 1,
-  "kind": "effect",
-  "id": "glow",
-  "name": "Glow",
-  "type": "glow",
-  "category": "Effects/Stylize"
-}

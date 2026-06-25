@@ -33,7 +33,7 @@
 #endif
 #if defined(ENABLE_WAYLAND) && QT_VERSION < QT_VERSION_CHECK(6, 9, 0) && \
     __has_include(<qpa/qplatformnativeinterface.h>)
-#define OBS_GSP_HAS_QPA_NATIVE_INTERFACE 1
+#define OBS_BGS_HAS_QPA_NATIVE_INTERFACE 1
 #include <qpa/qplatformnativeinterface.h>
 #endif
 #ifdef _WIN32
@@ -85,9 +85,9 @@ QColor editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole role)
 
 TitlePreferences::CanvasHelperColorRole snap_feedback_role_from_label(const QString &label)
 {
-    if (label == obsgs_tr("OBSTitles.ObjectEdge") ||
-        label == obsgs_tr("OBSTitles.ObjectCenter") ||
-        label == obsgs_tr("OBSTitles.Spacing")) {
+    if (label == bgl_tr("OBSTitles.ObjectEdge") ||
+        label == bgl_tr("OBSTitles.ObjectCenter") ||
+        label == bgl_tr("OBSTitles.Spacing")) {
         return TitlePreferences::CanvasHelperColorRole::ObjectSnapLines;
     }
     return TitlePreferences::CanvasHelperColorRole::CanvasSnapLines;
@@ -236,7 +236,7 @@ static bool canvas_qt_to_gs_window(QWindow *window, gs_window &gswindow)
 #ifdef ENABLE_WAYLAND
     case OBS_NIX_PLATFORM_WAYLAND:
 #if QT_VERSION < QT_VERSION_CHECK(6, 9, 0)
-#ifdef OBS_GSP_HAS_QPA_NATIVE_INTERFACE
+#ifdef OBS_BGS_HAS_QPA_NATIVE_INTERFACE
         if (QPlatformNativeInterface *native = QGuiApplication::platformNativeInterface())
             gswindow.display = native->nativeResourceForWindow("surface", window);
 #else
@@ -294,10 +294,10 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     });
     last_render_clock_.start();
 
-    QSettings adaptive_settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings adaptive_settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     adaptive_settings.beginGroup(QStringLiteral("titleEditor"));
     adaptive_rendering_enabled_ = adaptive_settings.value(
-        QString::fromUtf8(kEditorAdaptiveRenderingKey), true).toBool();
+        QString::fromUtf8(kEditorAdaptiveRenderingKey), false).toBool();
     const int saved_quality = adaptive_settings.value(
         QString::fromUtf8(kEditorAdaptiveQualityKey), 0).toInt();
     adaptive_quality_mode_ = static_cast<AdaptiveQualityMode>(std::clamp(saved_quality, 0, 5));
@@ -581,7 +581,7 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
             const std::string gpu_error = artwork_drawn
                 ? std::string()
                 : title_gpu_render_session_last_error(canvas->gpu_render_session_);
-            OGS_LOG_INFO("CachePlayback", QStringLiteral(
+            BGL_LOG_INFO("CachePlayback", QStringLiteral(
                 "consumer=editor-canvas stage=draw result=%1 output=%2x%3 rect=%4,%5,%6x%7 error=%8")
                 .arg(artwork_drawn ? QStringLiteral("ok") : QStringLiteral("failed"))
                 .arg(state.artwork_rect_px.width()).arg(state.artwork_rect_px.height())
@@ -837,7 +837,7 @@ void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
 void CanvasPreview::set_safe_guides_visible(bool visible)
 {
     safe_guides_visible_ = visible;
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
     settings.setValue(QString::fromUtf8(kEditorSafeGuidesVisibleKey), visible);
     settings.endGroup();
@@ -849,7 +849,7 @@ void CanvasPreview::set_safe_guides_visible(bool visible)
 
 void CanvasPreview::load_ruler_guide_settings()
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
     rulers_visible_ = settings.value(QString::fromUtf8(kEditorRulersVisibleKey), false).toBool();
     guides_visible_ = settings.value(QString::fromUtf8(kEditorGuidesVisibleKey), true).toBool();
@@ -863,7 +863,7 @@ void CanvasPreview::load_ruler_guide_settings()
 
 void CanvasPreview::save_ruler_guide_settings() const
 {
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
     settings.setValue(QString::fromUtf8(kEditorRulersVisibleKey), rulers_visible_);
     settings.setValue(QString::fromUtf8(kEditorGuidesVisibleKey), guides_visible_);
@@ -946,7 +946,23 @@ bool CanvasPreview::prepare_cached_playback_frame(double time)
         cacheability == TitleCacheability::NonCacheable)
         return true;
 
-    QImage cached = cache.requestFrame(title_, time, true);
+    const int cue_row = title_->current_cue_row;
+    const bool has_active_cue = cue_row >= 0 &&
+        cue_row < static_cast<int>(title_->live_text_rows.size());
+
+    /* Phase 14 prerenders normally live only in the GPU RAM tier. The old
+     * readiness gate checked QImage RAM/disk exclusively, so “Play after
+     * rendering” could wait forever while the exact frame was already ready
+     * and directly presentable on the GPU. */
+    const QString gpu_token = has_active_cue
+        ? cache.requestLiveCueFrameGpuToken(title_, cue_row, time, true)
+        : cache.requestFrameGpuToken(title_, time, true);
+    if (!gpu_token.isEmpty())
+        return true;
+
+    QImage cached = has_active_cue
+        ? cache.requestLiveCueFrame(title_, cue_row, time, true)
+        : cache.requestFrame(title_, time, true);
     if (cached.isNull())
         return false;
 
@@ -1014,7 +1030,7 @@ void CanvasPreview::set_adaptive_rendering_enabled(bool enabled)
     editor_quality_cache_.clear();
     if (adaptive_full_quality_timer_)
         adaptive_full_quality_timer_->stop();
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QStringLiteral("titleEditor"));
     settings.setValue(QString::fromUtf8(kEditorAdaptiveRenderingKey), enabled);
     settings.endGroup();
@@ -1031,7 +1047,7 @@ void CanvasPreview::set_adaptive_quality_mode(AdaptiveQualityMode mode)
     force_live_full_quality_render_ = false;
     if (adaptive_full_quality_timer_)
         adaptive_full_quality_timer_->stop();
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QStringLiteral("titleEditor"));
     settings.setValue(QString::fromUtf8(kEditorAdaptiveQualityKey), static_cast<int>(mode));
     settings.endGroup();
@@ -1196,7 +1212,7 @@ void CanvasPreview::set_checkerboard_pattern(int pattern)
 {
     checkerboard_pattern_ = std::clamp(pattern, 0, 5);
     invalidate_checkerboard_cache();
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kEditorLayoutSettingsGroup));
     settings.setValue(QString::fromUtf8(kEditorCanvasTransparencyKey), checkerboard_pattern_);
     settings.endGroup();
@@ -1211,6 +1227,7 @@ void CanvasPreview::set_selection_tool_active()
     active_tool_ = CanvasTool::Selection;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    color_picker_source_image_ = QImage();
     clear_path_point_selection();
     clear_corner_selection();
     invalidate_canvas_overlay_caches();
@@ -1298,6 +1315,12 @@ void CanvasPreview::set_color_picker_tool_active()
     active_tool_ = CanvasTool::ColorPicker;
     drawing_shape_ = false;
     color_picker_tooltip_visible_ = false;
+    /* Freeze the frame sampled by the eyedropper. Live preview may recolor the
+     * selected object, but subsequent mouse moves must continue sampling the
+     * original composite instead of feeding the preview color back into itself. */
+    if (dirty_)
+        render_to_frame();
+    color_picker_source_image_ = current_rendered_frame();
     clear_path_point_selection();
     clear_corner_selection();
     invalidate_canvas_overlay_caches();
@@ -1783,7 +1806,7 @@ bool CanvasPreview::ensure_direct_selection_path(const std::shared_ptr<Layer> &l
     if (!layer || !direct_selection_supported(*layer))
         return false;
     const bool already_path = layer->shape_type == ShapeType::Path;
-    if (!gsp::ensure_editable_path(*layer))
+    if (!bgs::ensure_editable_path(*layer))
         return false;
     if (!already_path) {
         dirty_ = true;
@@ -1834,7 +1857,7 @@ void CanvasPreview::draw_direct_selection_path(QPainter &p, const Layer &layer)
     if (active_tool_ != CanvasTool::DirectSelection || layer.shape_type != ShapeType::Path)
         return;
     const QRectF local_rect = layer_local_rect(layer);
-    QPainterPath local_path = gsp::layer_shape_path(layer, local_rect);
+    QPainterPath local_path = bgs::layer_shape_path(layer, local_rect);
     QPainterPath canvas_path = editor_layer_world_transform(title_, layer, playhead_).map(local_path);
     QTransform canvas_to_view_transform;
     canvas_to_view_transform.translate(view_origin().x(), view_origin().y());
@@ -1957,7 +1980,7 @@ void CanvasPreview::update_path_point_marquee(const QPointF &view_pt,
     selected_path_point_indices_ = std::move(next);
     clear_corner_selection(false);
     selected_corner_layer_id_ = layer->id;
-    const auto corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+    const auto corners = bgs::layer_live_corners(*layer, layer_local_rect(*layer));
     for (const auto &corner : corners) {
         if (selected_path_point_indices_.find(corner.point_index) != selected_path_point_indices_.end())
             selected_corner_indices_.insert(corner.point_index);
@@ -2013,7 +2036,7 @@ bool CanvasPreview::begin_direct_selection(const QPointF &view_pt, Qt::KeyboardM
             if (hit.mode == DragMode::PathAnchor) {
                 selected_corner_layer_id_ = layer->id;
                 selected_corner_indices_.clear();
-                const auto live_corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+                const auto live_corners = bgs::layer_live_corners(*layer, layer_local_rect(*layer));
                 for (const auto &corner : live_corners) {
                     if (selected_path_point_indices_.find(corner.point_index) != selected_path_point_indices_.end())
                         selected_corner_indices_.insert(corner.point_index);
@@ -2146,7 +2169,7 @@ void CanvasPreview::reframe_custom_path(Layer &layer, const std::vector<QPointF>
         return;
     QPainterPath geometry;
     geometry.setFillRule(Qt::OddEvenFill);
-    const auto subpaths = gsp::path_subpath_ranges(layer);
+    const auto subpaths = bgs::path_subpath_ranges(layer);
     for (const auto &[start, end] : subpaths) {
         if (end <= start)
             continue;
@@ -2236,9 +2259,9 @@ bool CanvasPreview::nudge_selected_path_points(double dx, double dy)
     const QPointF canvas_delta(dx, dy);
     for (size_t i = 0; i < layer->path_points.size(); ++i) {
         const BezierPathPoint &point = layer->path_points[i];
-        QPointF anchor = gsp::path_point_to_local(point, rect);
-        QPointF in_handle = gsp::path_in_handle_to_local(point, rect);
-        QPointF out_handle = gsp::path_out_handle_to_local(point, rect);
+        QPointF anchor = bgs::path_point_to_local(point, rect);
+        QPointF in_handle = bgs::path_in_handle_to_local(point, rect);
+        QPointF out_handle = bgs::path_out_handle_to_local(point, rect);
         if (selected_path_point_indices_.find((int)i) != selected_path_point_indices_.end()) {
             anchor = canvas_to_layer(*layer, layer_to_canvas(*layer, anchor) + canvas_delta);
             if (point.has_in)
@@ -2270,7 +2293,7 @@ void CanvasPreview::delete_selected_path_points()
     std::vector<BezierPathPoint> remaining;
     remaining.reserve(layer->path_points.size());
     const size_t minimum = layer->path_closed ? 3 : 2;
-    for (const auto &[start, end] : gsp::path_subpath_ranges(*layer)) {
+    for (const auto &[start, end] : bgs::path_subpath_ranges(*layer)) {
         const size_t contour_start = remaining.size();
         for (size_t i = start; i < end; ++i) {
             if (selected_path_point_indices_.find((int)i) == selected_path_point_indices_.end())
@@ -2303,9 +2326,9 @@ void CanvasPreview::delete_selected_path_points()
         has_in.reserve(layer->path_points.size());
         has_out.reserve(layer->path_points.size());
         for (const auto &point : layer->path_points) {
-            anchors.push_back(gsp::path_point_to_local(point, rect));
-            in_handles.push_back(gsp::path_in_handle_to_local(point, rect));
-            out_handles.push_back(gsp::path_out_handle_to_local(point, rect));
+            anchors.push_back(bgs::path_point_to_local(point, rect));
+            in_handles.push_back(bgs::path_in_handle_to_local(point, rect));
+            out_handles.push_back(bgs::path_out_handle_to_local(point, rect));
             has_in.push_back(point.has_in);
             has_out.push_back(point.has_out);
         }
@@ -2580,25 +2603,130 @@ bool CanvasPreview::apply_selected_text_gradient_fill(
     return true;
 }
 
-bool CanvasPreview::layer_supports_gradient_handles(const Layer &layer) const
+std::vector<CanvasPreview::GradientHandleTarget>
+CanvasPreview::gradient_handle_targets(const Layer &layer) const
 {
+    std::vector<GradientHandleTarget> targets;
     if (!gradient_handles_visible() || layer.locked || !layer.visible)
-        return false;
+        return targets;
     if (playhead_ < layer.in_time || playhead_ > layer.out_time)
-        return false;
-    if (is_canvas_text_layer(layer) && inline_text_layer_id_ == layer.id) {
-        RichTextFill fill;
-        return selected_text_fill(layer, fill) && fill.type == 1;
+        return targets;
+    if (!(layer.type == LayerType::SolidRect || layer.type == LayerType::Shape ||
+          is_canvas_text_layer(layer)))
+        return targets;
+
+    if (!is_canvas_text_layer(layer)) {
+        if (layer.fill_type != 1)
+            return targets;
+        GradientHandleTarget target;
+        target.kind = GradientHandleTarget::Kind::LayerFill;
+        target.fill.type = layer.fill_type;
+        target.fill.gradient_type = layer.gradient_type;
+        target.fill.gradient_center_x = layer.gradient_center_x;
+        target.fill.gradient_center_y = layer.gradient_center_y;
+        target.fill.gradient_focal_x = layer.gradient_focal_x;
+        target.fill.gradient_focal_y = layer.gradient_focal_y;
+        target.fill.gradient_scale = layer.gradient_scale;
+        target.fill.gradient_angle = layer.gradient_angle;
+        targets.push_back(std::move(target));
+        return targets;
     }
-    return layer.fill_type == 1 &&
-           (layer.type == LayerType::SolidRect ||
-            layer.type == LayerType::Shape || is_canvas_text_layer(layer));
+
+    const double local_time = std::max(0.0, playhead_ - layer.in_time);
+    RichTextDocument source = layer.rich_text.empty()
+        ? rich_text_document_from_layer_defaults(layer)
+        : layer.rich_text;
+    RichTextDocument effective = rich_text_document_for_editor_time(layer, local_time);
+    effective = rich_text_effective_document_for_editor(effective);
+    effective.normalize();
+
+    size_t selection_start = 0;
+    size_t selection_end = 0;
+    bool isolate_uniform_selection = false;
+    if (inline_text_layer_id_ == layer.id) {
+        selection_start = std::min(source.selection.anchor, source.selection.head);
+        selection_end = std::max(source.selection.anchor, source.selection.head);
+        selection_start = std::min(selection_start, effective.plain_text.size());
+        selection_end = std::min(selection_end, effective.plain_text.size());
+        if (selection_end > selection_start) {
+            RichTextFill selected_fill;
+            if (selected_text_fill(layer, selected_fill) && selected_fill.type == 1) {
+                GradientHandleTarget target;
+                target.kind = GradientHandleTarget::Kind::TextFillRanges;
+                target.fill = selected_fill;
+                target.text_ranges.push_back({selection_start, selection_end - selection_start});
+                target.selection_target = true;
+                targets.push_back(std::move(target));
+                isolate_uniform_selection = true;
+            }
+        }
+    }
+
+    const size_t text_len = effective.plain_text.size();
+    if (text_len == 0)
+        return targets;
+
+    std::vector<size_t> boundaries{0, text_len};
+    for (const RichTextRange &range : effective.ranges) {
+        const size_t range_start = std::min(range.start, text_len);
+        const size_t range_end = std::min(text_len, range_start +
+            std::min(range.length, text_len - range_start));
+        boundaries.push_back(range_start);
+        boundaries.push_back(range_end);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+
+    auto append_range = [&](size_t range_start, size_t range_end,
+                            const RichTextFill &fill) {
+        if (fill.type != 1 || range_end <= range_start)
+            return;
+        for (GradientHandleTarget &existing : targets) {
+            if (existing.selection_target ||
+                existing.kind != GradientHandleTarget::Kind::TextFillRanges)
+                continue;
+            if (rich_text_fills_equal(existing.fill, fill)) {
+                existing.text_ranges.push_back({range_start, range_end - range_start});
+                return;
+            }
+        }
+        GradientHandleTarget target;
+        target.kind = GradientHandleTarget::Kind::TextFillRanges;
+        target.fill = fill;
+        target.text_ranges.push_back({range_start, range_end - range_start});
+        targets.push_back(std::move(target));
+    };
+
+    for (size_t i = 0; i + 1 < boundaries.size(); ++i) {
+        const size_t segment_start = boundaries[i];
+        const size_t segment_end = boundaries[i + 1];
+        if (segment_end <= segment_start)
+            continue;
+        const RichTextFill fill = rich_text_format_at(effective, segment_start).fill;
+        if (isolate_uniform_selection && segment_start < selection_end && segment_end > selection_start) {
+            append_range(segment_start, std::min(segment_end, selection_start), fill);
+            append_range(std::max(segment_start, selection_end), segment_end, fill);
+        } else {
+            append_range(segment_start, segment_end, fill);
+        }
+    }
+    for (size_t i = 0; i < targets.size(); ++i)
+        targets[i].display_index = i;
+    return targets;
 }
 
-CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(const Layer &layer) const
+bool CanvasPreview::layer_supports_gradient_handles(const Layer &layer) const
+{
+    return !gradient_handle_targets(layer).empty();
+}
+
+CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(
+    const Layer &layer, const GradientHandleTarget &target) const
 {
     GradientHandleGeometry g;
-    if (!layer_supports_gradient_handles(layer))
+    if (!gradient_handles_visible() || layer.locked || !layer.visible)
+        return g;
+    if (playhead_ < layer.in_time || playhead_ > layer.out_time)
         return g;
 
     QRectF box = layer_local_rect(layer);
@@ -2607,20 +2735,12 @@ CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(co
     if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
         return g;
 
-    RichTextFill fill;
-    const bool inline_text_fill = selected_text_fill(layer, fill);
-    if (!inline_text_fill) {
-        fill.type = layer.fill_type;
-        fill.gradient_type = layer.gradient_type;
-        fill.gradient_center_x = layer.gradient_center_x;
-        fill.gradient_center_y = layer.gradient_center_y;
-        fill.gradient_focal_x = layer.gradient_focal_x;
-        fill.gradient_focal_y = layer.gradient_focal_y;
-        fill.gradient_scale = layer.gradient_scale;
-        fill.gradient_angle = layer.gradient_angle;
-    }
+    const RichTextFill &fill = target.fill;
+    if (fill.type != 1)
+        return g;
 
     g.valid = true;
+    g.target = target;
     g.radial = fill.gradient_type == 1;
     g.local_rect = box;
     g.center = QPointF(box.left() + (double)fill.gradient_center_x * box.width(),
@@ -2647,95 +2767,143 @@ CanvasPreview::GradientHandleGeometry CanvasPreview::gradient_handle_geometry(co
     return g;
 }
 
-CanvasPreview::DragMode CanvasPreview::hit_test_gradient_handles(const Layer &layer, const QPointF &view_pt) const
+CanvasPreview::DragMode CanvasPreview::hit_test_gradient_handles(
+    const Layer &layer, const QPointF &view_pt, GradientHandleTarget *target) const
 {
-    GradientHandleGeometry g = gradient_handle_geometry(layer);
-    if (!g.valid)
-        return DragMode::None;
+    const std::vector<GradientHandleTarget> targets = gradient_handle_targets(layer);
+    DragMode best_mode = DragMode::None;
+    double best_score = std::numeric_limits<double>::max();
+    GradientHandleTarget best_target;
 
-    auto near_local = [&](const QPointF &local, double radius = CANVAS_CONTROL_HIT_RADIUS_PX) {
+    auto consider = [&](const GradientHandleGeometry &g, const QPointF &local,
+                        double radius, DragMode mode) {
         const QPointF view = canvas_to_view(layer_to_canvas(layer, local));
-        return QLineF(view_pt, view).length() <= radius;
+        const double distance = QLineF(view_pt, view).length();
+        const size_t display_index = g.target.display_index;
+        const double visual_radius = radius + (double)display_index * 1.75;
+        if (distance > visual_radius + 2.5)
+            return;
+        /* Multiple text gradients commonly start with identical geometry. Their
+         * handles are drawn as concentric rings; scoring against each ring lets
+         * the user select an otherwise perfectly overlapping controller. */
+        const double score = display_index == 0
+            ? distance
+            : std::min(distance, std::abs(distance - visual_radius) + 0.25);
+        if (score < best_score) {
+            best_score = score;
+            best_mode = mode;
+            best_target = g.target;
+        }
     };
 
-    if (g.radial) {
-        if (near_local(g.focal, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2)) return DragMode::GradientFocal;
-        if (near_local(g.radius, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2)) return DragMode::GradientRadius;
-        if (near_local(g.center, CANVAS_CONTROL_HIT_RADIUS_PX * 1.35)) return DragMode::GradientCenter;
-    } else {
-        if (near_local(g.start, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2)) return DragMode::GradientStart;
-        if (near_local(g.end, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2)) return DragMode::GradientEnd;
-        if (near_local(g.center, CANVAS_CONTROL_HIT_RADIUS_PX * 1.35)) return DragMode::GradientCenter;
+    for (size_t target_index = 0; target_index < targets.size(); ++target_index) {
+        const GradientHandleTarget &candidate = targets[target_index];
+        const GradientHandleGeometry g = gradient_handle_geometry(layer, candidate);
+        if (!g.valid)
+            continue;
+        if (g.radial) {
+            consider(g, g.focal, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2,
+                     DragMode::GradientFocal);
+            consider(g, g.radius, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2,
+                     DragMode::GradientRadius);
+            consider(g, g.center, CANVAS_CONTROL_HIT_RADIUS_PX * 1.35,
+                     DragMode::GradientCenter);
+        } else {
+            consider(g, g.start, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2,
+                     DragMode::GradientStart);
+            consider(g, g.end, CANVAS_CONTROL_HIT_RADIUS_PX * 1.2,
+                     DragMode::GradientEnd);
+            consider(g, g.center, CANVAS_CONTROL_HIT_RADIUS_PX * 1.35,
+                     DragMode::GradientCenter);
+        }
     }
-    return DragMode::None;
+
+    if (target && best_mode != DragMode::None)
+        *target = std::move(best_target);
+    return best_mode;
 }
 
 void CanvasPreview::draw_gradient_handles(QPainter &p, const Layer &layer)
 {
-    GradientHandleGeometry g = gradient_handle_geometry(layer);
-    if (!g.valid)
+    std::vector<GradientHandleTarget> targets;
+    if (gradient_drag_.active && gradient_drag_.layer_id == layer.id) {
+        GradientHandleTarget active_target = gradient_drag_.target;
+        active_target.fill = gradient_drag_.fill;
+        targets.push_back(std::move(active_target));
+    } else {
+        targets = gradient_handle_targets(layer);
+    }
+    if (targets.empty())
         return;
 
-    auto to_view = [&](const QPointF &local) {
-        return canvas_to_view(layer_to_canvas(layer, local));
-    };
-    auto draw_handle = [&](const QPointF &view_pt, const QColor &fill, double radius = CANVAS_GRADIENT_HANDLE_RADIUS_PX) {
-        p.setPen(QPen(QColor(10, 10, 10, 210), 3.0));
-        p.setBrush(fill);
-        p.drawEllipse(view_pt, radius, radius);
-        p.setPen(QPen(QColor(255, 255, 255, 235), 1.0));
-        p.drawEllipse(view_pt, radius, radius);
-    };
-
-    const QPointF center = to_view(g.center);
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen guide_pen(QColor(255, 255, 255, 215), 1.4, Qt::SolidLine);
-    guide_pen.setCosmetic(true);
-    p.setPen(guide_pen);
-    p.setBrush(Qt::NoBrush);
+    for (size_t draw_index = targets.size(); draw_index-- > 0;) {
+        const size_t target_index = draw_index;
+        const GradientHandleGeometry g = gradient_handle_geometry(layer, targets[target_index]);
+        if (!g.valid)
+            continue;
 
-    if (g.radial) {
-        const QPointF radius = to_view(g.radius);
-        const QPointF focal = to_view(g.focal);
-        p.drawLine(center, radius);
-        QPen focal_pen(QColor(255, 215, 80, 210), 1.2, Qt::DashLine);
-        focal_pen.setCosmetic(true);
-        p.setPen(focal_pen);
-        p.drawLine(center, focal);
-        draw_handle(center, QColor(0, 145, 255));
-        draw_handle(radius, QColor(255, 255, 255));
-        draw_handle(focal, QColor(255, 210, 60), CANVAS_GRADIENT_HANDLE_RADIUS_PX - 0.5);
-    } else {
-        const QPointF start = to_view(g.start);
-        const QPointF end = to_view(g.end);
-        p.drawLine(start, end);
-        draw_handle(start, QColor(255, 255, 255));
-        draw_handle(end, QColor(255, 255, 255));
-        draw_handle(center, QColor(0, 145, 255));
+        auto to_view = [&](const QPointF &local) {
+            return canvas_to_view(layer_to_canvas(layer, local));
+        };
+        const size_t display_index = targets[target_index].display_index;
+        const QColor controller_color = display_index == 0
+            ? QColor(0, 145, 255)
+            : QColor::fromHsv((205 + (int)display_index * 67) % 360, 190, 245);
+        const double handle_radius_offset = (double)display_index * 1.75;
+        auto draw_handle = [&](const QPointF &view_point, const QColor &fill,
+                               double radius = CANVAS_GRADIENT_HANDLE_RADIUS_PX) {
+            radius += handle_radius_offset;
+            p.setPen(QPen(controller_color, 2.5));
+            p.setBrush(fill);
+            p.drawEllipse(view_point, radius, radius);
+            p.setPen(QPen(QColor(255, 255, 255, 235), 1.0));
+            p.drawEllipse(view_point, radius, radius);
+        };
+
+        const QPointF center = to_view(g.center);
+        QPen guide_pen(controller_color, 1.5, Qt::SolidLine);
+        guide_pen.setCosmetic(true);
+        p.setPen(guide_pen);
+        p.setBrush(Qt::NoBrush);
+
+        if (g.radial) {
+            const QPointF radius = to_view(g.radius);
+            const QPointF focal = to_view(g.focal);
+            p.drawLine(center, radius);
+            QPen focal_pen(controller_color.lighter(125), 1.2, Qt::DashLine);
+            focal_pen.setCosmetic(true);
+            p.setPen(focal_pen);
+            p.drawLine(center, focal);
+            draw_handle(center, controller_color);
+            draw_handle(radius, QColor(255, 255, 255));
+            draw_handle(focal, controller_color.lighter(135),
+                        CANVAS_GRADIENT_HANDLE_RADIUS_PX - 0.5);
+        } else {
+            const QPointF start = to_view(g.start);
+            const QPointF end = to_view(g.end);
+            p.drawLine(start, end);
+            draw_handle(start, QColor(255, 255, 255));
+            draw_handle(end, QColor(255, 255, 255));
+            draw_handle(center, controller_color);
+        }
     }
     p.restore();
 }
 
-void CanvasPreview::begin_gradient_drag(const Layer &layer)
+void CanvasPreview::begin_gradient_drag(const Layer &layer,
+                                        const GradientHandleTarget &target)
 {
-    GradientHandleGeometry g = gradient_handle_geometry(layer);
+    const GradientHandleGeometry g = gradient_handle_geometry(layer, target);
     gradient_drag_ = GradientDragState{};
     if (!g.valid)
         return;
 
     gradient_drag_.active = true;
-    gradient_drag_.inline_text = selected_text_fill(layer, gradient_drag_.fill);
-    if (!gradient_drag_.inline_text) {
-        gradient_drag_.fill.type = layer.fill_type;
-        gradient_drag_.fill.gradient_type = layer.gradient_type;
-        gradient_drag_.fill.gradient_center_x = layer.gradient_center_x;
-        gradient_drag_.fill.gradient_center_y = layer.gradient_center_y;
-        gradient_drag_.fill.gradient_focal_x = layer.gradient_focal_x;
-        gradient_drag_.fill.gradient_focal_y = layer.gradient_focal_y;
-        gradient_drag_.fill.gradient_scale = layer.gradient_scale;
-        gradient_drag_.fill.gradient_angle = layer.gradient_angle;
-    }
+    gradient_drag_.layer_id = layer.id;
+    gradient_drag_.target = target;
+    gradient_drag_.fill = target.fill;
     gradient_drag_.radial = g.radial;
     gradient_drag_.local_rect = g.local_rect;
     gradient_drag_.center = g.center;
@@ -2749,6 +2917,48 @@ void CanvasPreview::begin_gradient_drag(const Layer &layer)
     gradient_drag_.focal_y = gradient_drag_.fill.gradient_focal_y;
     gradient_drag_.scale = gradient_drag_.fill.gradient_scale;
     gradient_drag_.angle = gradient_drag_.fill.gradient_angle;
+}
+
+bool CanvasPreview::apply_gradient_target_fill(
+    Layer &layer, const GradientHandleTarget &target, const RichTextFill &fill)
+{
+    if (target.kind == GradientHandleTarget::Kind::LayerFill) {
+        layer.fill_type = 1;
+        layer.gradient_type = fill.gradient_type;
+        layer.gradient_center_x = fill.gradient_center_x;
+        layer.gradient_center_y = fill.gradient_center_y;
+        layer.gradient_focal_x = fill.gradient_focal_x;
+        layer.gradient_focal_y = fill.gradient_focal_y;
+        layer.gradient_scale = fill.gradient_scale;
+        layer.gradient_angle = fill.gradient_angle;
+        return true;
+    }
+
+    if (!is_canvas_text_layer(layer))
+        return false;
+    if (target.selection_target)
+        return apply_selected_text_gradient_fill(layer, fill);
+
+    if (layer.rich_text.empty())
+        layer.rich_text = rich_text_document_from_layer_defaults(layer);
+    RichTextCharFormat format;
+    format.fill = fill;
+    if (target.text_ranges.empty()) {
+        layer.rich_text.default_format.fill = fill;
+        if (layer.rich_text.has_typing_format) {
+            layer.rich_text.typing_format.fill = fill;
+            layer.rich_text.typing_format_mask |= RichTextCharFillColor;
+        }
+    } else {
+        for (const auto &[range_start, range_length] : target.text_ranges) {
+            if (range_length == 0)
+                continue;
+            rich_text_document_apply_format(layer.rich_text, range_start, range_length,
+                                            format, RichTextCharFillColor);
+        }
+    }
+    rich_text_document_sync_layer_mirrors(layer);
+    return true;
 }
 
 bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
@@ -2768,7 +2978,10 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
     if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
         return false;
 
-    const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
+    const QPointF snapped_canvas = snap_canvas_point(view_to_canvas(view_pt), true, true,
+                                                     allow_snap);
+    const QPointF local = canvas_to_layer(*layer, snapped_canvas);
     auto normalized = [&](const QPointF &pt) {
         return QPointF((pt.x() - box.left()) / box.width(),
                        (pt.y() - box.top()) / box.height());
@@ -2797,7 +3010,6 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         fill.gradient_scale = (float)std::clamp(distance / base, 0.01, 100.0);
     };
 
-    clear_snap_feedback();
     if (drag_mode_ == DragMode::GradientCenter) {
         const QPointF delta = local - gradient_drag_.center;
         assign_center(gradient_drag_.center + delta);
@@ -2821,16 +3033,10 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
         assign_axis(gradient_drag_.start, local);
     }
 
-    if (gradient_drag_.inline_text) {
-        apply_selected_text_gradient_fill(*layer, fill);
-    } else {
-        layer->gradient_center_x = fill.gradient_center_x;
-        layer->gradient_center_y = fill.gradient_center_y;
-        layer->gradient_focal_x = fill.gradient_focal_x;
-        layer->gradient_focal_y = fill.gradient_focal_y;
-        layer->gradient_scale = fill.gradient_scale;
-        layer->gradient_angle = fill.gradient_angle;
-    }
+    if (!apply_gradient_target_fill(*layer, gradient_drag_.target, fill))
+        return false;
+    gradient_drag_.fill = fill;
+    gradient_drag_.target.fill = fill;
 
     begin_adaptive_interaction();
     dirty_ = true;
@@ -2842,12 +3048,14 @@ bool CanvasPreview::apply_gradient_drag(const QPointF &view_pt, Qt::KeyboardModi
 }
 
 
-bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::KeyboardModifiers modifiers)
+bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt,
+                                             Qt::KeyboardModifiers modifiers)
 {
     auto layer = selected_layer();
     if (!layer || layer->locked || !layer->visible)
         return false;
-    if (!(layer->type == LayerType::SolidRect || layer->type == LayerType::Shape || is_canvas_text_layer(*layer)))
+    if (!(layer->type == LayerType::SolidRect || layer->type == LayerType::Shape ||
+          is_canvas_text_layer(*layer)))
         return false;
 
     QRectF box = layer_local_rect(*layer);
@@ -2856,17 +3064,35 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
     if (!box.isValid() || box.width() <= 0.0 || box.height() <= 0.0)
         return false;
 
+    GradientHandleTarget target;
     RichTextFill fill;
     const bool inline_text_fill =
         is_canvas_text_layer(*layer) && inline_text_layer_id_ == layer->id;
-    if (inline_text_fill) {
-        const double local_time = std::max(0.0, playhead_ - layer->in_time);
-        const RichTextCharFormatSummary summary =
-            summarize_rich_text_char_format(*layer, true, local_time);
-        fill = summary.valid ? summary.format.fill
-                             : rich_text_effective_typing_format(layer->rich_text).fill;
-    }
-    if (!inline_text_fill) {
+    if (is_canvas_text_layer(*layer)) {
+        target.kind = GradientHandleTarget::Kind::TextFillRanges;
+        if (inline_text_fill) {
+            const double local_time = std::max(0.0, playhead_ - layer->in_time);
+            const RichTextCharFormatSummary summary =
+                summarize_rich_text_char_format(*layer, true, local_time);
+            fill = summary.valid ? summary.format.fill
+                                 : rich_text_effective_typing_format(layer->rich_text).fill;
+            const size_t selection_start = std::min(layer->rich_text.selection.anchor,
+                                                    layer->rich_text.selection.head);
+            const size_t selection_end = std::max(layer->rich_text.selection.anchor,
+                                                  layer->rich_text.selection.head);
+            if (selection_end > selection_start)
+                target.text_ranges.push_back({selection_start, selection_end - selection_start});
+            target.selection_target = true;
+        } else {
+            RichTextDocument doc = layer->rich_text.empty()
+                ? rich_text_document_from_layer_defaults(*layer)
+                : layer->rich_text;
+            fill = doc.default_format.fill;
+            if (!doc.plain_text.empty())
+                target.text_ranges.push_back({0, doc.plain_text.size()});
+        }
+    } else {
+        target.kind = GradientHandleTarget::Kind::LayerFill;
         fill.type = layer->fill_type;
         fill.gradient_type = layer->gradient_type;
         fill.gradient_center_x = layer->gradient_center_x;
@@ -2876,18 +3102,23 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
         fill.gradient_scale = layer->gradient_scale;
         fill.gradient_angle = layer->gradient_angle;
     }
+
     fill.type = 1;
     if (fill.gradient_type < 0 || fill.gradient_type > 2)
         fill.gradient_type = 0;
-    const QPointF local = canvas_to_layer(*layer, view_to_canvas(view_pt));
+    const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
+    const QPointF snapped_canvas = snap_canvas_point(view_to_canvas(view_pt), true, true,
+                                                     allow_snap);
+    const QPointF local = canvas_to_layer(*layer, snapped_canvas);
     gradient_tool_dragging_ = true;
     gradient_tool_start_local_ = local;
     drag_start_selection_bounds_ = selected_canvas_bounds();
-    drag_mode_ = fill.gradient_type == 1 ? DragMode::GradientRadius : DragMode::GradientEnd;
+    drag_mode_ = fill.gradient_type == 1 ? DragMode::GradientRadius
+                                         : DragMode::GradientEnd;
 
-    auto normalized = [&](const QPointF &pt) {
-        return QPointF((pt.x() - box.left()) / box.width(),
-                       (pt.y() - box.top()) / box.height());
+    auto normalized = [&](const QPointF &point) {
+        return QPointF((point.x() - box.left()) / box.width(),
+                       (point.y() - box.top()) / box.height());
     };
     const QPointF n = normalized(local);
     fill.gradient_center_x = (float)n.x();
@@ -2895,22 +3126,13 @@ bool CanvasPreview::begin_gradient_tool_drag(const QPointF &view_pt, Qt::Keyboar
     fill.gradient_focal_x = (float)n.x();
     fill.gradient_focal_y = (float)n.y();
     fill.gradient_scale = 0.01f;
-    fill.gradient_angle = modifiers.testFlag(Qt::ShiftModifier) ? 0.0f : fill.gradient_angle;
+    fill.gradient_angle = modifiers.testFlag(Qt::ShiftModifier) ? 0.0f
+                                                                 : fill.gradient_angle;
+    target.fill = fill;
+    if (!apply_gradient_target_fill(*layer, target, fill))
+        return false;
 
-    if (inline_text_fill) {
-        apply_selected_text_gradient_fill(*layer, fill);
-    } else {
-        layer->fill_type = fill.type;
-        layer->gradient_type = fill.gradient_type;
-        layer->gradient_center_x = fill.gradient_center_x;
-        layer->gradient_center_y = fill.gradient_center_y;
-        layer->gradient_focal_x = fill.gradient_focal_x;
-        layer->gradient_focal_y = fill.gradient_focal_y;
-        layer->gradient_scale = fill.gradient_scale;
-        layer->gradient_angle = fill.gradient_angle;
-    }
-
-    begin_gradient_drag(*layer);
+    begin_gradient_drag(*layer, target);
     begin_adaptive_interaction();
     dirty_ = true;
     drag_changed_ = true;
@@ -2926,7 +3148,7 @@ bool CanvasPreview::layer_supports_corner_radius_handles(const Layer &layer) con
         return false;
     if (playhead_ < layer.in_time || playhead_ > layer.out_time)
         return false;
-    return !gsp::layer_live_corners(layer, layer_local_rect(layer)).empty();
+    return !bgs::layer_live_corners(layer, layer_local_rect(layer)).empty();
 }
 
 void CanvasPreview::notify_corner_context_changed()
@@ -2950,7 +3172,7 @@ void CanvasPreview::clear_corner_selection(bool notify)
 std::vector<int> CanvasPreview::corner_indices_for_layer(const Layer &layer, bool selected_only) const
 {
     std::vector<int> result;
-    const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+    const auto corners = bgs::layer_live_corners(layer, layer_local_rect(layer));
     result.reserve(corners.size());
     for (const auto &corner : corners) {
         if (selected_only &&
@@ -2965,15 +3187,15 @@ std::vector<int> CanvasPreview::corner_indices_for_layer(const Layer &layer, boo
 std::vector<int> CanvasPreview::mapped_corner_indices(const Layer &source, const Layer &target,
                                                        const std::vector<int> &source_indices) const
 {
-    const auto source_corners = gsp::layer_live_corners(source, layer_local_rect(source));
-    const auto target_corners = gsp::layer_live_corners(target, layer_local_rect(target));
+    const auto source_corners = bgs::layer_live_corners(source, layer_local_rect(source));
+    const auto target_corners = bgs::layer_live_corners(target, layer_local_rect(target));
     std::vector<int> result;
     if (source_corners.empty() || target_corners.empty() || source_indices.empty())
         return result;
 
     for (int source_index : source_indices) {
         auto source_it = std::find_if(source_corners.begin(), source_corners.end(),
-            [source_index](const gsp::LiveCornerGeometry &corner) {
+            [source_index](const bgs::LiveCornerGeometry &corner) {
                 return corner.point_index == source_index;
             });
         if (source_it == source_corners.end())
@@ -2981,7 +3203,7 @@ std::vector<int> CanvasPreview::mapped_corner_indices(const Layer &source, const
         const size_t source_position = (size_t)std::distance(source_corners.begin(), source_it);
 
         auto exact = std::find_if(target_corners.begin(), target_corners.end(),
-            [source_index](const gsp::LiveCornerGeometry &corner) {
+            [source_index](const bgs::LiveCornerGeometry &corner) {
                 return corner.point_index == source_index;
             });
         if (source_corners.size() == target_corners.size() && exact != target_corners.end()) {
@@ -3096,7 +3318,7 @@ double CanvasPreview::corner_control_bevel_roundness(bool *mixed) const
 }
 
 QPointF CanvasPreview::corner_radius_handle_view_pos(const Layer &layer,
-                                                     const gsp::LiveCornerGeometry &corner) const
+                                                     const bgs::LiveCornerGeometry &corner) const
 {
     constexpr double kCornerRadiusHandleOffsetPx = 20.0;
     const QPointF toward_previous = corner.previous - corner.anchor;
@@ -3137,7 +3359,7 @@ int CanvasPreview::hit_test_corner_radius_handle_index(const Layer &layer, const
 {
     if (!layer_supports_corner_radius_handles(layer))
         return -1;
-    const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+    const auto corners = bgs::layer_live_corners(layer, layer_local_rect(layer));
     double best_distance = CANVAS_CONTROL_HIT_RADIUS_PX * 1.5;
     int best_index = -1;
     for (const auto &corner : corners) {
@@ -3208,7 +3430,7 @@ void CanvasPreview::set_corner_radius_value(Layer &layer, int point_index, doubl
     radius = std::max(0.0, radius);
     if (layer.shape_type == ShapeType::Path) {
         if (affect_group) {
-            const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+            const auto corners = bgs::layer_live_corners(layer, layer_local_rect(layer));
             for (const auto &corner : corners) {
                 if (corner.point_index >= 0 && (size_t)corner.point_index < layer.path_points.size())
                     layer.path_points[(size_t)corner.point_index].corner_radius = radius;
@@ -3265,7 +3487,7 @@ void CanvasPreview::set_corner_control_radius(double radius)
         if (selected_only && layer->shape_type != ShapeType::Path &&
             layer->shape_type != ShapeType::Rectangle &&
             layer->shape_type != ShapeType::RoundedRectangle) {
-            if (gsp::ensure_editable_path(*layer))
+            if (bgs::ensure_editable_path(*layer))
                 indices = mapped_corner_indices(*source, *layer, source_indices);
         }
         for (int index : indices)
@@ -3290,7 +3512,7 @@ void CanvasPreview::set_corner_control_sync(bool enabled)
             continue;
         layer->corner_radius_locked = enabled;
         if (enabled) {
-            const auto corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
+            const auto corners = bgs::layer_live_corners(*layer, layer_local_rect(*layer));
             if (!corners.empty()) {
                 const double radius = corner_radius_value(*layer, corners.front().point_index);
                 for (const auto &corner : corners)
@@ -3397,9 +3619,9 @@ void collect_path_local_geometry(const Layer &layer, const QRectF &rect,
     has_in.reserve(layer.path_points.size());
     has_out.reserve(layer.path_points.size());
     for (const BezierPathPoint &point : layer.path_points) {
-        anchors.push_back(gsp::path_point_to_local(point, rect));
-        in_handles.push_back(gsp::path_in_handle_to_local(point, rect));
-        out_handles.push_back(gsp::path_out_handle_to_local(point, rect));
+        anchors.push_back(bgs::path_point_to_local(point, rect));
+        in_handles.push_back(bgs::path_in_handle_to_local(point, rect));
+        out_handles.push_back(bgs::path_out_handle_to_local(point, rect));
         has_in.push_back(point.has_in);
         has_out.push_back(point.has_out);
     }
@@ -3488,7 +3710,7 @@ void CanvasPreview::convert_selected_points_to_smooth()
     if (!point_controls_available() || !layer || layer->path_points.size() < 2)
         return;
     const QRectF rect = layer_local_rect(*layer);
-    const auto subpaths = gsp::path_subpath_ranges(*layer);
+    const auto subpaths = bgs::path_subpath_ranges(*layer);
     for (int selected : selected_path_point_indices_) {
         if (selected < 0 || (size_t)selected >= layer->path_points.size()) continue;
         const size_t i = (size_t)selected;
@@ -3508,26 +3730,26 @@ void CanvasPreview::convert_selected_points_to_smooth()
         const bool has_next = layer->path_closed || local_index + 1 < count;
         const size_t previous = start_index + ((local_index + count - 1) % count);
         const size_t next = start_index + ((local_index + 1) % count);
-        const QPointF anchor = gsp::path_point_to_local(point, rect);
+        const QPointF anchor = bgs::path_point_to_local(point, rect);
         QPointF direction;
         if (has_previous && has_next) {
-            direction = gsp::path_point_to_local(layer->path_points[next], rect) -
-                        gsp::path_point_to_local(layer->path_points[previous], rect);
+            direction = bgs::path_point_to_local(layer->path_points[next], rect) -
+                        bgs::path_point_to_local(layer->path_points[previous], rect);
         } else if (has_next) {
-            direction = gsp::path_point_to_local(layer->path_points[next], rect) - anchor;
+            direction = bgs::path_point_to_local(layer->path_points[next], rect) - anchor;
         } else if (has_previous) {
-            direction = anchor - gsp::path_point_to_local(layer->path_points[previous], rect);
+            direction = anchor - bgs::path_point_to_local(layer->path_points[previous], rect);
         }
         const double direction_length = std::hypot(direction.x(), direction.y());
         if (direction_length <= 1e-9)
             continue;
         const QPointF unit = direction / direction_length;
-        double in_length = point.has_in ? QLineF(anchor, gsp::path_in_handle_to_local(point, rect)).length() : 0.0;
-        double out_length = point.has_out ? QLineF(anchor, gsp::path_out_handle_to_local(point, rect)).length() : 0.0;
+        double in_length = point.has_in ? QLineF(anchor, bgs::path_in_handle_to_local(point, rect)).length() : 0.0;
+        double out_length = point.has_out ? QLineF(anchor, bgs::path_out_handle_to_local(point, rect)).length() : 0.0;
         if (has_previous && in_length <= 1e-6)
-            in_length = QLineF(anchor, gsp::path_point_to_local(layer->path_points[previous], rect)).length() / 3.0;
+            in_length = QLineF(anchor, bgs::path_point_to_local(layer->path_points[previous], rect)).length() / 3.0;
         if (has_next && out_length <= 1e-6)
-            out_length = QLineF(anchor, gsp::path_point_to_local(layer->path_points[next], rect)).length() / 3.0;
+            out_length = QLineF(anchor, bgs::path_point_to_local(layer->path_points[next], rect)).length() / 3.0;
         auto normalize = [&](const QPointF &local) {
             return QPointF((local.x() - rect.left()) / std::max(1e-9, rect.width()),
                            (local.y() - rect.top()) / std::max(1e-9, rect.height()));
@@ -3563,7 +3785,7 @@ void CanvasPreview::draw_corner_radius_handles(QPainter &p, const Layer &layer)
 {
     if (!layer_supports_corner_radius_handles(layer))
         return;
-    const auto corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+    const auto corners = bgs::layer_live_corners(layer, layer_local_rect(layer));
     if (corners.empty())
         return;
 
@@ -3612,7 +3834,7 @@ void CanvasPreview::begin_corner_radius_drag(const Layer &layer)
     if (preselected) {
         source_targets.assign(selected_corner_indices_.begin(), selected_corner_indices_.end());
     } else {
-        const auto source_corners = gsp::layer_live_corners(layer, layer_local_rect(layer));
+        const auto source_corners = bgs::layer_live_corners(layer, layer_local_rect(layer));
         for (const auto &corner : source_corners) {
             if (layer.shape_type == ShapeType::Star &&
                 (corner.point_index & 1) != (point_index & 1))
@@ -3627,7 +3849,7 @@ void CanvasPreview::begin_corner_radius_drag(const Layer &layer)
         CornerLayerDragState state;
         state.id = target_layer->id;
         state.sync = target_layer->corner_radius_locked;
-        const auto corners = gsp::layer_live_corners(*target_layer, layer_local_rect(*target_layer));
+        const auto corners = bgs::layer_live_corners(*target_layer, layer_local_rect(*target_layer));
         for (const auto &corner : corners)
             state.points.push_back({corner.point_index, corner_radius_value(*target_layer, corner.point_index)});
 
@@ -3654,13 +3876,13 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
     if (!layer || layer->locked)
         return false;
 
-    const auto corners = gsp::layer_live_corners(*layer, layer_local_rect(*layer));
-    const auto it = std::find_if(corners.begin(), corners.end(), [&](const gsp::LiveCornerGeometry &corner) {
+    const auto corners = bgs::layer_live_corners(*layer, layer_local_rect(*layer));
+    const auto it = std::find_if(corners.begin(), corners.end(), [&](const bgs::LiveCornerGeometry &corner) {
         return corner.point_index == corner_radius_drag_.point_index;
     });
     if (it == corners.end())
         return false;
-    const gsp::LiveCornerGeometry &corner = *it;
+    const bgs::LiveCornerGeometry &corner = *it;
 
     const QPointF previous_vector = corner.previous - corner.anchor;
     const QPointF next_vector = corner.next - corner.anchor;
@@ -3718,11 +3940,11 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
         if (corner_radius_drag_.isolated && target_layer->shape_type != ShapeType::Path &&
             target_layer->shape_type != ShapeType::Rectangle &&
             target_layer->shape_type != ShapeType::RoundedRectangle)
-            gsp::ensure_editable_path(*target_layer);
+            bgs::ensure_editable_path(*target_layer);
         for (const CornerPointDragState &point : state.points)
             set_corner_radius_value(*target_layer, point.point_index, point.radius, false);
 
-        const auto current_corners = gsp::layer_live_corners(*target_layer, layer_local_rect(*target_layer));
+        const auto current_corners = bgs::layer_live_corners(*target_layer, layer_local_rect(*target_layer));
         for (int target_index : state.target_indices) {
             auto start = std::find_if(state.points.begin(), state.points.end(),
                 [target_index](const CornerPointDragState &point) {
@@ -3731,7 +3953,7 @@ bool CanvasPreview::apply_corner_radius_drag(const QPointF &view_pt, Qt::Keyboar
             if (start == state.points.end())
                 continue;
             auto geometry = std::find_if(current_corners.begin(), current_corners.end(),
-                [target_index](const gsp::LiveCornerGeometry &item) {
+                [target_index](const bgs::LiveCornerGeometry &item) {
                     return item.point_index == target_index;
                 });
             const double maximum = geometry == current_corners.end() ? 9999.0 : geometry->max_radius;
@@ -4114,27 +4336,27 @@ void CanvasPreview::collect_snap_targets(bool x_axis, std::vector<double> &targe
 
     if (snap_settings_.canvas_bounds) {
         const double size = x_axis ? title_->width : title_->height;
-        add(0.0, obsgs_tr("OBSTitles.Canvas"));
-        add(size * 0.5, obsgs_tr("OBSTitles.CanvasCenter"));
-        add(size, obsgs_tr("OBSTitles.Canvas"));
+        add(0.0, bgl_tr("OBSTitles.Canvas"));
+        add(size * 0.5, bgl_tr("OBSTitles.CanvasCenter"));
+        add(size, bgl_tr("OBSTitles.Canvas"));
     }
 
     if (snap_settings_.guides) {
         const double size = x_axis ? title_->width : title_->height;
-        add(size * OBS_ACTION_SAFE_PERCENT, obsgs_tr("OBSTitles.ActionSafe"));
-        add(size * (1.0 - OBS_ACTION_SAFE_PERCENT), obsgs_tr("OBSTitles.ActionSafe"));
-        add(size * OBS_GRAPHICS_SAFE_PERCENT, obsgs_tr("OBSTitles.TitleSafe"));
-        add(size * (1.0 - OBS_GRAPHICS_SAFE_PERCENT), obsgs_tr("OBSTitles.TitleSafe"));
+        add(size * OBS_ACTION_SAFE_PERCENT, bgl_tr("OBSTitles.ActionSafe"));
+        add(size * (1.0 - OBS_ACTION_SAFE_PERCENT), bgl_tr("OBSTitles.ActionSafe"));
+        add(size * OBS_GRAPHICS_SAFE_PERCENT, bgl_tr("OBSTitles.TitleSafe"));
+        add(size * (1.0 - OBS_GRAPHICS_SAFE_PERCENT), bgl_tr("OBSTitles.TitleSafe"));
         const auto &user_guides = x_axis ? vertical_guides_ : horizontal_guides_;
         for (double guide : user_guides)
-            add(guide, obsgs_tr("OBSTitles.Guide"));
+            add(guide, bgl_tr("OBSTitles.Guide"));
     }
 
     if (snap_settings_.grid) {
         const double size = x_axis ? title_->width : title_->height;
         constexpr double grid = 10.0;
         for (double v = 0.0; v <= size + 0.01; v += grid)
-            add(v, obsgs_tr("OBSTitles.Grid"));
+            add(v, bgl_tr("OBSTitles.Grid"));
     }
 
     if (!snap_settings_.object_edges && !snap_settings_.object_centers) return;
@@ -4151,11 +4373,11 @@ void CanvasPreview::collect_snap_targets(bool x_axis, std::vector<double> &targe
         QRectF bounds = layer_canvas_bounds(*layer);
         if (!bounds.isValid() || bounds.isEmpty()) continue;
         if (snap_settings_.object_edges) {
-            add(x_axis ? bounds.left() : bounds.top(), obsgs_tr("OBSTitles.ObjectEdge"));
-            add(x_axis ? bounds.right() : bounds.bottom(), obsgs_tr("OBSTitles.ObjectEdge"));
+            add(x_axis ? bounds.left() : bounds.top(), bgl_tr("OBSTitles.ObjectEdge"));
+            add(x_axis ? bounds.right() : bounds.bottom(), bgl_tr("OBSTitles.ObjectEdge"));
         }
         if (snap_settings_.object_centers)
-            add(x_axis ? bounds.center().x() : bounds.center().y(), obsgs_tr("OBSTitles.ObjectCenter"));
+            add(x_axis ? bounds.center().x() : bounds.center().y(), bgl_tr("OBSTitles.ObjectCenter"));
     }
 }
 
@@ -4191,7 +4413,7 @@ void CanvasPreview::collect_spacing_targets(bool x_axis, std::vector<double> &ta
     auto add = [&](double value) {
         if (!std::isfinite(value)) return;
         targets.push_back(value);
-        labels.push_back(obsgs_tr("OBSTitles.Spacing"));
+        labels.push_back(bgl_tr("OBSTitles.Spacing"));
     };
     for (const Span &span : spans) {
         for (double gap : gaps) {
@@ -4765,12 +4987,21 @@ void CanvasPreview::render_to_frame()
         QString gpu_cache_token;
         if (!direct_interaction && cache.cacheEnabled() &&
             cacheability != TitleCacheability::NonCacheable) {
-            gpu_cache_token = cache.requestFrameGpuToken(
-                title_, playhead_, false);
+            const int cue_row = title_->current_cue_row;
+            const bool has_active_cue = cue_row >= 0 &&
+                cue_row < static_cast<int>(title_->live_text_rows.size());
+            gpu_cache_token = has_active_cue
+                ? cache.requestLiveCueFrameGpuToken(
+                      title_, cue_row, playhead_, false)
+                : cache.requestFrameGpuToken(title_, playhead_, false);
             if (gpu_cache_token.isEmpty()) {
                 if (!prefetched_cache_frame_.isNull() &&
                     std::abs(prefetched_cache_time_ - playhead_) < 1e-9) {
                     cached = prefetched_cache_frame_;
+                } else if (has_active_cue) {
+                    cached = cache.requestLiveCueFrame(
+                        title_, cue_row, playhead_,
+                        !playback.cached_frames_only);
                 } else {
                     cached = cache.requestFrame(title_, playhead_,
                                                 playback.cached_frames_only);
@@ -4845,7 +5076,7 @@ void CanvasPreview::render_to_frame()
                         ? QStringLiteral("hold-previous")
                         : cached.isNull() ? QStringLiteral("cache-miss")
                                           : QStringLiteral("cache-rejected");
-                OGS_LOG_INFO("CachePlayback", QStringLiteral(
+                BGL_LOG_INFO("CachePlayback", QStringLiteral(
                     "consumer=editor-canvas action=%1 title=%2 time=%3 cacheKey=%4 size=%5x%6 cachedOnly=%7")
                     .arg(action)
                     .arg(QString::fromStdString(title_->id))
@@ -5008,10 +5239,10 @@ double CanvasPreview::snap_guide_value_to_objects(bool x_axis, double raw_value)
         QRectF bounds = layer_canvas_bounds(*layer);
         if (!bounds.isValid() || bounds.isEmpty()) continue;
 
-        consider(x_axis ? bounds.left() : bounds.top(), obsgs_tr("OBSTitles.ObjectEdge"));
-        consider(x_axis ? bounds.right() : bounds.bottom(), obsgs_tr("OBSTitles.ObjectEdge"));
+        consider(x_axis ? bounds.left() : bounds.top(), bgl_tr("OBSTitles.ObjectEdge"));
+        consider(x_axis ? bounds.right() : bounds.bottom(), bgl_tr("OBSTitles.ObjectEdge"));
         if (snap_settings_.object_centers)
-            consider(x_axis ? bounds.center().x() : bounds.center().y(), obsgs_tr("OBSTitles.ObjectCenter"));
+            consider(x_axis ? bounds.center().x() : bounds.center().y(), bgl_tr("OBSTitles.ObjectCenter"));
     }
 
     snap_feedback_.clear();
@@ -5093,7 +5324,7 @@ void CanvasPreview::draw_rulers(QPainter &p, const QRectF &canvas_rect, double s
 void CanvasPreview::draw_guide_coordinate(QPainter &p, const QPointF &view_pt, bool x_axis, double value) const
 {
     if (!show_guide_coordinates_) return;
-    const QString text = obsgs_tr("OBSTitles.AxisPixelReadout").arg(x_axis ? obsgs_tr("OBSTitles.X") : obsgs_tr("OBSTitles.Y")).arg(value, 0, 'f', 1);
+    const QString text = bgl_tr("OBSTitles.AxisPixelReadout").arg(x_axis ? bgl_tr("OBSTitles.X") : bgl_tr("OBSTitles.Y")).arg(value, 0, 'f', 1);
     const QRectF bubble(view_pt.x() + 12.0, view_pt.y() + 12.0, 92.0, 22.0);
     p.save();
     p.setPen(Qt::NoPen);
@@ -5522,7 +5753,7 @@ void CanvasPreview::paintEvent(QPaintEvent *)
     painter.drawText(rect().adjusted(24, 24, -24, -24),
                      Qt::AlignCenter | Qt::TextWordWrap,
                      QStringLiteral("GPU canvas initialization failed. "
-                                    "OBS Graphics Studio Pro requires the OBS GPU renderer."));
+                                    "Broadcast Graphics Live requires the OBS GPU renderer."));
 }
 
 double CanvasPreview::toolbar_draw_aspect_ratio() const
@@ -5734,7 +5965,9 @@ bool CanvasPreview::sample_color_at_view(const QPointF &view_pt, QColor &color)
     /* Color picking is an explicit inspection operation, so it is allowed to
      * perform one final-frame readback. Normal canvas presentation remains
      * GPU-resident and never populates frame_image_. */
-    const QImage image = current_rendered_frame();
+    const QImage image = !color_picker_source_image_.isNull()
+        ? color_picker_source_image_
+        : current_rendered_frame();
     if (image.isNull())
         return false;
 
@@ -5757,6 +5990,7 @@ void CanvasPreview::update_color_picker_tooltip(const QPointF &view_pt)
     color_picker_tooltip_visible_ = sample_color_at_view(view_pt, color);
     if (color_picker_tooltip_visible_)
         color_picker_tooltip_color_ = color;
+    gpu_overlay_dirty_ = true;
     update();
 }
 
@@ -5783,7 +6017,7 @@ void CanvasPreview::draw_color_picker_tooltip(QPainter &p)
         return;
 
     const QString hex = editor_color_hex(color_picker_tooltip_color_);
-    const QString name = obsgs_tr("OBSTitles.ColorPickerTool");
+    const QString name = bgl_tr("OBSTitles.ColorPickerTool");
     QFont name_font = font();
     name_font.setPointSizeF(name_font.pointSizeF() * 1.35);
     name_font.setBold(true);
@@ -5857,7 +6091,7 @@ QString CanvasPreview::canvas_drag_tooltip_text() const
                                 ? shape_draw_current_rect_.normalized()
                                 : toolbar_draw_rect(shape_draw_current_canvas_, shape_draw_modifiers_).normalized();
         if (drawing_shape_changed_ && rect.isValid() && !rect.isEmpty()) {
-            return obsgs_tr("OBSTitles.SizePixelReadout")
+            return bgl_tr("OBSTitles.SizePixelReadout")
                 .arg(std::round(rect.width()), 0, 'f', 0)
                 .arg(std::round(rect.height()), 0, 'f', 0);
         }
@@ -5879,7 +6113,7 @@ QString CanvasPreview::canvas_drag_tooltip_text() const
 
     if (drag_mode_ == DragMode::Move) {
         const QPointF canvas = view_to_canvas(drag_current_view_);
-        return obsgs_tr("OBSTitles.PositionPixelReadout")
+        return bgl_tr("OBSTitles.PositionPixelReadout")
             .arg(std::round(canvas.x()), 0, 'f', 0)
             .arg(std::round(canvas.y()), 0, 'f', 0);
     }
@@ -5898,14 +6132,14 @@ QString CanvasPreview::canvas_drag_tooltip_text() const
             w = eval_box_width(*layers.front(), lt);
             h = eval_box_height(*layers.front(), lt);
         }
-        return obsgs_tr("OBSTitles.SizePixelReadout")
+        return bgl_tr("OBSTitles.SizePixelReadout")
             .arg(std::round(w), 0, 'f', 0)
             .arg(std::round(h), 0, 'f', 0);
     }
 
     if (drag_mode_ == DragMode::Rotate) {
         const double radians = degrees_to_radians(drag_current_rotation_delta_);
-        return obsgs_tr("OBSTitles.RadiansReadout").arg(radians, 0, 'f', 3);
+        return bgl_tr("OBSTitles.RadiansReadout").arg(radians, 0, 'f', 3);
     }
 
     if (is_corner_radius_drag(drag_mode_)) {
@@ -5924,7 +6158,7 @@ QString CanvasPreview::canvas_drag_tooltip_text() const
             default: break;
             }
         }
-        return obsgs_tr("OBSTitles.RadiusPixelReadout").arg(std::round(radius), 0, 'f', 0);
+        return bgl_tr("OBSTitles.RadiusPixelReadout").arg(std::round(radius), 0, 'f', 0);
     }
 
     return QString();
@@ -6320,7 +6554,7 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
 
-    if (!inline_text_layer_id_.empty()) {
+    if (!inline_text_layer_id_.empty() && !inline_text_suspended_for_gradient_) {
         commit_text_edit(true);
         ev->accept();
         return;
@@ -6339,7 +6573,8 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
      */
     if (ev->button() == Qt::LeftButton && gradient_handles_visible()) {
         if (auto layer = selected_layer()) {
-            DragMode gradient_hit = hit_test_gradient_handles(*layer, ev->pos());
+            GradientHandleTarget gradient_target;
+            DragMode gradient_hit = hit_test_gradient_handles(*layer, ev->pos(), &gradient_target);
             if (gradient_hit != DragMode::None) {
                 drag_mode_ = gradient_hit;
                 drag_changed_ = false;
@@ -6350,7 +6585,9 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                 drag_layer_states_.clear();
                 gradient_drag_ = GradientDragState{};
                 corner_radius_drag_ = CornerRadiusDragState{};
-                begin_gradient_drag(*layer);
+                begin_gradient_drag(*layer, gradient_target);
+                invalidate_canvas_overlay_caches();
+                update();
                 if (drag_mode_ == DragMode::GradientCenter || drag_mode_ == DragMode::GradientFocal)
                     setCursor(Qt::CrossCursor);
                 else
@@ -6710,7 +6947,15 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
     drag_start_h_ = (float)eval_box_height(*layer, lt);
     drag_start_origin_x_ = layer->origin_x;
     drag_start_origin_y_ = layer->origin_y;
-    begin_gradient_drag(*layer);
+    if (drag_mode_ == DragMode::GradientStart || drag_mode_ == DragMode::GradientEnd ||
+        drag_mode_ == DragMode::GradientCenter || drag_mode_ == DragMode::GradientRadius ||
+        drag_mode_ == DragMode::GradientFocal) {
+        GradientHandleTarget gradient_target;
+        if (hit_test_gradient_handles(*layer, drag_start_view_, &gradient_target) != DragMode::None)
+            begin_gradient_drag(*layer, gradient_target);
+    } else {
+        gradient_drag_ = GradientDragState{};
+    }
     begin_corner_radius_drag(*layer);
     drag_rotation_pivot_canvas_ = layers.size() > 1
         ? drag_start_selection_bounds_.center()
@@ -6881,6 +7126,8 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     if (active_tool_ == CanvasTool::ColorPicker) {
         clear_draw_tool_snap_cursor();
         update_color_picker_tooltip(ev->pos());
+        if (color_picker_tooltip_visible_)
+            emit color_picker_previewed(color_picker_tooltip_color_);
         setCursor(Qt::CrossCursor);
         return;
     }
@@ -6973,7 +7220,7 @@ bool CanvasPreview::handle_external_canvas_mime(const QMimeData *mime, const QPo
             QString base_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
             if (base_dir.isEmpty())
                 base_dir = QDir::tempPath();
-            QDir dir(base_dir + QStringLiteral("/obs-gsp-pasted-assets"));
+            QDir dir(base_dir + QStringLiteral("/obs-bgs-pasted-assets"));
             if (!dir.exists())
                 dir.mkpath(QStringLiteral("."));
             const QString path = dir.filePath(QStringLiteral("pasted-image-%1.png")
@@ -6998,7 +7245,7 @@ bool CanvasPreview::handle_external_canvas_mime(const QMimeData *mime, const QPo
 
 void CanvasPreview::dragEnterEvent(QDragEnterEvent *ev)
 {
-    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+    if (ev && bgs::effects::mime_has_effect_preset(ev->mimeData())) {
         ev->setDropAction(Qt::CopyAction);
         ev->accept();
         return;
@@ -7012,7 +7259,7 @@ void CanvasPreview::dragEnterEvent(QDragEnterEvent *ev)
 
 void CanvasPreview::dragMoveEvent(QDragMoveEvent *ev)
 {
-    if (ev && gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+    if (ev && bgs::effects::mime_has_effect_preset(ev->mimeData())) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPointF view_pt = ev->position();
 #else
@@ -7046,9 +7293,9 @@ void CanvasPreview::dropEvent(QDropEvent *ev)
 #else
     const QPointF view_pt = ev->pos();
 #endif
-    if (gsp::effects::mime_has_effect_preset(ev->mimeData())) {
+    if (bgs::effects::mime_has_effect_preset(ev->mimeData())) {
         const auto layer = layer_at_view_pos(view_pt);
-        const QString file_path = gsp::effects::effect_preset_path_from_mime(ev->mimeData());
+        const QString file_path = bgs::effects::effect_preset_path_from_mime(ev->mimeData());
         if (layer && !layer->locked && !file_path.isEmpty()) {
             emit effect_preset_dropped(file_path, layer->id);
             ev->setDropAction(Qt::CopyAction);
@@ -7072,6 +7319,7 @@ void CanvasPreview::leaveEvent(QEvent *ev)
     bool needs_update = false;
     if (color_picker_tooltip_visible_) {
         color_picker_tooltip_visible_ = false;
+        gpu_overlay_dirty_ = true;
         needs_update = true;
     }
     if (mouse_inside_canvas_ || !hovered_layer_id_.empty()) {
@@ -7265,9 +7513,9 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
                 has_in.reserve(layer->path_points.size());
                 has_out.reserve(layer->path_points.size());
                 for (const auto &point : layer->path_points) {
-                    anchors.push_back(gsp::path_point_to_local(point, rect));
-                    in_handles.push_back(gsp::path_in_handle_to_local(point, rect));
-                    out_handles.push_back(gsp::path_out_handle_to_local(point, rect));
+                    anchors.push_back(bgs::path_point_to_local(point, rect));
+                    in_handles.push_back(bgs::path_in_handle_to_local(point, rect));
+                    out_handles.push_back(bgs::path_out_handle_to_local(point, rect));
                     has_in.push_back(point.has_in);
                     has_out.push_back(point.has_out);
                 }
@@ -7342,6 +7590,7 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
         gradient_tool_dragging_ = false;
         gradient_drag_ = GradientDragState{};
         drag_mode_ = DragMode::None;
+        clear_snap_feedback();
         emit layer_geometry_changed();
         invalidate_canvas_overlay_caches();
         update();
@@ -7476,7 +7725,7 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
     }
 
     QMenu menu(this);
-    QAction *delete_guide = menu.addAction(obsgs_tr("OBSTitles.DeleteGuide"));
+    QAction *delete_guide = menu.addAction(bgl_tr("OBSTitles.DeleteGuide"));
     delete_guide->setEnabled(!guides_locked_);
     QAction *chosen = menu.exec(ev->globalPos());
     if (chosen == delete_guide && !guides_locked_) {

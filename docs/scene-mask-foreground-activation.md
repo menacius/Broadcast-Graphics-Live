@@ -1,6 +1,6 @@
 # Shape Scene Mask Foreground Activation
 
-Shape scene masks now keep their configured target OBS scenes active while the OBS Graphics Studio Pro source is active in Program. This makes scenes rendered through a mask behave like foreground scene content instead of passive off-screen renders.
+Shape scene masks now keep their configured target OBS scenes active while the Broadcast Graphics Live source is active in Program. This makes scenes rendered through a mask behave like foreground scene content instead of passive off-screen renders.
 
 ## Behavior
 

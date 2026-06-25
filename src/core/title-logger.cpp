@@ -83,7 +83,7 @@ void log(TitleLogLevel level, const char *category, const QString &message)
     }
 
     if (TitlePreferences::logging_mirror_to_obs())
-        blog(obs_level_for_title_level(level), "[OBS Graphics Studio Pro] %s", line.toUtf8().constData());
+        blog(obs_level_for_title_level(level), "[Broadcast Graphics Live] %s", line.toUtf8().constData());
 }
 
 void error(const char *category, const QString &message)

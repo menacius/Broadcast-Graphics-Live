@@ -1,4 +1,4 @@
-# build-windows.ps1 - Windows build helper for obs-graphics-studio-pro.
+# build-windows.ps1 - Windows build helper for broadcast-graphics-live.
 # Validates prerequisites, configures CMake, builds, and installs the plugin.
 
 param(
@@ -47,15 +47,15 @@ if ($Clean -and (Test-Path $BuildDir)) {
 # path. Keep manifest packages in a project-specific directory below VCPKG_ROOT
 # instead. This also avoids mixing the manifest with classic-mode packages.
 if ([string]::IsNullOrWhiteSpace($VcpkgInstalledDir)) {
-    if ($env:OBS_GSP_VCPKG_INSTALLED_DIR) {
-        $VcpkgInstalledDir = $env:OBS_GSP_VCPKG_INSTALLED_DIR
+    if ($env:OBS_BGS_VCPKG_INSTALLED_DIR) {
+        $VcpkgInstalledDir = $env:OBS_BGS_VCPKG_INSTALLED_DIR
     } else {
-        $VcpkgInstalledDir = Join-Path $VcpkgDir "manifest-installed\obs-graphics-studio-pro"
+        $VcpkgInstalledDir = Join-Path $VcpkgDir "manifest-installed\broadcast-graphics-live"
     }
 }
 $VcpkgInstalledDir = [System.IO.Path]::GetFullPath($VcpkgInstalledDir)
 if ($VcpkgInstalledDir -match "\s") {
-    Write-Error "The vcpkg manifest install path contains whitespace: $VcpkgInstalledDir. Pass -VcpkgInstalledDir with a path that has no spaces, for example C:\vcpkg-installed\obs-gsp."
+    Write-Error "The vcpkg manifest install path contains whitespace: $VcpkgInstalledDir. Pass -VcpkgInstalledDir with a path that has no spaces, for example C:\vcpkg-installed\obs-bgs."
     exit 1
 }
 New-Item -ItemType Directory -Force -Path $VcpkgInstalledDir | Out-Null
@@ -76,7 +76,7 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
     }
 }
 
-$PluginName = "obs-graphics-studio-pro"
+$PluginName = "broadcast-graphics-live"
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
 $ObsArchDir = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "32bit" } else { "64bit" }
 $VcpkgTriplet = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "x86-windows" } else { "x64-windows" }
@@ -85,7 +85,7 @@ $ObsPluginRoot = Join-Path $InstallRoot $PluginName
 $ObsPluginBin = Join-Path $ObsPluginRoot "bin\$ObsArchDir"
 $ObsPluginData = Join-Path $ObsPluginRoot "data\locale"
 
-Write-Host "=== Starting OBS Graphics Studio Pro build process ==="
+Write-Host "=== Starting Broadcast Graphics Live build process ==="
 
 # Source files now live in ownership-oriented module folders. Keep Windows-only
 # preflight checks pointed at the same paths CMake builds so stale flat-tree
@@ -256,7 +256,7 @@ $CmakeArgs = @(
     "-DVCPKG_TARGET_TRIPLET=$VcpkgTriplet",
     "-DVCPKG_INSTALLED_DIR=$($VcpkgInstalledDir.Replace('\', '/'))",
     "-DOBS_SDK_DIR=$($ObsSdkDir.Replace('\', '/'))",
-    "-DOBS_GSP_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
+    "-DOBS_BGS_BUILD_TESTS=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
 )
 & cmake @CmakeArgs
 if ($LASTEXITCODE -ne 0) {
@@ -265,18 +265,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 5. Build the Plugin
-Write-Host "`n=== Building OBS Graphics Studio Pro ($Configuration) ==="
+Write-Host "`n=== Building Broadcast Graphics Live ($Configuration) ==="
 # Build only the plugin target. CMake/MSBuild keeps object-file dependency
 # tracking, so unchanged translation units are reused. Do not pass -Clean for
 # normal development builds; -Clean intentionally discards incremental state.
-& cmake --build $BuildDir --config $Configuration --target obs-graphics-studio-pro -- /m
+& cmake --build $BuildDir --config $Configuration --target broadcast-graphics-live -- /m
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed."
     exit 1
 }
 
 if ($BuildTests) {
-    Write-Host "`n=== Running OBS Graphics Studio Pro tests ==="
+    Write-Host "`n=== Running Broadcast Graphics Live tests ==="
     & ctest --test-dir $BuildDir -C $Configuration --output-on-failure
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Tests failed."
@@ -345,7 +345,7 @@ if (Test-Path $StagedData) {
 
 # 7. Copy runtime DLL dependencies next to the plugin binary.
 # A plugin can compile and still fail to load in OBS if Qt/Cairo/Pango DLLs are
-# not beside obs-graphics-studio-pro.dll, so copy every vcpkg runtime DLL rather than trying
+# not beside broadcast-graphics-live.dll, so copy every vcpkg runtime DLL rather than trying
 # to maintain a fragile hand-written dependency list.
 Write-Host "`n=== Copying runtime DLL dependencies ==="
 $RuntimeDllDirs = @()
@@ -381,7 +381,7 @@ foreach ($RuntimeDllDir in ($RuntimeDllDirs | Select-Object -Unique)) {
 }
 
 if ($CopiedCount -eq 0) {
-    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says obs-graphics-studio-pro failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
+    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says broadcast-graphics-live failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
 } else {
     Write-Host "Copied $CopiedCount runtime DLL dependencies."
 }
@@ -399,11 +399,11 @@ foreach ($Dll in $ExpectedDlls) {
     }
 }
 if ($MissingExpectedDlls.Count -gt 0) {
-    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that obs-graphics-studio-pro failed to load."
+    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that broadcast-graphics-live failed to load."
 }
 
 Write-Host "`nInstalled OBS plugin layout:"
 Write-Host "  $ObsPluginRoot"
 Write-Host "  $ObsPluginBin\$PluginDllName"
 Write-Host "  $ObsPluginData\en-US.ini"
-Write-Host "`n=== OBS Graphics Studio Pro built and installed successfully! ==="
+Write-Host "`n=== Broadcast Graphics Live built and installed successfully! ==="

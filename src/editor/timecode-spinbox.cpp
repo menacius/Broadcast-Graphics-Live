@@ -17,7 +17,7 @@ TimecodeSpinBox::TimecodeSpinBox(QWidget *parent)
     setSingleStep(frame_duration());
     setButtonSymbols(QAbstractSpinBox::UpDownArrows);
     setKeyboardTracking(false);
-    setToolTip(obsgs_tr("OBSTitles.TimecodeTooltip"));
+    setToolTip(bgl_tr("OBSTitles.TimecodeTooltip"));
     lineEdit()->setPlaceholderText(QStringLiteral("00:00:00:00"));
 }
 

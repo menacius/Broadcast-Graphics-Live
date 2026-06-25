@@ -5,7 +5,7 @@ ForegroundBackgroundSwatch::ForegroundBackgroundSwatch(QWidget *parent) : QWidge
 {
     setFixedSize(42, 42);
     setCursor(Qt::PointingHandCursor);
-    setToolTip(obsgs_tr("OBSTitles.ForegroundBackgroundTooltip"));
+    setToolTip(bgl_tr("OBSTitles.ForegroundBackgroundTooltip"));
     foreground_fill_.type = 0;
     foreground_fill_.color = foreground_color_;
     foreground_fill_.start = foreground_color_;
@@ -153,7 +153,7 @@ void ForegroundBackgroundSwatch::paintEvent(QPaintEvent *)
             mixed_font.setBold(true);
             p.setFont(mixed_font);
             p.setPen(QColor(QStringLiteral("#f2c94c")));
-            p.drawText(inner, Qt::AlignCenter, obsgs_tr("OBSTitles.M"));
+            p.drawText(inner, Qt::AlignCenter, bgl_tr("OBSTitles.M"));
         }
     };
 
@@ -196,11 +196,11 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     const QColor highlighted_text = pal.color(QPalette::HighlightedText);
     const QColor hover = button.lightness() < 128 ? button.lighter(125) : button.darker(108);
 
-    setObjectName(QStringLiteral("OBSGraphicsStudioProToolsSidebarPanel"));
+    setObjectName(QStringLiteral("BroadcastGraphicsLiveToolsSidebarPanel"));
     setMinimumWidth(kSidebarButtonSize + 8);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     setStyleSheet(QStringLiteral(
-        "QWidget#OBSGraphicsStudioProToolsSidebarPanel{background:%1;color:%2;}"
+        "QWidget#BroadcastGraphicsLiveToolsSidebarPanel{background:%1;color:%2;}"
         "QToolButton{color:%3;background:%4;border:1px solid transparent;border-radius:3px;padding:0;"
         "min-width:%5px;min-height:%5px;max-width:%5px;max-height:%5px;}"
         "QToolButton:hover{background:%6;border-color:%7;}"
@@ -255,39 +255,39 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
         return button;
     };
 
-    selection_button_ = make_tool_button(obsgs_tr("OBSTitles.SelectionTool"), cursor_tool_icon(),
-                                         obsgs_tr("OBSTitles.SelectionToolTooltip") + QStringLiteral(" (V)"));
-    direct_selection_button_ = make_tool_button(obsgs_tr("OBSTitles.DirectSelectionTool"), direct_selection_tool_icon(),
-                                                obsgs_tr("OBSTitles.DirectSelectionToolTooltip") + QStringLiteral(" (A)"));
-    shape_button_ = make_tool_button(obsgs_tr("OBSTitles.ShapeTool"), shape_tool_icon(selected_shape_),
-                                     obsgs_tr("OBSTitles.ShapeToolTooltip") + QStringLiteral(" (M)"));
-    pen_button_ = make_tool_button(obsgs_tr("OBSTitles.PenTool"), pen_tool_icon(),
-                                   obsgs_tr("OBSTitles.PenToolTooltip") + QStringLiteral(" (P)"));
-    text_button_ = make_tool_button(obsgs_tr("OBSTitles.TextTool"), text_tool_icon(selected_text_layer_type_),
-                                    obsgs_tr("OBSTitles.TextToolTooltip") + QStringLiteral(" (T)"));
-    image_button_ = make_tool_button(obsgs_tr("OBSTitles.ImageTool"), obs_icon("image.svg"),
-                                     obsgs_tr("OBSTitles.ImageToolTooltip"));
-    color_picker_button_ = make_tool_button(obsgs_tr("OBSTitles.ColorPickerTool"), obs_icon("eyedropper.svg"),
-                                            obsgs_tr("OBSTitles.ColorPickerToolTooltip") + QStringLiteral(" (I)"));
-    gradient_button_ = make_tool_button(obsgs_tr("OBSTitles.GradientTool"), gradient_tool_icon(),
-                                        obsgs_tr("OBSTitles.GradientToolTooltip") + QStringLiteral(" (G)"));
+    selection_button_ = make_tool_button(bgl_tr("OBSTitles.SelectionTool"), cursor_tool_icon(),
+                                         bgl_tr("OBSTitles.SelectionToolTooltip") + QStringLiteral(" (V)"));
+    direct_selection_button_ = make_tool_button(bgl_tr("OBSTitles.DirectSelectionTool"), direct_selection_tool_icon(),
+                                                bgl_tr("OBSTitles.DirectSelectionToolTooltip") + QStringLiteral(" (A)"));
+    shape_button_ = make_tool_button(bgl_tr("OBSTitles.ShapeTool"), shape_tool_icon(selected_shape_),
+                                     bgl_tr("OBSTitles.ShapeToolTooltip") + QStringLiteral(" (M)"));
+    pen_button_ = make_tool_button(bgl_tr("OBSTitles.PenTool"), pen_tool_icon(),
+                                   bgl_tr("OBSTitles.PenToolTooltip") + QStringLiteral(" (P)"));
+    text_button_ = make_tool_button(bgl_tr("OBSTitles.TextTool"), text_tool_icon(selected_text_layer_type_),
+                                    bgl_tr("OBSTitles.TextToolTooltip") + QStringLiteral(" (T)"));
+    image_button_ = make_tool_button(bgl_tr("OBSTitles.ImageTool"), obs_icon("image.svg"),
+                                     bgl_tr("OBSTitles.ImageToolTooltip"));
+    color_picker_button_ = make_tool_button(bgl_tr("OBSTitles.ColorPickerTool"), obs_icon("eyedropper.svg"),
+                                            bgl_tr("OBSTitles.ColorPickerToolTooltip") + QStringLiteral(" (I)"));
+    gradient_button_ = make_tool_button(bgl_tr("OBSTitles.GradientTool"), gradient_tool_icon(),
+                                        bgl_tr("OBSTitles.GradientToolTooltip") + QStringLiteral(" (G)"));
 
-    auto *selection_action = new QAction(cursor_tool_icon(), obsgs_tr("OBSTitles.SelectionTool"), this);
+    auto *selection_action = new QAction(cursor_tool_icon(), bgl_tr("OBSTitles.SelectionTool"), this);
     selection_action->setCheckable(true);
     selection_action->setChecked(true);
-    auto *direct_selection_action = new QAction(direct_selection_tool_icon(), obsgs_tr("OBSTitles.DirectSelectionTool"), this);
+    auto *direct_selection_action = new QAction(direct_selection_tool_icon(), bgl_tr("OBSTitles.DirectSelectionTool"), this);
     direct_selection_action->setCheckable(true);
-    auto *shape_action = new QAction(shape_tool_icon(selected_shape_), obsgs_tr("OBSTitles.ShapeTool"), this);
+    auto *shape_action = new QAction(shape_tool_icon(selected_shape_), bgl_tr("OBSTitles.ShapeTool"), this);
     shape_action->setCheckable(true);
-    auto *pen_action = new QAction(pen_tool_icon(), obsgs_tr("OBSTitles.PenTool"), this);
+    auto *pen_action = new QAction(pen_tool_icon(), bgl_tr("OBSTitles.PenTool"), this);
     pen_action->setCheckable(true);
-    auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), obsgs_tr("OBSTitles.TextTool"), this);
+    auto *text_action = new QAction(text_tool_icon(selected_text_layer_type_), bgl_tr("OBSTitles.TextTool"), this);
     text_action->setCheckable(true);
-    auto *image_action = new QAction(obs_icon("image.svg"), obsgs_tr("OBSTitles.ImageTool"), this);
+    auto *image_action = new QAction(obs_icon("image.svg"), bgl_tr("OBSTitles.ImageTool"), this);
     image_action->setCheckable(true);
-    auto *color_picker_action = new QAction(obs_icon("eyedropper.svg"), obsgs_tr("OBSTitles.ColorPickerTool"), this);
+    auto *color_picker_action = new QAction(obs_icon("eyedropper.svg"), bgl_tr("OBSTitles.ColorPickerTool"), this);
     color_picker_action->setCheckable(true);
-    auto *gradient_action = new QAction(gradient_tool_icon(), obsgs_tr("OBSTitles.GradientTool"), this);
+    auto *gradient_action = new QAction(gradient_tool_icon(), bgl_tr("OBSTitles.GradientTool"), this);
     gradient_action->setCheckable(true);
     tool_group_->addAction(selection_action);
     tool_group_->addAction(direct_selection_action);
@@ -364,7 +364,7 @@ void ToolsSidebar::set_selected_shape(ShapeType shape_type)
             action->setText(shape_display_name(shape_type));
             action->setChecked(true);
         }
-        shape_button_->setToolTip(obsgs_tr("OBSTitles.ShapeToolSelectedTooltip").arg(shape_display_name(shape_type)) +
+        shape_button_->setToolTip(bgl_tr("OBSTitles.ShapeToolSelectedTooltip").arg(shape_display_name(shape_type)) +
                                   (shape_type == ShapeType::Ellipse ? QStringLiteral(" (L)") : QStringLiteral(" (M)")));
         shape_button_->setChecked(true);
     }
@@ -407,7 +407,7 @@ void ToolsSidebar::set_selected_text_layer_type(LayerType type)
             action->setText(name);
             action->setChecked(true);
         }
-        text_button_->setToolTip(obsgs_tr("OBSTitles.TextToolSelectedTooltip").arg(name) + QStringLiteral(" (T)"));
+        text_button_->setToolTip(bgl_tr("OBSTitles.TextToolSelectedTooltip").arg(name) + QStringLiteral(" (T)"));
         text_button_->setChecked(true);
     }
 }

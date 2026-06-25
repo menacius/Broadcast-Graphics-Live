@@ -3,7 +3,7 @@
 ## Changes
 
 - Renamed the Prerender Dock option `Play cached frames only` to `Play after rendering` while keeping the existing playback behavior (`cached_frames_only`) intact.
-- Persisted the Prerender Dock playback controls through `QSettings` under the existing `OBSGraphicsStudioPro/Dock` scope:
+- Persisted the Prerender Dock playback controls through `QSettings` under the existing `BroadcastGraphicsLive/Dock` scope:
   - start mode
   - playback mode
   - skip frames

@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace gsp::cache_tile_payload {
+namespace bgs::cache_tile_payload {
 
 inline constexpr int kTileSize = 256;
 
@@ -167,4 +167,4 @@ inline QImage compose_sparse_tiles(const QVector<Tile> &tiles,
     return sparse;
 }
 
-} // namespace gsp::cache_tile_payload
+} // namespace bgs::cache_tile_payload

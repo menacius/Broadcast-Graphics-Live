@@ -337,6 +337,103 @@ static void append_empty_line(TextLayoutData &data,
     data.lines.push_back(line);
 }
 
+/* QGlyphRun boundaries are local to each shaping/style run. The final cluster
+ * of a run must end at the next logical cluster on the line, not at the end of
+ * the complete line. Using a per-run list made style-boundary clusters overlap
+ * all following styled text, so selection rectangles acquired apparent extra
+ * character padding/margins. Finalize every run against one line-wide logical
+ * boundary table and rebuild cursor geometry from that exact table. */
+static void finalize_line_cluster_boundaries(
+    TextLayoutData &data, TextLayoutLine &line,
+    const ParagraphSpan &paragraph, const QString &paragraph_text,
+    const QTextLine &qline)
+{
+    const uint32_t cluster_end_index =
+        static_cast<uint32_t>(data.clusters.size());
+    if (line.cluster_begin >= cluster_end_index)
+        return;
+
+    const size_t line_end = line.byte_start + line.byte_length;
+    std::vector<size_t> logical_starts;
+    logical_starts.reserve(cluster_end_index - line.cluster_begin + 1);
+    for (uint32_t index = line.cluster_begin; index < cluster_end_index; ++index) {
+        const size_t start = std::clamp(data.clusters[index].byte_start,
+                                        line.byte_start, line_end);
+        logical_starts.push_back(start);
+    }
+    logical_starts.push_back(line_end);
+    std::sort(logical_starts.begin(), logical_starts.end());
+    logical_starts.erase(
+        std::unique(logical_starts.begin(), logical_starts.end()),
+        logical_starts.end());
+
+    for (uint32_t index = line.cluster_begin; index < cluster_end_index; ++index) {
+        TextLayoutCluster &cluster = data.clusters[index];
+        const size_t cluster_start = std::clamp(cluster.byte_start,
+                                                 line.byte_start, line_end);
+        const auto next = std::upper_bound(logical_starts.begin(),
+                                           logical_starts.end(), cluster_start);
+        const size_t cluster_end = next == logical_starts.end()
+            ? line_end : *next;
+        cluster.byte_start = cluster_start;
+        cluster.byte_length = cluster_end - cluster_start;
+
+        const int cluster_qstart = qtext_position_from_byte_offset(
+            paragraph_text, cluster_start - paragraph.start);
+        const int cluster_qend = qtext_position_from_byte_offset(
+            paragraph_text, cluster_end - paragraph.start);
+        const qreal cursor_start = qline.cursorToX(cluster_qstart);
+        const qreal cursor_end = qline.cursorToX(cluster_qend);
+        cluster.x = line.x + static_cast<float>(
+            std::min(cursor_start, cursor_end));
+        cluster.y = line.y;
+        cluster.width = std::max(
+            0.0f, static_cast<float>(std::abs(cursor_end - cursor_start)));
+        cluster.height = line.height;
+
+        cluster.boundary_begin = static_cast<uint32_t>(
+            data.cursor_boundaries.size());
+        size_t boundary_offset = cluster_start;
+        while (true) {
+            const int boundary_qpos = qtext_position_from_byte_offset(
+                paragraph_text, boundary_offset - paragraph.start);
+            data.cursor_boundaries.push_back({
+                boundary_offset,
+                line.x + static_cast<float>(qline.cursorToX(boundary_qpos))});
+            if (boundary_offset >= cluster_end)
+                break;
+            size_t following = rich_text_utf8_next_boundary(
+                data.text, boundary_offset + 1);
+            if (following <= boundary_offset || following > cluster_end)
+                following = cluster_end;
+            boundary_offset = following;
+        }
+        cluster.boundary_count = static_cast<uint32_t>(
+            data.cursor_boundaries.size()) - cluster.boundary_begin;
+    }
+
+    const uint32_t run_end_index = static_cast<uint32_t>(data.runs.size());
+    for (uint32_t run_index = line.run_begin; run_index < run_end_index;
+         ++run_index) {
+        TextLayoutRun &run = data.runs[run_index];
+        size_t run_start = line_end;
+        size_t run_end = line.byte_start;
+        const uint32_t last_cluster = std::min<uint32_t>(
+            run.cluster_begin + run.cluster_count, cluster_end_index);
+        for (uint32_t cluster_index = run.cluster_begin;
+             cluster_index < last_cluster; ++cluster_index) {
+            const TextLayoutCluster &cluster = data.clusters[cluster_index];
+            run_start = std::min(run_start, cluster.byte_start);
+            run_end = std::max(run_end,
+                               cluster.byte_start + cluster.byte_length);
+        }
+        if (run_end >= run_start) {
+            run.byte_start = run_start;
+            run.byte_length = run_end - run_start;
+        }
+    }
+}
+
 } // namespace
 
 ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
@@ -606,28 +703,10 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                     cluster.width = std::max(0.0f,
                                              advance_right - advance_left);
                     cluster.height = line.height;
-                    cluster.boundary_begin = static_cast<uint32_t>(
-                        data->cursor_boundaries.size());
-                    const size_t cluster_end = cluster_end_for(cluster_start);
-                    size_t boundary_offset = cluster_start;
-                    while (true) {
-                        const int boundary_qpos = qtext_position_from_byte_offset(
-                            paragraph_text, boundary_offset - paragraph.start);
-                        const float boundary_x = line.x + static_cast<float>(
-                            qline.cursorToX(boundary_qpos));
-                        data->cursor_boundaries.push_back(
-                            {boundary_offset, boundary_x});
-                        if (boundary_offset >= cluster_end)
-                            break;
-                        size_t next = rich_text_utf8_next_boundary(
-                            data->text, boundary_offset + 1);
-                        if (next <= boundary_offset || next > cluster_end)
-                            next = cluster_end;
-                        boundary_offset = next;
-                    }
-                    cluster.boundary_count = static_cast<uint32_t>(
-                        data->cursor_boundaries.size()) -
-                        cluster.boundary_begin;
+                    /* Cursor boundaries are finalized after every glyph
+                     * run on this line has contributed its logical starts. */
+                    cluster.boundary_begin = 0;
+                    cluster.boundary_count = 0;
                     /* Keep ink extents on the glyph records. Cluster bounds
                      * deliberately use cursor advances so spaces, combining
                      * marks, ligatures and RTL selections remain hittable. */
@@ -642,6 +721,8 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                 data->runs.push_back(std::move(run));
             }
 
+            finalize_line_cluster_boundaries(*data, line, paragraph,
+                                             paragraph_text, qline);
             line.run_count = static_cast<uint32_t>(data->runs.size()) -
                              line.run_begin;
             line.cluster_count = static_cast<uint32_t>(data->clusters.size()) -

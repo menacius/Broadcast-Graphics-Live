@@ -2,7 +2,7 @@
 
 ## Scope
 
-Static review of the complete OBS Graphics Studio Pro source tree (53 C/C++ files, approximately 48,700 lines), with emphasis on editor rendering, cache/prerender, persistence, threading, file handling, ownership and shutdown behavior.
+Static review of the complete Broadcast Graphics Live source tree (53 C/C++ files, approximately 48,700 lines), with emphasis on editor rendering, cache/prerender, persistence, threading, file handling, ownership and shutdown behavior.
 
 A full binary build was not possible in the audit environment because the OBS `libobsConfig.cmake` package is unavailable. The code was nevertheless checked structurally and CMake configuration was run up to dependency resolution.
 

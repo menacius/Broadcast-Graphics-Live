@@ -70,7 +70,7 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
     char *errors = nullptr;
     gs_effect_t *effect = gs_effect_create_from_file(path, &errors);
     if (!effect) {
-        OGS_LOG_WARNING("Effects", QStringLiteral("Failed to compile effect %1 from %2: %3")
+        BGL_LOG_WARNING("Effects", QStringLiteral("Failed to compile effect %1 from %2: %3")
                                        .arg(QString::fromUtf8(def->id),
                                             QString::fromUtf8(path),
                                             QString::fromUtf8(errors ? errors : "unknown shader error")));
@@ -83,7 +83,7 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
 
     if (errors)
         bfree(errors);
-    OGS_LOG_DEBUG("Effects", QStringLiteral("Compiled effect %1 from %2")
+    BGL_LOG_DEBUG("Effects", QStringLiteral("Compiled effect %1 from %2")
                                  .arg(QString::fromUtf8(def->id), QString::fromUtf8(path)));
     bfree(path);
 

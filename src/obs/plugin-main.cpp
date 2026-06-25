@@ -1,5 +1,5 @@
 /*
- * OBS Graphics Studio Pro Plugin - plugin-main.cpp
+ * Broadcast Graphics Live Plugin - plugin-main.cpp
  * Entry point: registers the source, dock, and module lifecycle.
  */
 
@@ -51,7 +51,7 @@ static void save_obs_dock_layout(QMainWindow *main)
     if (!main || !g_dock)
         return;
 
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kObsDockLayoutSettingsGroup));
     settings.setValue(QString::fromUtf8(kObsMainWindowStateKey),
                       main->saveState(kObsDockLayoutStateVersion));
@@ -64,7 +64,7 @@ static void restore_obs_dock_layout(QMainWindow *main)
     if (!main || !g_dock)
         return;
 
-    QSettings settings(QStringLiteral("OBSGraphicsStudioPro"), QStringLiteral("Dock"));
+    QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
     settings.beginGroup(QString::fromUtf8(kObsDockLayoutSettingsGroup));
     const QByteArray state = settings.value(QString::fromUtf8(kObsMainWindowStateKey)).toByteArray();
     settings.endGroup();
@@ -79,7 +79,7 @@ static QMenu *find_docks_menu(QMainWindow *main)
     for (auto *menu : main->menuBar()->findChildren<QMenu *>()) {
         QString title = menu->title();
         title.remove('&');
-        if (title.compare(obsgs_tr("OBSTitles.DocksMenu"), Qt::CaseInsensitive) == 0)
+        if (title.compare(bgl_tr("OBSTitles.DocksMenu"), Qt::CaseInsensitive) == 0)
             return menu;
     }
     return nullptr;
@@ -102,7 +102,7 @@ static void destroy_dock_ui()
 
     if (g_dock) {
         QObject::disconnect(g_dock, nullptr, nullptr, nullptr);
-        obs_frontend_remove_dock("obs-graphics-studio-pro-dock");
+        obs_frontend_remove_dock("broadcast-graphics-live-dock");
         delete g_dock;
         g_dock = nullptr;
     }
@@ -113,8 +113,8 @@ static void add_docks_menu_entry(QMainWindow *main)
     QMenu *docks_menu = find_docks_menu(main);
     if (!docks_menu || !g_dock || g_dock_menu_action) return;
 
-    g_dock_menu_action = docks_menu->addAction(obsgs_tr("OBSTitles.DockName"));
-    g_dock_menu_action->setObjectName("obs-graphics-studio-pro-docks-menu-action");
+    g_dock_menu_action = docks_menu->addAction(bgl_tr("OBSTitles.DockName"));
+    g_dock_menu_action->setObjectName("broadcast-graphics-live-docks-menu-action");
     g_dock_menu_action->setCheckable(true);
     g_dock_menu_action->setChecked(g_dock->isVisible());
     QObject::connect(g_dock_menu_action, &QAction::triggered, g_dock,
@@ -130,8 +130,8 @@ static void add_docks_menu_entry(QMainWindow *main)
 /* ── module load ────────────────────────────────────────────────── */
 bool obs_module_load(void)
 {
-    blog(LOG_INFO, "[OBS Graphics Studio Pro] Loading plugin v%s", PLUGIN_VERSION);
-    OGS_LOG_INFO("Plugin", QStringLiteral("Loading plugin version %1").arg(QStringLiteral(PLUGIN_VERSION)));
+    blog(LOG_INFO, "[Broadcast Graphics Live] Loading plugin v%s", PLUGIN_VERSION);
+    BGL_LOG_INFO("Plugin", QStringLiteral("Loading plugin version %1").arg(QStringLiteral(PLUGIN_VERSION)));
 
     /* 1. Initialise persistent title store */
     TitleDataStore::instance().load();
@@ -141,11 +141,11 @@ bool obs_module_load(void)
     title_hotkeys_register();
 
     /* 3. Add global preferences entry and defer dock/hotkey creation until the OBS UI is ready */
-    obs_frontend_add_tools_menu_item("OBS Graphics Studio Pro Preferences", open_preferences_from_tools_menu, nullptr);
+    obs_frontend_add_tools_menu_item("Broadcast Graphics Live Preferences", open_preferences_from_tools_menu, nullptr);
     obs_frontend_add_event_callback(on_frontend_event, nullptr);
 
-    blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin loaded.");
-    OGS_LOG_INFO("Plugin", QStringLiteral("Plugin loaded"));
+    blog(LOG_INFO, "[Broadcast Graphics Live] Plugin loaded.");
+    BGL_LOG_INFO("Plugin", QStringLiteral("Plugin loaded"));
     return true;
 }
 
@@ -161,19 +161,19 @@ void obs_module_unload(void)
      * index, and avoids deleting files on the OBS frontend thread. */
     CacheManager::instance().shutdownWorker();
     if (TitlePreferences::clear_cache_on_exit()) {
-        OGS_LOG_INFO("Plugin", QStringLiteral("Detaching frame cache on module unload"));
+        BGL_LOG_INFO("Plugin", QStringLiteral("Detaching frame cache on module unload"));
         CacheManager::instance().clearAll();
     }
     release_title_gpu_render_resources();
-    blog(LOG_INFO, "[OBS Graphics Studio Pro] Plugin unloaded.");
-    OGS_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
+    blog(LOG_INFO, "[Broadcast Graphics Live] Plugin unloaded.");
+    BGL_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
 }
 
 /* ── frontend event handler ─────────────────────────────────────── */
 static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 {
     if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
-        OGS_LOG_INFO("Plugin", QStringLiteral("Frontend finished loading"));
+        BGL_LOG_INFO("Plugin", QStringLiteral("Frontend finished loading"));
         TitleDataStore::instance().load();
 
         QMainWindow *main =
@@ -186,10 +186,10 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         QObject::connect(g_dock, &QObject::destroyed, []() {
             g_dock = nullptr;
         });
-        g_dock->setObjectName("OBSGraphicsStudioProDock");
-        g_dock->setWindowTitle(obsgs_tr("OBSTitles.DockName"));
+        g_dock->setObjectName("BroadcastGraphicsLiveDock");
+        g_dock->setWindowTitle(bgl_tr("OBSTitles.DockName"));
 
-        obs_frontend_add_custom_qdock("obs-graphics-studio-pro-dock", g_dock);
+        obs_frontend_add_custom_qdock("broadcast-graphics-live-dock", g_dock);
         QTimer::singleShot(0, g_dock, [main]() { restore_obs_dock_layout(main); });
         QObject::connect(g_dock, &QDockWidget::topLevelChanged, g_dock,
                          [main]() { save_obs_dock_layout(main); });
@@ -200,12 +200,12 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
         add_docks_menu_entry(main);
         g_frontend_ready = true;
         title_hotkeys_register();
-        blog(LOG_INFO, "[OBS Graphics Studio Pro] Dock and title cue hotkeys registered.");
-        OGS_LOG_INFO("Plugin", QStringLiteral("Dock and title cue hotkeys registered"));
+        blog(LOG_INFO, "[Broadcast Graphics Live] Dock and title cue hotkeys registered.");
+        BGL_LOG_INFO("Plugin", QStringLiteral("Dock and title cue hotkeys registered"));
     }
 
     if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP) {
-        OGS_LOG_INFO("Plugin", QStringLiteral("Scene collection cleanup"));
+        BGL_LOG_INFO("Plugin", QStringLiteral("Scene collection cleanup"));
         /* OBS emits a cleanup event during initial startup before the scene
          * collection has finished loading. The title store has not changed at
          * that point, so writing it is both unnecessary and vulnerable to
@@ -224,7 +224,7 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
     }
 
     if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED && g_frontend_ready) {
-        OGS_LOG_INFO("Plugin", QStringLiteral("Scene collection changed"));
+        BGL_LOG_INFO("Plugin", QStringLiteral("Scene collection changed"));
         TitleDataStore::instance().load();
         title_source_end_scene_collection_transition();
         title_hotkeys_register();
@@ -233,7 +233,7 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
     }
 
     if (event == OBS_FRONTEND_EVENT_EXIT) {
-        OGS_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
+        BGL_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
         /* Cache shutdown/rotation is performed once from obs_module_unload(),
          * after the prerender worker has stopped. Doing it here as well caused
          * duplicate clears while sources and the worker were still active. */

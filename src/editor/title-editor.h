@@ -72,6 +72,7 @@ class QToolButton;
 class QScrollBar;
 class QMenuBar;
 class QMenu;
+class QStatusBar;
 class QActionGroup;
 class QVBoxLayout;
 class QTextEdit;
@@ -133,7 +134,12 @@ private:
     bool confirm_save_before_close();
     void new_title_contents();
     bool save_title();
-    bool persist_title_changes(bool update_preview_screenshot, bool show_saved_status);
+    bool persist_title_changes(bool update_preview_screenshot, bool show_saved_status,
+                               bool autosave_operation = false);
+    void perform_autosave();
+    void update_autosave_timer();
+    void update_statusbar_autosave_summary();
+    void show_editor_activity(const QString &message, int timeout_ms = 4000);
     void set_live_editing_enabled(bool enabled);
     void save_live_edit();
     void save_title_as_new();
@@ -158,7 +164,7 @@ private:
     void select_after_layer_list_mutation(const std::string &layer_id);
     std::vector<std::string> selected_layer_ids_for_operation() const;
     std::vector<std::shared_ptr<Layer>> clone_layers_for_insert(const std::vector<std::shared_ptr<Layer>> &layers, bool suffix_name) const;
-    void apply_picked_color_to_selection(const QColor &color);
+    void apply_picked_color_to_selection(const QColor &color, bool commit = true);
     void duplicate_selected_layers();
     void copy_selected_layer();
     void cut_selected_layer();
@@ -245,6 +251,8 @@ private:
     QTimer                *layout_settle_timer_ = nullptr;
     QTimer                *clock_timer_ = nullptr;
     QTimer                *cache_invalidation_timer_ = nullptr;
+    QTimer                *autosave_timer_ = nullptr;
+    QTimer                *status_activity_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
     QElapsedTimer          cache_reprioritize_clock_;
     double                 display_refresh_hz_ = 60.0;
@@ -300,6 +308,8 @@ private:
     QLabel          *title_lbl_ = nullptr;
     QLineEdit       *title_name_edit_ = nullptr;
     QLabel          *dirty_indicator_ = nullptr;
+    QStatusBar      *editor_status_bar_ = nullptr;
+    QLabel          *status_activity_label_ = nullptr;
 
     QToolBar        *toolbar_   = nullptr;
     QWidget         *dynamic_toolbar_widget_ = nullptr;

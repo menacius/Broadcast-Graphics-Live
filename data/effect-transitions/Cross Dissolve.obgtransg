@@ -1,0 +1,10 @@
+{
+  "format": "broadcast-graphics-live-general-transition",
+  "version": 1,
+  "id": "general.cross-dissolve",
+  "name": "Cross Dissolve",
+  "type": "dissolve",
+  "easing": "ease-in-out",
+  "duration": 0.5,
+  "category": "Transitions/General/Dissolve"
+}

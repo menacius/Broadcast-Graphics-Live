@@ -21,12 +21,12 @@ int main()
             row[x] = qRgba(255, 255, 255, 255);
     }
 
-    gsp::cache_frame_payload::Placement placement;
+    bgs::cache_frame_payload::Placement placement;
     placement.x = 0;
     placement.y = 0;
     placement.canvas_width = canvas_width;
     placement.canvas_height = canvas_height;
-    const auto tiles = gsp::cache_tile_payload::extract_nonempty_tiles(
+    const auto tiles = bgs::cache_tile_payload::extract_nonempty_tiles(
         frame, placement);
     assert(tiles.size() == 2);
     assert(tiles[0].image.width() == 256);
@@ -38,11 +38,11 @@ int main()
         stored_pixels += quint64(tile.image.width()) * quint64(tile.image.height());
     assert(stored_pixels * 8 < quint64(canvas_width) * quint64(canvas_height));
 
-    const QImage composed = gsp::cache_tile_payload::compose_sparse_tiles(
+    const QImage composed = bgs::cache_tile_payload::compose_sparse_tiles(
         tiles, canvas_width, canvas_height);
     assert(!composed.isNull());
-    gsp::cache_frame_payload::Placement composed_placement;
-    assert(gsp::cache_frame_payload::read_placement(
+    bgs::cache_frame_payload::Placement composed_placement;
+    assert(bgs::cache_frame_payload::read_placement(
         composed, composed_placement));
     assert(composed_placement.x == 0);
     assert(composed_placement.y == 0);
@@ -56,10 +56,10 @@ int main()
     transparent.fill(Qt::transparent);
     placement.canvas_width = 320;
     placement.canvas_height = 180;
-    const auto no_tiles = gsp::cache_tile_payload::extract_nonempty_tiles(
+    const auto no_tiles = bgs::cache_tile_payload::extract_nonempty_tiles(
         transparent, placement);
     assert(no_tiles.isEmpty());
-    const QImage empty = gsp::cache_tile_payload::compose_sparse_tiles(
+    const QImage empty = bgs::cache_tile_payload::compose_sparse_tiles(
         no_tiles, 320, 180);
     assert(empty.size() == QSize(1, 1));
 

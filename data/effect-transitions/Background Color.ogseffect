@@ -1,9 +1,0 @@
-{
-  "format": "obs-gsp-effect-preset",
-  "version": 1,
-  "kind": "effect",
-  "id": "background-color",
-  "name": "Background Color",
-  "type": "background-color",
-  "category": "Effects/Generate"
-}

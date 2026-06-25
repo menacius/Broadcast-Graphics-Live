@@ -13,7 +13,7 @@
 /* Shared live-text cue structure contract. Dock editing, OBS hotkeys, source
  * playback and cache generation must agree on exposed-layer order and row
  * remapping; local copies of these helpers previously made that easy to break. */
-namespace gsp::live_text {
+namespace bgs::live_text {
 
 inline bool is_exposed_cue_layer(const std::shared_ptr<Layer> &layer)
 {
@@ -147,4 +147,4 @@ inline void normalize_live_text_rows(
     ensure_live_text_row_ids(*title);
 }
 
-} // namespace gsp::live_text
+} // namespace bgs::live_text

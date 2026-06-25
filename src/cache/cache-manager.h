@@ -439,7 +439,7 @@ private:
     RenderQueueManager queue_;
     CacheInvalidationManager invalidation_;
     std::atomic_bool paused_{false};
-    std::atomic_bool cache_enabled_{true};
+    std::atomic_bool cache_enabled_{false};
     std::atomic_bool interactive_bypass_{false};
     mutable QMutex editor_focus_mutex_;
     QString editor_focus_title_id_;

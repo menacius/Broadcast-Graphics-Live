@@ -28,5 +28,5 @@
 
 ## Verification
 
-- `cmake --build build --config RelWithDebInfo --target obs-graphics-studio-pro` passes after the split.
-- `ctest --test-dir build -C RelWithDebInfo --output-on-failure` finds no tests because this build was configured with `OBS_GSP_BUILD_TESTS=OFF`.
+- `cmake --build build --config RelWithDebInfo --target broadcast-graphics-live` passes after the split.
+- `ctest --test-dir build -C RelWithDebInfo --output-on-failure` finds no tests because this build was configured with `OBS_BGS_BUILD_TESTS=OFF`.

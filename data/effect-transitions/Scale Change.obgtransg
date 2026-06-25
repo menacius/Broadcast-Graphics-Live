@@ -1,0 +1,11 @@
+{
+  "format": "broadcast-graphics-live-general-transition",
+  "version": 1,
+  "id": "general.scale-change",
+  "name": "Scale Change",
+  "type": "scale",
+  "easing": "ease-in-out",
+  "duration": 0.55,
+  "scaleFrom": 0.72,
+  "category": "Transitions/General/Scale"
+}

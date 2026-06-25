@@ -50,19 +50,19 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
         ch->addWidget(icon);
     };
     add_header("◉", 20);
-    add_header_icon("layer-lock.svg", 20, obsgs_tr("OBSTitles.LockLayerTooltip"));
+    add_header_icon("layer-lock.svg", 20, bgl_tr("OBSTitles.LockLayerTooltip"));
     add_header("", 12);
     add_header("#", 24);
     add_header("T", 18);
     add_header("", 24); // FX indicator column
     add_header("Matte", 44, Qt::AlignLeft | Qt::AlignVCenter);
-    QLabel *name = new QLabel(obsgs_tr("OBSTitles.LayerNameHeader"), columns);
+    QLabel *name = new QLabel(bgl_tr("OBSTitles.LayerNameHeader"), columns);
     name->setStyleSheet(QStringLiteral("color:%1;font-size:10px;font-weight:bold;")
                             .arg(disabled_text.name(QColor::HexRgb)));
     ch->addWidget(name, 1);
-    add_header(obsgs_tr("OBSTitles.ModeHeader"), 110, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(obsgs_tr("OBSTitles.ParentHeader"), 174, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(obsgs_tr("OBSTitles.MaskHeader"), 178, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.ModeHeader"), 110, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.ParentHeader"), 174, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.MaskHeader"), 178, Qt::AlignLeft | Qt::AlignVCenter);
     vl->addWidget(columns);
 
     list_ = new QListWidget(this);
@@ -116,33 +116,33 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
         return button;
     };
 
-    btn_add_ = make_layer_tool(obsgs_tr("OBSTitles.AddLayer"),
+    btn_add_ = make_layer_tool(bgl_tr("OBSTitles.AddLayer"),
                                obs_icon("add.svg"),
-                               obsgs_tr("OBSTitles.AddLayerTooltip"));
+                               bgl_tr("OBSTitles.AddLayerTooltip"));
     auto *add_menu = new QMenu(btn_add_);
     add_menu->addAction(obs_icon("text.svg"),
-                        obsgs_tr("OBSTitles.Text"), this, &LayerStack::on_add_text);
+                        bgl_tr("OBSTitles.Text"), this, &LayerStack::on_add_text);
     add_menu->addAction(obs_icon("clock.svg"),
-                        obsgs_tr("OBSTitles.Clock"), this, &LayerStack::on_add_clock);
+                        bgl_tr("OBSTitles.Clock"), this, &LayerStack::on_add_clock);
     add_menu->addAction(obs_icon("text.svg"),
-                        obsgs_tr("OBSTitles.Ticker"), this, &LayerStack::on_add_ticker);
+                        bgl_tr("OBSTitles.Ticker"), this, &LayerStack::on_add_ticker);
     add_menu->addAction(obs_icon("shape.svg"),
-                        obsgs_tr("OBSTitles.Shape"), this, &LayerStack::on_add_rect);
+                        bgl_tr("OBSTitles.Shape"), this, &LayerStack::on_add_rect);
     add_menu->addAction(obs_icon("image.svg"),
-                        obsgs_tr("OBSTitles.Image"), this, &LayerStack::on_add_image);
+                        bgl_tr("OBSTitles.Image"), this, &LayerStack::on_add_image);
     btn_add_->setMenu(add_menu);
     btn_add_->setPopupMode(QToolButton::InstantPopup);
     btn_add_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
 
-    btn_move_up_ = make_layer_tool(obsgs_tr("OBSTitles.MoveLayerUp"),
+    btn_move_up_ = make_layer_tool(bgl_tr("OBSTitles.MoveLayerUp"),
                                    obs_icon("move-up.svg"),
-                                   obsgs_tr("OBSTitles.MoveLayerUpTooltip"));
-    btn_move_down_ = make_layer_tool(obsgs_tr("OBSTitles.MoveLayerDown"),
+                                   bgl_tr("OBSTitles.MoveLayerUpTooltip"));
+    btn_move_down_ = make_layer_tool(bgl_tr("OBSTitles.MoveLayerDown"),
                                      obs_icon("move-down.svg"),
-                                     obsgs_tr("OBSTitles.MoveLayerDownTooltip"));
-    btn_del_ = make_layer_tool(obsgs_tr("OBSTitles.DeleteLayer"),
+                                     bgl_tr("OBSTitles.MoveLayerDownTooltip"));
+    btn_del_ = make_layer_tool(bgl_tr("OBSTitles.DeleteLayer"),
                                obs_icon("delete.svg"),
-                               obsgs_tr("OBSTitles.DeleteLayerTooltip"));
+                               bgl_tr("OBSTitles.DeleteLayerTooltip"));
     btn_move_up_->setEnabled(false);
     btn_move_down_->setEnabled(false);
     btn_del_->setEnabled(false);
@@ -308,9 +308,9 @@ void LayerStack::populate()
                                        is_mask_object ? "layer-mask-object.svg" : "layer-hidden.svg",
                                        l->visible,
                                        is_mask_object
-                                           ? obsgs_tr("OBSTitles.LayerMaskObjectTooltip")
-                                           : obsgs_tr("OBSTitles.LayerVisibilityTooltip"));
-        QToolButton *lock = make_toggle("layer-lock.svg", "layer-unlock.svg", l->locked, obsgs_tr("OBSTitles.LockLayerTooltip"));
+                                           ? bgl_tr("OBSTitles.LayerMaskObjectTooltip")
+                                           : bgl_tr("OBSTitles.LayerVisibilityTooltip"));
+        QToolButton *lock = make_toggle("layer-lock.svg", "layer-unlock.svg", l->locked, bgl_tr("OBSTitles.LockLayerTooltip"));
         connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
             list_->setCurrentItem(item);
             emit layer_visibility_changed(id, checked);
@@ -324,7 +324,7 @@ void LayerStack::populate()
         expand->setCheckable(true);
         expand->setChecked(l->properties_expanded);
         expand->setIcon(obs_icon(l->properties_expanded ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
-        expand->setToolTip(obsgs_tr("OBSTitles.ShowKeyframedPropertiesTooltip"));
+        expand->setToolTip(bgl_tr("OBSTitles.ShowKeyframedPropertiesTooltip"));
         expand->setFixedSize(16, 20);
         expand->setIconSize(QSize(12, 12));
         expand->setAutoRaise(true);
@@ -353,11 +353,11 @@ void LayerStack::populate()
 
         const bool has_enabled_effect_stack = std::any_of(l->effects.begin(), l->effects.end(),
             [](const LayerEffect &effect) { return effect.enabled; });
-        QLabel *fx_indicator = new QLabel(has_enabled_effect_stack ? obsgs_tr("OBSTitles.FX") : QString(), row_widget);
+        QLabel *fx_indicator = new QLabel(has_enabled_effect_stack ? bgl_tr("OBSTitles.FX") : QString(), row_widget);
         fx_indicator->setFixedSize(24, 18);
         fx_indicator->setAlignment(Qt::AlignCenter);
         fx_indicator->setToolTip(has_enabled_effect_stack
-            ? obsgs_tr("OBSTitles.LayerEffectStackTooltip")
+            ? bgl_tr("OBSTitles.LayerEffectStackTooltip")
             : QString());
         fx_indicator->setStyleSheet(has_enabled_effect_stack
             ? QStringLiteral("QLabel{background:%1;border:1px solid %2;border-radius:2px;color:%3;font-size:9px;font-weight:bold;}")
@@ -383,17 +383,17 @@ void LayerStack::populate()
         const bool used_as_track_matte = is_mask_object;
         const bool uses_track_matte = l->mask_mode != MaskMode::None && !l->mask_source_id.empty();
         add_matte_indicator("timeline-mask.svg",
-                            obsgs_tr("OBSTitles.TrackMatteTooltip"),
+                            bgl_tr("OBSTitles.TrackMatteTooltip"),
                             used_as_track_matte);
         add_matte_indicator((l->mask_mode == MaskMode::InvertedAlpha || l->mask_mode == MaskMode::InvertedLuma) ? "timeline-mask-inverted.svg" : "timeline-mask.svg",
-                            obsgs_tr("OBSTitles.MaskedLayerTooltip"),
+                            bgl_tr("OBSTitles.MaskedLayerTooltip"),
                             uses_track_matte);
 
         QLineEdit *name = new QLineEdit(QString::fromStdString(l->name), row_widget);
         name->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         name->setFrame(false);
         name->setReadOnly(l->locked);
-        name->setToolTip(obsgs_tr("OBSTitles.RenameLayerTooltip"));
+        name->setToolTip(bgl_tr("OBSTitles.RenameLayerTooltip"));
         name->setStyleSheet(l->locked
             ? QStringLiteral("QLineEdit{color:%1;background:transparent;border:none;}")
                   .arg(disabled_text.name(QColor::HexRgb))
@@ -410,13 +410,13 @@ void LayerStack::populate()
         QComboBox *mode = new QComboBox(row_widget);
         mode->setFixedWidth(110);
         mode->setStyleSheet(combo_style);
-        mode->setToolTip(obsgs_tr("OBSTitles.LayerModesTooltip"));
-        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
-        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
-        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
-        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
-        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
-        mode->addItem(obs_icon("timeline-modes.svg"), obsgs_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
+        mode->setToolTip(bgl_tr("OBSTitles.LayerModesTooltip"));
+        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
+        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeMultiply"), (int)EffectBlendMode::Multiply);
+        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeAdditive"), (int)EffectBlendMode::Additive);
+        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeScreen"), (int)EffectBlendMode::Screen);
+        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeOverlay"), (int)EffectBlendMode::Overlay);
+        mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
         int mode_idx = mode->findData((int)l->blend_mode);
         mode->setCurrentIndex(mode_idx >= 0 ? mode_idx : 0);
         connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -427,7 +427,7 @@ void LayerStack::populate()
 
         QToolButton *pick_whip = new QToolButton(row_widget);
         pick_whip->setIcon(obs_icon("timeline-pick-whip.svg"));
-        pick_whip->setToolTip(obsgs_tr("OBSTitles.ParentPickWhipTooltip"));
+        pick_whip->setToolTip(bgl_tr("OBSTitles.ParentPickWhipTooltip"));
         pick_whip->setFixedSize(20, 20);
         pick_whip->setIconSize(QSize(14, 14));
         pick_whip->setAutoRaise(true);
@@ -437,8 +437,8 @@ void LayerStack::populate()
         QComboBox *parent = new QComboBox(row_widget);
         parent->setFixedWidth(150);
         parent->setStyleSheet(combo_style);
-        parent->setToolTip(obsgs_tr("OBSTitles.ParentLayerTooltip"));
-        parent->addItem(obsgs_tr("OBSTitles.None"), "");
+        parent->setToolTip(bgl_tr("OBSTitles.ParentLayerTooltip"));
+        parent->addItem(bgl_tr("OBSTitles.None"), "");
         for (const auto &candidate : title_->layers) {
             if (candidate->id == l->id) continue;
             parent->addItem(QString::fromStdString(candidate->name), QString::fromStdString(candidate->id));
@@ -454,8 +454,8 @@ void LayerStack::populate()
         QComboBox *mask = new QComboBox(row_widget);
         mask->setFixedWidth(178);
         mask->setStyleSheet(combo_style);
-        mask->setToolTip(obsgs_tr("OBSTitles.TrackMatteTooltip"));
-        mask->addItem(obs_icon("timeline-mask.svg"), obsgs_tr("OBSTitles.NoMask"), QVariant(QStringLiteral("|0")));
+        mask->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
+        mask->addItem(obs_icon("timeline-mask.svg"), bgl_tr("OBSTitles.NoMask"), QVariant(QStringLiteral("|0")));
         for (const auto &candidate : title_->layers) {
             if (candidate->id == l->id) continue;
             mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " α"),
@@ -511,7 +511,7 @@ void LayerStack::populate()
             diamond_indicator->setFixedSize(18, 20);
             diamond_indicator->setAutoRaise(true);
             diamond_indicator->setCursor(Qt::PointingHandCursor);
-            diamond_indicator->setToolTip(obsgs_tr("OBSTitles.ToggleKeyframe"));
+            diamond_indicator->setToolTip(bgl_tr("OBSTitles.ToggleKeyframe"));
             diamond_indicator->setStyleSheet(QString("QToolButton{border:none;background:transparent;color:%1;}")
                                                   .arg(layer_color(*l, row).name()));
             connect(diamond_indicator, &QToolButton::clicked, this,
@@ -719,12 +719,12 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
 
     QMenu menu(this);
     style_menu(&menu);
-    QAction *clone = menu.addAction(obsgs_tr("OBSTitles.CloneLayer"));
-    QAction *copy = menu.addAction(obsgs_tr("OBSTitles.CopyLayer"));
-    QAction *paste = menu.addAction(obsgs_tr("OBSTitles.PasteLayer"));
+    QAction *clone = menu.addAction(bgl_tr("OBSTitles.CloneLayer"));
+    QAction *copy = menu.addAction(bgl_tr("OBSTitles.CopyLayer"));
+    QAction *paste = menu.addAction(bgl_tr("OBSTitles.PasteLayer"));
     paste->setEnabled(layer_clipboard_available_);
     menu.addSeparator();
-    QAction *del = menu.addAction(obsgs_tr("OBSTitles.DeleteLayer"));
+    QAction *del = menu.addAction(bgl_tr("OBSTitles.DeleteLayer"));
 
     QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
     if (chosen == clone) emit clone_layer_requested(id);

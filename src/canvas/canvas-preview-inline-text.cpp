@@ -342,7 +342,7 @@ void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
             }
             QFontMetricsF metrics(inline_text_editor_->currentFont());
             const double min_w = std::max(
-                24.0, metrics.horizontalAdvance(obsgs_tr("OBSTitles.M")) /
+                24.0, metrics.horizontalAdvance(bgl_tr("OBSTitles.M")) /
                           visual_scale);
             const double min_h =
                 std::max(12.0, metrics.lineSpacing() / visual_scale);
@@ -693,6 +693,42 @@ void CanvasPreview::resume_inline_text_edit_after_gradient()
         !inline_text_suspended_for_gradient_)
         return;
 
+    /* Gradient drags write directly to the canonical rich-text model.  The
+     * hidden QTextEdit still contains its pre-drag formatting, so merely
+     * showing it again would let the next text sync overwrite the gradient
+     * edit.  Rebuild the adapter once from the canonical model and preserve
+     * the user's cursor/selection. */
+    if (title_) {
+        if (auto layer = title_->find_layer(inline_text_layer_id_)) {
+            const QTextCursor saved_cursor = inline_text_editor_->textCursor();
+            const int anchor = saved_cursor.anchor();
+            const int position = saved_cursor.position();
+            const bool was_updating_inline_text_editor = updating_inline_text_editor_;
+            updating_inline_text_editor_ = true;
+            {
+                QSignalBlocker blocker(inline_text_editor_);
+                configure_inline_text_editor(*layer);
+                const double visual_scale = inline_text_visual_scale(*layer);
+                const double local_time = std::max(0.0, playhead_ - layer->in_time);
+                const RichTextDocument editor_model =
+                    rich_text_document_for_editor_time(*layer, local_time);
+                populate_qtext_document_from_rich_text(inline_text_editor_->document(),
+                                                       editor_model, visual_scale);
+                inline_text_last_visual_scale_ = visual_scale;
+
+                QTextCursor restored(inline_text_editor_->document());
+                const int text_len = inline_text_editor_->toPlainText().size();
+                restored.setPosition(std::clamp(anchor, 0, text_len));
+                restored.setPosition(std::clamp(position, 0, text_len),
+                                     QTextCursor::KeepAnchor);
+                inline_text_editor_->setTextCursor(restored);
+                if (auto *doc = inline_text_editor_->document())
+                    doc->setModified(false);
+            }
+            updating_inline_text_editor_ = was_updating_inline_text_editor;
+        }
+    }
+
     inline_text_suspended_for_gradient_ = false;
     position_text_editor();
     inline_text_editor_->show();
@@ -708,7 +744,12 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
     committing_inline_text_ = true;
     const std::string layer_id = inline_text_layer_id_;
 
-    if (accept_changes)
+    /* Suspension flushes all pending QTextEdit changes before the gradient tool
+     * takes control, after which gradient edits are written directly to the
+     * canonical model.  Syncing the hidden, pre-drag adapter here would undo
+     * those edits when the user leaves the gradient tool without first
+     * returning to text editing. */
+    if (accept_changes && !inline_text_suspended_for_gradient_)
         sync_inline_text_layer(true);
 
     inline_text_layer_id_.clear();

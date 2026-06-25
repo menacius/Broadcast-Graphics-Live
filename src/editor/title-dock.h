@@ -1,7 +1,7 @@
 /*
  * title-dock.h
  *
- * Part 2: OBS Dock – "OBS Graphics Studio Pro" panel.
+ * Part 2: OBS Dock – "Broadcast Graphics Live" panel.
  *
  * Shows a list of all saved titles with:
  *   • Live thumbnail preview

@@ -8,11 +8,11 @@
 
 class QMimeData;
 
-namespace gsp::transitions {
+namespace bgs::transitions {
 
-inline constexpr const char *kTransitionPresetMimeType = "application/x-obs-gsp-transition-preset";
-inline constexpr const char *kTextTransitionExtension = ".osgtranst";
-inline constexpr const char *kGeneralTransitionExtension = ".osgtransg";
+inline constexpr const char *kTransitionPresetMimeType = "application/x-obs-bgs-transition-preset";
+inline constexpr const char *kTextTransitionExtension = ".obgtranst";
+inline constexpr const char *kGeneralTransitionExtension = ".obgtransg";
 
 struct TransitionPresetDescriptor {
     QString file_path;
@@ -41,4 +41,4 @@ bool transition_direction_from_id(const QString &id, LayerTransitionDirection *d
 QString transition_easing_id(EasingType easing);
 bool transition_easing_from_id(const QString &id, EasingType *easing);
 
-} // namespace gsp::transitions
+} // namespace bgs::transitions

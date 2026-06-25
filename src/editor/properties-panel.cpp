@@ -53,7 +53,7 @@ static QString properties_color_libraries_path()
 {
     QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (base.isEmpty())
-        base = QDir::homePath() + QStringLiteral("/OBS Graphics Studio Pro");
+        base = QDir::homePath() + QStringLiteral("/Broadcast Graphics Live");
     QDir dir(base);
     dir.mkpath(QStringLiteral("palettes"));
     return dir.filePath(QStringLiteral("palettes/user-color-libraries.palette.json"));
@@ -99,7 +99,7 @@ static void properties_limit_gradient_stop_color_dialog(color_widgets::ColorDial
             const bool is_picker = buttons->buttonRole(button) == QDialogButtonBox::ActionRole;
             button->setVisible(is_picker);
             if (is_picker)
-                button->setToolTip(obsgs_tr("OBSTitles.PickColor"));
+                button->setToolTip(bgl_tr("OBSTitles.PickColor"));
         }
     }
     dialog->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -368,38 +368,38 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_transform_size_lock_->setChecked(true);
     spn_rot_     = mk_dspin(-9999,  9999,  0.5);
     spn_opacity_ = mk_dspin(0.0,   1.0,  0.01);
-    chk_scene_mask_ = new QCheckBox(obsgs_tr("OBSTitles.UseAsSceneMask"), inner);
-    chk_scene_mask_->setToolTip(obsgs_tr("OBSTitles.SceneMaskRenderTooltip"));
+    chk_scene_mask_ = new QCheckBox(bgl_tr("OBSTitles.UseAsSceneMask"), inner);
+    chk_scene_mask_->setToolTip(bgl_tr("OBSTitles.SceneMaskRenderTooltip"));
     style_checkbox(chk_scene_mask_);
-    chk_shape_scale_stroke_ = new QCheckBox(obsgs_tr("OBSTitles.ScaleStroke"), inner);
-    chk_shape_scale_stroke_->setToolTip(obsgs_tr("OBSTitles.ScaleStrokeTooltip"));
+    chk_shape_scale_stroke_ = new QCheckBox(bgl_tr("OBSTitles.ScaleStroke"), inner);
+    chk_shape_scale_stroke_->setToolTip(bgl_tr("OBSTitles.ScaleStrokeTooltip"));
     style_checkbox(chk_shape_scale_stroke_);
-    chk_shape_scale_corners_ = new QCheckBox(obsgs_tr("OBSTitles.ScaleCorners"), inner);
-    chk_shape_scale_corners_->setToolTip(obsgs_tr("OBSTitles.ScaleCornersTooltip"));
+    chk_shape_scale_corners_ = new QCheckBox(bgl_tr("OBSTitles.ScaleCorners"), inner);
+    chk_shape_scale_corners_->setToolTip(bgl_tr("OBSTitles.ScaleCornersTooltip"));
     style_checkbox(chk_shape_scale_corners_);
     spn_origin_x_ = mk_dspin(0.0, 1.0, 0.05);
     spn_origin_y_ = mk_dspin(0.0, 1.0, 0.05);
     spn_origin_x_->setDecimals(2);
     spn_origin_y_->setDecimals(2);
-    spn_origin_x_->setToolTip(obsgs_tr("OBSTitles.OriginXTooltip"));
-    spn_origin_y_->setToolTip(obsgs_tr("OBSTitles.OriginYTooltip"));
+    spn_origin_x_->setToolTip(bgl_tr("OBSTitles.OriginXTooltip"));
+    spn_origin_y_->setToolTip(bgl_tr("OBSTitles.OriginYTooltip"));
     cmb_anchor_ = new QComboBox(inner);
-    for (const QString &label : QStringList{obsgs_tr("OBSTitles.TopLeft"), obsgs_tr("OBSTitles.TopCenter"), obsgs_tr("OBSTitles.TopRight"), obsgs_tr("OBSTitles.CenterLeft"), obsgs_tr("OBSTitles.Center"), obsgs_tr("OBSTitles.CenterRight"), obsgs_tr("OBSTitles.BottomLeft"), obsgs_tr("OBSTitles.BottomCenter"), obsgs_tr("OBSTitles.BottomRight")})
+    for (const QString &label : QStringList{bgl_tr("OBSTitles.TopLeft"), bgl_tr("OBSTitles.TopCenter"), bgl_tr("OBSTitles.TopRight"), bgl_tr("OBSTitles.CenterLeft"), bgl_tr("OBSTitles.Center"), bgl_tr("OBSTitles.CenterRight"), bgl_tr("OBSTitles.BottomLeft"), bgl_tr("OBSTitles.BottomCenter"), bgl_tr("OBSTitles.BottomRight")})
         cmb_anchor_->addItem(label);
-    cmb_anchor_->setToolTip(obsgs_tr("OBSTitles.AnchorChangeTooltip"));
+    cmb_anchor_->setToolTip(bgl_tr("OBSTitles.AnchorChangeTooltip"));
     cmb_anchor_->setFixedHeight(22);
     cmb_anchor_->setStyleSheet(control_style);
 
-    btn_kf_pos_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleXKeyframe"));
-    btn_kf_pos_y_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleYKeyframe"));
-    btn_kf_scale_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleScaleXKeyframe"));
-    btn_kf_scale_y_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleScaleYKeyframe"));
-    btn_kf_transform_size_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleWidthKeyframe"));
-    btn_kf_transform_size_->setToolTip(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
-    btn_kf_rotation_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleRotationKeyframe"));
-    btn_kf_opacity_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOpacityKeyframe"));
-    btn_kf_origin_x_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOriginXKeyframe"));
-    btn_kf_origin_y_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleOriginYKeyframe"));
+    btn_kf_pos_x_ = mk_kf_button(bgl_tr("OBSTitles.ToggleXKeyframe"));
+    btn_kf_pos_y_ = mk_kf_button(bgl_tr("OBSTitles.ToggleYKeyframe"));
+    btn_kf_scale_x_ = mk_kf_button(bgl_tr("OBSTitles.ToggleScaleXKeyframe"));
+    btn_kf_scale_y_ = mk_kf_button(bgl_tr("OBSTitles.ToggleScaleYKeyframe"));
+    btn_kf_transform_size_ = mk_kf_button(bgl_tr("OBSTitles.ToggleWidthKeyframe"));
+    btn_kf_transform_size_->setToolTip(bgl_tr("OBSTitles.ToggleSizeKeyframe"));
+    btn_kf_rotation_ = mk_kf_button(bgl_tr("OBSTitles.ToggleRotationKeyframe"));
+    btn_kf_opacity_ = mk_kf_button(bgl_tr("OBSTitles.ToggleOpacityKeyframe"));
+    btn_kf_origin_x_ = mk_kf_button(bgl_tr("OBSTitles.ToggleOriginXKeyframe"));
+    btn_kf_origin_y_ = mk_kf_button(bgl_tr("OBSTitles.ToggleOriginYKeyframe"));
     btn_kf_pos_y_->hide();
     btn_kf_scale_y_->hide();
     btn_kf_opacity_->hide();
@@ -419,15 +419,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *transform_header_layout = new QHBoxLayout(transform_header);
     transform_header_layout->setContentsMargins(0, 8, 0, 0);
     transform_header_layout->setSpacing(8);
-    auto *transform_title = new QLabel(obsgs_tr("OBSTitles.Transform"), transform_header);
+    auto *transform_title = new QLabel(bgl_tr("OBSTitles.Transform"), transform_header);
     transform_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     transform_header_layout->addWidget(transform_title);
     transform_header_layout->addStretch();
-    btn_transform_defaults_ = new QPushButton(obsgs_tr("OBSTitles.Defaults"), transform_header);
+    btn_transform_defaults_ = new QPushButton(bgl_tr("OBSTitles.Defaults"), transform_header);
     btn_transform_defaults_->setFixedHeight(22);
     btn_transform_defaults_->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     btn_transform_defaults_->setIconSize(QSize(13, 13));
-    btn_transform_defaults_->setToolTip(obsgs_tr("OBSTitles.RestoreTransformDefaults"));
+    btn_transform_defaults_->setToolTip(bgl_tr("OBSTitles.RestoreTransformDefaults"));
     btn_transform_defaults_->setStyleSheet(push_button_style);
     transform_header_layout->addWidget(btn_transform_defaults_);
     tform_layout->addWidget(transform_header);
@@ -465,7 +465,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_transform_spin(spn_rot_);
     spn_rot_->setPrefix(QString());
 
-    auto make_transform_field = [&](const QString &label, QDoubleSpinBox *spin) {
+    auto make_transform_field = [&](const QString &label, QDoubleSpinBox *spin, const char *icon_name = nullptr) {
         auto *field = new QWidget(transform_box_);
         field->setObjectName(QStringLiteral("OBSTitlesTransformNumericField"));
         field->setStyleSheet(QStringLiteral("QWidget#OBSTitlesTransformNumericField{background:%1;border:1px solid %2;"
@@ -486,6 +486,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                  });
         field_label->setFixedWidth(16);
         field_label->setAlignment(Qt::AlignCenter);
+        if (icon_name && *icon_name) {
+            field_label->setPixmap(obs_icon(icon_name).pixmap(14, 14));
+            field_label->setText(QString());
+        }
         field_label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:11px;padding:0;}").arg(subtle_text_name));
         field_layout->addWidget(field_label);
         field_layout->addWidget(spin);
@@ -493,19 +497,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return field;
     };
 
-    QWidget *field_pos_x = make_transform_field(obsgs_tr("OBSTitles.X"), spn_px_);
-    QWidget *field_pos_y = make_transform_field(obsgs_tr("OBSTitles.Y"), spn_py_);
-    QWidget *field_scale_x = make_transform_field(obsgs_tr("OBSTitles.W"), spn_scale_x_);
-    QWidget *field_scale_y = make_transform_field(obsgs_tr("OBSTitles.H"), spn_scale_y_);
-    QWidget *field_transform_size_w = make_transform_field(obsgs_tr("OBSTitles.W"), spn_transform_size_w_);
-    QWidget *field_transform_size_h = make_transform_field(obsgs_tr("OBSTitles.H"), spn_transform_size_h_);
-    QWidget *field_origin_x = make_transform_field(obsgs_tr("OBSTitles.X"), spn_origin_x_);
-    QWidget *field_origin_y = make_transform_field(obsgs_tr("OBSTitles.Y"), spn_origin_y_);
-    QWidget *field_rotation = make_transform_field(obsgs_tr("OBSTitles.R"), spn_rot_);
+    QWidget *field_pos_x = make_transform_field(bgl_tr("OBSTitles.X"), spn_px_);
+    QWidget *field_pos_y = make_transform_field(bgl_tr("OBSTitles.Y"), spn_py_);
+    QWidget *field_scale_x = make_transform_field(bgl_tr("OBSTitles.W"), spn_scale_x_);
+    QWidget *field_scale_y = make_transform_field(bgl_tr("OBSTitles.H"), spn_scale_y_);
+    QWidget *field_transform_size_w = make_transform_field(bgl_tr("OBSTitles.W"), spn_transform_size_w_);
+    QWidget *field_transform_size_h = make_transform_field(bgl_tr("OBSTitles.H"), spn_transform_size_h_);
+    QWidget *field_origin_x = make_transform_field(bgl_tr("OBSTitles.X"), spn_origin_x_);
+    QWidget *field_origin_y = make_transform_field(bgl_tr("OBSTitles.Y"), spn_origin_y_);
+    QWidget *field_rotation = make_transform_field(bgl_tr("OBSTitles.R"), spn_rot_, "transform-rotation.svg");
 
     btn_anchor_grid_ = new AnchorGridButton(transform_box_);
     btn_anchor_grid_->setFixedSize(36, 36);
-    btn_anchor_grid_->setToolTip(obsgs_tr("OBSTitles.AnchorChangeTooltip"));
+    btn_anchor_grid_->setToolTip(bgl_tr("OBSTitles.AnchorChangeTooltip"));
     if (auto *anchor_button = static_cast<AnchorGridButton *>(btn_anchor_grid_)) {
         anchor_button->anchor_selected = [this](int i) {
             if (cmb_anchor_) cmb_anchor_->setCurrentIndex(i);
@@ -513,10 +517,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     }
 
     chk_scale_lock_->setText(QString());
-    chk_scale_lock_->setToolTip(obsgs_tr("OBSTitles.ScaleLock"));
+    chk_scale_lock_->setToolTip(bgl_tr("OBSTitles.ScaleLock"));
     chk_scale_lock_->setFixedSize(24, 24);
     chk_transform_size_lock_->setText(QString());
-    chk_transform_size_lock_->setToolTip(obsgs_tr("OBSTitles.LockAspectRatio"));
+    chk_transform_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
     chk_transform_size_lock_->setFixedSize(24, 24);
 
     const QString transform_label_style = QStringLiteral("color:%1;font-size:12px;background:transparent;").arg(panel_text_name);
@@ -542,15 +546,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         return text;
     };
 
-    add_transform_row(0, btn_kf_pos_x_, obsgs_tr("OBSTitles.Location"), field_pos_x, field_pos_x, nullptr, field_pos_y);
-    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, obsgs_tr("OBSTitles.Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
+    add_transform_row(0, btn_kf_pos_x_, bgl_tr("OBSTitles.Location"), field_pos_x, field_pos_x, nullptr, field_pos_y);
+    transform_scale_label_ = add_transform_row(1, btn_kf_scale_x_, bgl_tr("OBSTitles.Scale"), field_scale_x, field_scale_x, chk_scale_lock_, field_scale_y);
     transform_scale_field_x_ = field_scale_x;
     transform_scale_field_y_ = field_scale_y;
-    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, obsgs_tr("OBSTitles.Size"), field_transform_size_w,
+    transform_size_label_ = add_transform_row(1, btn_kf_transform_size_, bgl_tr("OBSTitles.Size"), field_transform_size_w,
                                               field_transform_size_w, chk_transform_size_lock_, field_transform_size_h);
     transform_size_field_w_ = field_transform_size_w;
     transform_size_field_h_ = field_transform_size_h;
-    auto *anchor_label = new NumericDragLabel(obsgs_tr("OBSTitles.Anchor"), field_origin_x, transform_box_,
+    auto *anchor_label = new NumericDragLabel(bgl_tr("OBSTitles.Anchor"), field_origin_x, transform_box_,
                                               [this]() {
                                                   if (loading_values_) return;
                                                   numeric_label_dragging_ = true;
@@ -566,7 +570,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     transform_grid->addWidget(btn_kf_origin_x_, 2, 0, Qt::AlignCenter);
     transform_grid->addWidget(field_origin_x, 2, 2, Qt::AlignLeft);
     transform_grid->addWidget(field_origin_y, 2, 4, Qt::AlignLeft);
-    add_transform_row(3, btn_kf_rotation_, obsgs_tr("OBSTitles.Rotation"), field_rotation, field_rotation, nullptr, btn_anchor_grid_);
+    add_transform_row(3, btn_kf_rotation_, bgl_tr("OBSTitles.Rotation"), field_rotation, field_rotation, nullptr, btn_anchor_grid_);
     row_shape_scale_options_ = new QWidget(transform_box_);
     row_shape_scale_options_->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *shape_scale_options_layout = new QHBoxLayout(row_shape_scale_options_);
@@ -588,7 +592,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     appearance_layout->setContentsMargins(14, 2, 14, 12);
     appearance_layout->setSpacing(8);
 
-    auto *appearance_title = new QLabel(obsgs_tr("OBSTitles.Appearance"), appearance_box_);
+    auto *appearance_title = new QLabel(bgl_tr("OBSTitles.Appearance"), appearance_box_);
     appearance_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     appearance_layout->addWidget(appearance_title);
 
@@ -610,8 +614,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         button->setText(QString());
         return button;
     };
-    btn_appearance_fill_color_ = make_swatch(obsgs_tr("OBSTitles.FillColorTooltip"));
-    btn_appearance_stroke_color_ = make_swatch(obsgs_tr("OBSTitles.OutlineColorLabel"));
+    btn_appearance_fill_color_ = make_swatch(bgl_tr("OBSTitles.FillColorTooltip"));
+    btn_appearance_stroke_color_ = make_swatch(bgl_tr("OBSTitles.OutlineColorLabel"));
     spn_appearance_stroke_width_ = mk_dspin(0.0, 200.0, 1.0);
     spn_appearance_stroke_width_->setFixedSize(86, 24);
     spn_appearance_stroke_width_->setSuffix(QStringLiteral("px"));
@@ -622,15 +626,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_appearance_opacity_->setSuffix(QStringLiteral("%"));
     spn_appearance_opacity_->setDecimals(0);
     spn_appearance_opacity_->setStyleSheet(control_style);
-    btn_kf_appearance_fill_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleFillColorKeyframe"));
-    btn_kf_appearance_stroke_ = mk_kf_button(obsgs_tr("OBSTitles.OutlineColorLabel"));
+    btn_kf_appearance_fill_ = mk_kf_button(bgl_tr("OBSTitles.ToggleFillColorKeyframe"));
+    btn_kf_appearance_stroke_ = mk_kf_button(bgl_tr("OBSTitles.OutlineColorLabel"));
     btn_kf_appearance_stroke_->setEnabled(false);
     btn_kf_appearance_opacity_ = btn_kf_opacity_;
     btn_kf_appearance_opacity_->show();
     auto *stroke_options_trigger = new QPushButton(appearance_box_);
     stroke_options_trigger->hide();
     btn_appearance_stroke_label_ = new StrokeOptionsLabel(
-        obsgs_tr("OBSTitles.Stroke"), spn_appearance_stroke_width_, appearance_box_,
+        bgl_tr("OBSTitles.Stroke"), spn_appearance_stroke_width_, appearance_box_,
         [stroke_options_trigger]() { stroke_options_trigger->click(); },
         [this]() {
             if (loading_values_) return;
@@ -671,10 +675,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             appearance_grid->addWidget(secondary, row, 4, Qt::AlignLeft | Qt::AlignVCenter);
     };
 
-    add_appearance_row(0, btn_kf_appearance_fill_, obsgs_tr("OBSTitles.Fill"), btn_appearance_fill_color_);
-    add_appearance_row(1, btn_kf_appearance_stroke_, obsgs_tr("OBSTitles.Stroke"), btn_appearance_stroke_color_,
+    add_appearance_row(0, btn_kf_appearance_fill_, bgl_tr("OBSTitles.Fill"), btn_appearance_fill_color_);
+    add_appearance_row(1, btn_kf_appearance_stroke_, bgl_tr("OBSTitles.Stroke"), btn_appearance_stroke_color_,
                        spn_appearance_stroke_width_, btn_appearance_stroke_label_);
-    add_appearance_row(2, btn_kf_appearance_opacity_, obsgs_tr("OBSTitles.Opacity"), nullptr,
+    add_appearance_row(2, btn_kf_appearance_opacity_, bgl_tr("OBSTitles.Opacity"), nullptr,
                        spn_appearance_opacity_);
     appearance_layout->addLayout(appearance_grid);
     vl->addWidget(appearance_box_);
@@ -738,6 +742,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                  highlight_name, highlighted_text_name));
         return button;
     };
+    auto mk_type_icon_button = [&](const char *icon_name, const QString &tip) {
+        auto *button = mk_type_button(QString(), tip);
+        button->setIcon(obs_icon(icon_name));
+        button->setIconSize(QSize(16, 16));
+        button->setAccessibleName(tip);
+        return button;
+    };
     auto mk_paragraph_alignment_button = [&](const char *icon_name, const QString &tip) {
         auto *button = new QToolButton(inner);
         button->setIcon(obs_icon(icon_name));
@@ -772,7 +783,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     txt_content_->setAcceptRichText(false);
     txt_content_->setMinimumHeight(72);
     txt_content_->setMaximumHeight(92);
-    txt_content_->setPlaceholderText(obsgs_tr("OBSTitles.EnterTextPlaceholder"));
+    txt_content_->setPlaceholderText(bgl_tr("OBSTitles.EnterTextPlaceholder"));
     txt_content_->setStyleSheet(control_style);
 
     cmb_font_ = new QComboBox(inner);
@@ -794,16 +805,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_size_->setFixedHeight(22);
     spn_size_->setStyleSheet(control_style);
 
-    cmb_kerning_mode_ = mk_combo({obsgs_tr("OBSTitles.KerningMetrics"), obsgs_tr("OBSTitles.KerningOptical"), obsgs_tr("OBSTitles.KerningManual")}, {0, 1, 2});
+    cmb_kerning_mode_ = mk_combo({bgl_tr("OBSTitles.KerningMetrics"), bgl_tr("OBSTitles.KerningOptical"), bgl_tr("OBSTitles.KerningManual")}, {0, 1, 2});
     spn_kerning_value_ = mk_dspin(-100.0, 500.0, 1.0);
     spn_kerning_value_->setSuffix(" px");
-    spn_kerning_value_->setToolTip(obsgs_tr("OBSTitles.ManualKerningTooltip"));
+    spn_kerning_value_->setToolTip(bgl_tr("OBSTitles.ManualKerningTooltip"));
     spn_text_leading_ = mk_dspin(-200.0, 500.0, 1.0);
     spn_text_leading_->setSuffix(" px");
-    spn_text_leading_->setToolTip(obsgs_tr("OBSTitles.LeadingTooltip"));
+    spn_text_leading_->setToolTip(bgl_tr("OBSTitles.LeadingTooltip"));
     spn_char_tracking_ = mk_dspin(-100.0, 500.0, 1.0);
     spn_char_tracking_->setSuffix(" px");
-    spn_char_tracking_->setToolTip(obsgs_tr("OBSTitles.TrackingTooltip"));
+    spn_char_tracking_->setToolTip(bgl_tr("OBSTitles.TrackingTooltip"));
     spn_char_scale_x_ = mk_dspin(10.0, 500.0, 1.0);
     spn_char_scale_x_->setSuffix("%");
     spn_char_scale_y_ = mk_dspin(10.0, 500.0, 1.0);
@@ -817,9 +828,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     btn_kf_char_scale_y_ = mk_kf_button("Toggle V Scale keyframe");
     btn_kf_char_tracking_ = mk_kf_button("Toggle Tracking keyframe");
     btn_kf_baseline_shift_ = mk_kf_button("Toggle Baseline keyframe");
-    btn_kf_text_color_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleTextColorKeyframe"));
+    btn_kf_text_color_ = mk_kf_button(bgl_tr("OBSTitles.ToggleTextColorKeyframe"));
 
-    char_grid->addWidget(grid_label(obsgs_tr("OBSTitles.TextLabel"), text_box_), 0, 0);
+    char_grid->addWidget(grid_label(bgl_tr("OBSTitles.TextLabel"), text_box_), 0, 0);
     char_grid->addWidget(txt_content_, 0, 1, 1, 3);
     add_full_width_field(char_grid, 1, "Font", cmb_font_);
     add_full_width_field(char_grid, 2, "Style", cmb_font_style_);
@@ -837,22 +848,22 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
     /* ── Type Options ── */
     type_options_box_ = new QGroupBox("Type", inner);
-    type_options_box_->setObjectName(QStringLiteral("OBSGraphicsStudioProTextTypePanel"));
+    type_options_box_->setObjectName(QStringLiteral("BroadcastGraphicsLiveTextTypePanel"));
     type_options_box_->setStyleSheet(QStringLiteral(
-        "QGroupBox#OBSGraphicsStudioProTextTypePanel{color:%1;background:%2;border:1px solid %3;"
+        "QGroupBox#BroadcastGraphicsLiveTextTypePanel{color:%1;background:%2;border:1px solid %3;"
         "border-radius:2px;margin-top:16px;padding:0;font-size:14px;}"
-        "QGroupBox#OBSGraphicsStudioProTextTypePanel::title{subcontrol-origin:margin;left:14px;top:2px;padding:0 4px;background:%2;}")
+        "QGroupBox#BroadcastGraphicsLiveTextTypePanel::title{subcontrol-origin:margin;left:14px;top:2px;padding:0 4px;background:%2;}")
         .arg(panel_text_name, section_bg_name, border_name));
     auto *type_grid = new QGridLayout(type_options_box_);
     type_grid->setContentsMargins(14, 24, 14, 12);
     type_grid->setHorizontalSpacing(4);
     type_grid->setVerticalSpacing(4);
-    chk_bold_ = mk_type_button("B", obsgs_tr("OBSTitles.Bold"));
-    chk_italic_ = mk_type_button("I", obsgs_tr("OBSTitles.Italic"));
-    chk_font_kerning_ = mk_type_button("K", obsgs_tr("OBSTitles.Kerning"));
-    chk_font_kerning_->setToolTip(obsgs_tr("OBSTitles.KerningTooltip"));
-    btn_all_caps_ = mk_type_button("TT", "All Caps");
-    btn_small_caps_ = mk_type_button("Tᴛ", "Small Caps");
+    chk_bold_ = mk_type_icon_button("text-style-bold.svg", bgl_tr("OBSTitles.Bold"));
+    chk_italic_ = mk_type_icon_button("text-style-italic.svg", bgl_tr("OBSTitles.Italic"));
+    chk_font_kerning_ = mk_type_button("K", bgl_tr("OBSTitles.Kerning"));
+    chk_font_kerning_->setToolTip(bgl_tr("OBSTitles.KerningTooltip"));
+    btn_all_caps_ = mk_type_icon_button("text-style-allcaps.svg", "All Caps");
+    btn_small_caps_ = mk_type_icon_button("text-style-smallcaps.svg", "Small Caps");
     btn_superscript_ = mk_type_button("x²", "Superscript");
     btn_subscript_ = mk_type_button("x₂", "Subscript");
     btn_underline_ = mk_type_button("U", "Underline");
@@ -912,7 +923,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                               emit property_changed(true);
                                           });
         icon->setPixmap(obs_icon(icon_name).pixmap(16, 16));
-        icon->setToolTip(QStringLiteral("%1\n%2").arg(tip, obsgs_tr("OBSTitles.DragNumericLabelTooltip")));
+        icon->setToolTip(QStringLiteral("%1\n%2").arg(tip, bgl_tr("OBSTitles.DragNumericLabelTooltip")));
         icon->setAccessibleName(tip);
         icon->setFixedWidth(20);
         icon->setAlignment(Qt::AlignCenter);
@@ -927,15 +938,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     horizontal_button_layout->setSpacing(4);
     grp_text_align_ = new QButtonGroup(horizontal_buttons);
     grp_text_align_->setExclusive(true);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-left.svg", obsgs_tr("OBSTitles.AlignLeft"), 0);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-center.svg", obsgs_tr("OBSTitles.AlignCenter"), 1);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-right.svg", obsgs_tr("OBSTitles.AlignRight"), 2);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-align-left.svg", bgl_tr("OBSTitles.AlignLeft"), 0);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-align-center.svg", bgl_tr("OBSTitles.AlignCenter"), 1);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-align-right.svg", bgl_tr("OBSTitles.AlignRight"), 2);
     add_paragraph_gap(horizontal_button_layout);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify-left.svg", obsgs_tr("OBSTitles.JustifyLastLeft"), 3);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify-center.svg", obsgs_tr("OBSTitles.JustifyLastCenter"), 4);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify-right.svg", obsgs_tr("OBSTitles.JustifyLastRight"), 5);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-justify-left.svg", bgl_tr("OBSTitles.JustifyLastLeft"), 3);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-justify-center.svg", bgl_tr("OBSTitles.JustifyLastCenter"), 4);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-justify-right.svg", bgl_tr("OBSTitles.JustifyLastRight"), 5);
     add_paragraph_gap(horizontal_button_layout);
-    add_paragraph_button(horizontal_button_layout, grp_text_align_, "align-justify.svg", obsgs_tr("OBSTitles.JustifyAll"), 6);
+    add_paragraph_button(horizontal_button_layout, grp_text_align_, "text-justify-full.svg", bgl_tr("OBSTitles.JustifyAll"), 6);
     horizontal_button_layout->addStretch(1);
     paragraph_layout->addWidget(horizontal_buttons);
 
@@ -945,19 +956,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     vertical_button_layout->setSpacing(4);
     grp_text_valign_ = new QButtonGroup(vertical_buttons);
     grp_text_valign_->setExclusive(true);
-    add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-top.svg", obsgs_tr("OBSTitles.AlignTop"), 0);
-    add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-vertical-center.svg", obsgs_tr("OBSTitles.AlignMiddle"), 1);
-    add_paragraph_button(vertical_button_layout, grp_text_valign_, "align-bottom.svg", obsgs_tr("OBSTitles.AlignBottom"), 2);
-    add_paragraph_button(vertical_button_layout, grp_text_valign_, "distribute-vertical.svg", obsgs_tr("OBSTitles.DistributeVertically"), 3);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "text-verticalalign-top.svg", bgl_tr("OBSTitles.AlignTop"), 0);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "text-verticalalign-center.svg", bgl_tr("OBSTitles.AlignMiddle"), 1);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "text-verticalalign-bottom.svg", bgl_tr("OBSTitles.AlignBottom"), 2);
+    add_paragraph_button(vertical_button_layout, grp_text_valign_, "text-verticalalign-justify.svg", bgl_tr("OBSTitles.DistributeVertically"), 3);
     vertical_button_layout->addStretch(1);
     paragraph_layout->addWidget(vertical_buttons);
 
     spn_paragraph_indent_left_ = mk_paragraph_spin();
     spn_paragraph_indent_right_ = mk_paragraph_spin();
     spn_paragraph_indent_first_line_ = mk_paragraph_spin();
-    btn_kf_paragraph_indent_left_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleParagraphIndentLeftKeyframe"));
-    btn_kf_paragraph_indent_right_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleParagraphIndentRightKeyframe"));
-    btn_kf_paragraph_indent_first_line_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleParagraphIndentFirstLineKeyframe"));
+    btn_kf_paragraph_indent_left_ = mk_kf_button(bgl_tr("OBSTitles.ToggleParagraphIndentLeftKeyframe"));
+    btn_kf_paragraph_indent_right_ = mk_kf_button(bgl_tr("OBSTitles.ToggleParagraphIndentRightKeyframe"));
+    btn_kf_paragraph_indent_first_line_ = mk_kf_button(bgl_tr("OBSTitles.ToggleParagraphIndentFirstLineKeyframe"));
     auto *paragraph_indent_left_field = with_kf(spn_paragraph_indent_left_, btn_kf_paragraph_indent_left_);
     auto *paragraph_indent_right_field = with_kf(spn_paragraph_indent_right_, btn_kf_paragraph_indent_right_);
     auto *paragraph_indent_first_line_field = with_kf(spn_paragraph_indent_first_line_, btn_kf_paragraph_indent_first_line_);
@@ -973,14 +984,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     metric_grid->setVerticalSpacing(4);
     metric_grid->setColumnStretch(1, 1);
     metric_grid->setColumnStretch(3, 1);
-    add_metric_control(metric_grid, 0, 0, "paragraph-indent-left.svg", obsgs_tr("OBSTitles.ParagraphIndentLeft"), spn_paragraph_indent_left_, paragraph_indent_left_field);
-    add_metric_control(metric_grid, 0, 1, "paragraph-indent-right.svg", obsgs_tr("OBSTitles.ParagraphIndentRight"), spn_paragraph_indent_right_, paragraph_indent_right_field);
-    add_metric_control(metric_grid, 1, 0, "paragraph-indent-first-line.svg", obsgs_tr("OBSTitles.ParagraphIndentFirstLine"), spn_paragraph_indent_first_line_, paragraph_indent_first_line_field);
-    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", obsgs_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_, paragraph_space_before_field);
-    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", obsgs_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_, paragraph_space_after_field);
+    add_metric_control(metric_grid, 0, 0, "paragraph-indent-left.svg", bgl_tr("OBSTitles.ParagraphIndentLeft"), spn_paragraph_indent_left_, paragraph_indent_left_field);
+    add_metric_control(metric_grid, 0, 1, "paragraph-indent-right.svg", bgl_tr("OBSTitles.ParagraphIndentRight"), spn_paragraph_indent_right_, paragraph_indent_right_field);
+    add_metric_control(metric_grid, 1, 0, "paragraph-indent-first-line.svg", bgl_tr("OBSTitles.ParagraphIndentFirstLine"), spn_paragraph_indent_first_line_, paragraph_indent_first_line_field);
+    add_metric_control(metric_grid, 2, 0, "paragraph-space-before.svg", bgl_tr("OBSTitles.ParagraphSpaceBefore"), spn_paragraph_space_before_, paragraph_space_before_field);
+    add_metric_control(metric_grid, 2, 1, "paragraph-space-after.svg", bgl_tr("OBSTitles.ParagraphSpaceAfter"), spn_paragraph_space_after_, paragraph_space_after_field);
     paragraph_layout->addLayout(metric_grid);
 
-    chk_paragraph_hyphenate_ = new QCheckBox(obsgs_tr("OBSTitles.Hyphenate"), paragraph_box_);
+    chk_paragraph_hyphenate_ = new QCheckBox(bgl_tr("OBSTitles.Hyphenate"), paragraph_box_);
     style_checkbox(chk_paragraph_hyphenate_);
     paragraph_layout->addWidget(chk_paragraph_hyphenate_);
 
@@ -999,42 +1010,42 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     dynamic_form->setHorizontalSpacing(8);
     dynamic_form->setVerticalSpacing(6);
     cmb_text_style_ = new QComboBox(inner);
-    cmb_text_style_->addItem(obsgs_tr("OBSTitles.Normal"), 0);
-    cmb_text_style_->addItem(obsgs_tr("OBSTitles.AllCaps"), 1);
-    cmb_text_style_->addItem(obsgs_tr("OBSTitles.SmallCaps"), 2);
-    cmb_text_style_->addItem(obsgs_tr("OBSTitles.Superscript"), 3);
-    cmb_text_style_->addItem(obsgs_tr("OBSTitles.Subscript"), 4);
-    cmb_text_style_->setToolTip(obsgs_tr("OBSTitles.TextStyleTooltip"));
+    cmb_text_style_->addItem(bgl_tr("OBSTitles.Normal"), 0);
+    cmb_text_style_->addItem(bgl_tr("OBSTitles.AllCaps"), 1);
+    cmb_text_style_->addItem(bgl_tr("OBSTitles.SmallCaps"), 2);
+    cmb_text_style_->addItem(bgl_tr("OBSTitles.Superscript"), 3);
+    cmb_text_style_->addItem(bgl_tr("OBSTitles.Subscript"), 4);
+    cmb_text_style_->setToolTip(bgl_tr("OBSTitles.TextStyleTooltip"));
     cmb_text_style_->setFixedHeight(22);
     cmb_text_style_->setStyleSheet(control_style);
     cmb_text_overflow_ = new QComboBox(inner);
-    cmb_text_overflow_->addItem(obsgs_tr("OBSTitles.Wrap"), 0);
-    cmb_text_overflow_->addItem(obsgs_tr("OBSTitles.Clip"), 1);
-    cmb_text_overflow_->addItem(obsgs_tr("OBSTitles.HorizontalFit"), 2);
-    cmb_text_overflow_->setToolTip(obsgs_tr("OBSTitles.TextOverflowTooltip"));
+    cmb_text_overflow_->addItem(bgl_tr("OBSTitles.Wrap"), 0);
+    cmb_text_overflow_->addItem(bgl_tr("OBSTitles.Clip"), 1);
+    cmb_text_overflow_->addItem(bgl_tr("OBSTitles.HorizontalFit"), 2);
+    cmb_text_overflow_->setToolTip(bgl_tr("OBSTitles.TextOverflowTooltip"));
     cmb_text_overflow_->setFixedHeight(22);
     cmb_text_overflow_->setStyleSheet(control_style);
     spn_text_fit_min_scale_ = mk_dspin(0.05, 1.0, 0.05);
     spn_text_fit_min_scale_->setDecimals(2);
-    spn_text_fit_min_scale_->setToolTip(obsgs_tr("OBSTitles.MinFitScaleTooltip"));
-    lbl_text_fit_scale_ = new QLabel(obsgs_tr("OBSTitles.Scale100"), inner);
+    spn_text_fit_min_scale_->setToolTip(bgl_tr("OBSTitles.MinFitScaleTooltip"));
+    lbl_text_fit_scale_ = new QLabel(bgl_tr("OBSTitles.Scale100"), inner);
     lbl_text_fit_scale_->setStyleSheet(QStringLiteral("color:%1;font-size:10px;background:transparent;").arg(subtle_text_name));
-    chk_expose_text_ = new QCheckBox(obsgs_tr("OBSTitles.ExposeInDock"), inner);
-    chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
+    chk_expose_text_ = new QCheckBox(bgl_tr("OBSTitles.ExposeInDock"), inner);
+    chk_expose_text_->setToolTip(bgl_tr("OBSTitles.ExposeInDockTooltip"));
     style_checkbox(chk_expose_text_);
-    chk_exposed_hide_if_empty_ = new QCheckBox(obsgs_tr("OBSTitles.ExposedHideIfEmpty"), inner);
-    chk_exposed_hide_if_empty_->setToolTip(obsgs_tr("OBSTitles.ExposedHideIfEmptyTooltip"));
+    chk_exposed_hide_if_empty_ = new QCheckBox(bgl_tr("OBSTitles.ExposedHideIfEmpty"), inner);
+    chk_exposed_hide_if_empty_->setToolTip(bgl_tr("OBSTitles.ExposedHideIfEmptyTooltip"));
     style_checkbox(chk_exposed_hide_if_empty_);
-    chk_exposed_single_value_ = new QCheckBox(obsgs_tr("OBSTitles.ExposedSingleValue"), inner);
-    chk_exposed_single_value_->setToolTip(obsgs_tr("OBSTitles.ExposedSingleValueTooltip"));
+    chk_exposed_single_value_ = new QCheckBox(bgl_tr("OBSTitles.ExposedSingleValue"), inner);
+    chk_exposed_single_value_->setToolTip(bgl_tr("OBSTitles.ExposedSingleValueTooltip"));
     style_checkbox(chk_exposed_single_value_);
-    chk_ignore_persistence_ = new QCheckBox(obsgs_tr("OBSTitles.IgnorePersistence"), inner);
-    chk_ignore_persistence_->setToolTip(obsgs_tr("OBSTitles.IgnorePersistenceTooltip"));
+    chk_ignore_persistence_ = new QCheckBox(bgl_tr("OBSTitles.IgnorePersistence"), inner);
+    chk_ignore_persistence_->setToolTip(bgl_tr("OBSTitles.IgnorePersistenceTooltip"));
     style_checkbox(chk_ignore_persistence_);
     cmb_ticker_style_ = new QComboBox(inner);
-    cmb_ticker_style_->addItem(obsgs_tr("OBSTitles.TickerHorizontal"), 0);
-    cmb_ticker_style_->addItem(obsgs_tr("OBSTitles.TickerVerticalLine"), 1);
-    cmb_ticker_style_->addItem(obsgs_tr("OBSTitles.TickerVerticalSmooth"), 2);
+    cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerHorizontal"), 0);
+    cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerVerticalLine"), 1);
+    cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerVerticalSmooth"), 2);
     cmb_ticker_style_->setFixedHeight(22);
     cmb_ticker_style_->setStyleSheet(control_style);
     spn_ticker_speed_ = mk_dspin(1.0, 5000.0, 1.0);
@@ -1047,13 +1058,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_ticker_direction_->setFixedHeight(22);
     cmb_ticker_direction_->setStyleSheet(control_style);
     add_form_row(dynamic_form, "Text Style", cmb_text_style_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.OverflowLabel"), cmb_text_overflow_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.MinFitScaleLabel"), spn_text_fit_min_scale_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.OverflowLabel"), cmb_text_overflow_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.MinFitScaleLabel"), spn_text_fit_min_scale_);
     add_form_row(dynamic_form, "", lbl_text_fit_scale_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.TickerStyleLabel"), cmb_ticker_style_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.TickerSpeedLabel"), spn_ticker_speed_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.TickerLineHoldLabel"), spn_ticker_line_hold_);
-    add_form_row(dynamic_form, obsgs_tr("OBSTitles.DirectionLabel"), cmb_ticker_direction_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerStyleLabel"), cmb_ticker_style_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerSpeedLabel"), spn_ticker_speed_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerLineHoldLabel"), spn_ticker_line_hold_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.DirectionLabel"), cmb_ticker_direction_);
     vl->addWidget(dynamic_text_box_);
 
     /* ── Auto Styling ── */
@@ -1237,7 +1248,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     vl->addWidget(auto_style_box_);
 
     /* ── Live Edit ── */
-    live_edit_box_ = new QGroupBox(obsgs_tr("OBSTitles.LiveEdit"), inner);
+    live_edit_box_ = new QGroupBox(bgl_tr("OBSTitles.LiveEdit"), inner);
     live_edit_box_->setStyleSheet(QStringLiteral(
         "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
@@ -1248,17 +1259,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     live_edit_form->setContentsMargins(14, 28, 14, 12);
     live_edit_form->setHorizontalSpacing(8);
     live_edit_form->setVerticalSpacing(6);
-    chk_scene_mask_->setText(obsgs_tr("OBSTitles.SetAsSceneMask"));
-    chk_scene_mask_->setToolTip(obsgs_tr("OBSTitles.LiveSceneMaskTooltip"));
+    chk_scene_mask_->setText(bgl_tr("OBSTitles.SetAsSceneMask"));
+    chk_scene_mask_->setToolTip(bgl_tr("OBSTitles.LiveSceneMaskTooltip"));
     chk_scene_mask_->setFixedHeight(22);
     chk_scene_mask_->setStyleSheet(checkbox_style);
-    chk_expose_text_->setText(obsgs_tr("OBSTitles.ExposeToDock"));
-    chk_expose_text_->setToolTip(obsgs_tr("OBSTitles.ExposeInDockTooltip"));
-    add_form_row(live_edit_form, obsgs_tr("OBSTitles.SceneMask"), chk_scene_mask_);
-    add_form_row(live_edit_form, obsgs_tr("OBSTitles.DockEditing"), chk_expose_text_);
+    chk_expose_text_->setText(bgl_tr("OBSTitles.ExposeToDock"));
+    chk_expose_text_->setToolTip(bgl_tr("OBSTitles.ExposeInDockTooltip"));
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.SceneMask"), chk_scene_mask_);
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.DockEditing"), chk_expose_text_);
     add_form_row(live_edit_form, QString(), chk_exposed_hide_if_empty_);
     add_form_row(live_edit_form, QString(), chk_exposed_single_value_);
-    add_form_row(live_edit_form, obsgs_tr("OBSTitles.Persistence"), chk_ignore_persistence_);
+    add_form_row(live_edit_form, bgl_tr("OBSTitles.Persistence"), chk_ignore_persistence_);
     vl->addWidget(live_edit_box_);
 
     /* ── Bullets and Numbering ── */
@@ -1286,16 +1297,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *shape_header_layout = new QHBoxLayout(shape_header);
     shape_header_layout->setContentsMargins(0, 8, 0, 0);
     shape_header_layout->setSpacing(8);
-    auto *shape_title = new QLabel(obsgs_tr("OBSTitles.Shape"), shape_header);
+    auto *shape_title = new QLabel(bgl_tr("OBSTitles.Shape"), shape_header);
     shape_title->setObjectName(QStringLiteral("OBSTitlesShapePanelTitle"));
     shape_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     shape_header_layout->addWidget(shape_title);
     shape_header_layout->addStretch();
-    btn_shape_defaults_ = new QPushButton(obsgs_tr("OBSTitles.Defaults"), shape_header);
+    btn_shape_defaults_ = new QPushButton(bgl_tr("OBSTitles.Defaults"), shape_header);
     btn_shape_defaults_->setFixedHeight(22);
     btn_shape_defaults_->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     btn_shape_defaults_->setIconSize(QSize(13, 13));
-    btn_shape_defaults_->setToolTip(obsgs_tr("OBSTitles.RestoreShapeDefaults"));
+    btn_shape_defaults_->setToolTip(bgl_tr("OBSTitles.RestoreShapeDefaults"));
     btn_shape_defaults_->setStyleSheet(push_button_style);
     shape_header_layout->addWidget(btn_shape_defaults_);
     shape_layout->addWidget(shape_header);
@@ -1380,8 +1391,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_layer_h_ = mk_dspin(0.0, 9999.0, 10.0);
     spn_image_box_w_ = mk_dspin(0.0, 9999.0, 10.0);
     spn_image_box_h_ = mk_dspin(0.0, 9999.0, 10.0);
-    chk_text_box_width_to_text_ = new QCheckBox(obsgs_tr("OBSTitles.TextBoxWidthToText"), inner);
-    chk_text_box_height_to_text_ = new QCheckBox(obsgs_tr("OBSTitles.TextBoxHeightToText"), inner);
+    chk_text_box_width_to_text_ = new QCheckBox(bgl_tr("OBSTitles.TextBoxWidthToText"), inner);
+    chk_text_box_height_to_text_ = new QCheckBox(bgl_tr("OBSTitles.TextBoxHeightToText"), inner);
     style_checkbox(chk_text_box_width_to_text_);
     style_checkbox(chk_text_box_height_to_text_);
     spn_max_text_box_width_ = mk_dspin(1.0, 9999.0, 10.0);
@@ -1402,7 +1413,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     cmb_shape_type_->addItem("Star", (int)ShapeType::Star);
     cmb_shape_type_->addItem("Polygon", (int)ShapeType::Polygon);
     cmb_shape_type_->addItem("Diamond", (int)ShapeType::Diamond);
-    cmb_shape_type_->addItem(obsgs_tr("OBSTitles.Path"), (int)ShapeType::Path);
+    cmb_shape_type_->addItem(bgl_tr("OBSTitles.Path"), (int)ShapeType::Path);
     cmb_shape_type_->setFixedHeight(22);
     cmb_shape_type_->setStyleSheet(control_style);
     cmb_shape_type_->hide();
@@ -1411,9 +1422,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     spn_shape_inner_radius_ = mk_dspin(0.0, 1.0, 0.05); spn_shape_inner_radius_->setDecimals(2);
     spn_shape_outer_radius_ = mk_dspin(0.0, 1.0, 0.05); spn_shape_outer_radius_->setDecimals(2);
     spn_shape_roundness_ = mk_dspin(0.0, 1000.0, 1.0);
-    btn_kf_width_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleWidthKeyframe"));
-    btn_kf_width_->setToolTip(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
-    btn_kf_image_box_size_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleSizeKeyframe"));
+    btn_kf_width_ = mk_kf_button(bgl_tr("OBSTitles.ToggleWidthKeyframe"));
+    btn_kf_width_->setToolTip(bgl_tr("OBSTitles.ToggleSizeKeyframe"));
+    btn_kf_image_box_size_ = mk_kf_button(bgl_tr("OBSTitles.ToggleSizeKeyframe"));
 
     style_transform_spin(spn_layer_w_);
     style_transform_spin(spn_layer_h_);
@@ -1424,14 +1435,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     style_transform_spin(spn_rect_corner_br_);
     style_transform_spin(spn_rect_corner_bl_);
     style_transform_spin(spn_corner_bevel_roundness_);
-    auto *field_width = make_shape_field(obsgs_tr("OBSTitles.W"), spn_layer_w_);
-    auto *field_height = make_shape_field(obsgs_tr("OBSTitles.H"), spn_layer_h_);
+    auto *field_width = make_shape_field(bgl_tr("OBSTitles.W"), spn_layer_w_);
+    auto *field_height = make_shape_field(bgl_tr("OBSTitles.H"), spn_layer_h_);
     chk_size_lock_ = new TransformLockCheckBox(rect_box_);
     chk_size_lock_->setText(QString());
-    chk_size_lock_->setToolTip(obsgs_tr("OBSTitles.LockAspectRatio"));
+    chk_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
     chk_size_lock_->setFixedSize(24, 24);
     chk_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto *size_label = new QLabel(obsgs_tr("OBSTitles.Size"), rect_box_);
+    auto *size_label = new QLabel(bgl_tr("OBSTitles.Size"), rect_box_);
     size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
     shape_size_label_ = size_label;
     shape_size_field_w_ = field_width;
@@ -1449,26 +1460,26 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     corners_layout->setContentsMargins(0, 0, 0, 0);
     corners_layout->setHorizontalSpacing(8);
     corners_layout->setVerticalSpacing(6);
-    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.TL"), spn_rect_corner_tl_, obs_icon("corner-radius-tl.svg")), 0, 0);
-    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.TR"), spn_rect_corner_tr_, obs_icon("corner-radius-tr.svg")), 0, 1);
+    corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.TL"), spn_rect_corner_tl_, obs_icon("corner-radius-tl.svg")), 0, 0);
+    corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.TR"), spn_rect_corner_tr_, obs_icon("corner-radius-tr.svg")), 0, 1);
     chk_corner_lock_ = new TransformLockCheckBox(row_rect_corners_);
     chk_corner_lock_->setText(QString());
-    chk_corner_lock_->setToolTip(obsgs_tr("OBSTitles.SyncCornerRadii"));
+    chk_corner_lock_->setToolTip(bgl_tr("OBSTitles.SyncCornerRadii"));
     chk_corner_lock_->setFixedSize(24, 24);
     chk_corner_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
     corners_layout->addWidget(chk_corner_lock_, 0, 2, 2, 1, Qt::AlignCenter);
-    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.BL"), spn_rect_corner_bl_, obs_icon("corner-radius-bl.svg")), 1, 0);
-    corners_layout->addWidget(make_shape_field(obsgs_tr("OBSTitles.BR"), spn_rect_corner_br_, obs_icon("corner-radius-br.svg")), 1, 1);
+    corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.BL"), spn_rect_corner_bl_, obs_icon("corner-radius-bl.svg")), 1, 0);
+    corners_layout->addWidget(make_shape_field(bgl_tr("OBSTitles.BR"), spn_rect_corner_br_, obs_icon("corner-radius-br.svg")), 1, 1);
 
     auto *shape_form_widget = new QWidget(rect_box_);
     shape_form_widget->setStyleSheet("background:transparent;");
     auto *rfl = new QFormLayout(shape_form_widget);
     style_form(rfl);
     add_form_row(rfl, "", chk_text_box_width_to_text_);
-    add_form_row(rfl, obsgs_tr("OBSTitles.MaxTextBoxWidthLabel"), spn_max_text_box_width_);
+    add_form_row(rfl, bgl_tr("OBSTitles.MaxTextBoxWidthLabel"), spn_max_text_box_width_);
     add_form_row(rfl, "", chk_text_box_height_to_text_);
-    add_form_row(rfl, obsgs_tr("OBSTitles.MaxTextBoxHeightLabel"), spn_max_text_box_height_);
-    add_form_row(rfl, obsgs_tr("OBSTitles.CornerLabel"), row_rect_corners_);
+    add_form_row(rfl, bgl_tr("OBSTitles.MaxTextBoxHeightLabel"), spn_max_text_box_height_);
+    add_form_row(rfl, bgl_tr("OBSTitles.CornerLabel"), row_rect_corners_);
     add_form_row(rfl, QStringLiteral("Corner Roundness"), spn_corner_bevel_roundness_);
     add_form_row(rfl, "Points", spn_shape_points_);
     add_form_row(rfl, "Sides", spn_shape_sides_);
@@ -1476,34 +1487,34 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(rfl, "Outer Radius", spn_shape_outer_radius_);
     add_form_row(rfl, "Roundness", spn_shape_roundness_);
     cmb_fill_type_ = new QComboBox(inner);
-    cmb_fill_type_->addItem(obsgs_tr("OBSTitles.Solid"), 0);
-    cmb_fill_type_->addItem(obsgs_tr("OBSTitles.Gradient"), 1);
+    cmb_fill_type_->addItem(bgl_tr("OBSTitles.Solid"), 0);
+    cmb_fill_type_->addItem(bgl_tr("OBSTitles.Gradient"), 1);
     cmb_fill_type_->setFixedHeight(22);
     cmb_fill_type_->setStyleSheet(control_style);
     row_fill_type_ = cmb_fill_type_;
-    add_form_row(rfl, obsgs_tr("OBSTitles.FillTypeLabel"), row_fill_type_);
+    add_form_row(rfl, bgl_tr("OBSTitles.FillTypeLabel"), row_fill_type_);
     btn_fill_color_ = new QPushButton(inner);
-    btn_kf_fill_color_ = mk_kf_button(obsgs_tr("OBSTitles.ToggleFillColorKeyframe"));
+    btn_kf_fill_color_ = mk_kf_button(bgl_tr("OBSTitles.ToggleFillColorKeyframe"));
     row_fill_color_ = with_kf(btn_fill_color_, btn_kf_fill_color_);
-    add_form_row(rfl, obsgs_tr("OBSTitles.ColorLabel"), row_fill_color_);
+    add_form_row(rfl, bgl_tr("OBSTitles.ColorLabel"), row_fill_color_);
     shape_layout->addWidget(shape_form_widget);
     vl->addWidget(rect_box_);
 
     /* ── Gradient Properties ── */
-    gradient_box_ = new QGroupBox(obsgs_tr("OBSTitles.GradientProperties"), inner);
+    gradient_box_ = new QGroupBox(bgl_tr("OBSTitles.GradientProperties"), inner);
     gradient_box_->setStyleSheet(section_style);
     auto *gfl = new QFormLayout(gradient_box_);
     style_form(gfl);
     cmb_gradient_type_ = new QComboBox(inner);
-    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.LinearGradient"), 0);
-    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-    cmb_gradient_type_->addItem(obsgs_tr("OBSTitles.ConicalGradient"), 2);
+    cmb_gradient_type_->addItem(bgl_tr("OBSTitles.LinearGradient"), 0);
+    cmb_gradient_type_->addItem(bgl_tr("OBSTitles.RadialGradient"), 1);
+    cmb_gradient_type_->addItem(bgl_tr("OBSTitles.ConicalGradient"), 2);
     cmb_gradient_type_->setFixedHeight(22);
     cmb_gradient_type_->setStyleSheet(control_style);
     cmb_gradient_spread_ = new QComboBox(inner);
-    cmb_gradient_spread_->addItem(obsgs_tr("OBSTitles.No"), 0);
-    cmb_gradient_spread_->addItem(obsgs_tr("OBSTitles.Repeat"), 2);
-    cmb_gradient_spread_->addItem(obsgs_tr("OBSTitles.Reflect"), 1);
+    cmb_gradient_spread_->addItem(bgl_tr("OBSTitles.No"), 0);
+    cmb_gradient_spread_->addItem(bgl_tr("OBSTitles.Repeat"), 2);
+    cmb_gradient_spread_->addItem(bgl_tr("OBSTitles.Reflect"), 1);
     cmb_gradient_spread_->setFixedHeight(22);
     cmb_gradient_spread_->setStyleSheet(control_style);
     btn_gradient_start_color_ = new QPushButton(inner);
@@ -1526,21 +1537,21 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                                                spn_gradient_focal_x_, spn_gradient_focal_y_})
         spin->setDecimals(2);
     spn_gradient_angle_->setSuffix("°");
-    add_form_row(gfl, obsgs_tr("OBSTitles.GradientTypeLabel"), cmb_gradient_type_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.SpreadLabel"), cmb_gradient_spread_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.StartColorLabel"), btn_gradient_start_color_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.StartStopLabel"), spn_gradient_start_pos_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.StartOpacityLabel"), spn_gradient_start_opacity_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.EndColorLabel"), btn_gradient_end_color_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.EndStopLabel"), spn_gradient_end_pos_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.EndOpacityLabel"), spn_gradient_end_opacity_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.OpacityLabel"), spn_gradient_opacity_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.AngleLabel"), spn_gradient_angle_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.CenterXLabel"), spn_gradient_center_x_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.CenterYLabel"), spn_gradient_center_y_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.ScaleLabel"), spn_gradient_scale_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.FocalXLabel"), spn_gradient_focal_x_);
-    add_form_row(gfl, obsgs_tr("OBSTitles.FocalYLabel"), spn_gradient_focal_y_);
+    add_form_row(gfl, bgl_tr("OBSTitles.GradientTypeLabel"), cmb_gradient_type_);
+    add_form_row(gfl, bgl_tr("OBSTitles.SpreadLabel"), cmb_gradient_spread_);
+    add_form_row(gfl, bgl_tr("OBSTitles.StartColorLabel"), btn_gradient_start_color_);
+    add_form_row(gfl, bgl_tr("OBSTitles.StartStopLabel"), spn_gradient_start_pos_);
+    add_form_row(gfl, bgl_tr("OBSTitles.StartOpacityLabel"), spn_gradient_start_opacity_);
+    add_form_row(gfl, bgl_tr("OBSTitles.EndColorLabel"), btn_gradient_end_color_);
+    add_form_row(gfl, bgl_tr("OBSTitles.EndStopLabel"), spn_gradient_end_pos_);
+    add_form_row(gfl, bgl_tr("OBSTitles.EndOpacityLabel"), spn_gradient_end_opacity_);
+    add_form_row(gfl, bgl_tr("OBSTitles.OpacityLabel"), spn_gradient_opacity_);
+    add_form_row(gfl, bgl_tr("OBSTitles.AngleLabel"), spn_gradient_angle_);
+    add_form_row(gfl, bgl_tr("OBSTitles.CenterXLabel"), spn_gradient_center_x_);
+    add_form_row(gfl, bgl_tr("OBSTitles.CenterYLabel"), spn_gradient_center_y_);
+    add_form_row(gfl, bgl_tr("OBSTitles.ScaleLabel"), spn_gradient_scale_);
+    add_form_row(gfl, bgl_tr("OBSTitles.FocalXLabel"), spn_gradient_focal_x_);
+    add_form_row(gfl, bgl_tr("OBSTitles.FocalYLabel"), spn_gradient_focal_y_);
     vl->addWidget(gradient_box_);
     make_collapsible(gradient_box_);
 
@@ -1556,7 +1567,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *image_header_layout = new QHBoxLayout(image_header);
     image_header_layout->setContentsMargins(0, 8, 0, 0);
     image_header_layout->setSpacing(8);
-    auto *image_title = new QLabel(obsgs_tr("OBSTitles.Image"), image_header);
+    auto *image_title = new QLabel(bgl_tr("OBSTitles.Image"), image_header);
     image_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     image_header_layout->addWidget(image_title);
     image_header_layout->addStretch(1);
@@ -1582,38 +1593,38 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     edit_image_path_ = new QLineEdit(image_form_widget);
     edit_image_path_->setFixedHeight(22);
     edit_image_path_->setStyleSheet(control_style);
-    btn_pick_image_ = new QPushButton(obsgs_tr("OBSTitles.Browse"), image_form_widget);
+    btn_pick_image_ = new QPushButton(bgl_tr("OBSTitles.Browse"), image_form_widget);
     style_push_button(btn_pick_image_);
-    spn_layer_w_->setToolTip(obsgs_tr("OBSTitles.ImageWidthTooltip"));
-    spn_layer_h_->setToolTip(obsgs_tr("OBSTitles.ImageHeightTooltip"));
+    spn_layer_w_->setToolTip(bgl_tr("OBSTitles.ImageWidthTooltip"));
+    spn_layer_h_->setToolTip(bgl_tr("OBSTitles.ImageHeightTooltip"));
     cmb_image_scale_filter_ = new QComboBox(image_form_widget);
     cmb_image_scale_filter_->setFixedHeight(22);
     cmb_image_scale_filter_->setStyleSheet(control_style);
-    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterDisable"), (int)ImageScaleFilter::Disable);
-    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterBilinear"), (int)ImageScaleFilter::Bilinear);
-    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterBicubic"), (int)ImageScaleFilter::Bicubic);
-    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterLanczos"), (int)ImageScaleFilter::Lanczos);
-    cmb_image_scale_filter_->addItem(obsgs_tr("OBSTitles.ScaleFilterArea"), (int)ImageScaleFilter::Area);
+    cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterDisable"), (int)ImageScaleFilter::Disable);
+    cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterBilinear"), (int)ImageScaleFilter::Bilinear);
+    cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterBicubic"), (int)ImageScaleFilter::Bicubic);
+    cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterLanczos"), (int)ImageScaleFilter::Lanczos);
+    cmb_image_scale_filter_->addItem(bgl_tr("OBSTitles.ScaleFilterArea"), (int)ImageScaleFilter::Area);
     cmb_image_box_mode_ = new QComboBox(image_form_widget);
     cmb_image_box_mode_->setFixedHeight(22);
     cmb_image_box_mode_->setStyleSheet(control_style);
-    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFitImageToBox"), (int)ImageBoxMode::FitImageToBox);
-    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFillHorizontal"), (int)ImageBoxMode::FillHorizontal);
-    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFillVertical"), (int)ImageBoxMode::FillVertical);
-    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFitToLongSide"), (int)ImageBoxMode::FitToLongSide);
-    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxFitToShortSide"), (int)ImageBoxMode::FitToShortSide);
-    cmb_image_box_mode_->addItem(obsgs_tr("OBSTitles.ImageBoxStretchToFill"), (int)ImageBoxMode::StretchToFill);
-    chk_image_crop_when_outside_box_ = new QCheckBox(obsgs_tr("OBSTitles.ImageBoxCropWhenOutside"), image_form_widget);
+    cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFitImageToBox"), (int)ImageBoxMode::FitImageToBox);
+    cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFillHorizontal"), (int)ImageBoxMode::FillHorizontal);
+    cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFillVertical"), (int)ImageBoxMode::FillVertical);
+    cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFitToLongSide"), (int)ImageBoxMode::FitToLongSide);
+    cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxFitToShortSide"), (int)ImageBoxMode::FitToShortSide);
+    cmb_image_box_mode_->addItem(bgl_tr("OBSTitles.ImageBoxStretchToFill"), (int)ImageBoxMode::StretchToFill);
+    chk_image_crop_when_outside_box_ = new QCheckBox(bgl_tr("OBSTitles.ImageBoxCropWhenOutside"), image_form_widget);
     style_checkbox(chk_image_crop_when_outside_box_);
     btn_image_anchor_grid_ = new AnchorGridButton(image_form_widget);
     btn_image_anchor_grid_->setFixedSize(36, 36);
-    btn_image_anchor_grid_->setToolTip(obsgs_tr("OBSTitles.ImageBoxAnchorTooltip"));
-    add_form_row(image_form, obsgs_tr("OBSTitles.PathLabel"), edit_image_path_);
+    btn_image_anchor_grid_->setToolTip(bgl_tr("OBSTitles.ImageBoxAnchorTooltip"));
+    add_form_row(image_form, bgl_tr("OBSTitles.PathLabel"), edit_image_path_);
     add_form_row(image_form, "", btn_pick_image_);
-    add_form_row(image_form, obsgs_tr("OBSTitles.ImageBoxMode"), cmb_image_box_mode_);
+    add_form_row(image_form, bgl_tr("OBSTitles.ImageBoxMode"), cmb_image_box_mode_);
     add_form_row(image_form, QString(), chk_image_crop_when_outside_box_);
-    add_form_row(image_form, obsgs_tr("OBSTitles.ImageBoxAnchor"), btn_image_anchor_grid_);
-    add_form_row(image_form, obsgs_tr("OBSTitles.Filtering"), cmb_image_scale_filter_);
+    add_form_row(image_form, bgl_tr("OBSTitles.ImageBoxAnchor"), btn_image_anchor_grid_);
+    add_form_row(image_form, bgl_tr("OBSTitles.Filtering"), cmb_image_scale_filter_);
     image_content_layout->addWidget(image_form_widget, 1);
     image_layout->addWidget(image_content);
     const int image_size_index = vl->indexOf(rect_box_);
@@ -1632,7 +1643,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto *image_box_size_header_layout = new QHBoxLayout(image_box_size_header);
     image_box_size_header_layout->setContentsMargins(0, 8, 0, 0);
     image_box_size_header_layout->setSpacing(8);
-    auto *image_box_size_title = new QLabel(obsgs_tr("OBSTitles.ImageBoxSize"), image_box_size_header);
+    auto *image_box_size_title = new QLabel(bgl_tr("OBSTitles.ImageBoxSize"), image_box_size_header);
     image_box_size_title->setStyleSheet(QStringLiteral("color:%1;font-size:14px;background:transparent;").arg(panel_text_name));
     image_box_size_header_layout->addWidget(image_box_size_title);
     image_box_size_header_layout->addStretch(1);
@@ -1677,16 +1688,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     };
     chk_image_box_size_lock_ = new TransformLockCheckBox(image_box_size_box_);
     chk_image_box_size_lock_->setText(QString());
-    chk_image_box_size_lock_->setToolTip(obsgs_tr("OBSTitles.LockAspectRatio"));
+    chk_image_box_size_lock_->setToolTip(bgl_tr("OBSTitles.LockAspectRatio"));
     chk_image_box_size_lock_->setFixedSize(24, 24);
     chk_image_box_size_lock_->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto *image_box_size_label = new QLabel(obsgs_tr("OBSTitles.Size"), image_box_size_box_);
+    auto *image_box_size_label = new QLabel(bgl_tr("OBSTitles.Size"), image_box_size_box_);
     image_box_size_label->setStyleSheet(QStringLiteral("color:%1;background:transparent;font-size:13px;").arg(panel_text_name));
     image_box_size_grid->addWidget(btn_kf_image_box_size_, 0, 0, Qt::AlignCenter);
     image_box_size_grid->addWidget(image_box_size_label, 0, 1);
-    image_box_size_grid->addWidget(make_image_box_size_field(obsgs_tr("OBSTitles.W"), spn_image_box_w_), 0, 2);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.W"), spn_image_box_w_), 0, 2);
     image_box_size_grid->addWidget(chk_image_box_size_lock_, 0, 3, Qt::AlignCenter);
-    image_box_size_grid->addWidget(make_image_box_size_field(obsgs_tr("OBSTitles.H"), spn_image_box_h_), 0, 4);
+    image_box_size_grid->addWidget(make_image_box_size_field(bgl_tr("OBSTitles.H"), spn_image_box_h_), 0, 4);
     image_box_size_layout->addLayout(image_box_size_grid);
     const int image_box_size_index = vl->indexOf(image_box_);
     if (image_box_size_index >= 0)
@@ -1809,7 +1820,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 raw_h = intrinsic.height();
             }
         }
-        const gsp::ImageDisplaySize display = gsp::calculate_image_display_size(
+        const bgs::ImageDisplaySize display = bgs::calculate_image_display_size(
             layer_->image_box_mode, layer_->image_size_auto_fit,
             eval_box_width(*layer_, t), eval_box_height(*layer_, t), raw_w, raw_h);
         if (spn_layer_w_) {
@@ -1851,7 +1862,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
                         QMenu menu(button);
                         menu.setStyleSheet(menu_style);
-                        QAction *delete_all = menu.addAction(obsgs_tr("OBSTitles.DeleteAllKeyframes"));
+                        QAction *delete_all = menu.addAction(bgl_tr("OBSTitles.DeleteAllKeyframes"));
                         delete_all->setEnabled(can_edit() && has_keyframes);
                         if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit()) return;
 
@@ -1881,7 +1892,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     auto &vec = layer_.get()->*prop;
                     QMenu menu(button);
                     menu.setStyleSheet(menu_style);
-                    QAction *delete_all = menu.addAction(obsgs_tr("OBSTitles.DeleteAllKeyframes"));
+                    QAction *delete_all = menu.addAction(bgl_tr("OBSTitles.DeleteAllKeyframes"));
                     delete_all->setEnabled(can_edit() && !vec.keyframes.empty());
                     if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit()) return;
                     if (vec.keyframes.empty()) return;
@@ -1899,7 +1910,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     AnimatedVec2Property *vec = prop_for_layer();
                     QMenu menu(button);
                     menu.setStyleSheet(menu_style);
-                    QAction *delete_all = menu.addAction(obsgs_tr("OBSTitles.DeleteAllKeyframes"));
+                    QAction *delete_all = menu.addAction(bgl_tr("OBSTitles.DeleteAllKeyframes"));
                     delete_all->setEnabled(can_edit() && vec && !vec->keyframes.empty());
                     if (menu.exec(button->mapToGlobal(pos)) != delete_all || !can_edit() || !vec) return;
                     if (vec->keyframes.empty()) return;
@@ -2386,7 +2397,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 QColor initial = color_from_argb(text_edit_active()
                     ? current.fill.color
                     : eval_text_color(*layer_, local_time()));
-                QColor picked = obsgs_pick_color(initial, this, obsgs_tr("OBSTitles.TextColor"));
+                QColor picked = bgl_pick_color(initial, this, bgl_tr("OBSTitles.TextColor"));
                 if (!picked.isValid()) return;
                 RichTextCharFormat fmt = current_text_char_format();
                 fmt.fill.type = 0;
@@ -2456,7 +2467,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         popup_header->addStretch();
         auto *close_popup = new QToolButton(&popup);
         close_popup->setText(QStringLiteral("×"));
-        close_popup->setToolTip(obsgs_tr("OBSTitles.Close"));
+        close_popup->setToolTip(bgl_tr("OBSTitles.Close"));
         close_popup->setAutoRaise(true);
         close_popup->setFixedSize(22, 22);
         popup_header->addWidget(close_popup);
@@ -2593,7 +2604,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         const QColor original_color = selected_color;
         bool syncing_color_controls = false;
         bool closing_for_eyedropper = false;
-        QStringList recent_color_hexes = obsgs_load_recent_color_hexes();
+        QStringList recent_color_hexes = bgl_load_recent_color_hexes();
         if (title_) {
             for (const auto &hex : title_->editor_recent_color_hexes) {
                 const QString value = QString::fromStdString(hex);
@@ -2664,13 +2675,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *picker_actions_layout = new QVBoxLayout(picker_actions);
         picker_actions_layout->setContentsMargins(0, 0, 0, 0);
         picker_actions_layout->setSpacing(6);
-        auto *add_to_library_button = new QPushButton(obsgs_tr("OBSTitles.AddToLibrary"), picker_actions);
+        auto *add_to_library_button = new QPushButton(bgl_tr("OBSTitles.AddToLibrary"), picker_actions);
         add_to_library_button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         picker_actions_layout->addWidget(add_to_library_button);
         picker_actions_layout->addStretch(1);
 
         auto *color_picker = new color_widgets::ColorDialog(picker_row, Qt::Widget);
-        obsgs_prepare_embedded_color_dialog(color_picker, selected_color);
+        bgl_prepare_embedded_color_dialog(color_picker, selected_color);
         picker_row_layout->addWidget(picker_actions);
         picker_row_layout->addWidget(color_picker, 1);
         wheel_layout->addWidget(picker_row, 1);
@@ -2681,19 +2692,19 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         swatch_row_layout->setContentsMargins(0, 0, 0, 0);
         swatch_row_layout->setSpacing(6);
         auto *none_button = new QPushButton(QStringLiteral("╱"), swatch_row);
-        none_button->setToolTip(obsgs_tr("OBSTitles.NoColor"));
+        none_button->setToolTip(bgl_tr("OBSTitles.NoColor"));
         none_button->setStyleSheet(none_swatch_style(30));
         auto *background_button = new QPushButton(swatch_row);
-        background_button->setToolTip(obsgs_tr("OBSTitles.BackgroundColor"));
+        background_button->setToolTip(bgl_tr("OBSTitles.BackgroundColor"));
         auto *foreground_button = new QPushButton(swatch_row);
-        foreground_button->setToolTip(obsgs_tr("OBSTitles.ForegroundColor"));
+        foreground_button->setToolTip(bgl_tr("OBSTitles.ForegroundColor"));
         auto *swap_button = new QPushButton(QStringLiteral("⇄"), swatch_row);
-        swap_button->setToolTip(obsgs_tr("OBSTitles.SwapForegroundBackground"));
+        swap_button->setToolTip(bgl_tr("OBSTitles.SwapForegroundBackground"));
         swap_button->setFixedSize(30, 30);
         auto *eyedropper_button = new QPushButton(QStringLiteral("⌕"), swatch_row);
         eyedropper_button->setIcon(obs_icon("eyedropper.svg"));
         eyedropper_button->setText(QString());
-        eyedropper_button->setToolTip(obsgs_tr("OBSTitles.PickColor"));
+        eyedropper_button->setToolTip(bgl_tr("OBSTitles.PickColor"));
         eyedropper_button->setFixedSize(30, 30);
         swatch_row_layout->addWidget(none_button);
         swatch_row_layout->addWidget(background_button);
@@ -2703,7 +2714,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         swatch_row_layout->addWidget(eyedropper_button);
         wheel_layout->addWidget(swatch_row);
 
-        auto *recent_label = new QLabel(obsgs_tr("OBSTitles.RecentColors"), wheel_column);
+        auto *recent_label = new QLabel(bgl_tr("OBSTitles.RecentColors"), wheel_column);
         wheel_layout->addWidget(recent_label);
         auto *recent_row = new QWidget(wheel_column);
         auto *recent_layout = new QHBoxLayout(recent_row);
@@ -2730,7 +2741,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     parse_hex(recent_color_hexes[i], c);
                     b->setEnabled(true);
                     b->setStyleSheet(swatch_style(c, 22));
-                    b->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.RecentColors"), c, color_hex(c)));
+                    b->setToolTip(bgl_color_swatch_tooltip(bgl_tr("OBSTitles.RecentColors"), c, color_hex(c)));
                 } else {
                     b->setEnabled(false);
                     b->setStyleSheet(QStringLiteral(
@@ -2751,7 +2762,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 static QStringList fallback_recent_color_hexes;
                 fallback_recent_color_hexes = recent_color_hexes;
             }
-            obsgs_save_recent_color_hexes(recent_color_hexes);
+            bgl_save_recent_color_hexes(recent_color_hexes);
             update_recent_buttons();
             emit recent_colors_changed();
         };
@@ -2794,8 +2805,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             syncing_color_controls = true;
             foreground_button->setStyleSheet(swatch_style(selected_color, 30));
             background_button->setStyleSheet(swatch_style(background_color, 30));
-            foreground_button->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.ForegroundColor"), selected_color, color_hex(selected_color)));
-            background_button->setToolTip(obsgs_color_swatch_tooltip(obsgs_tr("OBSTitles.BackgroundColor"), background_color, color_hex(background_color)));
+            foreground_button->setToolTip(bgl_color_swatch_tooltip(bgl_tr("OBSTitles.ForegroundColor"), selected_color, color_hex(selected_color)));
+            background_button->setToolTip(bgl_color_swatch_tooltip(bgl_tr("OBSTitles.BackgroundColor"), background_color, color_hex(background_color)));
             if (sync_picker) {
                 QSignalBlocker blocker(color_picker);
                 color_picker->setColor(selected_color);
@@ -2884,8 +2895,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (i >= recent_color_hexes.size() || !parse_hex(recent_color_hexes[i], c))
                     return;
                 QMenu menu(button);
-                QAction *add_action = menu.addAction(obsgs_tr("OBSTitles.AddToLibrary"));
-                QAction *delete_action = menu.addAction(obsgs_tr("OBSTitles.Delete"));
+                QAction *add_action = menu.addAction(bgl_tr("OBSTitles.AddToLibrary"));
+                QAction *delete_action = menu.addAction(bgl_tr("OBSTitles.Delete"));
                 QAction *selected = menu.exec(button->mapToGlobal(pos));
                 if (selected == add_action)
                     emit color_library_add_requested(c);
@@ -2900,7 +2911,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         });
 
         update_color_controls();
-        tabs->addTab(color_tab, obsgs_tr("OBSTitles.Color"));
+        tabs->addTab(color_tab, bgl_tr("OBSTitles.Color"));
 
         auto *swatches_tab = new QWidget(tabs);
         auto *swatches_layout = new QVBoxLayout(swatches_tab);
@@ -2929,7 +2940,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *button = new QPushButton(swatches_grid_widget);
                 button->setFixedSize(24, 24);
                 button->setText(QString());
-                button->setToolTip(obsgs_color_swatch_tooltip(entry.name, entry.color, color_hex(entry.color)));
+                button->setToolTip(bgl_color_swatch_tooltip(entry.name, entry.color, color_hex(entry.color)));
                 button->setStyleSheet(swatch_style(entry.color, 24));
                 connect(button, &QPushButton::clicked, &popup, [=, &apply_and_sync_color]() {
                     apply_and_sync_color(entry.color, true);
@@ -2940,7 +2951,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         connect(swatches_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), &popup,
                 [&refresh_swatches_tab](int) { refresh_swatches_tab(); });
         refresh_swatches_tab();
-        tabs->addTab(swatches_tab, obsgs_tr("OBSTitles.Swatches"));
+        tabs->addTab(swatches_tab, bgl_tr("OBSTitles.Swatches"));
 
         auto *gradient_tab = new QWidget(tabs);
         auto *gradient_layout = new QVBoxLayout(gradient_tab);
@@ -2948,7 +2959,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_layout->setContentsMargins(8, 8, 8, 8);
         gradient_layout->setSpacing(6);
 
-        auto *preset_box = new QGroupBox(obsgs_tr("OBSTitles.Presets"), gradient_tab);
+        auto *preset_box = new QGroupBox(bgl_tr("OBSTitles.Presets"), gradient_tab);
         preset_box->setStyleSheet(QStringLiteral("QGroupBox{color:%1;background:%2;border:1px solid %3;"
                                 "border-radius:2px;margin-top:15px;padding-top:8px;font-size:10px;}"
                                 "QGroupBox::title{subcontrol-origin:margin;left:6px;padding:0 3px;background:%2;}")
@@ -2961,8 +2972,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         preset_folders_layout->setContentsMargins(0, 0, 0, 0);
         preset_folders_layout->setHorizontalSpacing(10);
         preset_folders_layout->setVerticalSpacing(4);
-        const QStringList preset_groups = {obsgs_tr("OBSTitles.Cloud"), obsgs_tr("OBSTitles.Iridescent"),
-                                           obsgs_tr("OBSTitles.Pastels"), obsgs_tr("OBSTitles.Neutrals")};
+        const QStringList preset_groups = {bgl_tr("OBSTitles.Cloud"), bgl_tr("OBSTitles.Iridescent"),
+                                           bgl_tr("OBSTitles.Pastels"), bgl_tr("OBSTitles.Neutrals")};
         for (int i = 0; i < preset_groups.size(); ++i) {
             auto *label = new QLabel(QStringLiteral("▸  📁  %1").arg(preset_groups[i]), preset_folders);
             label->setStyleSheet(QStringLiteral("QLabel{color:%1;background:transparent;font-size:10px;}").arg(panel_text_name));
@@ -2981,18 +2992,18 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_form_layout->setContentsMargins(0, 0, 0, 0);
         gradient_form_layout->setHorizontalSpacing(6);
         gradient_form_layout->setVerticalSpacing(4);
-        auto *name_edit = new QLineEdit(obsgs_tr("OBSTitles.Custom"), gradient_form);
+        auto *name_edit = new QLineEdit(bgl_tr("OBSTitles.Custom"), gradient_form);
         name_edit->setStyleSheet(control_style);
-        auto *new_preset = new QPushButton(obsgs_tr("OBSTitles.New"), gradient_form);
+        auto *new_preset = new QPushButton(bgl_tr("OBSTitles.New"), gradient_form);
         auto *type = new QComboBox(gradient_form);
-        type->addItem(obsgs_tr("OBSTitles.Linear"), 0);
-        type->addItem(obsgs_tr("OBSTitles.RadialGradient"), 1);
-        type->addItem(obsgs_tr("OBSTitles.ConicalGradient"), 2);
+        type->addItem(bgl_tr("OBSTitles.Linear"), 0);
+        type->addItem(bgl_tr("OBSTitles.RadialGradient"), 1);
+        type->addItem(bgl_tr("OBSTitles.ConicalGradient"), 2);
         type->setStyleSheet(control_style);
         auto *repeat_mode = new QComboBox(gradient_form);
-        repeat_mode->addItem(obsgs_tr("OBSTitles.No"), 0);
-        repeat_mode->addItem(obsgs_tr("OBSTitles.Repeat"), 2);
-        repeat_mode->addItem(obsgs_tr("OBSTitles.Reflect"), 1);
+        repeat_mode->addItem(bgl_tr("OBSTitles.No"), 0);
+        repeat_mode->addItem(bgl_tr("OBSTitles.Repeat"), 2);
+        repeat_mode->addItem(bgl_tr("OBSTitles.Reflect"), 1);
         repeat_mode->setStyleSheet(control_style);
         auto *smoothness = new QSpinBox(gradient_form);
         smoothness->setRange(0, 100);
@@ -3002,11 +3013,11 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         // Compact square-layout controls: keep only the essentials visible.
         name_edit->hide();
         new_preset->hide();
-        gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Type"), gradient_form), 0, 0);
+        gradient_form_layout->addWidget(new QLabel(bgl_tr("OBSTitles.Type"), gradient_form), 0, 0);
         gradient_form_layout->addWidget(type, 0, 1);
-        gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Smooth"), gradient_form), 0, 2);
+        gradient_form_layout->addWidget(new QLabel(bgl_tr("OBSTitles.Smooth"), gradient_form), 0, 2);
         gradient_form_layout->addWidget(smoothness, 0, 3);
-        gradient_form_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.SpreadLabel"), gradient_form), 1, 0);
+        gradient_form_layout->addWidget(new QLabel(bgl_tr("OBSTitles.SpreadLabel"), gradient_form), 1, 0);
         gradient_form_layout->addWidget(repeat_mode, 1, 1);
         gradient_form_layout->setColumnStretch(1, 1);
 
@@ -3041,8 +3052,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *scale = make_spin(0.01, 100.0, 0.05);
         auto *focal_x = make_spin(-100.0, 100.0, 0.01);
         auto *focal_y = make_spin(-100.0, 100.0, 0.01);
-        auto *reverse_gradient = new QCheckBox(obsgs_tr("OBSTitles.ReverseGradient"), gradient_tab);
-        auto *dither_gradient = new QCheckBox(obsgs_tr("OBSTitles.Dither"), gradient_tab);
+        auto *reverse_gradient = new QCheckBox(bgl_tr("OBSTitles.ReverseGradient"), gradient_tab);
+        auto *dither_gradient = new QCheckBox(bgl_tr("OBSTitles.Dither"), gradient_tab);
         for (auto *w : {gradient_opacity, angle, center_x, center_y, scale, focal_x, focal_y})
             w->hide();
         reverse_gradient->hide();
@@ -3112,7 +3123,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         start_color->setText(QString());
         end_color->setText(QString());
 
-        auto *stops_box = new QGroupBox(obsgs_tr("OBSTitles.Stops"), gradient_tab);
+        auto *stops_box = new QGroupBox(bgl_tr("OBSTitles.Stops"), gradient_tab);
         stops_box->setStyleSheet(preset_box->styleSheet());
         auto *stops_layout = new QVBoxLayout(stops_box);
         stops_layout->setContentsMargins(5, 5, 5, 5);
@@ -3124,8 +3135,8 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(6);
             color_button->setFixedSize(28, 18);
-            layout->addWidget(new QLabel(stop_index < 2 ? (stop_index == 0 ? obsgs_tr("OBSTitles.Start") : obsgs_tr("OBSTitles.End"))
-                                                        : obsgs_tr("OBSTitles.Stop"), row));
+            layout->addWidget(new QLabel(stop_index < 2 ? (stop_index == 0 ? bgl_tr("OBSTitles.Start") : bgl_tr("OBSTitles.End"))
+                                                        : bgl_tr("OBSTitles.Stop"), row));
             layout->addWidget(color_button);
             pos_spin->setSuffix(QStringLiteral("%"));
             pos_spin->setRange(0.0, 100.0);
@@ -3138,10 +3149,10 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             auto *delete_button = new QPushButton(QStringLiteral("×"), row);
             delete_button->setFixedSize(22, 22);
             delete_button->setEnabled(false);
-            delete_button->setToolTip(obsgs_tr("OBSTitles.StopDeleteLockedTooltip"));
-            layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Location"), row));
+            delete_button->setToolTip(bgl_tr("OBSTitles.StopDeleteLockedTooltip"));
+            layout->addWidget(new QLabel(bgl_tr("OBSTitles.Location"), row));
             layout->addWidget(pos_spin);
-            layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Opacity"), row));
+            layout->addWidget(new QLabel(bgl_tr("OBSTitles.Opacity"), row));
             layout->addWidget(opacity_spin);
             layout->addWidget(delete_button);
             row->setProperty("stop_index", stop_index);
@@ -3163,7 +3174,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         selected_stop_layout->setContentsMargins(0, 0, 0, 0);
         selected_stop_layout->setHorizontalSpacing(6);
         selected_stop_layout->setVerticalSpacing(5);
-        auto *selected_stop_label = new QLabel(obsgs_tr("OBSTitles.NoStopSelected"), selected_stop_row);
+        auto *selected_stop_label = new QLabel(bgl_tr("OBSTitles.NoStopSelected"), selected_stop_row);
         auto *selected_stop_color = new QPushButton(selected_stop_row);
         selected_stop_color->setFixedSize(28, 18);
         auto *selected_stop_location = make_spin(0.0, 100.0, 1.0, 0);
@@ -3174,14 +3185,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         selected_stop_opacity->setFixedWidth(58);
         auto *selected_stop_delete = new QPushButton(QStringLiteral("×"), selected_stop_row);
         selected_stop_delete->setFixedSize(22, 22);
-        selected_stop_delete->setToolTip(obsgs_tr("OBSTitles.DeleteSelectedStopTooltip"));
+        selected_stop_delete->setToolTip(bgl_tr("OBSTitles.DeleteSelectedStopTooltip"));
         selected_stop_layout->addWidget(selected_stop_label, 0, 0, 1, 5);
-        selected_stop_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Color"), selected_stop_row), 1, 0);
+        selected_stop_layout->addWidget(new QLabel(bgl_tr("OBSTitles.Color"), selected_stop_row), 1, 0);
         selected_stop_layout->addWidget(selected_stop_color, 1, 1);
-        selected_stop_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Location"), selected_stop_row), 1, 2);
+        selected_stop_layout->addWidget(new QLabel(bgl_tr("OBSTitles.Location"), selected_stop_row), 1, 2);
         selected_stop_layout->addWidget(selected_stop_location, 1, 3);
         selected_stop_layout->addWidget(selected_stop_delete, 1, 4);
-        selected_stop_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.Opacity"), selected_stop_row), 2, 2);
+        selected_stop_layout->addWidget(new QLabel(bgl_tr("OBSTitles.Opacity"), selected_stop_row), 2, 2);
         selected_stop_layout->addWidget(selected_stop_opacity, 2, 3);
         stops_layout->addWidget(selected_stop_row);
 
@@ -3190,13 +3201,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto *stop_actions_layout = new QHBoxLayout(stop_actions);
         stop_actions_layout->setContentsMargins(0, 0, 0, 0);
         stop_actions_layout->setSpacing(5);
-        auto *add_stop = new QPushButton(obsgs_tr("OBSTitles.AddStop"), stop_actions);
-        auto *duplicate_stop = new QPushButton(obsgs_tr("OBSTitles.Duplicate"), stop_actions);
-        auto *sort_stops = new QPushButton(obsgs_tr("OBSTitles.Sort"), stop_actions);
-        auto *delete_stop = new QPushButton(obsgs_tr("OBSTitles.Delete"), stop_actions);
-        delete_stop->setToolTip(obsgs_tr("OBSTitles.DeleteStopTooltip"));
-        duplicate_stop->setToolTip(obsgs_tr("OBSTitles.DuplicateStopTooltip"));
-        add_stop->setToolTip(obsgs_tr("OBSTitles.AddStopTooltip"));
+        auto *add_stop = new QPushButton(bgl_tr("OBSTitles.AddStop"), stop_actions);
+        auto *duplicate_stop = new QPushButton(bgl_tr("OBSTitles.Duplicate"), stop_actions);
+        auto *sort_stops = new QPushButton(bgl_tr("OBSTitles.Sort"), stop_actions);
+        auto *delete_stop = new QPushButton(bgl_tr("OBSTitles.Delete"), stop_actions);
+        delete_stop->setToolTip(bgl_tr("OBSTitles.DeleteStopTooltip"));
+        duplicate_stop->setToolTip(bgl_tr("OBSTitles.DuplicateStopTooltip"));
+        add_stop->setToolTip(bgl_tr("OBSTitles.AddStopTooltip"));
         stop_actions_layout->addWidget(add_stop);
         stop_actions_layout->addWidget(duplicate_stop);
         stop_actions_layout->addWidget(sort_stops);
@@ -3213,7 +3224,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         }
 
         auto *gradient_color_picker = new color_widgets::ColorDialog(stops_box, Qt::Widget);
-        obsgs_prepare_embedded_color_dialog(
+        bgl_prepare_embedded_color_dialog(
             gradient_color_picker,
             color_from_argb(stroke
                 ? (inline_text_stroke ? initial_inline_stroke.fill.gradient_start_color
@@ -3221,6 +3232,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 : (inline_text_fill ? initial_inline_fill.gradient_start_color
                                     : layer_->gradient_start_color)));
         properties_limit_gradient_stop_color_dialog(gradient_color_picker);
+        if (auto *buttons = gradient_color_picker->findChild<QDialogButtonBox *>(QStringLiteral("buttonBox"))) {
+            for (auto *button : buttons->buttons()) {
+                if (buttons->buttonRole(button) == QDialogButtonBox::ActionRole) {
+                    connect(button, &QAbstractButton::clicked, &popup, [this, &popup]() {
+                        remember_next_color_popup_position(popup.pos());
+                        popup.accept();
+                        emit color_picker_tool_requested();
+                    });
+                }
+            }
+        }
         gradient_color_picker->setVisible(true);
         gradient_color_picker->setEnabled(false);
         stops_layout->addWidget(gradient_color_picker);
@@ -3229,11 +3251,16 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         auto set_gradient_color_picker_target = [&](int stop_index) {
             if (stop_index < 0 || stop_index >= preview->stop_count()) {
                 active_gradient_stop = -1;
+                if (layer_ && external_gradient_layer_id_ == layer_->id)
+                    external_gradient_stop_index_ = -1;
                 gradient_color_picker->setEnabled(false);
                 return;
             }
 
             active_gradient_stop = stop_index;
+            external_gradient_layer_id_ = layer_ ? layer_->id : std::string();
+            external_gradient_stop_index_ = stop_index;
+            external_gradient_stroke_ = stroke;
             gradient_color_picker->setEnabled(true);
             QColor color = color_from_argb(preview->stop_color_argb(stop_index));
             color.setAlphaF(preview->stop_opacity(stop_index));
@@ -3287,14 +3314,14 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         gradient_layout->addWidget(preview);
         gradient_layout->addWidget(stops_box);
         gradient_layout->addWidget(preset_box, 0, Qt::AlignTop);
-        tabs->addTab(gradient_tab, obsgs_tr("OBSTitles.Gradient"));
+        tabs->addTab(gradient_tab, bgl_tr("OBSTitles.Gradient"));
         // With the Color tab hidden, open directly on Gradient.
         tabs->setCurrentWidget(gradient_tab);
 
         auto *pattern_tab = new QWidget(tabs);
         auto *pattern_layout = new QVBoxLayout(pattern_tab);
-        pattern_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.PatternsNotImplemented"), pattern_tab));
-        tabs->addTab(pattern_tab, obsgs_tr("OBSTitles.Pattern"));
+        pattern_layout->addWidget(new QLabel(bgl_tr("OBSTitles.PatternsNotImplemented"), pattern_tab));
+        tabs->addTab(pattern_tab, bgl_tr("OBSTitles.Pattern"));
         tabs->setTabEnabled(tabs->indexOf(pattern_tab), false);
 
         auto preview_change_in_progress = std::make_shared<bool>(false);
@@ -3306,9 +3333,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
 
             syncing_selected_stop_controls = true;
             selected_stop_label->setText(has_selection
-                ? obsgs_tr("OBSTitles.SelectedStop").arg(selected < 2 ? (selected == 0 ? obsgs_tr("OBSTitles.StartLower") : obsgs_tr("OBSTitles.EndLower"))
-                                                               : obsgs_tr("OBSTitles.IntermediateLower"))
-                : obsgs_tr("OBSTitles.NoStopSelected"));
+                ? bgl_tr("OBSTitles.SelectedStop").arg(selected < 2 ? (selected == 0 ? bgl_tr("OBSTitles.StartLower") : bgl_tr("OBSTitles.EndLower"))
+                                                               : bgl_tr("OBSTitles.IntermediateLower"))
+                : bgl_tr("OBSTitles.NoStopSelected"));
             selected_stop_color->setEnabled(has_selection);
             selected_stop_location->setEnabled(has_selection);
             selected_stop_opacity->setEnabled(has_selection);
@@ -3721,7 +3748,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *weight_layout = new QHBoxLayout(weight_row);
                 weight_layout->setContentsMargins(0, 0, 0, 0);
                 weight_layout->setSpacing(6);
-                auto *weight_label = new QLabel(obsgs_tr("OBSTitles.WeightColon"), weight_row);
+                auto *weight_label = new QLabel(bgl_tr("OBSTitles.WeightColon"), weight_row);
                 auto *weight = new QDoubleSpinBox(weight_row);
                 weight->setRange(0.0, 200.0);
                 weight->setDecimals(0);
@@ -3763,18 +3790,18 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     root->addWidget(row);
                 };
 
-                auto *cap_butt = make_button(obsgs_tr("OBSTitles.Butt"), obsgs_tr("OBSTitles.CapStyleUnsupported"), &popup);
-                auto *cap_round = make_button(obsgs_tr("OBSTitles.Rnd"), obsgs_tr("OBSTitles.CapStyleUnsupported"), &popup);
-                auto *cap_square = make_button(obsgs_tr("OBSTitles.Sqr"), obsgs_tr("OBSTitles.CapStyleUnsupported"), &popup);
+                auto *cap_butt = make_button(bgl_tr("OBSTitles.Butt"), bgl_tr("OBSTitles.CapStyleUnsupported"), &popup);
+                auto *cap_round = make_button(bgl_tr("OBSTitles.Rnd"), bgl_tr("OBSTitles.CapStyleUnsupported"), &popup);
+                auto *cap_square = make_button(bgl_tr("OBSTitles.Sqr"), bgl_tr("OBSTitles.CapStyleUnsupported"), &popup);
                 for (auto *button : {cap_butt, cap_round, cap_square})
                     button->setEnabled(false);
-                add_button_group_row(obsgs_tr("OBSTitles.CapColon"), {cap_butt, cap_round, cap_square});
+                add_button_group_row(bgl_tr("OBSTitles.CapColon"), {cap_butt, cap_round, cap_square});
 
                 auto *corner_group = new QButtonGroup(&popup);
                 corner_group->setExclusive(true);
-                auto *corner_miter = make_button(obsgs_tr("OBSTitles.M"), obsgs_tr("OBSTitles.Miter"), &popup);
-                auto *corner_round = make_button(obsgs_tr("OBSTitles.R"), obsgs_tr("OBSTitles.Round"), &popup);
-                auto *corner_bevel = make_button(obsgs_tr("OBSTitles.B"), obsgs_tr("OBSTitles.Bevel"), &popup);
+                auto *corner_miter = make_button(bgl_tr("OBSTitles.M"), bgl_tr("OBSTitles.Miter"), &popup);
+                auto *corner_round = make_button(bgl_tr("OBSTitles.R"), bgl_tr("OBSTitles.Round"), &popup);
+                auto *corner_bevel = make_button(bgl_tr("OBSTitles.B"), bgl_tr("OBSTitles.Bevel"), &popup);
                 corner_group->addButton(corner_miter, 0);
                 corner_group->addButton(corner_round, 1);
                 corner_group->addButton(corner_bevel, 2);
@@ -3790,25 +3817,25 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *limit_layout = new QHBoxLayout(limit_wrap);
                 limit_layout->setContentsMargins(0, 0, 0, 0);
                 limit_layout->setSpacing(4);
-                limit_layout->addWidget(new QLabel(obsgs_tr("OBSTitles.LimitColon"), limit_wrap));
+                limit_layout->addWidget(new QLabel(bgl_tr("OBSTitles.LimitColon"), limit_wrap));
                 limit_layout->addWidget(limit);
-                add_button_group_row(obsgs_tr("OBSTitles.CornerColon"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
+                add_button_group_row(bgl_tr("OBSTitles.CornerColon"), {corner_miter, corner_round, corner_bevel}, limit_wrap);
 
                 auto *order_group = new QButtonGroup(&popup);
                 order_group->setExclusive(true);
-                auto *order_back = make_button(obsgs_tr("OBSTitles.Back"), obsgs_tr("OBSTitles.StrokeBehindFillTooltip"), &popup);
-                auto *order_front = make_button(obsgs_tr("OBSTitles.Front"), obsgs_tr("OBSTitles.StrokeInFrontFillTooltip"), &popup);
+                auto *order_back = make_button(bgl_tr("OBSTitles.Back"), bgl_tr("OBSTitles.StrokeBehindFillTooltip"), &popup);
+                auto *order_front = make_button(bgl_tr("OBSTitles.Front"), bgl_tr("OBSTitles.StrokeInFrontFillTooltip"), &popup);
                 order_group->addButton(order_back, 0);
                 order_group->addButton(order_front, 1);
                 if (auto *button = order_group->button(displayed_stroke.on_front ? 1 : 0))
                     button->setChecked(true);
-                add_button_group_row(obsgs_tr("OBSTitles.StrokeOrderColon"), {order_back, order_front});
+                add_button_group_row(bgl_tr("OBSTitles.StrokeOrderColon"), {order_back, order_front});
 
                 auto *alignment_group = new QButtonGroup(&popup);
                 alignment_group->setExclusive(true);
-                auto *alignment_outer = make_button(obsgs_tr("OBSTitles.Outer"), obsgs_tr("OBSTitles.OuterStrokeTooltip"), &popup);
-                auto *alignment_mid = make_button(obsgs_tr("OBSTitles.Mid"), obsgs_tr("OBSTitles.MidStrokeTooltip"), &popup);
-                auto *alignment_inner = make_button(obsgs_tr("OBSTitles.Inner"), obsgs_tr("OBSTitles.InnerStrokeTooltip"), &popup);
+                auto *alignment_outer = make_button(bgl_tr("OBSTitles.Outer"), bgl_tr("OBSTitles.OuterStrokeTooltip"), &popup);
+                auto *alignment_mid = make_button(bgl_tr("OBSTitles.Mid"), bgl_tr("OBSTitles.MidStrokeTooltip"), &popup);
+                auto *alignment_inner = make_button(bgl_tr("OBSTitles.Inner"), bgl_tr("OBSTitles.InnerStrokeTooltip"), &popup);
                 for (auto *button : {alignment_outer, alignment_mid, alignment_inner})
                     button->setFixedWidth(42);
                 alignment_group->addButton(alignment_outer, 0);
@@ -3816,17 +3843,17 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 alignment_group->addButton(alignment_inner, 2);
                 if (auto *button = alignment_group->button(std::clamp(displayed_stroke.alignment, 0, 2)))
                     button->setChecked(true);
-                add_button_group_row(obsgs_tr("OBSTitles.StrokeAlignmentColon"),
+                add_button_group_row(bgl_tr("OBSTitles.StrokeAlignmentColon"),
                                      {alignment_outer, alignment_mid, alignment_inner});
 
                 auto *dash_row = new QWidget(&popup);
                 auto *dash_layout = new QHBoxLayout(dash_row);
                 dash_layout->setContentsMargins(0, 0, 0, 0);
                 dash_layout->setSpacing(4);
-                auto *dashed = new QCheckBox(obsgs_tr("OBSTitles.DashedLine"), dash_row);
+                auto *dashed = new QCheckBox(bgl_tr("OBSTitles.DashedLine"), dash_row);
                 dashed->setEnabled(false);
                 dashed->setStyleSheet(checkbox_style);
-                dashed->setToolTip(obsgs_tr("OBSTitles.DashedStrokesUnsupported"));
+                dashed->setToolTip(bgl_tr("OBSTitles.DashedStrokesUnsupported"));
                 dash_layout->addWidget(dashed);
                 dash_layout->addStretch();
                 root->addWidget(dash_row);
@@ -3835,13 +3862,13 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 auto *dash_values_layout = new QHBoxLayout(dash_values);
                 dash_values_layout->setContentsMargins(0, 0, 0, 0);
                 dash_values_layout->setSpacing(4);
-                for (const QString &label : {obsgs_tr("OBSTitles.Dash"), obsgs_tr("OBSTitles.Gap"),
-                                             obsgs_tr("OBSTitles.Dash"), obsgs_tr("OBSTitles.Gap"),
-                                             obsgs_tr("OBSTitles.Dash"), obsgs_tr("OBSTitles.Gap")}) {
+                for (const QString &label : {bgl_tr("OBSTitles.Dash"), bgl_tr("OBSTitles.Gap"),
+                                             bgl_tr("OBSTitles.Dash"), bgl_tr("OBSTitles.Gap"),
+                                             bgl_tr("OBSTitles.Dash"), bgl_tr("OBSTitles.Gap")}) {
                     auto *field = new QSpinBox(dash_values);
                     field->setRange(0, 999);
-                    field->setValue(label == obsgs_tr("OBSTitles.Dash") ? 12 : 0);
-                    if (label == obsgs_tr("OBSTitles.Dash"))
+                    field->setValue(label == bgl_tr("OBSTitles.Dash") ? 12 : 0);
+                    if (label == bgl_tr("OBSTitles.Dash"))
                         field->setSuffix(QStringLiteral(" pt"));
                     field->setFixedWidth(48);
                     field->setEnabled(false);
@@ -4035,7 +4062,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (layer_->type == LayerType::Image) {
                     double raw_w = eval_image_width(*layer_, t);
                     double raw_h = eval_image_height(*layer_, t);
-                    const gsp::ImageDisplaySize current = gsp::calculate_image_display_size(
+                    const bgs::ImageDisplaySize current = bgs::calculate_image_display_size(
                         layer_->image_box_mode, layer_->image_size_auto_fit,
                         eval_box_width(*layer_, t), eval_box_height(*layer_, t), raw_w, raw_h);
                     const double old_w = current.width;
@@ -4087,7 +4114,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 if (layer_->type == LayerType::Image) {
                     double raw_w = eval_image_width(*layer_, t);
                     double raw_h = eval_image_height(*layer_, t);
-                    const gsp::ImageDisplaySize current = gsp::calculate_image_display_size(
+                    const bgs::ImageDisplaySize current = bgs::calculate_image_display_size(
                         layer_->image_box_mode, layer_->image_size_auto_fit,
                         eval_box_width(*layer_, t), eval_box_height(*layer_, t), raw_w, raw_h);
                     const double old_w = current.width;
@@ -4285,7 +4312,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 const ShapeType previous_shape = layer_->shape_type;
                 const ShapeType next_shape = (ShapeType)cmb_shape_type_->itemData(idx).toInt();
                 if (next_shape == ShapeType::Path && previous_shape != ShapeType::Path) {
-                    if (!gsp::ensure_editable_path(*layer_)) {
+                    if (!bgs::ensure_editable_path(*layer_)) {
                         load_values();
                         return;
                     }
@@ -4436,7 +4463,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, local_time, emit_change]() {
                 if (!can_edit()) return;
                 QColor initial = color_from_argb(eval_fill_color(*layer_, local_time()));
-                QColor picked = obsgs_pick_color(initial, this, obsgs_tr("OBSTitles.FillColor"));
+                QColor picked = bgl_pick_color(initial, this, bgl_tr("OBSTitles.FillColor"));
                 if (!picked.isValid()) return;
                 layer_->fill_color = argb_from_color(picked);
                 set_color_channels_at(*layer_, false, local_time(), layer_->fill_color);
@@ -4474,7 +4501,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                     ? fmt.fill.gradient_start_color
                     : fmt.fill.gradient_end_color;
             }
-            QColor picked = obsgs_pick_color(color_from_argb(initial_argb), this, obsgs_tr(title_key));
+            QColor picked = bgl_pick_color(color_from_argb(initial_argb), this, bgl_tr(title_key));
             if (!picked.isValid()) return;
             const uint32_t argb = argb_from_color(picked);
             if (text_fill && text_edit_active()) {
@@ -4563,9 +4590,9 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
             this, [this, can_edit, fit_image_size_to_current_image, emit_change]() {
                 if (!can_edit()) return;
                 QString path = QFileDialog::getOpenFileName(
-                    this, obsgs_tr("OBSTitles.ChooseImage"),
+                    this, bgl_tr("OBSTitles.ChooseImage"),
                     QString::fromStdString(layer_->image_path),
-                    obsgs_tr("OBSTitles.ImageFileFilter"));
+                    bgl_tr("OBSTitles.ImageFileFilter"));
                 if (path.isEmpty()) return;
                 layer_->image_path = path.toStdString();
                 fit_image_size_to_current_image();
@@ -4829,7 +4856,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     };
     auto refresh_auto_rule_list = [this]() {
         if (!lst_auto_style_rules_ || !layer_) return;
-        obsgsp::StylePresetLibrary library;
+        obsbgs::StylePresetLibrary library;
         QSignalBlocker blocker(lst_auto_style_rules_);
         lst_auto_style_rules_->clear();
         int i = 1;
@@ -4854,12 +4881,12 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     auto cache_text_preset_format = [](const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask) {
         mask = 0;
         if (preset_id.empty()) return;
-        obsgsp::StylePresetLibrary library;
-        obsgsp::StylePreset preset;
+        obsbgs::StylePresetLibrary library;
+        obsbgs::StylePreset preset;
         if (library.findById(QString::fromStdString(preset_id), &preset) &&
-            preset.kind == obsgsp::StylePresetKind::Text &&
-            obsgsp::StylePresetLibrary::textPresetToCharFormat(preset, format))
-            mask = obsgsp::StylePresetLibrary::textPresetCharMask();
+            preset.kind == obsbgs::StylePresetKind::Text &&
+            obsbgs::StylePresetLibrary::textPresetToCharFormat(preset, format))
+            mask = obsbgs::StylePresetLibrary::textPresetCharMask();
     };
     auto cache_rule_format = [cache_text_preset_format](RichTextAutoStyleRule &rule) {
         cache_text_preset_format(rule.style_preset_id, rule.cached_format, rule.cached_mask);
@@ -5090,7 +5117,7 @@ void PropertiesPanel::update_playhead(double t)
                 raw_h = intrinsic.height();
             }
         }
-        const gsp::ImageDisplaySize display = gsp::calculate_image_display_size(
+        const bgs::ImageDisplaySize display = bgs::calculate_image_display_size(
             layer_->image_box_mode, layer_->image_size_auto_fit,
             eval_box_width(*layer_, lt), eval_box_height(*layer_, lt), raw_w, raw_h);
         set_double(spn_layer_w_, display.width);
@@ -5133,7 +5160,7 @@ void PropertiesPanel::update_playhead(double t)
             QRectF preview_rect(0, 0, eval_box_width(*layer_, lt), eval_box_height(*layer_, lt));
             double fit_scale = horizontal_fit_scale(preview_font, preview_rect,
                                                     display_text_for_style(*layer_), *layer_, lt);
-            lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat")
+            lbl_text_fit_scale_->setText(bgl_tr("OBSTitles.ScalePercentFormat")
                                              .arg((int)std::round(fit_scale * 100.0)));
         }
     }
@@ -5268,7 +5295,7 @@ void PropertiesPanel::load_values()
         if (spn_rect_corner_bl_) spn_rect_corner_bl_->setValue(0.0);
         if (spn_corner_bevel_roundness_) spn_corner_bevel_roundness_->setValue(100.0);
         spn_size_->setValue(72);
-        if (cmb_font_style_) populate_font_style_combo(cmb_font_style_, cmb_font_->currentText(), obsgs_tr("OBSTitles.Regular"));
+        if (cmb_font_style_) populate_font_style_combo(cmb_font_style_, cmb_font_->currentText(), bgl_tr("OBSTitles.Regular"));
         chk_bold_->setChecked(false);
         chk_italic_->setChecked(false);
         if (chk_font_kerning_) chk_font_kerning_->setChecked(true);
@@ -5292,7 +5319,7 @@ void PropertiesPanel::load_values()
         if (cmb_text_style_) cmb_text_style_->setCurrentIndex(0);
         if (cmb_text_overflow_) cmb_text_overflow_->setCurrentIndex(0);
         if (spn_text_fit_min_scale_) spn_text_fit_min_scale_->setValue(0.5);
-        if (lbl_text_fit_scale_) lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.Scale100"));
+        if (lbl_text_fit_scale_) lbl_text_fit_scale_->setText(bgl_tr("OBSTitles.Scale100"));
         if (chk_text_box_width_to_text_) chk_text_box_width_to_text_->setChecked(false);
         if (chk_text_box_height_to_text_) chk_text_box_height_to_text_->setChecked(false);
         if (spn_max_text_box_width_) { spn_max_text_box_width_->setValue(1920.0); spn_max_text_box_width_->setEnabled(false); }
@@ -5349,8 +5376,8 @@ void PropertiesPanel::load_values()
         const bool show_text_editor = !is_text;
         if (auto *label_item = char_grid->itemAtPosition(0, 0)) {
             if (auto *label = qobject_cast<QLabel *>(label_item->widget())) {
-                label->setText(is_clock ? obsgs_tr("OBSTitles.DateTimeFormatLabel")
-                                        : obsgs_tr("OBSTitles.TextLabel"));
+                label->setText(is_clock ? bgl_tr("OBSTitles.DateTimeFormatLabel")
+                                        : bgl_tr("OBSTitles.TextLabel"));
                 label->setVisible(show_text_editor);
             }
         }
@@ -5360,10 +5387,10 @@ void PropertiesPanel::load_values()
                 label->setVisible(false);
         }
     }
-    txt_content_->setPlaceholderText(is_clock ? "H:i:s" : obsgs_tr("OBSTitles.EnterTextPlaceholder"));
+    txt_content_->setPlaceholderText(is_clock ? "H:i:s" : bgl_tr("OBSTitles.EnterTextPlaceholder"));
     if (cmb_auto_default_style_ && cmb_auto_rule_style_) {
-        obsgsp::StylePresetLibrary library;
-        const auto presets = library.presets(obsgsp::StylePresetKind::Text);
+        obsbgs::StylePresetLibrary library;
+        const auto presets = library.presets(obsbgs::StylePresetKind::Text);
         auto fill_combo = [&](QComboBox *combo, bool include_none, const QString &selected) {
             QSignalBlocker blocker(combo);
             combo->clear();
@@ -5504,11 +5531,11 @@ void PropertiesPanel::load_values()
     rect_box_->setVisible(is_text_like || is_rect || is_image);
     rect_box_->setTitle(QString());
     if (auto *shape_title = rect_box_->findChild<QLabel *>(QStringLiteral("OBSTitlesShapePanelTitle"))) {
-        shape_title->setText(is_rect ? obsgs_tr("OBSTitles.Shape")
-                            : is_image ? obsgs_tr("OBSTitles.ImageSize")
-                                       : (is_clock ? obsgs_tr("OBSTitles.ClockBox")
-                                                   : (is_ticker ? obsgs_tr("OBSTitles.TickerBox")
-                                                                : obsgs_tr("OBSTitles.TextBox"))));
+        shape_title->setText(is_rect ? bgl_tr("OBSTitles.Shape")
+                            : is_image ? bgl_tr("OBSTitles.ImageSize")
+                                       : (is_clock ? bgl_tr("OBSTitles.ClockBox")
+                                                   : (is_ticker ? bgl_tr("OBSTitles.TickerBox")
+                                                                : bgl_tr("OBSTitles.TextBox"))));
     }
     const bool is_shape_layer = layer_->type == LayerType::Shape || layer_->type == LayerType::SolidRect;
     const ShapeType current_shape = layer_->type == LayerType::SolidRect ? ShapeType::RoundedRectangle : layer_->shape_type;
@@ -5558,8 +5585,8 @@ void PropertiesPanel::load_values()
         shape_types_row->setVisible(is_shape_layer);
     if (btn_shape_defaults_) {
         btn_shape_defaults_->setVisible(is_shape_layer || is_image);
-        btn_shape_defaults_->setToolTip(is_image ? obsgs_tr("OBSTitles.RestoreImageSizeDefaults")
-                                                    : obsgs_tr("OBSTitles.RestoreShapeDefaults"));
+        btn_shape_defaults_->setToolTip(is_image ? bgl_tr("OBSTitles.RestoreImageSizeDefaults")
+                                                    : bgl_tr("OBSTitles.RestoreShapeDefaults"));
     }
     if (spn_shape_points_) spn_shape_points_->setVisible(show_star_controls);
     if (spn_shape_sides_) spn_shape_sides_->setVisible(show_polygon_controls);
@@ -5691,7 +5718,7 @@ void PropertiesPanel::load_values()
                 raw_h = intrinsic.height();
             }
         }
-        const gsp::ImageDisplaySize display = gsp::calculate_image_display_size(
+        const bgs::ImageDisplaySize display = bgs::calculate_image_display_size(
             layer_->image_box_mode, layer_->image_size_auto_fit,
             eval_box_width(*layer_, lt), eval_box_height(*layer_, lt), raw_w, raw_h);
         spn_layer_w_->setValue(display.width);
@@ -5851,11 +5878,11 @@ void PropertiesPanel::load_values()
     spn_ticker_line_hold_->setValue(layer_->ticker_line_hold);
     cmb_ticker_direction_->clear();
     if (layer_->ticker_style == 0) {
-        cmb_ticker_direction_->addItem(obsgs_tr("OBSTitles.LeftToRight"), 0);
-        cmb_ticker_direction_->addItem(obsgs_tr("OBSTitles.RightToLeft"), 1);
+        cmb_ticker_direction_->addItem(bgl_tr("OBSTitles.LeftToRight"), 0);
+        cmb_ticker_direction_->addItem(bgl_tr("OBSTitles.RightToLeft"), 1);
     } else {
-        cmb_ticker_direction_->addItem(obsgs_tr("OBSTitles.TopToBottom"), 0);
-        cmb_ticker_direction_->addItem(obsgs_tr("OBSTitles.BottomToTop"), 1);
+        cmb_ticker_direction_->addItem(bgl_tr("OBSTitles.TopToBottom"), 0);
+        cmb_ticker_direction_->addItem(bgl_tr("OBSTitles.BottomToTop"), 1);
     }
     int ticker_direction_idx = cmb_ticker_direction_->findData(layer_->ticker_direction);
     cmb_ticker_direction_->setCurrentIndex(ticker_direction_idx >= 0 ? ticker_direction_idx : 0);
@@ -6098,7 +6125,7 @@ void PropertiesPanel::load_values()
         QFont preview_font = font_for_layer(*layer_);
         QRectF preview_rect(0, 0, eval_box_width(*layer_, lt), eval_box_height(*layer_, lt));
         double scale = horizontal_fit_scale(preview_font, preview_rect, display_text_for_style(*layer_), *layer_, lt);
-        lbl_text_fit_scale_->setText(obsgs_tr("OBSTitles.ScalePercentFormat").arg((int)std::round(scale * 100.0)));
+        lbl_text_fit_scale_->setText(bgl_tr("OBSTitles.ScalePercentFormat").arg((int)std::round(scale * 100.0)));
     }
     {
         QSignalBlocker block(chk_expose_text_);
@@ -6120,8 +6147,8 @@ void PropertiesPanel::load_values()
         chk_ignore_persistence_->setEnabled(can_ignore_persistence);
         chk_ignore_persistence_->setChecked(can_ignore_persistence && layer_->ignore_persistence);
         chk_ignore_persistence_->setToolTip(can_ignore_persistence
-            ? obsgs_tr("OBSTitles.IgnorePersistenceTooltip")
-            : obsgs_tr("OBSTitles.IgnorePersistenceDisabledTooltip"));
+            ? bgl_tr("OBSTitles.IgnorePersistenceTooltip")
+            : bgl_tr("OBSTitles.IgnorePersistenceDisabledTooltip"));
     }
     if (chk_scene_mask_) chk_scene_mask_->setChecked(layer_->use_as_scene_mask);
     RichTextParagraphFormat displayed_paragraph;
@@ -6193,10 +6220,10 @@ void PropertiesPanel::load_values()
 
     QFontDatabase fdb;
     cmb_font_->setToolTip(rich_font_family_mixed
-        ? obsgs_tr("OBSTitles.MixedValues")
+        ? bgl_tr("OBSTitles.MixedValues")
         : (fdb.families().contains(QString::fromStdString(layer_->font_family))
             ? QString()
-            : obsgs_tr("OBSTitles.FontMissingWarningFormat").arg(
+            : bgl_tr("OBSTitles.FontMissingWarningFormat").arg(
                   QString::fromStdString(layer_->font_family))));
 
     loading_values_ = false;
@@ -6208,6 +6235,40 @@ void PropertiesPanel::remember_next_color_popup_position(const QPoint &global_po
     pending_color_popup_position_valid_ = true;
 }
 
+
+bool PropertiesPanel::apply_external_picked_color(const QColor &color, bool commit)
+{
+    if (!color.isValid() || !layer_ || external_gradient_stop_index_ < 0 ||
+        external_gradient_layer_id_ != layer_->id)
+        return false;
+
+    const uint32_t argb = argb_from_color(color);
+    auto &stops = external_gradient_stroke_ ? layer_->stroke_gradient_stops
+                                            : layer_->gradient_stops;
+    if (external_gradient_stop_index_ == 0) {
+        if (external_gradient_stroke_)
+            layer_->stroke_gradient_start_color = argb;
+        else
+            layer_->gradient_start_color = argb;
+    } else if (external_gradient_stop_index_ == 1) {
+        if (external_gradient_stroke_)
+            layer_->stroke_gradient_end_color = argb;
+        else
+            layer_->gradient_end_color = argb;
+    } else {
+        const int extra = external_gradient_stop_index_ - 2;
+        if (extra < 0 || extra >= static_cast<int>(stops.size()))
+            return false;
+        stops[extra].color = argb;
+    }
+
+    if (commit)
+        emit property_changed(true);
+    else
+        emit live_visual_changed();
+    emit gradient_model_refresh_requested();
+    return true;
+}
 
 void PropertiesPanel::open_foreground_color_selector()
 {

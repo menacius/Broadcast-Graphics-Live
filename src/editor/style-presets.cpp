@@ -21,7 +21,7 @@
 #include <QMessageBox>
 #include <algorithm>
 
-namespace obsgsp {
+namespace obsbgs {
 namespace {
 
 QString kindToString(StylePresetKind kind)
@@ -162,7 +162,7 @@ StylePresetLibrary::StylePresetLibrary()
 QString StylePresetLibrary::storagePath() const
 {
     QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (base.isEmpty()) base = QDir::homePath() + QStringLiteral("/.obs-graphics-studio-pro");
+    if (base.isEmpty()) base = QDir::homePath() + QStringLiteral("/.broadcast-graphics-live");
     QDir dir(base);
     dir.mkpath(QStringLiteral("style-presets"));
     return dir.filePath(QStringLiteral("style-presets/styles.json"));
@@ -209,7 +209,7 @@ bool StylePresetLibrary::save() const
         arr.append(o);
     }
     QJsonObject root;
-    root[QStringLiteral("format")] = QStringLiteral("OBS-GSP Style Presets");
+    root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
     root[QStringLiteral("version")] = 1;
     root[QStringLiteral("presets")] = arr;
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -257,7 +257,7 @@ bool StylePresetLibrary::exportToFile(const QString &path, StylePresetKind kind,
         arr.append(o);
     }
     QJsonObject root;
-    root[QStringLiteral("format")] = QStringLiteral("OBS-GSP Style Presets");
+    root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
     root[QStringLiteral("version")] = 1;
     root[QStringLiteral("presets")] = arr;
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -529,7 +529,7 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
 
     auto *top = new QHBoxLayout;
     search_ = new QLineEdit(this);
-    search_->setPlaceholderText(obsgs_tr("OBSTitles.SearchStyles"));
+    search_->setPlaceholderText(bgl_tr("OBSTitles.SearchStyles"));
     category_filter_ = new QComboBox(this);
     category_filter_->setEditable(false);
     top->addWidget(search_, 1);
@@ -546,11 +546,11 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
     layout->addWidget(list_, 1);
 
     auto *buttons = new QHBoxLayout;
-    add_button_ = new QToolButton(this); add_button_->setText(QStringLiteral("+")); add_button_->setToolTip(obsgs_tr("OBSTitles.SaveStylePreset"));
-    apply_button_ = new QToolButton(this); apply_button_->setText(QStringLiteral("✓")); apply_button_->setToolTip(obsgs_tr("OBSTitles.ApplyStylePreset"));
-    delete_button_ = new QToolButton(this); delete_button_->setText(QStringLiteral("−")); delete_button_->setToolTip(obsgs_tr("OBSTitles.DeleteStylePreset"));
-    import_button_ = new QToolButton(this); import_button_->setText(QStringLiteral("Import")); import_button_->setToolTip(obsgs_tr("OBSTitles.ImportStylePresets"));
-    export_button_ = new QToolButton(this); export_button_->setText(QStringLiteral("Export")); export_button_->setToolTip(obsgs_tr("OBSTitles.ExportStylePresets"));
+    add_button_ = new QToolButton(this); add_button_->setText(QStringLiteral("+")); add_button_->setToolTip(bgl_tr("OBSTitles.SaveStylePreset"));
+    apply_button_ = new QToolButton(this); apply_button_->setText(QStringLiteral("✓")); apply_button_->setToolTip(bgl_tr("OBSTitles.ApplyStylePreset"));
+    delete_button_ = new QToolButton(this); delete_button_->setText(QStringLiteral("−")); delete_button_->setToolTip(bgl_tr("OBSTitles.DeleteStylePreset"));
+    import_button_ = new QToolButton(this); import_button_->setText(QStringLiteral("Import")); import_button_->setToolTip(bgl_tr("OBSTitles.ImportStylePresets"));
+    export_button_ = new QToolButton(this); export_button_->setText(QStringLiteral("Export")); export_button_->setToolTip(bgl_tr("OBSTitles.ExportStylePresets"));
     buttons->addWidget(add_button_);
     buttons->addWidget(apply_button_);
     buttons->addWidget(delete_button_);
@@ -594,7 +594,7 @@ void StylePresetPanel::rebuildCategoryFilter()
     const QString current = category_filter_->currentData().toString();
     category_filter_->blockSignals(true);
     category_filter_->clear();
-    category_filter_->addItem(obsgs_tr("OBSTitles.AllCategories"), QString());
+    category_filter_->addItem(bgl_tr("OBSTitles.AllCategories"), QString());
     for (const auto &category : library_.categories(kind_)) category_filter_->addItem(category, category);
     const int idx = category_filter_->findData(current);
     if (idx >= 0) category_filter_->setCurrentIndex(idx);
@@ -639,9 +639,9 @@ void StylePresetPanel::addCurrentAsPreset()
 {
     if (!create_callback_) return;
     bool ok = false;
-    const QString name = QInputDialog::getText(this, obsgs_tr("OBSTitles.SaveStylePreset"), obsgs_tr("OBSTitles.StylePresetName"), QLineEdit::Normal, QString(), &ok);
+    const QString name = QInputDialog::getText(this, bgl_tr("OBSTitles.SaveStylePreset"), bgl_tr("OBSTitles.StylePresetName"), QLineEdit::Normal, QString(), &ok);
     if (!ok || name.trimmed().isEmpty()) return;
-    const QString category = QInputDialog::getText(this, obsgs_tr("OBSTitles.StylePresetCategory"), obsgs_tr("OBSTitles.StylePresetCategory"), QLineEdit::Normal, QStringLiteral("User"), &ok);
+    const QString category = QInputDialog::getText(this, bgl_tr("OBSTitles.StylePresetCategory"), bgl_tr("OBSTitles.StylePresetCategory"), QLineEdit::Normal, QStringLiteral("User"), &ok);
     if (!ok) return;
     library_.upsert(create_callback_(name.trimmed(), category.trimmed().isEmpty() ? QStringLiteral("User") : category.trimmed()));
     rebuildCategoryFilter();
@@ -658,7 +658,7 @@ void StylePresetPanel::deleteSelectedPreset()
 {
     const StylePreset *preset = selectedPreset();
     if (!preset) return;
-    if (QMessageBox::question(this, obsgs_tr("OBSTitles.DeleteStylePreset"), obsgs_tr("OBSTitles.DeleteStylePresetConfirm")) != QMessageBox::Yes) return;
+    if (QMessageBox::question(this, bgl_tr("OBSTitles.DeleteStylePreset"), bgl_tr("OBSTitles.DeleteStylePresetConfirm")) != QMessageBox::Yes) return;
     library_.remove(preset->id);
     rebuildCategoryFilter();
     refreshList();
@@ -666,20 +666,20 @@ void StylePresetPanel::deleteSelectedPreset()
 
 void StylePresetPanel::importPresets()
 {
-    const QString path = QFileDialog::getOpenFileName(this, obsgs_tr("OBSTitles.ImportStylePresets"), QString(), QStringLiteral("OBS GSP Style Presets (*.json)"));
+    const QString path = QFileDialog::getOpenFileName(this, bgl_tr("OBSTitles.ImportStylePresets"), QString(), QStringLiteral("OBS BGS Style Presets (*.json)"));
     if (path.isEmpty()) return;
     QString error;
-    if (!library_.importFromFile(path, &error)) QMessageBox::warning(this, obsgs_tr("OBSTitles.ImportStylePresets"), error);
+    if (!library_.importFromFile(path, &error)) QMessageBox::warning(this, bgl_tr("OBSTitles.ImportStylePresets"), error);
     rebuildCategoryFilter();
     refreshList();
 }
 
 void StylePresetPanel::exportPresets()
 {
-    const QString path = QFileDialog::getSaveFileName(this, obsgs_tr("OBSTitles.ExportStylePresets"), QStringLiteral("style-presets.json"), QStringLiteral("OBS GSP Style Presets (*.json)"));
+    const QString path = QFileDialog::getSaveFileName(this, bgl_tr("OBSTitles.ExportStylePresets"), QStringLiteral("style-presets.json"), QStringLiteral("OBS BGS Style Presets (*.json)"));
     if (path.isEmpty()) return;
     QString error;
-    if (!library_.exportToFile(path, kind_, &error)) QMessageBox::warning(this, obsgs_tr("OBSTitles.ExportStylePresets"), error);
+    if (!library_.exportToFile(path, kind_, &error)) QMessageBox::warning(this, bgl_tr("OBSTitles.ExportStylePresets"), error);
 }
 
-} // namespace obsgsp
+} // namespace obsbgs

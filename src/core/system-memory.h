@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace gsp::system_memory {
+namespace bgs::system_memory {
 
 constexpr int kMinimumCacheRamMb = 16;
 
@@ -14,4 +14,4 @@ std::uint64_t total_physical_bytes();
 int maximum_cache_ram_mb();
 int clamp_cache_ram_mb(int megabytes);
 
-} // namespace gsp::system_memory
+} // namespace bgs::system_memory

@@ -33,7 +33,7 @@ public:
     {
         if (!spin_)
             return;
-        setToolTip(obsgs_tr("OBSTitles.DragNumericLabelTooltip"));
+        setToolTip(bgl_tr("OBSTitles.DragNumericLabelTooltip"));
         setCursor(Qt::SizeHorCursor);
     }
 
@@ -389,7 +389,7 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     : QDialog(parent), transition_(transition)
 {
     const QString display_name = transition_settings_display_name(transition);
-    setWindowTitle(obsgs_tr("OBSTitles.TransitionSettingsNamed").arg(display_name));
+    setWindowTitle(bgl_tr("OBSTitles.TransitionSettingsNamed").arg(display_name));
     setModal(true);
     resize(470, 560);
 
@@ -403,7 +403,7 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     layout->addWidget(preview_);
 
     auto *form = new QFormLayout;
-    enabled_ = new QCheckBox(obsgs_tr("OBSTitles.Enabled"), this);
+    enabled_ = new QCheckBox(bgl_tr("OBSTitles.Enabled"), this);
     enabled_->setChecked(transition.enabled);
     form->addRow(QString(), enabled_);
 
@@ -413,30 +413,30 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     duration_->setSingleStep(0.05);
     duration_->setSuffix(QStringLiteral(" s"));
     duration_->setValue(std::clamp(transition.duration, duration_->minimum(), duration_->maximum()));
-    form->addRow(make_numeric_drag_label(obsgs_tr("OBSTitles.Duration"), duration_, this), duration_);
+    form->addRow(make_numeric_drag_label(bgl_tr("OBSTitles.Duration"), duration_, this), duration_);
 
     easing_ = make_combo(this);
-    easing_->addItem(obsgs_tr("OBSTitles.Linear"), (int)EasingType::Linear);
-    easing_->addItem(obsgs_tr("OBSTitles.EaseIn"), (int)EasingType::EaseIn);
-    easing_->addItem(obsgs_tr("OBSTitles.EaseOut"), (int)EasingType::EaseOut);
-    easing_->addItem(obsgs_tr("OBSTitles.EaseInOut"), (int)EasingType::EaseInOut);
+    easing_->addItem(bgl_tr("OBSTitles.Linear"), (int)EasingType::Linear);
+    easing_->addItem(bgl_tr("OBSTitles.EaseIn"), (int)EasingType::EaseIn);
+    easing_->addItem(bgl_tr("OBSTitles.EaseOut"), (int)EasingType::EaseOut);
+    easing_->addItem(bgl_tr("OBSTitles.EaseInOut"), (int)EasingType::EaseInOut);
     easing_->setCurrentIndex(std::max(0, easing_->findData((int)transition.easing)));
-    form->addRow(obsgs_tr("OBSTitles.Easing"), easing_);
+    form->addRow(bgl_tr("OBSTitles.Easing"), easing_);
 
-    unit_label_ = new QLabel(obsgs_tr("OBSTitles.TextUnit"), this);
+    unit_label_ = new QLabel(bgl_tr("OBSTitles.TextUnit"), this);
     unit_ = make_combo(this);
-    unit_->addItem(obsgs_tr("OBSTitles.Characters"), (int)LayerTransitionUnit::Character);
-    unit_->addItem(obsgs_tr("OBSTitles.Words"), (int)LayerTransitionUnit::Word);
-    unit_->addItem(obsgs_tr("OBSTitles.Sentences"), (int)LayerTransitionUnit::Sentence);
+    unit_->addItem(bgl_tr("OBSTitles.Characters"), (int)LayerTransitionUnit::Character);
+    unit_->addItem(bgl_tr("OBSTitles.Words"), (int)LayerTransitionUnit::Word);
+    unit_->addItem(bgl_tr("OBSTitles.Sentences"), (int)LayerTransitionUnit::Sentence);
     unit_->setCurrentIndex(std::max(0, unit_->findData((int)transition.unit)));
     form->addRow(unit_label_, unit_);
 
-    direction_label_ = new QLabel(obsgs_tr("OBSTitles.Direction"), this);
+    direction_label_ = new QLabel(bgl_tr("OBSTitles.Direction"), this);
     direction_ = make_combo(this);
-    direction_->addItem(obsgs_tr("OBSTitles.Left"), (int)LayerTransitionDirection::Left);
-    direction_->addItem(obsgs_tr("OBSTitles.Right"), (int)LayerTransitionDirection::Right);
-    direction_->addItem(obsgs_tr("OBSTitles.Up"), (int)LayerTransitionDirection::Up);
-    direction_->addItem(obsgs_tr("OBSTitles.Down"), (int)LayerTransitionDirection::Down);
+    direction_->addItem(bgl_tr("OBSTitles.Left"), (int)LayerTransitionDirection::Left);
+    direction_->addItem(bgl_tr("OBSTitles.Right"), (int)LayerTransitionDirection::Right);
+    direction_->addItem(bgl_tr("OBSTitles.Up"), (int)LayerTransitionDirection::Up);
+    direction_->addItem(bgl_tr("OBSTitles.Down"), (int)LayerTransitionDirection::Down);
     direction_->setCurrentIndex(std::max(0, direction_->findData((int)transition.direction)));
     form->addRow(direction_label_, direction_);
 
@@ -444,38 +444,38 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     stagger_->setRange(0.0, 95.0);
     stagger_->setSuffix(QStringLiteral(" %"));
     stagger_->setValue(transition.stagger * 100.0);
-    stagger_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.Stagger"), stagger_, this);
+    stagger_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.Stagger"), stagger_, this);
     form->addRow(stagger_label_, stagger_);
 
     blur_ = new QDoubleSpinBox(this);
     blur_->setRange(0.0, 256.0);
     blur_->setSuffix(QStringLiteral(" px"));
     blur_->setValue(transition.blur_amount);
-    blur_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.BlurAmount"), blur_, this);
+    blur_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.BlurAmount"), blur_, this);
     form->addRow(blur_label_, blur_);
 
     scale_ = new QDoubleSpinBox(this);
     scale_->setRange(-1000.0, 1000.0);
     scale_->setSuffix(QStringLiteral(" %"));
     scale_->setValue(transition.scale_from * 100.0);
-    scale_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.StartScale"), scale_, this);
+    scale_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.StartScale"), scale_, this);
     form->addRow(scale_label_, scale_);
 
     offset_ = new QDoubleSpinBox(this);
     offset_->setRange(0.0, 10000.0);
     offset_->setSuffix(QStringLiteral(" px"));
     offset_->setValue(transition.offset);
-    offset_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.Offset"), offset_, this);
+    offset_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.Offset"), offset_, this);
     form->addRow(offset_label_, offset_);
 
     softness_ = new QDoubleSpinBox(this);
     softness_->setRange(0.0, 100.0);
     softness_->setSuffix(QStringLiteral(" %"));
     softness_->setValue(transition.softness * 100.0);
-    softness_label_ = make_numeric_drag_label(obsgs_tr("OBSTitles.Softness"), softness_, this);
+    softness_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.Softness"), softness_, this);
     form->addRow(softness_label_, softness_);
 
-    reverse_order_ = new QCheckBox(obsgs_tr("OBSTitles.ReverseOrder"), this);
+    reverse_order_ = new QCheckBox(bgl_tr("OBSTitles.ReverseOrder"), this);
     reverse_order_->setChecked(transition.reverse_order);
     form->addRow(QString(), reverse_order_);
     layout->addLayout(form);

@@ -1,9 +1,0 @@
-{
-  "format": "obs-gsp-effect-preset",
-  "version": 1,
-  "kind": "effect",
-  "id": "brightness-contrast",
-  "name": "Brightness & Contrast",
-  "type": "brightness-contrast",
-  "category": "Effects/Color Correction"
-}

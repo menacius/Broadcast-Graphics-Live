@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace gsp::transitions {
+namespace bgs::transitions {
 namespace {
 
 constexpr qint64 kMaxPresetFileBytes = 1024 * 1024;
@@ -242,7 +242,7 @@ bool is_transition_preset_path(const QString &file_path)
 
 bool is_transition_file_in_library(const QString &file_path)
 {
-    const QString root = gsp::effects::effect_presets_root_path();
+    const QString root = bgs::effects::effect_presets_root_path();
     if (root.isEmpty())
         return false;
     const QFileInfo info(file_path);
@@ -292,8 +292,8 @@ bool load_transition_preset_file(const QString &file_path,
         return false;
     }
     const QString expected_format = text_transition
-        ? QStringLiteral("obs-graphics-studio-pro-text-transition")
-        : QStringLiteral("obs-graphics-studio-pro-general-transition");
+        ? QStringLiteral("broadcast-graphics-live-text-transition")
+        : QStringLiteral("broadcast-graphics-live-general-transition");
     if (object.value(QStringLiteral("format")).toString() != expected_format) {
         set_error(error_message, QStringLiteral("The file format does not match its transition extension."));
         return false;
@@ -377,4 +377,4 @@ bool mime_has_transition_preset(const QMimeData *mime_data)
     return !path.isEmpty() && is_transition_preset_path(path) && is_transition_file_in_library(path);
 }
 
-} // namespace gsp::transitions
+} // namespace bgs::transitions

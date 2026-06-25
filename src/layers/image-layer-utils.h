@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace gsp {
+namespace bgs {
 
 struct ImageDisplaySize {
     double width = 0.0;
@@ -31,4 +31,4 @@ QSize image_intrinsic_size_for_path(const std::string &path);
  * dimensions so their animation is retained with the new aspect ratio. */
 bool apply_exposed_image_cue_value(Layer &layer, const std::string &path);
 
-} // namespace gsp
+} // namespace bgs

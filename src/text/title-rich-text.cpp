@@ -1,5 +1,5 @@
 #include "title-rich-text.h"
-#ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
+#ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
 #include "title-data.h"
 #endif
 
@@ -8,7 +8,7 @@
 #include <cmath>
 #include <utility>
 
-#ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
+#ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
 static RichTextCharFormat layer_char_format(const Layer &layer)
 {
     RichTextCharFormat f;
@@ -567,7 +567,7 @@ void rich_text_document_apply_format(RichTextDocument &doc, size_t start, size_t
     doc.normalize();
 }
 
-#ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
+#ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
 RichTextDocument rich_text_document_from_layer_defaults(const Layer &layer)
 {
     RichTextDocument doc;
@@ -822,7 +822,7 @@ RichTextDocument rich_text_document_with_evaluated_defaults(
     return document;
 }
 
-#ifndef OBS_GSP_RICH_TEXT_STANDALONE_TEST
+#ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
 void rich_text_document_ensure_canonical(Layer &layer)
 {
     if (layer.type != LayerType::Text && layer.type != LayerType::Ticker && layer.type != LayerType::Clock)

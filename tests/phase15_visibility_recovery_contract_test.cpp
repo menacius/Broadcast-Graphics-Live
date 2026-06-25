@@ -44,7 +44,7 @@ int main(int argc, char **argv)
     require(title_source, "render_layer_unmasked");
     require(text_renderer, "kGpuTextEffect");
     require(cache_source, "gpu-renderer-v24-phase15-visibility-recovery");
-    require(preferences, "gsp::system_memory::clamp_cache_ram_mb");
+    require(preferences, "bgs::system_memory::clamp_cache_ram_mb");
     require(cmake, "src/core/system-memory.cpp");
     reject(cmake, "title-gpu-vector-renderer.cpp");
 

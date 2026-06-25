@@ -1,4 +1,4 @@
-# OBS Graphics Studio Pro — Step 6
+# Broadcast Graphics Live — Step 6
 
 Implemented conservative adaptive prerender sampling on top of the existing exact temporal deduplication, sparse payloads, direct cropped drawing, and dirty-region renderer.
 

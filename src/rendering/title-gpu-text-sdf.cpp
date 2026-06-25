@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <limits>
 
-namespace gsp::gpu_text {
+namespace bgs::gpu_text {
 
 TextStrokeCoverageExtents text_stroke_coverage_extents(float width,
                                                        int alignment)
@@ -163,4 +163,4 @@ std::vector<uint8_t> build_glyph_sdf(const uint8_t *source, int source_width,
     return sdf;
 }
 
-} // namespace gsp::gpu_text
+} // namespace bgs::gpu_text
