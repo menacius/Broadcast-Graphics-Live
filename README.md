@@ -39,6 +39,8 @@ Compared with the current GitHub `main` snapshot, this development archive advan
 
 ## Highlights
 
+<img width="1919" height="1040" alt="Screenshot 2026-06-25 025251" src="https://github.com/user-attachments/assets/70126f07-1a3d-4d56-ae29-a680e7dd52d0" />
+
 ### Native OBS integration
 
 - Native OBS input source: **Broadcast Graphics Live Title**.
@@ -165,6 +167,8 @@ Effects can be applied by drag-and-drop onto a timeline layer strip, directly on
   - Show last frame
   - Show nothing
   - Show first frame
+
+<img width="1920" height="1044" alt="Screenshot 2026-06-25 025718" src="https://github.com/user-attachments/assets/9f409f1f-aafe-419f-a4a7-c735a80cac1d" />
 
 ### Live text and image cues
 
