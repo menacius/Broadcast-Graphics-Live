@@ -1,8 +1,6 @@
 # Broadcast Graphics Live
 
-<p align="center">
-  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
-</p>
+<img width="1919" height="1040" alt="Screenshot 2026-06-25 025251" src="https://github.com/user-attachments/assets/70126f07-1a3d-4d56-ae29-a680e7dd52d0" />
 
 **Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
@@ -38,8 +36,6 @@ Compared with the current GitHub `main` snapshot, this development archive advan
 ---
 
 ## Highlights
-
-<img width="1919" height="1040" alt="Screenshot 2026-06-25 025251" src="https://github.com/user-attachments/assets/70126f07-1a3d-4d56-ae29-a680e7dd52d0" />
 
 ### Native OBS integration
 
