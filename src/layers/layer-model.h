@@ -13,12 +13,14 @@
  *  Layer type
  * ══════════════════════════════════════════════════════════════════ */
 enum class LayerType {
-    Text,
-    SolidRect,
-    Image,
-    Shape,      /* vector primitives */
-    Clock,
-    Ticker,
+    Text = 0,
+    SolidRect = 1,
+    Image = 2,
+    Shape = 3,      /* vector primitives */
+    Clock = 4,
+    Ticker = 5,
+    Adjustment = 6,
+    ColorSolid = 7,
 };
 
 enum class ShapeType {
@@ -177,6 +179,8 @@ struct Layer {
     double      ticker_speed = 120.0;
     double      ticker_line_hold = 2.0;
     int         ticker_direction = 1;
+    /* 0=always play, 1=paused until title is cued, 2=paused until hotkey/UI resume. */
+    int         ticker_playback_mode = 0;
 
     uint32_t    text_color    = 0xFFFFFFFF;  /* ARGB */
 

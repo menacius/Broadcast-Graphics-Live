@@ -1,4 +1,5 @@
 #include "cache-manager.h"
+#include "title-logger.h"
 
 #include <QMutexLocker>
 
@@ -65,10 +66,15 @@ void RamFrameCache::remove(const CacheFrameKey &key)
 void RamFrameCache::clear()
 {
     QMutexLocker lock(&mutex_);
+    const quint64 released_bytes = bytes_used_;
+    const int released_keys = key_payload_ids_.size();
     key_payload_ids_.clear();
     payloads_.clear();
     lru_.clear();
     bytes_used_ = 0;
+    BGL_LOG_INFO("RamCache", QStringLiteral(
+        "Cleared RAM frame cache keys=%1 bytes=%2")
+        .arg(released_keys).arg(released_bytes));
 }
 
 void RamFrameCache::setMaxBytes(quint64 bytes)
@@ -76,6 +82,9 @@ void RamFrameCache::setMaxBytes(quint64 bytes)
     QMutexLocker lock(&mutex_);
     max_bytes_ = std::max<quint64>(16ull * 1024ull * 1024ull, bytes);
     evictIfNeeded();
+    BGL_LOG_INFO("RamCache", QStringLiteral(
+        "Set RAM frame cache limit bytes=%1 used=%2")
+        .arg(max_bytes_).arg(bytes_used_));
 }
 
 quint64 RamFrameCache::maxBytes() const

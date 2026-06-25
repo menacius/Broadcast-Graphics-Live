@@ -8,14 +8,20 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QFileDialog>
+#include <QImage>
+#include <QHBoxLayout>
 #include <QFormLayout>
 #include <QFontMetricsF>
 #include <QLabel>
+#include <QLineEdit>
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
+#include <QPushButton>
+#include <QSpinBox>
 #include <QTimer>
 #include <QVector>
 #include <QVBoxLayout>
@@ -168,6 +174,138 @@ protected:
     }
 
 private:
+    static bool is_procedural_transition(LayerTransitionType type)
+    {
+        return type == LayerTransitionType::Blocks ||
+               type == LayerTransitionType::ImageWipe ||
+               type == LayerTransitionType::Clock ||
+               type == LayerTransitionType::Iris ||
+               type == LayerTransitionType::GradientWipe;
+    }
+
+    static double preview_smoothstep(double edge0, double edge1, double value)
+    {
+        if (edge1 <= edge0)
+            return value >= edge1 ? 1.0 : 0.0;
+        const double t = std::clamp((value - edge0) / (edge1 - edge0), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    static double preview_hash(int x, int y, int seed)
+    {
+        const double value = std::sin((x * 127.1 + y * 311.7 + seed * 74.7)) * 43758.5453123;
+        return value - std::floor(value);
+    }
+
+    QImage procedural_preview_mask(const QSize &size,
+                                   const LayerTransitionVisualState &state) const
+    {
+        QImage mask(size, QImage::Format_ARGB32_Premultiplied);
+        mask.fill(Qt::transparent);
+        if (size.width() <= 0 || size.height() <= 0)
+            return mask;
+
+        QImage matte;
+        if (state.type == LayerTransitionType::ImageWipe && !state.image_path.empty()) {
+            matte.load(QString::fromStdString(state.image_path));
+            if (!matte.isNull())
+                matte = matte.convertToFormat(QImage::Format_ARGB32)
+                             .scaled(size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        }
+
+        const double reveal = std::clamp(state.wipe, 0.0, 1.0);
+        const double feather = std::max(0.0001, state.wipe_softness);
+        const double radians = state.rotation * 0.017453292519943295;
+        const double cosine = std::cos(radians);
+        const double sine = std::sin(radians);
+        constexpr double kPi = 3.14159265358979323846;
+
+        for (int y = 0; y < size.height(); ++y) {
+            QRgb *row = reinterpret_cast<QRgb *>(mask.scanLine(y));
+            for (int x = 0; x < size.width(); ++x) {
+                const double u = (x + 0.5) / std::max(1, size.width());
+                const double v = (y + 0.5) / std::max(1, size.height());
+                double threshold = u;
+
+                switch (state.type) {
+                case LayerTransitionType::Blocks: {
+                    const int columns = std::max(1, state.blocks_columns);
+                    const int rows = std::max(1, state.blocks_rows);
+                    const int cell_x = std::clamp(static_cast<int>(u * columns), 0, columns - 1);
+                    const int cell_y = std::clamp(static_cast<int>(v * rows), 0, rows - 1);
+                    threshold = preview_hash(cell_x, cell_y, state.random_seed);
+                    break;
+                }
+                case LayerTransitionType::ImageWipe: {
+                    if (!matte.isNull()) {
+                        const QRgb pixel = matte.pixel(std::clamp(x, 0, matte.width() - 1),
+                                                       std::clamp(y, 0, matte.height() - 1));
+                        switch (state.image_channel) {
+                        case 1: threshold = qAlpha(pixel) / 255.0; break;
+                        case 2: threshold = qRed(pixel) / 255.0; break;
+                        case 3: threshold = qGreen(pixel) / 255.0; break;
+                        case 4: threshold = qBlue(pixel) / 255.0; break;
+                        case 0:
+                        default:
+                            threshold = (0.2126 * qRed(pixel) + 0.7152 * qGreen(pixel) +
+                                         0.0722 * qBlue(pixel)) / 255.0;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case LayerTransitionType::Clock: {
+                    const double px = u - state.center_x;
+                    const double py = v - state.center_y;
+                    threshold = std::fmod(std::atan2(py, px) / (2.0 * kPi) + 0.5 +
+                                           state.rotation / 360.0 + 1.0, 1.0);
+                    if (!state.clockwise)
+                        threshold = 1.0 - threshold;
+                    break;
+                }
+                case LayerTransitionType::Iris: {
+                    double px = (u - state.center_x) * 2.0;
+                    const double py = (v - state.center_y) * 2.0;
+                    px *= std::max(0.01, state.aspect);
+                    if (state.profile == 1)
+                        threshold = std::max(std::abs(px), std::abs(py));
+                    else if (state.profile == 2)
+                        threshold = (std::abs(px) + std::abs(py)) * 0.5;
+                    else
+                        threshold = std::sqrt(px * px + py * py) / 1.41421356237;
+                    threshold = std::clamp(threshold, 0.0, 1.0);
+                    break;
+                }
+                case LayerTransitionType::GradientWipe: {
+                    const double px = u - state.center_x;
+                    const double py = v - state.center_y;
+                    const double qx = (px * cosine - py * sine) * std::max(0.01, state.aspect);
+                    const double qy = px * sine + py * cosine;
+                    if (state.profile == 1)
+                        threshold = std::sqrt(qx * qx + qy * qy) * 1.41421356237;
+                    else if (state.profile == 2)
+                        threshold = std::abs(qx) + std::abs(qy);
+                    else
+                        threshold = qx + 0.5;
+                    threshold = std::clamp(threshold, 0.0, 1.0);
+                    break;
+                }
+                default:
+                    break;
+                }
+
+                if (state.invert)
+                    threshold = 1.0 - threshold;
+                const double alpha = preview_smoothstep(threshold - feather,
+                                                        threshold + feather,
+                                                        reveal);
+                row[x] = qRgba(255, 255, 255,
+                               static_cast<int>(std::lround(std::clamp(alpha, 0.0, 1.0) * 255.0)));
+            }
+        }
+        return mask;
+    }
+
     void draw_general_preview(QPainter &painter, const QRectF &area, double phase)
     {
         const QRectF frame = area.adjusted(14, 14, -14, -14);
@@ -191,7 +329,8 @@ private:
         painter.scale(state.scale, state.scale);
         painter.translate(-center);
 
-        if (state.wipe < 0.999) {
+        const bool procedural = is_procedural_transition(state.type);
+        if (!procedural && state.wipe < 0.999) {
             QRectF reveal = frame;
             switch (state.wipe_direction) {
             case LayerTransitionDirection::Right:
@@ -212,24 +351,49 @@ private:
             painter.setClipRect(reveal, Qt::IntersectClip);
         }
 
-        auto draw_b = [&](const QPointF &offset, double opacity) {
-            painter.save();
-            painter.translate(offset);
-            painter.setOpacity(std::clamp(state.opacity * opacity, 0.0, 1.0));
-            painter.fillRect(frame, QColor(134, 65, 93));
-            painter.setPen(Qt::white);
-            painter.drawText(frame, Qt::AlignCenter, QStringLiteral("B"));
-            painter.restore();
+        auto paint_b = [&](QPainter &target, const QPointF &offset, double opacity) {
+            target.save();
+            target.translate(offset);
+            target.setOpacity(std::clamp(state.opacity * opacity, 0.0, 1.0));
+            target.fillRect(frame, QColor(134, 65, 93));
+            target.setPen(Qt::white);
+            target.setFont(font);
+            target.drawText(frame, Qt::AlignCenter, QStringLiteral("B"));
+            target.restore();
         };
-        if (state.blur > 0.01) {
-            const double radius = std::clamp(state.blur * 0.18, 1.0, 8.0);
-            for (const QPointF &offset : {QPointF(-radius, 0.0), QPointF(radius, 0.0),
-                                          QPointF(0.0, -radius), QPointF(0.0, radius),
-                                          QPointF(-radius * 0.7, -radius * 0.7),
-                                          QPointF(radius * 0.7, radius * 0.7)})
-                draw_b(offset, 0.11);
+
+        if (procedural) {
+            QImage b_layer(size(), QImage::Format_ARGB32_Premultiplied);
+            b_layer.fill(Qt::transparent);
+            QPainter b_painter(&b_layer);
+            b_painter.setRenderHint(QPainter::Antialiasing, true);
+            if (state.blur > 0.01) {
+                const double radius = std::clamp(state.blur * 0.18, 1.0, 8.0);
+                for (const QPointF &offset : {QPointF(-radius, 0.0), QPointF(radius, 0.0),
+                                              QPointF(0.0, -radius), QPointF(0.0, radius),
+                                              QPointF(-radius * 0.7, -radius * 0.7),
+                                              QPointF(radius * 0.7, radius * 0.7)})
+                    paint_b(b_painter, offset, 0.11);
+            }
+            paint_b(b_painter, QPointF(), 1.0);
+            b_painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            const QSize mask_size(std::max(1, static_cast<int>(std::ceil(frame.width()))),
+                                  std::max(1, static_cast<int>(std::ceil(frame.height()))));
+            const QImage mask = procedural_preview_mask(mask_size, state);
+            b_painter.drawImage(frame.topLeft(), mask);
+            b_painter.end();
+            painter.drawImage(QPointF(0.0, 0.0), b_layer);
+        } else {
+            if (state.blur > 0.01) {
+                const double radius = std::clamp(state.blur * 0.18, 1.0, 8.0);
+                for (const QPointF &offset : {QPointF(-radius, 0.0), QPointF(radius, 0.0),
+                                              QPointF(0.0, -radius), QPointF(0.0, radius),
+                                              QPointF(-radius * 0.7, -radius * 0.7),
+                                              QPointF(radius * 0.7, radius * 0.7)})
+                    paint_b(painter, offset, 0.11);
+            }
+            paint_b(painter, QPointF(), 1.0);
         }
-        draw_b(QPointF(), 1.0);
         painter.restore();
     }
 
@@ -478,6 +642,95 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     reverse_order_ = new QCheckBox(bgl_tr("OBSTitles.ReverseOrder"), this);
     reverse_order_->setChecked(transition.reverse_order);
     form->addRow(QString(), reverse_order_);
+
+    blocks_columns_ = new QSpinBox(this);
+    blocks_columns_->setRange(1, 128);
+    blocks_columns_->setValue(std::clamp(transition.blocks_columns, 1, 128));
+    blocks_columns_label_ = new QLabel(bgl_tr("OBSTitles.Columns"), this);
+    form->addRow(blocks_columns_label_, blocks_columns_);
+
+    blocks_rows_ = new QSpinBox(this);
+    blocks_rows_->setRange(1, 128);
+    blocks_rows_->setValue(std::clamp(transition.blocks_rows, 1, 128));
+    blocks_rows_label_ = new QLabel(bgl_tr("OBSTitles.Rows"), this);
+    form->addRow(blocks_rows_label_, blocks_rows_);
+
+    random_seed_ = new QSpinBox(this);
+    random_seed_->setRange(0, 999999);
+    random_seed_->setValue(std::max(0, transition.random_seed));
+    random_seed_label_ = new QLabel(bgl_tr("OBSTitles.Seed"), this);
+    form->addRow(random_seed_label_, random_seed_);
+
+    auto *image_row = new QWidget(this);
+    auto *image_layout = new QHBoxLayout(image_row);
+    image_layout->setContentsMargins(0, 0, 0, 0);
+    image_path_ = new QLineEdit(QString::fromStdString(transition.image_path), image_row);
+    image_browse_ = new QPushButton(bgl_tr("OBSTitles.Browse"), image_row);
+    image_layout->addWidget(image_path_, 1);
+    image_layout->addWidget(image_browse_);
+    image_path_label_ = new QLabel(bgl_tr("OBSTitles.Image"), this);
+    form->addRow(image_path_label_, image_row);
+
+    image_channel_ = make_combo(this);
+    image_channel_->addItem(QStringLiteral("Luma"), 0);
+    image_channel_->addItem(QStringLiteral("Alpha"), 1);
+    image_channel_->addItem(QStringLiteral("Red"), 2);
+    image_channel_->addItem(QStringLiteral("Green"), 3);
+    image_channel_->addItem(QStringLiteral("Blue"), 4);
+    image_channel_->setCurrentIndex(std::max(0, image_channel_->findData(transition.image_channel)));
+    image_channel_label_ = new QLabel(bgl_tr("OBSTitles.Channel"), this);
+    form->addRow(image_channel_label_, image_channel_);
+
+    invert_ = new QCheckBox(QStringLiteral("Invert"), this);
+    invert_->setChecked(transition.invert);
+    form->addRow(QString(), invert_);
+
+    clockwise_ = new QCheckBox(bgl_tr("OBSTitles.Clockwise"), this);
+    clockwise_->setChecked(transition.clockwise);
+    form->addRow(QString(), clockwise_);
+
+    center_x_ = new QDoubleSpinBox(this);
+    center_x_->setRange(0.0, 100.0);
+    center_x_->setSuffix(QStringLiteral(" %"));
+    center_x_->setValue(std::clamp(transition.center_x, 0.0, 1.0) * 100.0);
+    center_x_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.CenterXLabel"), center_x_, this);
+    form->addRow(center_x_label_, center_x_);
+
+    center_y_ = new QDoubleSpinBox(this);
+    center_y_->setRange(0.0, 100.0);
+    center_y_->setSuffix(QStringLiteral(" %"));
+    center_y_->setValue(std::clamp(transition.center_y, 0.0, 1.0) * 100.0);
+    center_y_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.CenterYLabel"), center_y_, this);
+    form->addRow(center_y_label_, center_y_);
+
+    rotation_ = new QDoubleSpinBox(this);
+    rotation_->setRange(-3600.0, 3600.0);
+    rotation_->setSuffix(QStringLiteral("°"));
+    rotation_->setValue(transition.rotation);
+    rotation_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.Rotation"), rotation_, this);
+    form->addRow(rotation_label_, rotation_);
+
+    aspect_ = new QDoubleSpinBox(this);
+    aspect_->setRange(0.01, 100.0);
+    aspect_->setDecimals(3);
+    aspect_->setSingleStep(0.05);
+    aspect_->setValue(std::max(0.01, transition.aspect));
+    aspect_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.Aspect"), aspect_, this);
+    form->addRow(aspect_label_, aspect_);
+
+    profile_ = make_combo(this);
+    if (transition.type == LayerTransitionType::Iris) {
+        profile_->addItem(QStringLiteral("Circle"), 0);
+        profile_->addItem(QStringLiteral("Square"), 1);
+        profile_->addItem(QStringLiteral("Diamond"), 2);
+    } else {
+        profile_->addItem(QStringLiteral("Linear"), 0);
+        profile_->addItem(QStringLiteral("Radial"), 1);
+        profile_->addItem(QStringLiteral("Diamond"), 2);
+    }
+    profile_->setCurrentIndex(std::max(0, profile_->findData(transition.profile)));
+    profile_label_ = new QLabel(bgl_tr("OBSTitles.EffectProfile"), this);
+    form->addRow(profile_label_, profile_);
     layout->addLayout(form);
 
     auto update = [this]() {
@@ -496,6 +749,27 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     connect(offset_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
     connect(softness_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
     connect(reverse_order_, &QCheckBox::toggled, this, update);
+    connect(blocks_columns_, qOverload<int>(&QSpinBox::valueChanged), this, [update](int) { update(); });
+    connect(blocks_rows_, qOverload<int>(&QSpinBox::valueChanged), this, [update](int) { update(); });
+    connect(random_seed_, qOverload<int>(&QSpinBox::valueChanged), this, [update](int) { update(); });
+    connect(image_path_, &QLineEdit::textChanged, this, [update](const QString &) { update(); });
+    connect(image_channel_, qOverload<int>(&QComboBox::currentIndexChanged), this, [update](int) { update(); });
+    connect(invert_, &QCheckBox::toggled, this, update);
+    connect(clockwise_, &QCheckBox::toggled, this, update);
+    connect(center_x_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
+    connect(center_y_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
+    connect(rotation_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
+    connect(aspect_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [update](double) { update(); });
+    connect(profile_, qOverload<int>(&QComboBox::currentIndexChanged), this, [update](int) { update(); });
+    connect(image_browse_, &QPushButton::clicked, this, [this, update]() {
+        const QString path = QFileDialog::getOpenFileName(
+            this, bgl_tr("OBSTitles.ImageWipe"), image_path_->text(),
+            bgl_tr("OBSTitles.ImageFileFilter"));
+        if (!path.isEmpty()) {
+            image_path_->setText(path);
+            update();
+        }
+    });
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -522,6 +796,18 @@ void TransitionEditorDialog::update_model_from_controls()
     transition_.offset = offset_->value();
     transition_.softness = softness_->value() / 100.0;
     transition_.reverse_order = reverse_order_->isChecked();
+    transition_.blocks_columns = blocks_columns_->value();
+    transition_.blocks_rows = blocks_rows_->value();
+    transition_.random_seed = random_seed_->value();
+    transition_.image_path = image_path_->text().toStdString();
+    transition_.image_channel = image_channel_->currentData().toInt();
+    transition_.invert = invert_->isChecked();
+    transition_.clockwise = clockwise_->isChecked();
+    transition_.center_x = center_x_->value() / 100.0;
+    transition_.center_y = center_y_->value() / 100.0;
+    transition_.rotation = rotation_->value();
+    transition_.aspect = aspect_->value();
+    transition_.profile = profile_->currentData().toInt();
 }
 
 void TransitionEditorDialog::update_control_visibility()
@@ -546,7 +832,22 @@ void TransitionEditorDialog::update_control_visibility()
                             transition_.type == LayerTransitionType::TextSlide ||
                             transition_.type == LayerTransitionType::TextBlurSlide;
     const bool has_softness = transition_.type == LayerTransitionType::Wipe ||
-                              transition_.type == LayerTransitionType::TextWipe;
+                              transition_.type == LayerTransitionType::TextWipe ||
+                              transition_.type == LayerTransitionType::Blocks ||
+                              transition_.type == LayerTransitionType::ImageWipe ||
+                              transition_.type == LayerTransitionType::Clock ||
+                              transition_.type == LayerTransitionType::Iris ||
+                              transition_.type == LayerTransitionType::GradientWipe;
+    const bool is_blocks = transition_.type == LayerTransitionType::Blocks;
+    const bool is_image_wipe = transition_.type == LayerTransitionType::ImageWipe;
+    const bool is_clock = transition_.type == LayerTransitionType::Clock;
+    const bool is_iris = transition_.type == LayerTransitionType::Iris;
+    const bool is_gradient = transition_.type == LayerTransitionType::GradientWipe;
+    const bool has_center = is_clock || is_iris || is_gradient;
+    const bool has_rotation = is_clock || is_gradient;
+    const bool has_aspect = is_iris || is_gradient;
+    const bool has_profile = is_iris || is_gradient;
+    const bool procedural = is_blocks || is_image_wipe || is_clock || is_iris || is_gradient;
 
     for (QWidget *widget : std::initializer_list<QWidget *>{unit_label_, unit_, stagger_label_, stagger_, reverse_order_})
         widget->setVisible(text);
@@ -555,4 +856,18 @@ void TransitionEditorDialog::update_control_visibility()
     for (QWidget *widget : std::initializer_list<QWidget *>{scale_label_, scale_}) widget->setVisible(has_scale);
     for (QWidget *widget : std::initializer_list<QWidget *>{offset_label_, offset_}) widget->setVisible(has_offset);
     for (QWidget *widget : std::initializer_list<QWidget *>{softness_label_, softness_}) widget->setVisible(has_softness);
+    for (QWidget *widget : std::initializer_list<QWidget *>{blocks_columns_label_, blocks_columns_, blocks_rows_label_, blocks_rows_, random_seed_label_, random_seed_})
+        widget->setVisible(is_blocks);
+    for (QWidget *widget : std::initializer_list<QWidget *>{image_path_label_, image_path_->parentWidget(), image_channel_label_, image_channel_})
+        widget->setVisible(is_image_wipe);
+    invert_->setVisible(procedural);
+    clockwise_->setVisible(is_clock);
+    for (QWidget *widget : std::initializer_list<QWidget *>{center_x_label_, center_x_, center_y_label_, center_y_})
+        widget->setVisible(has_center);
+    for (QWidget *widget : std::initializer_list<QWidget *>{rotation_label_, rotation_})
+        widget->setVisible(has_rotation);
+    for (QWidget *widget : std::initializer_list<QWidget *>{aspect_label_, aspect_})
+        widget->setVisible(has_aspect);
+    for (QWidget *widget : std::initializer_list<QWidget *>{profile_label_, profile_})
+        widget->setVisible(has_profile);
 }

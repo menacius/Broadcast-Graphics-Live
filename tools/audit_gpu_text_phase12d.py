@@ -127,8 +127,8 @@ else:
 
 require(
     CACHE,
-    ("gpu-renderer-v24-phase15-visibility-recovery",),
-    "Phase 15 recovery ABI invalidates blank Phase 15 and older text/editor frame payloads",
+    ("gpu-renderer-v25-transactional-text-prerender",),
+    "Transactional renderer ABI invalidates incomplete and older text/editor frame payloads",
 )
 
 require(

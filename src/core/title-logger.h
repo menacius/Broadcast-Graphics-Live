@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QVector>
 
 enum class TitleLogLevel {
     Off = 0,
@@ -11,7 +12,21 @@ enum class TitleLogLevel {
     Trace = 5
 };
 
+struct TitleLogCategory {
+    QString key;
+    QString display_name;
+    QString description;
+    bool default_enabled = true;
+};
+
 namespace TitleLogger {
+
+void startSession();
+void endSession();
+QString currentSessionFilePath();
+bool relocateCurrentSession(const QString &directory);
+QVector<TitleLogCategory> categories();
+bool categoryEnabled(const QString &category);
 
 void log(TitleLogLevel level, const char *category, const QString &message);
 void error(const char *category, const QString &message);

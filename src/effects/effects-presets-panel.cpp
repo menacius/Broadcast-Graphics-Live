@@ -300,6 +300,43 @@ void EffectsPresetsPanel::reload()
                               Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
     }
 
+    /* Keep the library compact: hide empty categories and promote a preset
+     * when it is the sole item in a subcategory. This is applied uniformly
+     * to Effects, Transitions and Animation Presets. */
+    std::function<void(QTreeWidgetItem *)> normalize_category_tree =
+        [&](QTreeWidgetItem *parent) {
+            if (!parent)
+                return;
+            for (int i = parent->childCount() - 1; i >= 0; --i) {
+                QTreeWidgetItem *child = parent->child(i);
+                const bool is_category = child &&
+                    child->data(0, kPresetPathRole).toString().isEmpty();
+                if (!is_category)
+                    continue;
+                normalize_category_tree(child);
+                if (child->childCount() == 0) {
+                    delete parent->takeChild(i);
+                    continue;
+                }
+                if (child->childCount() == 1) {
+                    QTreeWidgetItem *only = child->child(0);
+                    const bool only_is_preset = only &&
+                        !only->data(0, kPresetPathRole).toString().isEmpty();
+                    if (only_is_preset) {
+                        only = child->takeChild(0);
+                        delete parent->takeChild(i);
+                        parent->insertChild(i, only);
+                    }
+                }
+            }
+        };
+    for (int i = tree_->topLevelItemCount() - 1; i >= 0; --i) {
+        QTreeWidgetItem *root = tree_->topLevelItem(i);
+        normalize_category_tree(root);
+        if (root && root->childCount() == 0)
+            delete tree_->takeTopLevelItem(i);
+    }
+
     if (watcher_) {
         const QStringList old_paths = watcher_->directories() + watcher_->files();
         if (!old_paths.isEmpty())

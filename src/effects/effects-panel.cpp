@@ -173,6 +173,22 @@ static void set_effect_stroke_color_channels_at(LayerEffect &effect, double time
     set_animated_value(effect.stroke_color_b, time, argb & 0xFF);
 }
 
+static uint32_t panel_eval_effect_secondary_color(const LayerEffect &effect, double t)
+{
+    return ((uint32_t)eval_channel(effect.secondary_color_a, (effect.effect_secondary_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.secondary_color_r, (effect.effect_secondary_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.secondary_color_g, (effect.effect_secondary_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.secondary_color_b, effect.effect_secondary_color & 0xFF, t);
+}
+
+static void set_effect_secondary_color_channels_at(LayerEffect &effect, double time, uint32_t argb)
+{
+    set_animated_value(effect.secondary_color_a, time, (argb >> 24) & 0xFF);
+    set_animated_value(effect.secondary_color_r, time, (argb >> 16) & 0xFF);
+    set_animated_value(effect.secondary_color_g, time, (argb >> 8) & 0xFF);
+    set_animated_value(effect.secondary_color_b, time, argb & 0xFF);
+}
+
 EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("BroadcastGraphicsLiveEffectsPanel"));
@@ -286,6 +302,10 @@ EffectsPanel::EffectsPanel(QWidget *parent) : QWidget(parent)
         add_action(bgl_tr("OBSTitles.MotionBlur"), LayerEffectType::MotionBlur);
         add_action(bgl_tr("OBSTitles.Bloom"), LayerEffectType::Bloom);
         add_action(bgl_tr("OBSTitles.Emboss"), LayerEffectType::Emboss);
+        add_action(bgl_tr("OBSTitles.LensFlare"), LayerEffectType::LensFlare);
+        add_action(bgl_tr("OBSTitles.Vignette"), LayerEffectType::Vignette);
+        add_action(bgl_tr("OBSTitles.Noise"), LayerEffectType::Noise);
+        add_action(bgl_tr("OBSTitles.RoughenEdges"), LayerEffectType::RoughenEdges);
         QAction *chosen = menu.exec(btn_add->mapToGlobal(QPoint(0, btn_add->height())));
         if (!chosen) return;
         LayerEffect effect = bgs::effects::make_default_layer_effect(
@@ -1064,6 +1084,127 @@ void EffectsPanel::load_settings()
         connect(intensity, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_falloff=(float)v; set_animated_value(selected_effect()->falloff_prop, lt, v); emit_effect_changed(); }});
         connect(blur_type, QOverload<int>::of(&QComboBox::activated), this, [this, blur_type](int){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_blur_type=blur_type->currentData().toInt(); emit_effect_changed(); }});
         connect(blend, QOverload<int>::of(&QComboBox::activated), this, [this, blend](int){ if (!loading_values_ && selected_effect()) { selected_effect()->blend_mode=(EffectBlendMode)blend->currentData().toInt(); emit_effect_changed(); }});
+    } else if (selected_effect()->type == LayerEffectType::LensFlare) {
+        LayerEffect *effect = selected_effect();
+        auto *profile = combo();
+        profile->addItem(QStringLiteral("Classic 35mm"), 0);
+        profile->addItem(QStringLiteral("Anamorphic Blue"), 1);
+        profile->addItem(QStringLiteral("Cinematic Warm"), 2);
+        profile->addItem(QStringLiteral("Modern Sci-Fi"), 3);
+        profile->addItem(QStringLiteral("Subtle Natural"), 4);
+        profile->setCurrentIndex(profile->findData(effect->effect_profile));
+        auto *primary = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb) {
+            if (!selected_effect()) return;
+            selected_effect()->effect_color = argb;
+            set_effect_color_channels_at(*selected_effect(), lt, argb);
+        });
+        auto *secondary = color_button(panel_eval_effect_secondary_color(*effect, lt), [this, lt](uint32_t argb) {
+            if (!selected_effect()) return;
+            selected_effect()->effect_secondary_color = argb;
+            set_effect_secondary_color_channels_at(*selected_effect(), lt, argb);
+        });
+        auto *amount = spin(0.0, 10.0, 0.05); amount->setValue(panel_eval_effect_property(effect->amount_prop, effect->effect_amount, lt));
+        auto *opacity = spin(0.0, 1.0, 0.05); opacity->setValue(panel_eval_effect_property(effect->opacity_prop, effect->effect_opacity, lt));
+        auto *scale = spin(0.01, 20.0, 0.05); scale->setValue(panel_eval_effect_property(effect->scale_prop, effect->effect_scale, lt));
+        auto *radius = spin(0.001, 4.0, 0.01); radius->setValue(panel_eval_effect_property(effect->size_prop, effect->effect_size, lt));
+        auto *spread = spin(0.0, 4.0, 0.05); spread->setValue(panel_eval_effect_property(effect->spread_prop, effect->effect_spread, lt));
+        auto *falloff = spin(0.01, 16.0, 0.1); falloff->setValue(panel_eval_effect_property(effect->falloff_prop, effect->effect_falloff, lt));
+        auto *angle = spin(-360.0, 360.0, 1.0); angle->setValue(panel_eval_effect_property(effect->angle_prop, effect->effect_angle, lt));
+        auto *center_x = spin(-4.0, 4.0, 0.01); center_x->setValue(panel_eval_effect_property(effect->center_x_prop, effect->effect_center_x, lt));
+        auto *center_y = spin(-4.0, 4.0, 0.01); center_y->setValue(panel_eval_effect_property(effect->center_y_prop, effect->effect_center_y, lt));
+        auto *ghosts = spin(2.0, 12.0, 1.0);
+        ghosts->setDecimals(0);
+        ghosts->setValue(panel_eval_effect_property(
+            effect->complexity_prop, effect->effect_complexity, lt));
+        bind_color(primary, [](const LayerEffect &e, double t) { return panel_eval_effect_color(e, t); });
+        bind_color(secondary, [](const LayerEffect &e, double t) { return panel_eval_effect_secondary_color(e, t); });
+        bind_numeric(amount, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.amount_prop, e.effect_amount, t); });
+        bind_numeric(opacity, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.opacity_prop, e.effect_opacity, t); });
+        bind_numeric(scale, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.scale_prop, e.effect_scale, t); });
+        bind_numeric(radius, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.size_prop, e.effect_size, t); });
+        bind_numeric(spread, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.spread_prop, e.effect_spread, t); });
+        bind_numeric(falloff, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.falloff_prop, e.effect_falloff, t); });
+        bind_numeric(angle, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.angle_prop, e.effect_angle, t); });
+        bind_numeric(center_x, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.center_x_prop, e.effect_center_x, t); });
+        bind_numeric(center_y, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.center_y_prop, e.effect_center_y, t); });
+        bind_numeric(ghosts, [](const LayerEffect &e, double t){ return panel_eval_effect_property(e.complexity_prop, e.effect_complexity, t); });
+        add_effect_row(bgl_tr("OBSTitles.EffectProfile"), profile);
+        add_effect_row(bgl_tr("OBSTitles.ColorLabel"), primary);
+        add_effect_row(bgl_tr("OBSTitles.SecondaryColor"), secondary);
+        add_effect_row(bgl_tr("OBSTitles.Amount"), amount);
+        add_effect_row(bgl_tr("OBSTitles.OpacityLabel"), opacity);
+        add_effect_row(bgl_tr("OBSTitles.Scale"), scale);
+        add_effect_row(bgl_tr("OBSTitles.SizeRadiusLabel"), radius);
+        add_effect_row(bgl_tr("OBSTitles.SpreadLabel"), spread);
+        add_effect_row(bgl_tr("OBSTitles.FalloffLabel"), falloff);
+        add_effect_row(bgl_tr("OBSTitles.AngleLabel"), angle);
+        add_effect_row(bgl_tr("OBSTitles.CenterX"), center_x);
+        add_effect_row(bgl_tr("OBSTitles.CenterY"), center_y);
+        add_effect_row(bgl_tr("OBSTitles.Ghosts"), ghosts);
+        connect(profile, QOverload<int>::of(&QComboBox::activated), this, [this, profile](int){ if (!loading_values_ && selected_effect()) { selected_effect()->effect_profile=profile->currentData().toInt(); emit_effect_changed(); }});
+        connect(ghosts, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this, lt](double v) {
+                    if (!loading_values_ && selected_effect()) {
+                        selected_effect()->effect_complexity = (float)v;
+                        selected_effect()->effect_samples = (int)std::round(v);
+                        set_animated_value(selected_effect()->complexity_prop, lt, v);
+                        emit_effect_changed();
+                    }
+                });
+        const auto bind_value = [this, lt](QDoubleSpinBox *w, float LayerEffect::*field, AnimatedProperty LayerEffect::*prop) {
+            connect(w, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this, lt, field, prop](double v){ if (!loading_values_ && selected_effect()) { selected_effect()->*field=(float)v; set_animated_value(selected_effect()->*prop, lt, v); emit_effect_changed(); }});
+        };
+        bind_value(amount, &LayerEffect::effect_amount, &LayerEffect::amount_prop);
+        bind_value(opacity, &LayerEffect::effect_opacity, &LayerEffect::opacity_prop);
+        bind_value(scale, &LayerEffect::effect_scale, &LayerEffect::scale_prop);
+        bind_value(radius, &LayerEffect::effect_size, &LayerEffect::size_prop);
+        bind_value(spread, &LayerEffect::effect_spread, &LayerEffect::spread_prop);
+        bind_value(falloff, &LayerEffect::effect_falloff, &LayerEffect::falloff_prop);
+        bind_value(angle, &LayerEffect::effect_angle, &LayerEffect::angle_prop);
+        bind_value(center_x, &LayerEffect::effect_center_x, &LayerEffect::center_x_prop);
+        bind_value(center_y, &LayerEffect::effect_center_y, &LayerEffect::center_y_prop);
+    } else if (selected_effect()->type == LayerEffectType::Vignette) {
+        LayerEffect *effect = selected_effect();
+        auto *color = color_button(panel_eval_effect_color(*effect, lt), [this, lt](uint32_t argb){ if (selected_effect()) { selected_effect()->effect_color=argb; set_effect_color_channels_at(*selected_effect(), lt, argb); }});
+        auto *amount = spin(0.0, 2.0, 0.02); amount->setValue(panel_eval_effect_property(effect->amount_prop, effect->effect_amount, lt));
+        auto *scale = spin(0.01, 4.0, 0.02); scale->setValue(panel_eval_effect_property(effect->scale_prop, effect->effect_scale, lt));
+        auto *soft = spin(0.0, 1.0, 0.01); soft->setValue(panel_eval_effect_property(effect->softness_prop, effect->effect_softness, lt));
+        auto *round = spin(-1.0, 1.0, 0.02); round->setValue(panel_eval_effect_property(effect->roundness_prop, effect->effect_roundness, lt));
+        auto *cx = spin(-4.0, 4.0, 0.01); cx->setValue(panel_eval_effect_property(effect->center_x_prop, effect->effect_center_x, lt));
+        auto *cy = spin(-4.0, 4.0, 0.01); cy->setValue(panel_eval_effect_property(effect->center_y_prop, effect->effect_center_y, lt));
+        auto *invert = new QCheckBox(bgl_tr("OBSTitles.Invert"), box); invert->setChecked(effect->effect_invert);
+        bind_color(color, [](const LayerEffect &e,double t){ return panel_eval_effect_color(e,t); });
+        const auto init_bind=[&](QDoubleSpinBox *w, const AnimatedProperty LayerEffect::*prop, const float LayerEffect::*field){ bind_numeric(w,[prop,field](const LayerEffect&e,double t){return panel_eval_effect_property(e.*prop,e.*field,t);});};
+        init_bind(amount,&LayerEffect::amount_prop,&LayerEffect::effect_amount); init_bind(scale,&LayerEffect::scale_prop,&LayerEffect::effect_scale); init_bind(soft,&LayerEffect::softness_prop,&LayerEffect::effect_softness); init_bind(round,&LayerEffect::roundness_prop,&LayerEffect::effect_roundness); init_bind(cx,&LayerEffect::center_x_prop,&LayerEffect::effect_center_x); init_bind(cy,&LayerEffect::center_y_prop,&LayerEffect::effect_center_y);
+        add_effect_row(bgl_tr("OBSTitles.ColorLabel"),color); add_effect_row(bgl_tr("OBSTitles.Amount"),amount); add_effect_row(bgl_tr("OBSTitles.Scale"),scale); add_effect_row(bgl_tr("OBSTitles.SoftnessLabel"),soft); add_effect_row(bgl_tr("OBSTitles.Roundness"),round); add_effect_row(bgl_tr("OBSTitles.CenterX"),cx); add_effect_row(bgl_tr("OBSTitles.CenterY"),cy); add_effect_row(QString(),invert);
+        const auto bind_value=[this,lt](QDoubleSpinBox*w,float LayerEffect::*f,AnimatedProperty LayerEffect::*p){connect(w,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,[this,lt,f,p](double v){if(!loading_values_&&selected_effect()){selected_effect()->*f=(float)v;set_animated_value(selected_effect()->*p,lt,v);emit_effect_changed();}});};
+        bind_value(amount,&LayerEffect::effect_amount,&LayerEffect::amount_prop); bind_value(scale,&LayerEffect::effect_scale,&LayerEffect::scale_prop); bind_value(soft,&LayerEffect::effect_softness,&LayerEffect::softness_prop); bind_value(round,&LayerEffect::effect_roundness,&LayerEffect::roundness_prop); bind_value(cx,&LayerEffect::effect_center_x,&LayerEffect::center_x_prop); bind_value(cy,&LayerEffect::effect_center_y,&LayerEffect::center_y_prop);
+        connect(invert,&QCheckBox::toggled,this,[this](bool v){if(!loading_values_&&selected_effect()){selected_effect()->effect_invert=v;emit_effect_changed();}});
+    } else if (selected_effect()->type == LayerEffectType::Noise || selected_effect()->type == LayerEffectType::RoughenEdges) {
+        LayerEffect *effect = selected_effect();
+        const bool noise = effect->type == LayerEffectType::Noise;
+        QComboBox *profile = nullptr;
+        if (noise) { profile=combo(); profile->addItem(QStringLiteral("Uniform"),0); profile->addItem(QStringLiteral("Smooth"),1); profile->addItem(QStringLiteral("Gaussian"),2); profile->addItem(QStringLiteral("Film Grain"),3); profile->addItem(QStringLiteral("Digital Speckle"),4); profile->addItem(QStringLiteral("Organic Grain"),5); profile->setCurrentIndex(profile->findData(effect->effect_profile)); add_effect_row(bgl_tr("OBSTitles.EffectProfile"),profile); }
+        auto *opacity=spin(0.0,1.0,0.01); opacity->setValue(panel_eval_effect_property(effect->opacity_prop,effect->effect_opacity,lt));
+        auto *amount=spin(0.0,4.0,0.01); amount->setValue(panel_eval_effect_property(effect->amount_prop,effect->effect_amount,lt));
+        auto *scale=spin(0.001,1000.0,0.1); scale->setValue(panel_eval_effect_property(effect->scale_prop,effect->effect_scale,lt));
+        auto *soft=spin(0.0,1.0,0.01); soft->setValue(panel_eval_effect_property(effect->softness_prop,effect->effect_softness,lt));
+        auto *complexity=spin(1.0,12.0,0.25); complexity->setValue(panel_eval_effect_property(effect->complexity_prop,effect->effect_complexity,lt));
+        auto *evolution=spin(-100000.0,100000.0,1.0); evolution->setValue(panel_eval_effect_property(effect->evolution_prop,effect->effect_evolution,lt));
+        auto *seed=new QSpinBox(box); seed->setRange(0,1000000); seed->setValue(effect->effect_seed);
+        QDoubleSpinBox *speed=nullptr; QCheckBox *animated=nullptr; QCheckBox *mono=nullptr;
+        if(noise){speed=spin(-100.0,100.0,0.1);speed->setValue(panel_eval_effect_property(effect->speed_prop,effect->effect_speed,lt));animated=new QCheckBox(bgl_tr("OBSTitles.Animated"),box);animated->setChecked(effect->effect_animated);mono=new QCheckBox(bgl_tr("OBSTitles.Monochrome"),box);mono->setChecked(effect->effect_monochrome);}
+        auto *invert=new QCheckBox(bgl_tr("OBSTitles.Invert"),box);invert->setChecked(effect->effect_invert);
+        const auto init_bind=[&](QDoubleSpinBox*w,const AnimatedProperty LayerEffect::*p,const float LayerEffect::*f){if(w)bind_numeric(w,[p,f](const LayerEffect&e,double t){return panel_eval_effect_property(e.*p,e.*f,t);});};
+        init_bind(opacity,&LayerEffect::opacity_prop,&LayerEffect::effect_opacity);init_bind(amount,&LayerEffect::amount_prop,&LayerEffect::effect_amount);init_bind(scale,&LayerEffect::scale_prop,&LayerEffect::effect_scale);init_bind(soft,&LayerEffect::softness_prop,&LayerEffect::effect_softness);init_bind(complexity,&LayerEffect::complexity_prop,&LayerEffect::effect_complexity);init_bind(evolution,&LayerEffect::evolution_prop,&LayerEffect::effect_evolution);init_bind(speed,&LayerEffect::speed_prop,&LayerEffect::effect_speed);
+        add_effect_row(bgl_tr("OBSTitles.OpacityLabel"),opacity);add_effect_row(bgl_tr("OBSTitles.Amount"),amount);add_effect_row(bgl_tr("OBSTitles.Scale"),scale);add_effect_row(bgl_tr("OBSTitles.SoftnessLabel"),soft);add_effect_row(bgl_tr("OBSTitles.Complexity"),complexity);add_effect_row(bgl_tr("OBSTitles.Evolution"),evolution);if(speed)add_effect_row(bgl_tr("OBSTitles.Speed"),speed);add_effect_row(bgl_tr("OBSTitles.Seed"),seed);if(animated)add_effect_row(QString(),animated);if(mono)add_effect_row(QString(),mono);add_effect_row(QString(),invert);
+        const auto bind_value=[this,lt](QDoubleSpinBox*w,float LayerEffect::*f,AnimatedProperty LayerEffect::*p){if(w)connect(w,QOverload<double>::of(&QDoubleSpinBox::valueChanged),this,[this,lt,f,p](double v){if(!loading_values_&&selected_effect()){selected_effect()->*f=(float)v;set_animated_value(selected_effect()->*p,lt,v);emit_effect_changed();}});};
+        bind_value(opacity,&LayerEffect::effect_opacity,&LayerEffect::opacity_prop);bind_value(amount,&LayerEffect::effect_amount,&LayerEffect::amount_prop);bind_value(scale,&LayerEffect::effect_scale,&LayerEffect::scale_prop);bind_value(soft,&LayerEffect::effect_softness,&LayerEffect::softness_prop);bind_value(complexity,&LayerEffect::effect_complexity,&LayerEffect::complexity_prop);bind_value(evolution,&LayerEffect::effect_evolution,&LayerEffect::evolution_prop);bind_value(speed,&LayerEffect::effect_speed,&LayerEffect::speed_prop);
+        if(profile)connect(profile,QOverload<int>::of(&QComboBox::activated),this,[this,profile](int){if(!loading_values_&&selected_effect()){selected_effect()->effect_profile=profile->currentData().toInt();emit_effect_changed();}});
+        connect(seed,QOverload<int>::of(&QSpinBox::valueChanged),this,[this](int v){if(!loading_values_&&selected_effect()){selected_effect()->effect_seed=v;emit_effect_changed();}});
+        if(animated)connect(animated,&QCheckBox::toggled,this,[this](bool v){if(!loading_values_&&selected_effect()){selected_effect()->effect_animated=v;emit_effect_changed();}});
+        if(mono)connect(mono,&QCheckBox::toggled,this,[this](bool v){if(!loading_values_&&selected_effect()){selected_effect()->effect_monochrome=v;emit_effect_changed();}});
+        connect(invert,&QCheckBox::toggled,this,[this](bool v){if(!loading_values_&&selected_effect()){selected_effect()->effect_invert=v;emit_effect_changed();}});
     } else if (selected_effect()->type == LayerEffectType::Emboss) {
         LayerEffect *effect = selected_effect();
         auto *depth = spin(0.1, 32.0, 0.1); depth->setDecimals(2); depth->setValue(effect->size_prop.is_animated() ? effect->size_prop.evaluate(lt) : effect->effect_size);

@@ -32,6 +32,7 @@
 #include <QHash>
 #include <QElapsedTimer>
 #include <memory>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -444,6 +445,7 @@ private:
     TitleGpuRenderSession *gpu_render_session_ = nullptr;
     uint64_t gpu_model_revision_ = 0;
     bool gpu_model_dirty_ = true;
+    std::atomic_bool gpu_recovery_queued_{false};
     QString gpu_underlay_key_;
     mutable bool gpu_overlay_dirty_ = true;
     QImage gpu_overlay_cache_;

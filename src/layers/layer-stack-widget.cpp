@@ -130,6 +130,11 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                         bgl_tr("OBSTitles.Shape"), this, &LayerStack::on_add_rect);
     add_menu->addAction(obs_icon("image.svg"),
                         bgl_tr("OBSTitles.Image"), this, &LayerStack::on_add_image);
+    add_menu->addSeparator();
+    add_menu->addAction(obs_icon("lightning.svg"),
+                        bgl_tr("OBSTitles.AdjustmentLayer"), this, &LayerStack::on_add_adjustment);
+    add_menu->addAction(obs_icon("shape.svg"),
+                        bgl_tr("OBSTitles.ColorSolid"), this, &LayerStack::on_add_color_solid);
     btn_add_->setMenu(add_menu);
     btn_add_->setPopupMode(QToolButton::InstantPopup);
     btn_add_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -457,7 +462,7 @@ void LayerStack::populate()
         mask->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
         mask->addItem(obs_icon("timeline-mask.svg"), bgl_tr("OBSTitles.NoMask"), QVariant(QStringLiteral("|0")));
         for (const auto &candidate : title_->layers) {
-            if (candidate->id == l->id) continue;
+            if (candidate->id == l->id || candidate->type == LayerType::Adjustment) continue;
             mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " α"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Alpha)));
             mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -α"),
@@ -467,6 +472,7 @@ void LayerStack::populate()
             mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -Luma"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedLuma)));
         }
+        mask->setEnabled(l->type != LayerType::Adjustment);
         QString mask_value = QString::fromStdString(l->mask_source_id + "|" + std::to_string((int)l->mask_mode));
         int mask_idx = mask->findData(mask_value);
         mask->setCurrentIndex(mask_idx >= 0 ? mask_idx : 0);
@@ -654,6 +660,8 @@ void LayerStack::on_add_clock() { emit add_layer_requested(LayerType::Clock); }
 void LayerStack::on_add_ticker() { emit add_layer_requested(LayerType::Ticker); }
 void LayerStack::on_add_rect() { emit add_layer_requested(LayerType::Shape); }
 void LayerStack::on_add_image() { emit add_layer_requested(LayerType::Image); }
+void LayerStack::on_add_adjustment() { emit add_layer_requested(LayerType::Adjustment); }
+void LayerStack::on_add_color_solid() { emit add_layer_requested(LayerType::ColorSolid); }
 
 void LayerStack::on_move_up()
 {

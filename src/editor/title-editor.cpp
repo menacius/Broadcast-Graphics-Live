@@ -19,6 +19,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QList>
 #include <QDir>
 #include <QDateTime>
 #include <QStatusBar>
@@ -2016,7 +2017,9 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
         l->name = (type == LayerType::Text) ? editor_text_std("OBSTitles.Text") :
                   (type == LayerType::Clock) ? editor_text_std("OBSTitles.Clock") :
                   (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
-                  (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") : editor_text_std("OBSTitles.Shape");
+                  (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") :
+                  (type == LayerType::Adjustment) ? editor_text_std("OBSTitles.AdjustmentLayer") :
+                  (type == LayerType::ColorSolid) ? editor_text_std("OBSTitles.ColorSolid") : editor_text_std("OBSTitles.Shape");
     }
     l->name = unique_layer_name(l->name);
     l->type = type;
@@ -2030,8 +2033,10 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
     l->clock_format = (type == LayerType::Clock) ? "H:i:s" : l->clock_format;
     l->position.static_value.x = title_->width / 2.0;
     l->position.static_value.y = title_->height / 2.0;
-    l->rect_width = title_->width * 0.5f;
-    l->rect_height = (type == LayerType::Image) ? title_->height * 0.4f : 160.0f;
+    const bool full_canvas_layer = type == LayerType::Adjustment || type == LayerType::ColorSolid;
+    l->rect_width = full_canvas_layer ? static_cast<float>(title_->width) : title_->width * 0.5f;
+    l->rect_height = full_canvas_layer ? static_cast<float>(title_->height) :
+                     ((type == LayerType::Image) ? title_->height * 0.4f : 160.0f);
     l->size.static_value.x = l->rect_width;
     l->size.static_value.y = l->rect_height;
     if (type == LayerType::Image) {
@@ -2040,11 +2045,18 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
         l->image_size.static_value.x = l->image_width;
         l->image_size.static_value.y = l->image_height;
     }
-    if (type == LayerType::Shape || type == LayerType::SolidRect)
+    if (type == LayerType::Shape || type == LayerType::SolidRect ||
+        type == LayerType::Adjustment || type == LayerType::ColorSolid)
         l->lock_aspect_ratio = false;
     l->origin_prop.static_value.x = l->origin_x;
     l->origin_prop.static_value.y = l->origin_y;
     apply_new_layer_defaults(*l);
+    if (type == LayerType::ColorSolid) {
+        l->shape_type = ShapeType::Rectangle;
+        l->fill_type = 0;
+        l->outline_enabled = false;
+        l->stroke_width = 0.0f;
+    }
     set_channel_statics(*l, true, l->text_color);
     set_channel_statics(*l, false, l->fill_color);
     l->out_time = title_->duration;
@@ -2377,12 +2389,23 @@ void TitleEditor::build_ui()
     root->setSpacing(0);
 
     auto *menu_bar = new QMenuBar(this);
+    const auto register_editor_shortcut = [this](QAction *action,
+                                                  const QList<QKeySequence> &shortcuts) {
+        if (!action)
+            return;
+        action->setShortcuts(shortcuts);
+        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        /* The menu bar is embedded in the editor layout instead of being the
+         * QMainWindow's native menu bar. Associate every shortcut action with
+         * the editor itself so Qt does not limit it to an open QMenu. */
+        addAction(action);
+    };
     auto *file_menu = menu_bar->addMenu(bgl_tr("OBSTitles.FileMenu"));
     QAction *new_action = file_menu->addAction(bgl_tr("OBSTitles.New"));
-    new_action->setShortcut(QKeySequence::New);
+    register_editor_shortcut(new_action, {QKeySequence(QKeySequence::New)});
     connect(new_action, &QAction::triggered, this, &TitleEditor::new_title_contents);
     QAction *save_action = file_menu->addAction(obs_icon("save.svg"), bgl_tr("OBSTitles.Save"));
-    save_action->setShortcut(QKeySequence::Save);
+    register_editor_shortcut(save_action, {QKeySequence(QKeySequence::Save)});
     connect(save_action, &QAction::triggered, this, &TitleEditor::save_title);
     QAction *save_as_new_action = file_menu->addAction(bgl_tr("OBSTitles.SaveAsNew"));
     connect(save_as_new_action, &QAction::triggered, this, &TitleEditor::save_title_as_new);
@@ -2396,20 +2419,25 @@ void TitleEditor::build_ui()
 
     auto *edit_menu = menu_bar->addMenu(bgl_tr("OBSTitles.EditMenu"));
     edit_menu->addAction(act_undo_ = new QAction(obs_icon("undo.svg"), bgl_tr("OBSTitles.Undo"), this));
-    act_undo_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Z")));
-    act_undo_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    register_editor_shortcut(act_undo_, {QKeySequence(QKeySequence::Undo)});
     connect(act_undo_, &QAction::triggered, this, [this]() {
-        if (undo_index_ > 0) restore_undo_snapshot(undo_index_ - 1);
+        if (editor_focus_accepts_text(focusWidget()))
+            return;
+        if (undo_index_ > 0)
+            restore_undo_snapshot(undo_index_ - 1);
     });
     edit_menu->addAction(act_redo_ = new QAction(obs_icon("redo.svg"), bgl_tr("OBSTitles.Redo"), this));
-    act_redo_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Z")));
-    act_redo_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    register_editor_shortcut(act_redo_, {QKeySequence(QKeySequence::Redo),
+                                            QKeySequence(QStringLiteral("Ctrl+Shift+Z"))});
     connect(act_redo_, &QAction::triggered, this, [this]() {
-        if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
+        if (editor_focus_accepts_text(focusWidget()))
+            return;
+        if (undo_index_ + 1 < (int)undo_stack_.size())
+            restore_undo_snapshot(undo_index_ + 1);
     });
     edit_menu->addSeparator();
     QAction *copy_action = edit_menu->addAction(bgl_tr("OBSTitles.Copy"));
-    copy_action->setShortcut(QKeySequence::Copy);
+    register_editor_shortcut(copy_action, {QKeySequence(QKeySequence::Copy)});
     connect(copy_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
         if (timeline_ && timeline_->has_transition_target_selection()) {
@@ -2423,7 +2451,7 @@ void TitleEditor::build_ui()
         copy_selected_layer();
     });
     QAction *cut_action = edit_menu->addAction(bgl_tr("OBSTitles.Cut"));
-    cut_action->setShortcut(QKeySequence::Cut);
+    register_editor_shortcut(cut_action, {QKeySequence(QKeySequence::Cut)});
     connect(cut_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
         if (timeline_ && timeline_->has_transition_target_selection()) {
@@ -2437,7 +2465,7 @@ void TitleEditor::build_ui()
         cut_selected_layer();
     });
     QAction *paste_action = edit_menu->addAction(bgl_tr("OBSTitles.Paste"));
-    paste_action->setShortcut(QKeySequence::Paste);
+    register_editor_shortcut(paste_action, {QKeySequence(QKeySequence::Paste)});
     connect(paste_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
         if (timeline_ && timeline_->has_transition_target_selection()) {
@@ -2454,7 +2482,8 @@ void TitleEditor::build_ui()
             paste_external_clipboard_to_canvas();
     });
     QAction *delete_action = edit_menu->addAction(bgl_tr("OBSTitles.Delete"));
-    delete_action->setShortcut(QKeySequence::Delete);
+    register_editor_shortcut(delete_action, {QKeySequence(QKeySequence::Delete),
+                                                QKeySequence(Qt::Key_Backspace)});
     connect(delete_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
         if (timeline_ && timeline_->has_transition_target_selection()) {
@@ -2468,7 +2497,8 @@ void TitleEditor::build_ui()
         delete_selected_layer();
     });
     QAction *duplicate_action = edit_menu->addAction(bgl_tr("OBSTitles.DuplicateLayer"));
-    duplicate_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
+    register_editor_shortcut(duplicate_action,
+                             {QKeySequence(Qt::CTRL | Qt::Key_D)});
     connect(duplicate_action, &QAction::triggered, this, [this]() {
         if (editor_focus_accepts_text(focusWidget())) return;
         duplicate_selected_layers();
@@ -2480,7 +2510,8 @@ void TitleEditor::build_ui()
     auto *view_menu = menu_bar->addMenu(bgl_tr("OBSTitles.View"));
     act_rulers_visible_ = view_menu->addAction(bgl_tr("OBSTitles.Rulers"));
     act_rulers_visible_->setCheckable(true);
-    act_rulers_visible_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+    register_editor_shortcut(act_rulers_visible_,
+                             {QKeySequence(Qt::CTRL | Qt::Key_R)});
     act_rulers_visible_->setToolTip(bgl_tr("OBSTitles.RulersTooltip"));
     connect(act_rulers_visible_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_rulers_visible(visible);
@@ -2489,7 +2520,8 @@ void TitleEditor::build_ui()
     act_guides_visible_ = view_menu->addAction(bgl_tr("OBSTitles.Guides"));
     act_guides_visible_->setCheckable(true);
     act_guides_visible_->setChecked(true);
-    act_guides_visible_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_QuoteLeft));
+    register_editor_shortcut(act_guides_visible_,
+                             {QKeySequence(Qt::CTRL | Qt::Key_QuoteLeft)});
     act_guides_visible_->setToolTip(bgl_tr("OBSTitles.GuidesTooltip"));
     connect(act_guides_visible_, &QAction::toggled, this, [this](bool visible) {
         if (canvas_) canvas_->set_guides_visible(visible);
@@ -2524,12 +2556,13 @@ void TitleEditor::build_ui()
     });
     view_menu->addSeparator();
 
-    QAction *snap_action = view_menu->addAction(bgl_tr("OBSTitles.Snap"));
-    snap_action->setCheckable(true);
-    snap_action->setChecked(true);
-    snap_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Semicolon));
-    snap_action->setToolTip(bgl_tr("OBSTitles.SnapTooltip"));
-    connect(snap_action, &QAction::toggled, this, [this](bool enabled) {
+    act_snap_enabled_ = view_menu->addAction(bgl_tr("OBSTitles.Snap"));
+    act_snap_enabled_->setCheckable(true);
+    act_snap_enabled_->setChecked(true);
+    register_editor_shortcut(act_snap_enabled_,
+                             {QKeySequence(Qt::CTRL | Qt::Key_Semicolon)});
+    act_snap_enabled_->setToolTip(bgl_tr("OBSTitles.SnapTooltip"));
+    connect(act_snap_enabled_, &QAction::toggled, this, [this](bool enabled) {
         if (canvas_) canvas_->set_snap_enabled(enabled);
     });
 
@@ -3344,6 +3377,13 @@ void TitleEditor::build_ui()
                 schedule_cache_invalidation();
                 if (canvas_)
                     canvas_->refresh_preview();
+            });
+    connect(props_, &PropertiesPanel::runtime_visual_changed,
+            this, [this]() {
+                if (updating_layer_panels_)
+                    return;
+                if (canvas_)
+                    canvas_->refresh_runtime_dynamic_content();
             });
     connect(props_, &PropertiesPanel::text_char_format_changed,
             this, [this](const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask) {
@@ -6364,11 +6404,18 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     auto *logging_path_layout = new QHBoxLayout(logging_path_row);
     logging_path_layout->setContentsMargins(0, 0, 0, 0);
     logging_path_layout->setSpacing(6);
-    auto *logging_path = new QLineEdit(TitlePreferences::logging_file_path(), logging_path_row);
+    auto *logging_path = new QLineEdit(TitlePreferences::logging_directory(), logging_path_row);
     auto *browse_log = new QPushButton(bgl_tr("OBSTitles.Browse"), logging_path_row);
     logging_path_layout->addWidget(logging_path, 1);
     logging_path_layout->addWidget(browse_log);
-    logging_form->addRow(bgl_tr("OBSTitles.LogFile"), logging_path_row);
+    logging_form->addRow(bgl_tr("OBSTitles.LogFolder"), logging_path_row);
+
+    auto *current_session_log = new QLabel(TitleLogger::currentSessionFilePath(), logging_page);
+    current_session_log->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    current_session_log->setWordWrap(true);
+    current_session_log->setStyleSheet(QStringLiteral("color:%1;")
+                                           .arg(disabled_text.name(QColor::HexRgb)));
+    logging_form->addRow(bgl_tr("OBSTitles.CurrentSessionLog"), current_session_log);
 
     auto *mirror_obs = new QCheckBox(bgl_tr("OBSTitles.AlsoWriteObsLog"), logging_page);
     mirror_obs->setChecked(TitlePreferences::logging_mirror_to_obs());
@@ -6377,13 +6424,47 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
                                        disabled_text.name(QColor::HexRgb)));
     logging_form->addRow(QString(), mirror_obs);
 
-    auto *cache_playback_logging = new QCheckBox(bgl_tr("OBSTitles.CachePlaybackLogging"), logging_page);
-    cache_playback_logging->setChecked(TitlePreferences::cache_playback_logging_enabled());
-    cache_playback_logging->setToolTip(bgl_tr("OBSTitles.CachePlaybackLoggingTooltip"));
-    cache_playback_logging->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
-                                               .arg(text.name(QColor::HexRgb),
-                                                    disabled_text.name(QColor::HexRgb)));
-    logging_form->addRow(QString(), cache_playback_logging);
+    auto *categories_label = new QLabel(bgl_tr("OBSTitles.LoggingCategories"), logging_page);
+    QFont logging_section_font = categories_label->font();
+    logging_section_font.setBold(true);
+    categories_label->setFont(logging_section_font);
+    logging_layout->addLayout(logging_form);
+    logging_layout->addWidget(categories_label);
+
+    auto *category_scroll = new QScrollArea(logging_page);
+    category_scroll->setWidgetResizable(true);
+    category_scroll->setFrameShape(QFrame::StyledPanel);
+    category_scroll->setMinimumHeight(230);
+    auto *category_container = new QWidget(category_scroll);
+    auto *category_layout = new QVBoxLayout(category_container);
+    category_layout->setContentsMargins(8, 8, 8, 8);
+    category_layout->setSpacing(5);
+    QVector<QPair<QString, QCheckBox *>> category_checks;
+    for (const TitleLogCategory &category : TitleLogger::categories()) {
+        auto *check = new QCheckBox(category.display_name, category_container);
+        check->setChecked(TitlePreferences::logging_category_enabled(
+            category.key, category.default_enabled));
+        check->setToolTip(category.description);
+        check->setStyleSheet(QStringLiteral("QCheckBox{color:%1;}QCheckBox:disabled{color:%2;}")
+                                 .arg(text.name(QColor::HexRgb),
+                                      disabled_text.name(QColor::HexRgb)));
+        category_layout->addWidget(check);
+        category_checks.push_back(qMakePair(category.key, check));
+    }
+    category_layout->addStretch(1);
+    category_scroll->setWidget(category_container);
+    logging_layout->addWidget(category_scroll, 1);
+
+    auto *category_actions = new QWidget(logging_page);
+    auto *category_actions_layout = new QHBoxLayout(category_actions);
+    category_actions_layout->setContentsMargins(0, 0, 0, 0);
+    category_actions_layout->setSpacing(6);
+    auto *select_all_categories = new QPushButton(bgl_tr("OBSTitles.SelectAll"), category_actions);
+    auto *select_no_categories = new QPushButton(bgl_tr("OBSTitles.SelectNone"), category_actions);
+    category_actions_layout->addWidget(select_all_categories);
+    category_actions_layout->addWidget(select_no_categories);
+    category_actions_layout->addStretch(1);
+    logging_layout->addWidget(category_actions);
 
     auto *logging_buttons_row = new QWidget(logging_page);
     auto *logging_buttons_layout = new QHBoxLayout(logging_buttons_row);
@@ -6394,15 +6475,12 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     logging_buttons_layout->addWidget(open_log_folder);
     logging_buttons_layout->addWidget(clear_log);
     logging_buttons_layout->addStretch(1);
-    logging_form->addRow(QString(), logging_buttons_row);
+    logging_layout->addWidget(logging_buttons_row);
 
-    auto *logging_hint = new QLabel(bgl_tr("OBSTitles.LoggingHint"), logging_page);
+    auto *logging_hint = new QLabel(bgl_tr("OBSTitles.LoggingSessionHint"), logging_page);
     logging_hint->setWordWrap(true);
     logging_hint->setStyleSheet(QStringLiteral("color:%1;").arg(disabled_text.name(QColor::HexRgb)));
-    logging_form->addRow(bgl_tr("OBSTitles.Notes"), logging_hint);
-
-    logging_layout->addLayout(logging_form);
-    logging_layout->addStretch(1);
+    logging_layout->addWidget(logging_hint);
 
     pages->addWidget(editor_page);
     pages->addWidget(colors_page);
@@ -6473,36 +6551,65 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
         TitlePreferences::set_logging_level(logging_level->itemData(index).toInt());
         BGL_LOG_INFO("Preferences", QStringLiteral("Set logging level=%1").arg(logging_level->itemData(index).toInt()));
     });
-    connect(logging_path, &QLineEdit::editingFinished, dialog, [logging_path]() {
-        TitlePreferences::set_logging_file_path(logging_path->text());
-        logging_path->setText(TitlePreferences::logging_file_path());
-    });
-    connect(browse_log, &QPushButton::clicked, dialog, [dialog, logging_path]() {
-        const QString path = QFileDialog::getSaveFileName(dialog, bgl_tr("OBSTitles.LogFile"),
-                                                          logging_path->text(),
-                                                          bgl_tr("OBSTitles.LogFileFilter"));
+    auto apply_log_directory = [logging_path, current_session_log]() {
+        const QString requested = logging_path->text().trimmed();
+        if (requested.isEmpty()) {
+            logging_path->setText(TitlePreferences::logging_directory());
+            return;
+        }
+        TitlePreferences::set_logging_directory(requested);
+        const QString directory = TitlePreferences::logging_directory();
+        if (!TitleLogger::relocateCurrentSession(directory)) {
+            BGL_LOG_WARNING("Preferences", QStringLiteral(
+                "Could not relocate current logging session to %1").arg(directory));
+        }
+        logging_path->setText(directory);
+        current_session_log->setText(TitleLogger::currentSessionFilePath());
+        BGL_LOG_INFO("Preferences", QStringLiteral("Set log directory=%1").arg(directory));
+    };
+    connect(logging_path, &QLineEdit::editingFinished, dialog, apply_log_directory);
+    connect(browse_log, &QPushButton::clicked, dialog,
+            [dialog, logging_path, apply_log_directory]() {
+        const QString path = QFileDialog::getExistingDirectory(
+            dialog, bgl_tr("OBSTitles.LogFolder"), logging_path->text());
         if (path.isEmpty())
             return;
         logging_path->setText(path);
-        TitlePreferences::set_logging_file_path(path);
-        BGL_LOG_INFO("Preferences", QStringLiteral("Set log file path=%1").arg(path));
+        apply_log_directory();
     });
     connect(mirror_obs, &QCheckBox::toggled, dialog, [](bool enabled) {
         TitlePreferences::set_logging_mirror_to_obs(enabled);
         BGL_LOG_INFO("Preferences", QStringLiteral("Set logging mirror to OBS=%1").arg(enabled));
     });
-    connect(cache_playback_logging, &QCheckBox::toggled, dialog, [](bool enabled) {
-        TitlePreferences::set_cache_playback_logging_enabled(enabled);
-        BGL_LOG_INFO("Preferences", QStringLiteral("Set cache playback logging=%1").arg(enabled));
+    for (const auto &entry : category_checks) {
+        const QString category_key = entry.first;
+        QCheckBox *check = entry.second;
+        connect(check, &QCheckBox::toggled, dialog,
+                [category_key](bool enabled) {
+            TitlePreferences::set_logging_category_enabled(category_key, enabled);
+            BGL_LOG_INFO("Preferences", QStringLiteral(
+                "Set logging category %1=%2").arg(category_key).arg(enabled));
+        });
+    }
+    connect(select_all_categories, &QPushButton::clicked, dialog,
+            [category_checks]() {
+        for (const auto &entry : category_checks)
+            entry.second->setChecked(true);
+    });
+    connect(select_no_categories, &QPushButton::clicked, dialog,
+            [category_checks]() {
+        for (const auto &entry : category_checks)
+            entry.second->setChecked(false);
     });
     connect(open_log_folder, &QPushButton::clicked, dialog, []() {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(TitlePreferences::logging_file_path()).absolutePath()));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(
+            QFileInfo(TitleLogger::currentSessionFilePath()).absolutePath()));
     });
     connect(clear_log, &QPushButton::clicked, dialog, []() {
-        QFile file(TitlePreferences::logging_file_path());
+        QFile file(TitleLogger::currentSessionFilePath());
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
             file.close();
-        BGL_LOG_INFO("Preferences", QStringLiteral("Cleared log file"));
+        BGL_LOG_INFO("Preferences", QStringLiteral("Cleared current session log"));
     });
     auto format_cache_bytes = [](quint64 bytes) {
         const double mib = (double)bytes / 1024.0 / 1024.0;
@@ -6639,11 +6746,24 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    if (event->type() == QEvent::KeyPress && isActiveWindow()) {
+    QWidget *focused_widget = QApplication::focusWidget();
+    QWidget *active_window = QApplication::activeWindow();
+    const bool focus_in_editor = focused_widget &&
+        (focused_widget == this || isAncestorOf(focused_widget));
+    const bool child_window_active = active_window && active_window != this &&
+        active_window->isWindow();
+    /* A QWindow-backed canvas can own the key event without becoming a QWidget
+     * descendant. QApplication still reports this editor as the active window,
+     * so use the active top-level editor as the fallback routing boundary. Do
+     * not steal shortcuts from modal/tool child windows. */
+    const bool editor_is_active = !child_window_active &&
+        (focus_in_editor || active_window == this);
+    if (event->type() == QEvent::KeyPress && editor_is_active) {
         auto *key_event = static_cast<QKeyEvent *>(event);
         auto *widget = qobject_cast<QWidget *>(watched);
-        const bool in_editor = widget && (widget == this || isAncestorOf(widget));
-        const bool editing_value = editor_focus_accepts_text(focusWidget());
+        const bool in_editor = editor_is_active ||
+            (widget && (widget == this || isAncestorOf(widget)));
+        const bool editing_value = editor_focus_accepts_text(focused_widget);
         const Qt::KeyboardModifiers shortcut_modifiers =
             key_event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier |
                                       Qt::AltModifier | Qt::MetaModifier);
@@ -6652,17 +6772,104 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
 
         // Route history shortcuts before the focused canvas/viewport can consume
         // them. Text-entry widgets retain their own native document undo/redo.
-        if (in_editor && !editing_value && !key_event->isAutoRepeat() &&
-            key_event->key() == Qt::Key_Z) {
-            if (shortcut_modifiers == Qt::ControlModifier) {
+        if (in_editor && !editing_value && !key_event->isAutoRepeat()) {
+            const bool undo_shortcut = key_event->key() == Qt::Key_Z &&
+                shortcut_modifiers == Qt::ControlModifier;
+            const bool redo_shortcut =
+                (key_event->key() == Qt::Key_Z &&
+                 shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) ||
+                (key_event->key() == Qt::Key_Y &&
+                 shortcut_modifiers == Qt::ControlModifier);
+            if (undo_shortcut) {
                 if (undo_index_ > 0)
                     restore_undo_snapshot(undo_index_ - 1);
                 key_event->accept();
                 return true;
             }
-            if (shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {
+            if (redo_shortcut) {
                 if (undo_index_ + 1 < (int)undo_stack_.size())
                     restore_undo_snapshot(undo_index_ + 1);
+                key_event->accept();
+                return true;
+            }
+
+            if (key_event->matches(QKeySequence::New)) {
+                new_title_contents();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->matches(QKeySequence::Save)) {
+                save_title();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->matches(QKeySequence::Copy)) {
+                if (timeline_ && timeline_->has_transition_target_selection())
+                    timeline_->copy_transition_selection();
+                else if (timeline_ && timeline_->has_selected_keyframes())
+                    timeline_->copy_keyframe_selection();
+                else
+                    copy_selected_layer();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->matches(QKeySequence::Cut)) {
+                if (timeline_ && timeline_->has_transition_target_selection())
+                    timeline_->cut_transition_selection();
+                else if (timeline_ && timeline_->has_selected_keyframes())
+                    timeline_->cut_keyframe_selection();
+                else
+                    cut_selected_layer();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->matches(QKeySequence::Paste)) {
+                if (timeline_ && timeline_->has_transition_target_selection())
+                    timeline_->paste_transition_to_selection();
+                else if (timeline_ && timeline_->has_keyframe_clipboard())
+                    timeline_->paste_keyframes_at_playhead();
+                else if (!layer_clipboard_.empty())
+                    paste_layer_from_clipboard();
+                else
+                    paste_external_clipboard_to_canvas();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_Delete ||
+                key_event->key() == Qt::Key_Backspace) {
+                if (timeline_ && timeline_->has_transition_target_selection())
+                    timeline_->delete_transition_selection();
+                else if (timeline_ && timeline_->has_selected_keyframes())
+                    timeline_->delete_keyframe_selection();
+                else
+                    delete_selected_layer();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_D &&
+                shortcut_modifiers == Qt::ControlModifier) {
+                duplicate_selected_layers();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_R &&
+                shortcut_modifiers == Qt::ControlModifier &&
+                act_rulers_visible_) {
+                act_rulers_visible_->toggle();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_QuoteLeft &&
+                shortcut_modifiers == Qt::ControlModifier &&
+                act_guides_visible_) {
+                act_guides_visible_->toggle();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_Semicolon &&
+                shortcut_modifiers == Qt::ControlModifier &&
+                act_snap_enabled_) {
+                act_snap_enabled_->toggle();
                 key_event->accept();
                 return true;
             }
@@ -6736,9 +6943,13 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         ev->accept();
         return;
     }
-    if (!editing_value && ev->key() == Qt::Key_Z &&
-        shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {
-        if (undo_index_ + 1 < (int)undo_stack_.size()) restore_undo_snapshot(undo_index_ + 1);
+    if (!editing_value &&
+        ((ev->key() == Qt::Key_Z &&
+          shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) ||
+         (ev->key() == Qt::Key_Y &&
+          shortcut_modifiers == Qt::ControlModifier))) {
+        if (undo_index_ + 1 < (int)undo_stack_.size())
+            restore_undo_snapshot(undo_index_ + 1);
         ev->accept();
         return;
     }

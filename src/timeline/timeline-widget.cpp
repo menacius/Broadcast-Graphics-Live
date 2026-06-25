@@ -2,6 +2,7 @@
 #include "cache-manager.h"
 #include "effect-preset-catalog.h"
 #include "transition-preset-catalog.h"
+#include "title-logger.h"
 
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -23,6 +24,12 @@ void TimelineWidget::set_title(std::shared_ptr<Title> t)
     const bool title_changed = t != title_;
     title_ = t;
     if (title_changed) {
+        BGL_LOG_INFO("Timeline", QStringLiteral(
+            "Timeline title=%1 duration=%2 layers=%3")
+            .arg(title_ ? QString::fromStdString(title_->id)
+                        : QStringLiteral("<none>"))
+            .arg(title_ ? title_->duration : 0.0, 0, 'f', 6)
+            .arg(title_ ? static_cast<int>(title_->layers.size()) : 0));
         scroll_x_ = 0;
         fit_on_next_resize_ = true;
         selected_keyframes_.clear();
@@ -265,6 +272,12 @@ bool TimelineWidget::delete_transition_selection()
                                          return transition.edge == selected_transition_edge_;
                                      }), transitions.end());
     update();
+    BGL_LOG_DEBUG("Transitions", QStringLiteral(
+        "Deleted transition title=%1 layer=%2 edge=%3")
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(QString::fromStdString(layer->id))
+        .arg(static_cast<int>(selected_transition_edge_)));
     emit transition_modified();
     return true;
 }
@@ -314,6 +327,13 @@ bool TimelineWidget::paste_transition_to_selection()
         layer->transitions.push_back(std::move(pasted));
 
     update();
+    BGL_LOG_DEBUG("Transitions", QStringLiteral(
+        "Pasted transition title=%1 layer=%2 edge=%3 type=%4")
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(QString::fromStdString(layer->id))
+        .arg(static_cast<int>(selected_transition_edge_))
+        .arg(static_cast<int>(transition_clipboard_.type)));
     emit transition_modified();
     return true;
 }
@@ -546,8 +566,14 @@ bool TimelineWidget::delete_selected_keyframes()
     }
 
     if (changed) {
+        const int removed_count = static_cast<int>(selected_keyframes_.size());
         selected_keyframes_.clear();
         update();
+        BGL_LOG_DEBUG("Animation", QStringLiteral(
+            "Deleted keyframes title=%1 count=%2")
+            .arg(title_ ? QString::fromStdString(title_->id)
+                        : QStringLiteral("<none>"))
+            .arg(removed_count));
     }
     return changed;
 }
@@ -617,6 +643,12 @@ bool TimelineWidget::paste_keyframes_at(double timeline_time)
     }
 
     update();
+    BGL_LOG_DEBUG("Animation", QStringLiteral(
+        "Pasted keyframes title=%1 count=%2 origin=%3")
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(static_cast<int>(keyframe_clipboard_.size()))
+        .arg(paste_origin, 0, 'f', 6));
     return true;
 }
 

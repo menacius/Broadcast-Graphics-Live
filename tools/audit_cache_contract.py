@@ -104,10 +104,10 @@ if "take_source_cache_wake_frame(" not in source:
 else:
     notes.append("static OBS sources wake and adopt completed prerender frames")
 
-if "gpu-renderer-v24-phase15-visibility-recovery" not in cache_manager:
+if "gpu-renderer-v25-transactional-text-prerender" not in cache_manager:
     errors.append("renderer cache ABI was not bumped for the Phase 15 visibility-recovery contract")
 else:
-    notes.append("pre-recovery blank/legacy frame cache generations are invalidated by renderer ABI v24")
+    notes.append("pre-recovery blank/legacy frame cache generations are invalidated by renderer ABI v25")
 
 if "add(QString::fromStdString(p.name))" in cache_manager:
     errors.append("animation editor labels still pollute the visual cache hash")

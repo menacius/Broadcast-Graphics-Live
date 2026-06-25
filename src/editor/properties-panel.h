@@ -42,6 +42,7 @@ class QResizeEvent;
 class QPaintEvent;
 class QPainter;
 class QScrollBar;
+class QTimer;
 
 class PropertiesPanel : public QScrollArea {
     Q_OBJECT
@@ -64,6 +65,7 @@ public slots:
 signals:
     void property_changed(bool push_undo_snapshot = true);
     void live_visual_changed();
+    void runtime_visual_changed();
     void text_char_format_changed(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     void gradient_editor_active_changed(bool active);
     void gradient_model_refresh_requested();
@@ -77,6 +79,7 @@ private:
     void build_transform_section(QWidget *w, QFormLayout *fl);
 
     void load_values();
+    void update_ticker_runtime_button();
 
     std::shared_ptr<Layer> layer_;
     std::shared_ptr<Title> title_;
@@ -84,6 +87,7 @@ private:
     QPoint pending_color_popup_position_;
     double playhead_ = 0.0;
     bool loading_values_ = false;
+    QTimer *ticker_status_timer_ = nullptr;
     bool numeric_label_dragging_ = false;
     std::string active_text_edit_layer_id_;
     std::string external_gradient_layer_id_;
@@ -129,6 +133,9 @@ private:
     QToolButton     *btn_opentype_features_ = nullptr;
     QComboBox       *cmb_text_overflow_ = nullptr;
     QDoubleSpinBox  *spn_text_fit_min_scale_ = nullptr;
+    QWidget         *row_ticker_playback_ = nullptr;
+    QToolButton     *btn_ticker_pause_ = nullptr;
+    QComboBox       *cmb_ticker_playback_mode_ = nullptr;
     QComboBox       *cmb_ticker_style_ = nullptr;
     QDoubleSpinBox  *spn_ticker_speed_ = nullptr;
     QDoubleSpinBox  *spn_ticker_line_hold_ = nullptr;

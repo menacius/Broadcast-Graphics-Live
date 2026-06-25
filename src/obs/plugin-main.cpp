@@ -130,6 +130,7 @@ static void add_docks_menu_entry(QMainWindow *main)
 /* ── module load ────────────────────────────────────────────────── */
 bool obs_module_load(void)
 {
+    TitleLogger::startSession();
     blog(LOG_INFO, "[Broadcast Graphics Live] Loading plugin v%s", PLUGIN_VERSION);
     BGL_LOG_INFO("Plugin", QStringLiteral("Loading plugin version %1").arg(QStringLiteral(PLUGIN_VERSION)));
 
@@ -167,6 +168,7 @@ void obs_module_unload(void)
     release_title_gpu_render_resources();
     blog(LOG_INFO, "[Broadcast Graphics Live] Plugin unloaded.");
     BGL_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
+    TitleLogger::endSession();
 }
 
 /* ── frontend event handler ─────────────────────────────────────── */

@@ -89,7 +89,7 @@ void test_editor_first_frame_contract(const std::string &source)
     assert(next_function != std::string::npos);
     const std::string body = source.substr(set_title, next_function - set_title);
     assert(body.find("title_gpu_render_session_update") != std::string::npos);
-    assert(body.find("gpu_model_dirty_ = false") != std::string::npos);
+    assert(body.find("gpu_model_dirty_ = true") != std::string::npos);
 }
 
 } // namespace

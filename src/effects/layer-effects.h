@@ -39,6 +39,10 @@ enum class LayerEffectType {
     MotionBlur = 11,
     Bloom = 12,
     Emboss = 13,
+    LensFlare = 14,
+    Vignette = 15,
+    Noise = 16,
+    RoughenEdges = 17,
 };
 
 enum class EffectBlendMode {
@@ -71,6 +75,25 @@ struct LayerEffect {
     int effect_samples = 8;
     bool effect_centered = true;
     EffectBlendMode blend_mode = EffectBlendMode::Normal;
+
+    /* Procedural effect controls. These fields are shared by Lens Flare,
+     * Vignette, Noise and Roughen Edges; unused values are ignored by each
+     * effect's GPU shader. */
+    int effect_profile = 0;
+    bool effect_animated = false;
+    bool effect_monochrome = true;
+    bool effect_invert = false;
+    int effect_seed = 1;
+    float effect_amount = 1.0f;
+    float effect_scale = 1.0f;
+    float effect_softness = 0.25f;
+    float effect_roundness = 0.0f;
+    float effect_speed = 1.0f;
+    float effect_center_x = 0.5f;
+    float effect_center_y = 0.5f;
+    float effect_complexity = 4.0f;
+    float effect_evolution = 0.0f;
+    uint32_t effect_secondary_color = 0xFF4EA3FF;
 
     /* Effect-owned style data. Legacy layer fields may still be read while
      * loading old projects, but active editor/render state belongs here.
@@ -115,6 +138,15 @@ struct LayerEffect {
     AnimatedProperty angle_prop { "effect_angle", 135.0 };
     AnimatedProperty spread_prop { "effect_spread", 0.0 };
     AnimatedProperty falloff_prop { "effect_falloff", 1.0 };
+    AnimatedProperty amount_prop { "effect_amount", 1.0 };
+    AnimatedProperty scale_prop { "effect_scale", 1.0 };
+    AnimatedProperty softness_prop { "effect_softness", 0.25 };
+    AnimatedProperty roundness_prop { "effect_roundness", 0.0 };
+    AnimatedProperty speed_prop { "effect_speed", 1.0 };
+    AnimatedProperty center_x_prop { "effect_center_x", 0.5 };
+    AnimatedProperty center_y_prop { "effect_center_y", 0.5 };
+    AnimatedProperty complexity_prop { "effect_complexity", 4.0 };
+    AnimatedProperty evolution_prop { "effect_evolution", 0.0 };
     AnimatedProperty stroke_width_prop { "effect_stroke_width", 0.0 };
     AnimatedProperty stroke_opacity_prop { "effect_stroke_opacity", 1.0 };
     AnimatedProperty padding_left_prop { "effect_padding_left", 0.0 };
@@ -133,4 +165,8 @@ struct LayerEffect {
     AnimatedProperty stroke_color_r { "effect_stroke_color_r", 0.0 };
     AnimatedProperty stroke_color_g { "effect_stroke_color_g", 0.0 };
     AnimatedProperty stroke_color_b { "effect_stroke_color_b", 0.0 };
+    AnimatedProperty secondary_color_a { "effect_secondary_color_a", 255.0 };
+    AnimatedProperty secondary_color_r { "effect_secondary_color_r", 78.0 };
+    AnimatedProperty secondary_color_g { "effect_secondary_color_g", 163.0 };
+    AnimatedProperty secondary_color_b { "effect_secondary_color_b", 255.0 };
 };

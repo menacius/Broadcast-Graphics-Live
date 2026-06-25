@@ -115,6 +115,14 @@ void set_stroke_color_channels(LayerEffect &effect, uint32_t argb)
     effect.stroke_color_b.static_value = argb & 0xFF;
 }
 
+void set_secondary_color_channels(LayerEffect &effect, uint32_t argb)
+{
+    effect.secondary_color_a.static_value = (argb >> 24) & 0xFF;
+    effect.secondary_color_r.static_value = (argb >> 16) & 0xFF;
+    effect.secondary_color_g.static_value = (argb >> 8) & 0xFF;
+    effect.secondary_color_b.static_value = argb & 0xFF;
+}
+
 uint32_t json_color(const QJsonObject &object, const char *key, uint32_t fallback)
 {
     const QJsonValue value = object.value(QString::fromUtf8(key));
@@ -187,6 +195,21 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.effect_corner_radius_br = static_cast<float>(number("cornerRadiusBR", effect.effect_corner_radius_br));
     effect.effect_corner_radius_bl = static_cast<float>(number("cornerRadiusBL", effect.effect_corner_radius_bl));
     effect.effect_corner_type = integer("cornerType", effect.effect_corner_type);
+    effect.effect_profile = integer("profile", effect.effect_profile);
+    effect.effect_animated = boolean("animated", effect.effect_animated);
+    effect.effect_monochrome = boolean("monochrome", effect.effect_monochrome);
+    effect.effect_invert = boolean("invert", effect.effect_invert);
+    effect.effect_seed = integer("seed", effect.effect_seed);
+    effect.effect_amount = static_cast<float>(number("amount", effect.effect_amount));
+    effect.effect_scale = static_cast<float>(number("scale", effect.effect_scale));
+    effect.effect_softness = static_cast<float>(number("softness", effect.effect_softness));
+    effect.effect_roundness = static_cast<float>(number("roundness", effect.effect_roundness));
+    effect.effect_speed = static_cast<float>(number("speed", effect.effect_speed));
+    effect.effect_center_x = static_cast<float>(number("centerX", effect.effect_center_x));
+    effect.effect_center_y = static_cast<float>(number("centerY", effect.effect_center_y));
+    effect.effect_complexity = static_cast<float>(number("complexity", effect.effect_complexity));
+    effect.effect_evolution = static_cast<float>(number("evolution", effect.effect_evolution));
+    effect.effect_secondary_color = json_color(p, "secondaryColor", effect.effect_secondary_color);
 
     auto finite_clamp = [](float value, float minimum, float maximum, float fallback) {
         return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
@@ -213,6 +236,17 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.effect_corner_radius_tr = finite_clamp(effect.effect_corner_radius_tr, 0.0f, 1000.0f, 0.0f);
     effect.effect_corner_radius_br = finite_clamp(effect.effect_corner_radius_br, 0.0f, 1000.0f, 0.0f);
     effect.effect_corner_radius_bl = finite_clamp(effect.effect_corner_radius_bl, 0.0f, 1000.0f, 0.0f);
+    effect.effect_profile = std::clamp(effect.effect_profile, 0, 16);
+    effect.effect_seed = std::clamp(effect.effect_seed, 0, 1000000);
+    effect.effect_amount = finite_clamp(effect.effect_amount, 0.0f, 10.0f, 1.0f);
+    effect.effect_scale = finite_clamp(effect.effect_scale, 0.001f, 1000.0f, 1.0f);
+    effect.effect_softness = finite_clamp(effect.effect_softness, 0.0f, 1.0f, 0.25f);
+    effect.effect_roundness = finite_clamp(effect.effect_roundness, -1.0f, 1.0f, 0.0f);
+    effect.effect_speed = finite_clamp(effect.effect_speed, -100.0f, 100.0f, 1.0f);
+    effect.effect_center_x = finite_clamp(effect.effect_center_x, -4.0f, 4.0f, 0.5f);
+    effect.effect_center_y = finite_clamp(effect.effect_center_y, -4.0f, 4.0f, 0.5f);
+    effect.effect_complexity = finite_clamp(effect.effect_complexity, 1.0f, 12.0f, 4.0f);
+    effect.effect_evolution = finite_clamp(effect.effect_evolution, -100000.0f, 100000.0f, 0.0f);
 
     switch (effect.type) {
     case LayerEffectType::Outline:
@@ -227,6 +261,16 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
         effect.effect_size = finite_clamp(effect.effect_size, 0.1f, 32.0f, 2.0f);
         effect.effect_distance = finite_clamp(effect.effect_distance, 0.1f, 32.0f, 1.0f);
         effect.effect_spread = finite_clamp(effect.effect_spread, 0.0f, 16.0f, 0.0f);
+        break;
+    case LayerEffectType::LensFlare:
+        effect.effect_size = finite_clamp(effect.effect_size, 0.001f, 4.0f, 0.22f);
+        effect.effect_spread = finite_clamp(effect.effect_spread, 0.0f, 4.0f, 0.8f);
+        effect.effect_falloff = finite_clamp(effect.effect_falloff, 0.01f, 16.0f, 2.0f);
+        break;
+    case LayerEffectType::Vignette:
+    case LayerEffectType::Noise:
+    case LayerEffectType::RoughenEdges:
+        effect.effect_size = finite_clamp(effect.effect_size, 0.0f, 4096.0f, 16.0f);
         break;
     case LayerEffectType::Bloom:
         effect.effect_size = finite_clamp(effect.effect_size, 0.0f, 512.0f, 24.0f);
@@ -274,8 +318,18 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.corner_radius_tr_prop.static_value = effect.effect_corner_radius_tr;
     effect.corner_radius_br_prop.static_value = effect.effect_corner_radius_br;
     effect.corner_radius_bl_prop.static_value = effect.effect_corner_radius_bl;
+    effect.amount_prop.static_value = effect.effect_amount;
+    effect.scale_prop.static_value = effect.effect_scale;
+    effect.softness_prop.static_value = effect.effect_softness;
+    effect.roundness_prop.static_value = effect.effect_roundness;
+    effect.speed_prop.static_value = effect.effect_speed;
+    effect.center_x_prop.static_value = effect.effect_center_x;
+    effect.center_y_prop.static_value = effect.effect_center_y;
+    effect.complexity_prop.static_value = effect.effect_complexity;
+    effect.evolution_prop.static_value = effect.effect_evolution;
     set_color_channels(effect, effect.effect_color);
     set_stroke_color_channels(effect, effect.effect_stroke_color);
+    set_secondary_color_channels(effect, effect.effect_secondary_color);
 }
 
 } // namespace
@@ -353,6 +407,49 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
         effect.effect_samples = 8;
         effect.effect_centered = true;
         break;
+    case LayerEffectType::LensFlare:
+        effect.blend_mode = EffectBlendMode::Screen;
+        effect.effect_profile = 0;
+        effect.effect_color = 0xFFFFD59A;
+        effect.effect_secondary_color = 0xFF4EA3FF;
+        effect.effect_opacity = 0.85f;
+        effect.effect_amount = 1.0f;
+        effect.effect_scale = 1.0f;
+        effect.effect_size = 0.22f;
+        effect.effect_spread = 0.8f;
+        effect.effect_falloff = 2.0f;
+        effect.effect_center_x = 0.5f;
+        effect.effect_center_y = 0.5f;
+        effect.effect_samples = 6;
+        effect.effect_complexity = 6.0f;
+        break;
+    case LayerEffectType::Vignette:
+        effect.blend_mode = EffectBlendMode::Multiply;
+        effect.effect_color = 0xFF000000;
+        effect.effect_opacity = 1.0f;
+        effect.effect_amount = 0.65f;
+        effect.effect_scale = 0.78f;
+        effect.effect_softness = 0.35f;
+        effect.effect_roundness = 0.0f;
+        break;
+    case LayerEffectType::Noise:
+        effect.effect_profile = 3;
+        effect.effect_amount = 0.12f;
+        effect.effect_scale = 1.0f;
+        effect.effect_softness = 0.15f;
+        effect.effect_speed = 1.0f;
+        effect.effect_complexity = 4.0f;
+        effect.effect_animated = false;
+        effect.effect_monochrome = true;
+        effect.effect_seed = 1;
+        break;
+    case LayerEffectType::RoughenEdges:
+        effect.effect_amount = 0.18f;
+        effect.effect_scale = 48.0f;
+        effect.effect_softness = 0.2f;
+        effect.effect_complexity = 4.0f;
+        effect.effect_seed = 1;
+        break;
     case LayerEffectType::BrightnessContrast:
     case LayerEffectType::Saturation:
         break;
@@ -364,8 +461,18 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
     effect.angle_prop.static_value = effect.effect_angle;
     effect.spread_prop.static_value = effect.effect_spread;
     effect.falloff_prop.static_value = effect.effect_falloff;
+    effect.amount_prop.static_value = effect.effect_amount;
+    effect.scale_prop.static_value = effect.effect_scale;
+    effect.softness_prop.static_value = effect.effect_softness;
+    effect.roundness_prop.static_value = effect.effect_roundness;
+    effect.speed_prop.static_value = effect.effect_speed;
+    effect.center_x_prop.static_value = effect.effect_center_x;
+    effect.center_y_prop.static_value = effect.effect_center_y;
+    effect.complexity_prop.static_value = effect.effect_complexity;
+    effect.evolution_prop.static_value = effect.effect_evolution;
     set_color_channels(effect, effect.effect_color);
     set_stroke_color_channels(effect, effect.effect_stroke_color);
+    set_secondary_color_channels(effect, effect.effect_secondary_color);
     return effect;
 }
 
@@ -386,6 +493,10 @@ QString effect_type_id(LayerEffectType type)
     case LayerEffectType::MotionBlur: return QStringLiteral("motion-blur");
     case LayerEffectType::Bloom: return QStringLiteral("bloom");
     case LayerEffectType::Emboss: return QStringLiteral("emboss");
+    case LayerEffectType::LensFlare: return QStringLiteral("lens-flare");
+    case LayerEffectType::Vignette: return QStringLiteral("vignette");
+    case LayerEffectType::Noise: return QStringLiteral("noise");
+    case LayerEffectType::RoughenEdges: return QStringLiteral("roughen-edges");
     }
     return {};
 }
@@ -398,7 +509,7 @@ bool effect_type_from_id(const QString &id, LayerEffectType *type)
     normalized.replace(QLatin1Char('_'), QLatin1Char('-'));
     normalized.replace(QLatin1Char(' '), QLatin1Char('-'));
     for (int value = static_cast<int>(LayerEffectType::BackgroundColor);
-         value <= static_cast<int>(LayerEffectType::Emboss); ++value) {
+         value <= static_cast<int>(LayerEffectType::RoughenEdges); ++value) {
         const auto candidate = static_cast<LayerEffectType>(value);
         if (effect_type_id(candidate) == normalized) {
             *type = candidate;

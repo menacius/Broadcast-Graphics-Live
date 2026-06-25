@@ -25,6 +25,7 @@
 #include "image-layer-utils.h"
 #include "path-geometry.h"
 #include "title-text-layout.h"
+#include "ticker-runtime.h"
 
 #include <obs-module.h>
 
@@ -2722,6 +2723,9 @@ static QColor layer_type_color(LayerType type)
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
     case LayerType::Image:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ImageLayer);
+    case LayerType::Adjustment:
+    case LayerType::ColorSolid:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
     }
     return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
 }
@@ -2740,6 +2744,8 @@ static QString layer_type_short(LayerType type)
     case LayerType::SolidRect: return "■";
     case LayerType::Image: return "▧";
     case LayerType::Shape: return "◆";
+    case LayerType::Adjustment: return "FX";
+    case LayerType::ColorSolid: return "■";
     }
     return "•";
 }
@@ -3526,11 +3532,6 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
 }
 
 
-static double ticker_time_seconds()
-{
-    return QDateTime::currentMSecsSinceEpoch() / 1000.0;
-}
-
 static QStringList ticker_lines(const QString &text)
 {
     QString normalized = text;
@@ -3547,12 +3548,14 @@ static QStringList ticker_lines(const QString &text)
 
 static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
                                      Qt::Alignment alignment, const QString &text,
-                                     const Layer &layer)
+                                     const Layer &layer, const std::string &title_id)
 {
     QPainterPath path;
     QFontMetricsF metrics(font);
     const double speed = std::max(1.0, layer.ticker_speed);
-    const double now = ticker_time_seconds();
+    const TickerRuntimeSnapshot ticker_state =
+        bgs::ticker_runtime::sample(title_id, layer, false);
+    const double now = ticker_state.time_seconds;
 
     if (layer.ticker_style == 0) {
         QString single = text;
@@ -3607,7 +3610,8 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
     return path;
 }
 
-static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRectF &local_rect, double local_time)
+static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRectF &local_rect,
+                                                   double local_time, const std::string &title_id)
 {
     if (layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker) {
         QFont font = font_for_layer(layer, local_time);
@@ -3627,7 +3631,7 @@ static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRect
             text = QString::fromStdString(layer.rich_text.plain_text);
 
         QPainterPath text_path = layer.type == LayerType::Ticker
-            ? ticker_text_path(font, text_rect, align, text, layer)
+            ? ticker_text_path(font, text_rect, align, text, layer, title_id)
             : text_overflow_path(font, text_rect, align, text, layer, local_time);
         text_path = apply_vertical_character_scale(text_path, text_rect, align, layer, local_time);
         if (std::abs(eval_baseline_shift(layer, local_time)) > 0.0001)
@@ -3975,6 +3979,10 @@ static QString effect_type_name(LayerEffectType type)
     case LayerEffectType::MotionBlur: return bgl_tr("OBSTitles.MotionBlur");
     case LayerEffectType::Bloom: return bgl_tr("OBSTitles.Bloom");
     case LayerEffectType::Emboss: return bgl_tr("OBSTitles.Emboss");
+    case LayerEffectType::LensFlare: return bgl_tr("OBSTitles.LensFlare");
+    case LayerEffectType::Vignette: return bgl_tr("OBSTitles.Vignette");
+    case LayerEffectType::Noise: return bgl_tr("OBSTitles.Noise");
+    case LayerEffectType::RoughenEdges: return bgl_tr("OBSTitles.RoughenEdges");
     }
     return bgl_tr("OBSTitles.Effect");
 }
@@ -4925,6 +4933,56 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             name(effect.color_r, "color_r");
             name(effect.color_g, "color_g");
             name(effect.color_b, "color_b");
+            break;
+        case LayerEffectType::LensFlare:
+            name(effect.opacity_prop, "opacity");
+            name(effect.amount_prop, "amount");
+            name(effect.scale_prop, "scale");
+            name(effect.size_prop, "size");
+            name(effect.spread_prop, "spread");
+            name(effect.falloff_prop, "falloff");
+            name(effect.angle_prop, "angle");
+            name(effect.center_x_prop, "center_x");
+            name(effect.center_y_prop, "center_y");
+            name(effect.complexity_prop, "ghosts");
+            name(effect.color_a, "color_a");
+            name(effect.color_r, "color_r");
+            name(effect.color_g, "color_g");
+            name(effect.color_b, "color_b");
+            name(effect.secondary_color_a, "secondary_color_a");
+            name(effect.secondary_color_r, "secondary_color_r");
+            name(effect.secondary_color_g, "secondary_color_g");
+            name(effect.secondary_color_b, "secondary_color_b");
+            break;
+        case LayerEffectType::Vignette:
+            name(effect.opacity_prop, "opacity");
+            name(effect.amount_prop, "amount");
+            name(effect.scale_prop, "scale");
+            name(effect.softness_prop, "softness");
+            name(effect.roundness_prop, "roundness");
+            name(effect.center_x_prop, "center_x");
+            name(effect.center_y_prop, "center_y");
+            name(effect.color_a, "color_a");
+            name(effect.color_r, "color_r");
+            name(effect.color_g, "color_g");
+            name(effect.color_b, "color_b");
+            break;
+        case LayerEffectType::Noise:
+            name(effect.opacity_prop, "opacity");
+            name(effect.amount_prop, "amount");
+            name(effect.scale_prop, "scale");
+            name(effect.softness_prop, "softness");
+            name(effect.complexity_prop, "complexity");
+            name(effect.evolution_prop, "evolution");
+            name(effect.speed_prop, "speed");
+            break;
+        case LayerEffectType::RoughenEdges:
+            name(effect.opacity_prop, "opacity");
+            name(effect.amount_prop, "amount");
+            name(effect.scale_prop, "scale");
+            name(effect.softness_prop, "softness");
+            name(effect.complexity_prop, "complexity");
+            name(effect.evolution_prop, "evolution");
             break;
         default:
             name(effect.opacity_prop, "amount");

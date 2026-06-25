@@ -53,6 +53,11 @@ bool logging_mirror_to_obs();
 void set_logging_mirror_to_obs(bool enabled);
 bool cache_playback_logging_enabled();
 void set_cache_playback_logging_enabled(bool enabled);
+QString logging_directory();
+void set_logging_directory(const QString &path);
+bool logging_category_enabled(const QString &category, bool default_enabled = true);
+void set_logging_category_enabled(const QString &category, bool enabled);
+// Compatibility aliases retained for older callers/settings migration.
 QString logging_file_path();
 void set_logging_file_path(const QString &path);
 bool gpu_available();

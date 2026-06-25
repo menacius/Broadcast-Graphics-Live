@@ -6,10 +6,12 @@
 #include "title-source.h"
 #include "title-preferences.h"
 #include "title-logger.h"
+#include "ticker-runtime.h"
 
 #include <obs.h>
 #include <graphics/graphics.h>
 
+#include <QMetaObject>
 #include <QApplication>
 #include <QClipboard>
 #include <QDragEnterEvent>
@@ -96,6 +98,12 @@ TitlePreferences::CanvasHelperColorRole snap_feedback_role_from_label(const QStr
 bool layer_is_shape_sized(const Layer &layer)
 {
     return layer.type == LayerType::Shape || layer.type == LayerType::SolidRect;
+}
+
+bool layer_has_fixed_canvas_geometry(const Layer &layer)
+{
+    return layer.type == LayerType::Adjustment ||
+           layer.type == LayerType::ColorSolid;
 }
 
 double shape_resize_metric_factor(double old_w, double old_h, double new_w, double new_h)
@@ -316,10 +324,9 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
             adaptive_full_quality_timer_->start();
             return;
         }
-        adaptive_interaction_active_ = false;
-        if (frame_image_preview_scale_ < 0.999) {
-            force_live_full_quality_render_ =
-                adaptive_quality_mode_ == AdaptiveQualityMode::Auto;
+        const bool was_reduced_quality = frame_image_preview_scale_ < 0.999;
+        end_adaptive_interaction();
+        if (was_reduced_quality) {
             dirty_ = true;
             update();
         }
@@ -358,6 +365,7 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
     inline_text_editor_->installEventFilter(this);
     connect(inline_text_editor_->document(), &QTextDocument::contentsChanged, this, [this]() {
         if (updating_inline_text_editor_ || refreshing_inline_text_) return;
+        begin_adaptive_interaction();
         refresh_inline_text_edit(true, true);
     });
     if (auto *layout = inline_text_editor_->document()->documentLayout()) {
@@ -391,6 +399,8 @@ CanvasPreview::CanvasPreview(QWidget *parent) : QWidget(parent)
 
 CanvasPreview::~CanvasPreview()
 {
+    if (title_)
+        bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     destroy_gpu_display();
     title_gpu_render_session_destroy(gpu_render_session_);
     gpu_render_session_ = nullptr;
@@ -577,10 +587,39 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
             canvas->gpu_render_session_,
             static_cast<uint32_t>(state.artwork_rect_px.width()),
             static_cast<uint32_t>(state.artwork_rect_px.height()));
+        const std::string gpu_error = artwork_drawn
+            ? std::string()
+            : title_gpu_render_session_last_error(canvas->gpu_render_session_);
+        if (!artwork_drawn) {
+            BGL_LOG_DEBUG("Canvas", QStringLiteral(
+                "GPU canvas draw deferred title=%1 output=%2x%3 error=%4")
+                .arg(canvas->title_
+                         ? QString::fromStdString(canvas->title_->id)
+                         : QStringLiteral("<none>"))
+                .arg(state.artwork_rect_px.width())
+                .arg(state.artwork_rect_px.height())
+                .arg(gpu_error.empty() ? QStringLiteral("unknown")
+                                       : QString::fromStdString(gpu_error)));
+            /* A permanent GPU-text backend failure changes the next model
+             * preparation path to the compatibility raster. The display callback
+             * itself must not mutate the Qt/editor model, so queue exactly one
+             * recovery snapshot on the widget thread. This also retries transient
+             * first-frame atlas failures without requiring a user edit. */
+            bool expected = false;
+            if (canvas->gpu_recovery_queued_.compare_exchange_strong(
+                    expected, true, std::memory_order_acq_rel)) {
+                QMetaObject::invokeMethod(canvas, [canvas]() {
+                    canvas->gpu_recovery_queued_.store(
+                        false, std::memory_order_release);
+                    if (!canvas->title_ || !canvas->gpu_render_session_)
+                        return;
+                    canvas->gpu_model_dirty_ = true;
+                    canvas->dirty_ = true;
+                    canvas->update();
+                }, Qt::QueuedConnection);
+            }
+        }
         if (TitlePreferences::cache_playback_logging_enabled()) {
-            const std::string gpu_error = artwork_drawn
-                ? std::string()
-                : title_gpu_render_session_last_error(canvas->gpu_render_session_);
             BGL_LOG_INFO("CachePlayback", QStringLiteral(
                 "consumer=editor-canvas stage=draw result=%1 output=%2x%3 rect=%4,%5,%6x%7 error=%8")
                 .arg(artwork_drawn ? QStringLiteral("ok") : QStringLiteral("failed"))
@@ -690,7 +729,13 @@ QPointF CanvasPreview::view_center_canvas_point() const
 void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
 {
     commit_text_edit(true);
+    if (title_)
+        bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     title_ = t;
+    BGL_LOG_INFO("Canvas", QStringLiteral(
+        "Set canvas title=%1 preserveView=%2")
+        .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
+        .arg(preserve_view ? 1 : 0));
     gpu_model_dirty_ = true;
     playback_frame_pending_ = false;
     prefetched_cache_frame_ = QImage();
@@ -1025,6 +1070,8 @@ void CanvasPreview::set_adaptive_rendering_enabled(bool enabled)
 {
     if (adaptive_rendering_enabled_ == enabled)
         return;
+    if (!enabled && title_)
+        bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     adaptive_rendering_enabled_ = enabled;
     adaptive_interaction_active_ = false;
     editor_quality_cache_.clear();
@@ -1042,6 +1089,8 @@ void CanvasPreview::set_adaptive_quality_mode(AdaptiveQualityMode mode)
 {
     if (adaptive_quality_mode_ == mode)
         return;
+    if (title_)
+        bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     adaptive_quality_mode_ = mode;
     adaptive_interaction_active_ = false;
     force_live_full_quality_render_ = false;
@@ -1077,10 +1126,16 @@ void CanvasPreview::begin_adaptive_interaction()
     if (!adaptive_rendering_enabled_)
         return;
     adaptive_interaction_active_ = true;
-    /* Fixed quality modes remain at their selected scale. Auto uses the timer
-     * only as an idle safety net; mouse/key release remains the normal end. */
-    if (adaptive_full_quality_timer_ &&
-        adaptive_quality_mode_ == AdaptiveQualityMode::Auto)
+    if (title_) {
+        bgs::ticker_runtime::set_adaptive_pause(title_->id, true);
+        BGL_LOG_DEBUG("Ticker", QStringLiteral(
+            "action=adaptive-pause title=%1")
+            .arg(QString::fromStdString(title_->id)));
+    }
+    /* The idle timer also releases the ticker auto-pause after keyboard/text
+     * edits that do not have a mouse-release boundary. Fixed quality modes keep
+     * their selected preview scale; only Auto requests a full-quality settle. */
+    if (adaptive_full_quality_timer_)
         adaptive_full_quality_timer_->start();
 }
 
@@ -1091,6 +1146,12 @@ void CanvasPreview::end_adaptive_interaction()
 
     const bool was_reduced_quality = frame_image_preview_scale_ < 0.999;
     adaptive_interaction_active_ = false;
+    if (title_) {
+        bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
+        BGL_LOG_DEBUG("Ticker", QStringLiteral(
+            "action=adaptive-resume title=%1")
+            .arg(QString::fromStdString(title_->id)));
+    }
     if (adaptive_rendering_enabled_ && adaptive_quality_mode_ == AdaptiveQualityMode::Auto && was_reduced_quality)
         force_live_full_quality_render_ = true;
 }
@@ -3979,6 +4040,10 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
 {
     auto layers = selected_layers();
     if (layers.empty()) return DragMode::None;
+    if (std::any_of(layers.begin(), layers.end(), [](const auto &layer) {
+            return layer && layer_has_fixed_canvas_geometry(*layer);
+        }))
+        return DragMode::None;
 
     if (layers.size() > 1) {
         QRectF r = selected_canvas_bounds();
@@ -4291,7 +4356,9 @@ bool CanvasPreview::nudge_selected_layers(double dx, double dy)
 
     bool changed = false;
     for (const auto &layer : layers) {
-        if (!layer || layer->locked || has_selected_parent(*layer)) continue;
+        if (!layer || layer->locked || layer_has_fixed_canvas_geometry(*layer) ||
+            has_selected_parent(*layer))
+            continue;
         double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                std::max(0.0, layer->out_time - layer->in_time));
         set_animated_x(layer->position, lt, layer->position.evaluate(lt).x + dx);
@@ -5114,6 +5181,12 @@ void CanvasPreview::render_to_frame()
     force_live_full_quality_render_ = false;
     const int cost_ms = std::max(1, (int)render_cost.elapsed());
     last_full_quality_render_cost_ms_ = cost_ms;
+    BGL_LOG_TRACE("Performance", QStringLiteral(
+        "Canvas frame prepared title=%1 time=%2 costMs=%3 scale=%4")
+        .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
+        .arg(playhead_, 0, 'f', 6)
+        .arg(cost_ms)
+        .arg(frame_image_preview_scale_, 0, 'f', 3));
     /* GPU presentation can remain at display cadence. Coalescing protects the
      * UI only while a changed layer raster is being regenerated. */
     render_interval_ms_ = std::clamp(cost_ms + 1, 16, 34);
@@ -5473,7 +5546,8 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
 
         const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
                                              std::max(0.0, layer->out_time - layer->in_time));
-        QPainterPath path = editor_scene_mask_layer_path(*layer, local_rect, local_time);
+        QPainterPath path = editor_scene_mask_layer_path(*layer, local_rect, local_time,
+                                                          title_->id);
         QPen border(TitlePreferences::scene_mask_color(), layer->type == LayerType::Shape && layer->shape_type == ShapeType::Line ? 3.0 : 2.0);
         border.setCosmetic(true);
 

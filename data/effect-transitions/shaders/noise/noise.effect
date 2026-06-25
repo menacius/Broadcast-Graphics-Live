@@ -1,0 +1,106 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float opacity;
+uniform float amount;
+uniform float scale;
+uniform float softness;
+uniform float complexity;
+uniform float speed;
+uniform float time;
+uniform float evolution;
+uniform float seed;
+uniform int profile;
+uniform int animatedNoise;
+uniform int monochrome;
+uniform int invert;
+
+sampler_state textureSampler {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertDataIn {
+    float4 pos : POSITION;
+    float2 uv : TEXCOORD0;
+};
+
+struct VertDataOut {
+    float4 pos : POSITION;
+    float2 uv : TEXCOORD0;
+};
+
+VertDataOut VSDefault(VertDataIn v_in)
+{
+    VertDataOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float hash_noise(float2 p)
+{
+    return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float smooth_noise(float2 p)
+{
+    float2 cell = floor(p);
+    float2 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash_noise(cell);
+    float b = hash_noise(cell + float2(1.0, 0.0));
+    float c = hash_noise(cell + float2(0.0, 1.0));
+    float d = hash_noise(cell + float2(1.0, 1.0));
+    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
+float layered_noise(float2 p, float layers)
+{
+    float value = smooth_noise(p) * 0.55;
+    value += smooth_noise(p * 2.03 + 17.0) * 0.25 * step(1.5, layers);
+    value += smooth_noise(p * 4.09 + 31.0) * 0.125 * step(2.5, layers);
+    value += smooth_noise(p * 8.17 + 47.0) * 0.0625 * step(3.5, layers);
+    return saturate(value / 0.9875);
+}
+
+float4 PSNoise(VertDataOut v_in) : TARGET
+{
+    float4 base = image.Sample(textureSampler, v_in.uv);
+    float phase = evolution + seed * 17.13;
+    if (animatedNoise != 0)
+        phase += time * speed;
+    float2 p = v_in.uv * max(scale, 0.001) * 512.0 + float2(phase, phase * 0.731);
+
+    float value = hash_noise(floor(p));
+    if (profile == 1)
+        value = smooth_noise(p);
+    else if (profile == 2)
+        value = saturate((smooth_noise(p) + smooth_noise(p * 1.73 + 9.1) - 1.0) * 1.6 + 0.5);
+    else if (profile == 3 || profile == 5)
+        value = layered_noise(p, clamp(complexity, 1.0, 4.0));
+    else if (profile == 4)
+        value = step(0.92, hash_noise(floor(p)));
+
+    value = lerp(value, 0.5, saturate(softness));
+    if (invert != 0)
+        value = 1.0 - value;
+
+    float strength = max(amount, 0.0) * clamp(opacity, 0.0, 1.0);
+    float3 noise_rgb = float3(value, value, value);
+    if (monochrome == 0) {
+        noise_rgb.g = hash_noise(p + float2(37.0, 17.0));
+        noise_rgb.b = hash_noise(p + float2(91.0, 53.0));
+    }
+    float3 delta = (noise_rgb - 0.5) * strength * base.a;
+    return float4(clamp(base.rgb + delta, 0.0, 1.0), base.a);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSNoise(v_in);
+    }
+}

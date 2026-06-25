@@ -3,6 +3,8 @@
  */
 
 #include "title-data.h"
+#include "title-logger.h"
+#include "ticker-runtime.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/platform.h>
@@ -42,6 +44,7 @@ constexpr size_t kMaxLiveTextRows = 256;
 constexpr size_t kMaxLiveTextColumns = 32;
 constexpr size_t kMaxNameLength = 256;
 constexpr size_t kMaxTextLength = 8192;
+constexpr size_t kMaxPathLength = 4096;
 constexpr size_t kMaxScreenshotBase64Length = 32 * 1024 * 1024;
 constexpr double kMaxDuration = 3600.0;
 constexpr double kMaxPropertyValue = 100000.0;
@@ -388,6 +391,10 @@ static bool attach_embedded_image_asset(const Layer &layer, json &j, bool requir
     asset["hash"] = hex_u64(fnv1a_64(data));
     asset["data_base64"] = base64_encode(data);
     j["embedded_image"] = std::move(asset);
+    BGL_LOG_DEBUG("Assets", QStringLiteral(
+        "Embedded image asset layer=%1 file=%2 bytes=%3")
+        .arg(QString::fromStdString(layer.id), QString::fromStdString(file_name))
+        .arg(static_cast<qulonglong>(data.size())));
     return true;
 }
 
@@ -422,6 +429,10 @@ static bool restore_embedded_image_asset(const json &j, std::string &image_path)
     }
 
     image_path = path;
+    BGL_LOG_DEBUG("Assets", QStringLiteral(
+        "Restored embedded image asset file=%1 bytes=%2")
+        .arg(QString::fromStdString(path))
+        .arg(static_cast<qulonglong>(data.size())));
     return true;
 }
 
@@ -542,12 +553,19 @@ std::shared_ptr<Layer> Title::find_layer(const std::string &lid) const
 
 void Title::add_layer(std::shared_ptr<Layer> l)
 {
-    if (l)
-        layers.push_back(l);
+    if (!l)
+        return;
+    layers.push_back(l);
+    BGL_LOG_DEBUG("Layers", QStringLiteral(
+        "Added layer title=%1 layer=%2 type=%3 count=%4")
+        .arg(QString::fromStdString(id), QString::fromStdString(l->id))
+        .arg(static_cast<int>(l->type))
+        .arg(static_cast<int>(layers.size())));
 }
 
 void Title::remove_layer(const std::string &lid)
 {
+    const std::size_t previous_count = layers.size();
     layers.erase(
         std::remove_if(layers.begin(), layers.end(),
                        [&](auto &l){ return !l || l->id == lid; }),
@@ -559,6 +577,12 @@ void Title::remove_layer(const std::string &lid)
             layer->mask_source_id.clear();
             layer->mask_mode = MaskMode::None;
         }
+    }
+    if (layers.size() != previous_count) {
+        BGL_LOG_DEBUG("Layers", QStringLiteral(
+            "Removed layer title=%1 layer=%2 count=%3")
+            .arg(QString::fromStdString(id), QString::fromStdString(lid))
+            .arg(static_cast<int>(layers.size())));
     }
 }
 
@@ -710,8 +734,10 @@ void TitleDataStore::delete_title(const std::string &id)
         deleted = titles_.size() != old_size;
     }
 
-    if (deleted)
+    if (deleted) {
+        bgs::ticker_runtime::clear_title(id);
         notify_change();
+    }
 }
 
 void TitleDataStore::rename_title(const std::string &id, const std::string &n)
@@ -1264,6 +1290,21 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_blur_type", effect.effect_blur_type},
                            {"effect_samples", effect.effect_samples},
                            {"effect_centered", effect.effect_centered},
+                           {"effect_profile", effect.effect_profile},
+                           {"effect_animated", effect.effect_animated},
+                           {"effect_monochrome", effect.effect_monochrome},
+                           {"effect_invert", effect.effect_invert},
+                           {"effect_seed", effect.effect_seed},
+                           {"effect_amount", effect.effect_amount},
+                           {"effect_scale", effect.effect_scale},
+                           {"effect_softness", effect.effect_softness},
+                           {"effect_roundness", effect.effect_roundness},
+                           {"effect_speed", effect.effect_speed},
+                           {"effect_center_x", effect.effect_center_x},
+                           {"effect_center_y", effect.effect_center_y},
+                           {"effect_complexity", effect.effect_complexity},
+                           {"effect_evolution", effect.effect_evolution},
+                           {"effect_secondary_color", effect.effect_secondary_color},
                            {"blend_mode", (int)effect.blend_mode},
                            {"effect_fill_type", effect.effect_fill_type},
                            {"effect_join_style", effect.effect_join_style},
@@ -1303,6 +1344,15 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"angle_prop", aprop_to_json(effect.angle_prop)},
                            {"spread_prop", aprop_to_json(effect.spread_prop)},
                            {"falloff_prop", aprop_to_json(effect.falloff_prop)},
+                           {"amount_prop", aprop_to_json(effect.amount_prop)},
+                           {"scale_prop", aprop_to_json(effect.scale_prop)},
+                           {"softness_prop", aprop_to_json(effect.softness_prop)},
+                           {"roundness_prop", aprop_to_json(effect.roundness_prop)},
+                           {"speed_prop", aprop_to_json(effect.speed_prop)},
+                           {"center_x_prop", aprop_to_json(effect.center_x_prop)},
+                           {"center_y_prop", aprop_to_json(effect.center_y_prop)},
+                           {"complexity_prop", aprop_to_json(effect.complexity_prop)},
+                           {"evolution_prop", aprop_to_json(effect.evolution_prop)},
                            {"stroke_width_prop", aprop_to_json(effect.stroke_width_prop)},
                            {"stroke_opacity_prop", aprop_to_json(effect.stroke_opacity_prop)},
                            {"padding_left_prop", aprop_to_json(effect.padding_left_prop)},
@@ -1320,7 +1370,11 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"stroke_color_a", aprop_to_json(effect.stroke_color_a)},
                            {"stroke_color_r", aprop_to_json(effect.stroke_color_r)},
                            {"stroke_color_g", aprop_to_json(effect.stroke_color_g)},
-                           {"stroke_color_b", aprop_to_json(effect.stroke_color_b)}});
+                           {"stroke_color_b", aprop_to_json(effect.stroke_color_b)},
+                           {"secondary_color_a", aprop_to_json(effect.secondary_color_a)},
+                           {"secondary_color_r", aprop_to_json(effect.secondary_color_r)},
+                           {"secondary_color_g", aprop_to_json(effect.secondary_color_g)},
+                           {"secondary_color_b", aprop_to_json(effect.secondary_color_b)}});
     }
     j["effects"] = effects;
     json transitions = json::array();
@@ -1343,6 +1397,18 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
             {"stagger", transition.stagger},
             {"softness", transition.softness},
             {"reverse_order", transition.reverse_order},
+            {"blocks_columns", transition.blocks_columns},
+            {"blocks_rows", transition.blocks_rows},
+            {"random_seed", transition.random_seed},
+            {"image_path", transition.image_path},
+            {"image_channel", transition.image_channel},
+            {"invert", transition.invert},
+            {"clockwise", transition.clockwise},
+            {"center_x", transition.center_x},
+            {"center_y", transition.center_y},
+            {"rotation", transition.rotation},
+            {"aspect", transition.aspect},
+            {"profile", transition.profile},
         });
     }
     j["transitions"] = transitions;
@@ -1399,6 +1465,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["ticker_speed"] = l.ticker_speed;
     j["ticker_line_hold"] = l.ticker_line_hold;
     j["ticker_direction"] = l.ticker_direction;
+    j["ticker_playback_mode"] = l.ticker_playback_mode;
     j["text_color"]    = l.text_color;
     j["outline_enabled"] = l.outline_enabled;
     j["stroke_fill_type"] = l.stroke_fill_type;
@@ -1635,7 +1702,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
 
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
-    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Ticker);
+    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::ColorSolid);
     l->visible  = json_bool(j, "visible", true);
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
@@ -1653,7 +1720,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             const int raw_effect_type = json_int(effect_json, "type", 0);
-            if (raw_effect_type < 0 || raw_effect_type > 13) {
+            if (raw_effect_type < 0 || raw_effect_type > (int)LayerEffectType::RoughenEdges) {
                 if (diagnostics) {
                     append_unique_import_diagnostic(
                         diagnostics->missing_effects,
@@ -1705,6 +1772,21 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_blur_type = std::clamp(json_int(effect_json, "effect_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::DualKawase);
             effect.effect_samples = std::clamp(json_int(effect_json, "effect_samples", 8), 2, 64);
             effect.effect_centered = json_bool(effect_json, "effect_centered", true);
+            effect.effect_profile = std::clamp(json_int(effect_json, "effect_profile", 0), 0, 32);
+            effect.effect_animated = json_bool(effect_json, "effect_animated", false);
+            effect.effect_monochrome = json_bool(effect_json, "effect_monochrome", true);
+            effect.effect_invert = json_bool(effect_json, "effect_invert", false);
+            effect.effect_seed = std::clamp(json_int(effect_json, "effect_seed", 1), 0, 999999);
+            effect.effect_amount = (float)std::clamp(finite_or(json_double(effect_json, "effect_amount", 1.0), 1.0), 0.0, 10.0);
+            effect.effect_scale = (float)std::clamp(finite_or(json_double(effect_json, "effect_scale", 1.0), 1.0), 0.001, 100.0);
+            effect.effect_softness = (float)std::clamp(finite_or(json_double(effect_json, "effect_softness", 0.25), 0.25), 0.0, 1.0);
+            effect.effect_roundness = (float)std::clamp(finite_or(json_double(effect_json, "effect_roundness", 0.0), 0.0), -1.0, 1.0);
+            effect.effect_speed = (float)std::clamp(finite_or(json_double(effect_json, "effect_speed", 1.0), 1.0), -100.0, 100.0);
+            effect.effect_center_x = (float)std::clamp(finite_or(json_double(effect_json, "effect_center_x", 0.5), 0.5), -10.0, 10.0);
+            effect.effect_center_y = (float)std::clamp(finite_or(json_double(effect_json, "effect_center_y", 0.5), 0.5), -10.0, 10.0);
+            effect.effect_complexity = (float)std::clamp(finite_or(json_double(effect_json, "effect_complexity", 4.0), 4.0), 1.0, 12.0);
+            effect.effect_evolution = (float)finite_or(json_double(effect_json, "effect_evolution", 0.0), 0.0);
+            effect.effect_secondary_color = json_color(effect_json, "effect_secondary_color", 0xFF4EA3FFu);
             if (effect_json.contains("blend_mode"))
                 effect.blend_mode = (EffectBlendMode)std::clamp(json_int(effect_json, "blend_mode", (int)effect.blend_mode), 0, (int)EffectBlendMode::Color);
             effect.effect_owned_style_loaded = effect_json.contains("effect_fill_type") ||
@@ -1751,6 +1833,15 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.angle_prop.static_value = effect.effect_angle;
             effect.spread_prop.static_value = effect.effect_spread;
             effect.falloff_prop.static_value = effect.effect_falloff;
+            effect.amount_prop.static_value = effect.effect_amount;
+            effect.scale_prop.static_value = effect.effect_scale;
+            effect.softness_prop.static_value = effect.effect_softness;
+            effect.roundness_prop.static_value = effect.effect_roundness;
+            effect.speed_prop.static_value = effect.effect_speed;
+            effect.center_x_prop.static_value = effect.effect_center_x;
+            effect.center_y_prop.static_value = effect.effect_center_y;
+            effect.complexity_prop.static_value = effect.effect_complexity;
+            effect.evolution_prop.static_value = effect.effect_evolution;
             effect.stroke_width_prop.static_value = effect.effect_stroke_width;
             effect.stroke_opacity_prop.static_value = effect.effect_stroke_opacity;
             effect.padding_left_prop.static_value = effect.effect_padding_left;
@@ -1763,6 +1854,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.corner_radius_bl_prop.static_value = effect.effect_corner_radius_bl;
             set_argb_channels(effect.color_a, effect.color_r, effect.color_g, effect.color_b, effect.effect_color);
             set_argb_channels(effect.stroke_color_a, effect.stroke_color_r, effect.stroke_color_g, effect.stroke_color_b, effect.effect_stroke_color);
+            set_argb_channels(effect.secondary_color_a, effect.secondary_color_r, effect.secondary_color_g, effect.secondary_color_b, effect.effect_secondary_color);
             if (effect_json.contains("enabled_prop")) effect.enabled_prop = aprop_from_json(effect_json["enabled_prop"], "effect_enabled");
             if (effect_json.contains("opacity_prop")) effect.opacity_prop = aprop_from_json(effect_json["opacity_prop"], "effect_opacity");
             if (effect_json.contains("size_prop")) effect.size_prop = aprop_from_json(effect_json["size_prop"], "effect_size");
@@ -1770,6 +1862,15 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             if (effect_json.contains("angle_prop")) effect.angle_prop = aprop_from_json(effect_json["angle_prop"], "effect_angle");
             if (effect_json.contains("spread_prop")) effect.spread_prop = aprop_from_json(effect_json["spread_prop"], "effect_spread");
             if (effect_json.contains("falloff_prop")) effect.falloff_prop = aprop_from_json(effect_json["falloff_prop"], "effect_falloff");
+            if (effect_json.contains("amount_prop")) effect.amount_prop = aprop_from_json(effect_json["amount_prop"], "effect_amount");
+            if (effect_json.contains("scale_prop")) effect.scale_prop = aprop_from_json(effect_json["scale_prop"], "effect_scale");
+            if (effect_json.contains("softness_prop")) effect.softness_prop = aprop_from_json(effect_json["softness_prop"], "effect_softness");
+            if (effect_json.contains("roundness_prop")) effect.roundness_prop = aprop_from_json(effect_json["roundness_prop"], "effect_roundness");
+            if (effect_json.contains("speed_prop")) effect.speed_prop = aprop_from_json(effect_json["speed_prop"], "effect_speed");
+            if (effect_json.contains("center_x_prop")) effect.center_x_prop = aprop_from_json(effect_json["center_x_prop"], "effect_center_x");
+            if (effect_json.contains("center_y_prop")) effect.center_y_prop = aprop_from_json(effect_json["center_y_prop"], "effect_center_y");
+            if (effect_json.contains("complexity_prop")) effect.complexity_prop = aprop_from_json(effect_json["complexity_prop"], "effect_complexity");
+            if (effect_json.contains("evolution_prop")) effect.evolution_prop = aprop_from_json(effect_json["evolution_prop"], "effect_evolution");
             if (effect_json.contains("stroke_width_prop")) effect.stroke_width_prop = aprop_from_json(effect_json["stroke_width_prop"], "effect_stroke_width");
             if (effect_json.contains("stroke_opacity_prop")) effect.stroke_opacity_prop = aprop_from_json(effect_json["stroke_opacity_prop"], "effect_stroke_opacity");
             if (effect_json.contains("padding_left_prop")) effect.padding_left_prop = aprop_from_json(effect_json["padding_left_prop"], "effect_padding_left");
@@ -1788,6 +1889,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             if (effect_json.contains("stroke_color_r")) effect.stroke_color_r = aprop_from_json(effect_json["stroke_color_r"], "effect_stroke_color_r");
             if (effect_json.contains("stroke_color_g")) effect.stroke_color_g = aprop_from_json(effect_json["stroke_color_g"], "effect_stroke_color_g");
             if (effect_json.contains("stroke_color_b")) effect.stroke_color_b = aprop_from_json(effect_json["stroke_color_b"], "effect_stroke_color_b");
+            if (effect_json.contains("secondary_color_a")) effect.secondary_color_a = aprop_from_json(effect_json["secondary_color_a"], "effect_secondary_color_a");
+            if (effect_json.contains("secondary_color_r")) effect.secondary_color_r = aprop_from_json(effect_json["secondary_color_r"], "effect_secondary_color_r");
+            if (effect_json.contains("secondary_color_g")) effect.secondary_color_g = aprop_from_json(effect_json["secondary_color_g"], "effect_secondary_color_g");
+            if (effect_json.contains("secondary_color_b")) effect.secondary_color_b = aprop_from_json(effect_json["secondary_color_b"], "effect_secondary_color_b");
             if (effect.type == LayerEffectType::ColorOverlay) {
                 effect.tint_color = effect.effect_color;
                 effect.tint_amount = effect.effect_opacity;
@@ -1817,7 +1922,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             transition.kind = (LayerTransitionKind)std::clamp(json_int(transition_json, "kind", 0),
                 (int)LayerTransitionKind::General, (int)LayerTransitionKind::Text);
             transition.type = (LayerTransitionType)std::clamp(json_int(transition_json, "type", 0),
-                (int)LayerTransitionType::Dissolve, (int)LayerTransitionType::TextBlurSlide);
+                (int)LayerTransitionType::Dissolve, (int)LayerTransitionType::GradientWipe);
             transition.edge = (LayerTransitionEdge)std::clamp(json_int(transition_json, "edge", 0),
                 (int)LayerTransitionEdge::In, (int)LayerTransitionEdge::Out);
             transition.unit = (LayerTransitionUnit)std::clamp(json_int(transition_json, "unit", 0),
@@ -1835,6 +1940,18 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             transition.stagger = std::clamp(finite_or(json_double(transition_json, "stagger", 0.35), 0.35), 0.0, 0.95);
             transition.softness = std::clamp(finite_or(json_double(transition_json, "softness", 0.0), 0.0), 0.0, 1.0);
             transition.reverse_order = json_bool(transition_json, "reverse_order", false);
+            transition.blocks_columns = std::clamp(json_int(transition_json, "blocks_columns", 8), 1, 128);
+            transition.blocks_rows = std::clamp(json_int(transition_json, "blocks_rows", 6), 1, 128);
+            transition.random_seed = std::clamp(json_int(transition_json, "random_seed", 1), 0, 999999);
+            transition.image_path = bounded_string(transition_json, "image_path", "", kMaxPathLength);
+            transition.image_channel = std::clamp(json_int(transition_json, "image_channel", 0), 0, 4);
+            transition.invert = json_bool(transition_json, "invert", false);
+            transition.clockwise = json_bool(transition_json, "clockwise", true);
+            transition.center_x = std::clamp(finite_or(json_double(transition_json, "center_x", 0.5), 0.5), 0.0, 1.0);
+            transition.center_y = std::clamp(finite_or(json_double(transition_json, "center_y", 0.5), 0.5), 0.0, 1.0);
+            transition.rotation = finite_or(json_double(transition_json, "rotation", 0.0), 0.0);
+            transition.aspect = std::clamp(finite_or(json_double(transition_json, "aspect", 1.0), 1.0), 0.05, 20.0);
+            transition.profile = std::clamp(json_int(transition_json, "profile", 0), 0, 16);
             const bool text_type = layer_transition_type_is_text(transition.type);
             transition.kind = text_type ? LayerTransitionKind::Text : LayerTransitionKind::General;
             const int edge_index = transition.edge == LayerTransitionEdge::Out ? 1 : 0;
@@ -1907,6 +2024,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->ticker_speed = std::clamp(finite_or(json_double(j, "ticker_speed", 120.0), 120.0), 0.0, 10000.0);
     l->ticker_line_hold = std::clamp(finite_or(json_double(j, "ticker_line_hold", 2.0), 2.0), 0.0, kMaxDuration);
     l->ticker_direction = std::clamp(json_int(j, "ticker_direction", 1), 0, 1);
+    l->ticker_playback_mode = std::clamp(json_int(j, "ticker_playback_mode", 0), 0, 2);
     l->text_color    = json_color(j, "text_color", (uint32_t)0xFFFFFFFF);
     l->stroke_fill_type = std::clamp(json_int(j, "stroke_fill_type", 1), 0, 2);
     l->stroke_color  = json_color(j, "stroke_color", (uint32_t)0xFF000000);
@@ -2343,7 +2461,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     if (j.contains("fill_color_g")) l->fill_color_g = aprop_from_json(j["fill_color_g"], "fill_color_g");
     if (j.contains("fill_color_b")) l->fill_color_b = aprop_from_json(j["fill_color_b"], "fill_color_b");
     rich_text_document_sync_layer_mirrors(*l);
-    l->image_path    = bounded_string(j, "image_path", "", 4096);
+    l->image_path    = bounded_string(j, "image_path", "", kMaxPathLength);
     if (object_member(j, "embedded_image") && !restore_embedded_image_asset(j, l->image_path) && require_embedded_assets) {
         if (error) *error = "Could not restore an embedded image asset from the template file.";
     }
@@ -2679,7 +2797,18 @@ void TitleDataStore::save() const
     /* Serialize synchronous and asynchronous writes. Otherwise a manual save
      * can race an outstanding background save through the same .tmp path. */
     std::lock_guard<std::mutex> write_lock(save_io_mutex_);
-    write_snapshot_atomic(snapshot, path);
+    const bool saved = write_snapshot_atomic(snapshot, path);
+    if (saved) {
+        BGL_LOG_DEBUG("TitleStore", QStringLiteral(
+            "Saved titles count=%1 path=%2")
+            .arg(static_cast<int>(snapshot.size()))
+            .arg(QString::fromStdString(path)));
+    } else {
+        BGL_LOG_ERROR("TitleStore", QStringLiteral(
+            "Failed to save titles count=%1 path=%2")
+            .arg(static_cast<int>(snapshot.size()))
+            .arg(QString::fromStdString(path)));
+    }
 }
 
 void TitleDataStore::save_worker_loop() const
@@ -2727,11 +2856,13 @@ void TitleDataStore::save_async() const
         request->path = loaded_path_.empty() ? data_path() : loaded_path_;
     }
 
+    uint64_t queued_generation = 0;
     {
         std::lock_guard<std::mutex> lock(save_mutex_);
         if (save_stop_)
             return;
         request->generation = ++save_generation_;
+        queued_generation = request->generation;
         pending_save_ = std::move(request);
         if (!save_worker_started_) {
             save_worker_started_ = true;
@@ -2739,6 +2870,9 @@ void TitleDataStore::save_async() const
         }
     }
     save_cv_.notify_one();
+    BGL_LOG_TRACE("TitleStore", QStringLiteral(
+        "Queued asynchronous title-store save generation=%1")
+        .arg(queued_generation));
 }
 
 
@@ -2814,8 +2948,14 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     }
     if (!f.good()) {
         if (error) *error = "Failed while writing the export file.";
+        BGL_LOG_ERROR("ImportExport", QStringLiteral(
+            "Title export write failed id=%1 path=%2")
+            .arg(QString::fromStdString(id), QString::fromStdString(path)));
         return false;
     }
+    BGL_LOG_INFO("ImportExport", QStringLiteral(
+        "Exported title id=%1 path=%2")
+        .arg(QString::fromStdString(id), QString::fromStdString(path)));
     return true;
 }
 
@@ -2886,9 +3026,18 @@ std::shared_ptr<Title> TitleDataStore::import_title(const std::string &path, std
 
         notify_change();
         save();
+        BGL_LOG_INFO("ImportExport", QStringLiteral(
+            "Imported title id=%1 name=%2 path=%3 layers=%4")
+            .arg(QString::fromStdString(imported->id),
+                 QString::fromStdString(imported->name),
+                 QString::fromStdString(path))
+            .arg(static_cast<int>(imported->layers.size())));
         return imported;
     } catch (const std::exception &e) {
         if (error) *error = e.what();
+        BGL_LOG_ERROR("ImportExport", QStringLiteral(
+            "Title import failed path=%1 error=%2")
+            .arg(QString::fromStdString(path), QString::fromUtf8(e.what())));
         return nullptr;
     }
 }
@@ -2919,14 +3068,25 @@ void TitleDataStore::load()
                  "[Broadcast Graphics Live] Failed to reload titles for the current scene collection; "
                  "keeping the already loaded titles in memory: %s",
                  error.c_str());
+            BGL_LOG_WARNING("TitleStore", QStringLiteral(
+                "Reload failed; preserved in-memory titles path=%1 error=%2")
+                .arg(QString::fromStdString(path), QString::fromStdString(error)));
             return;
         }
 
+        bgs::ticker_runtime::clear_all();
         notify_change();
-        if (error == "Could not open the file.")
+        if (error == "Could not open the file.") {
             blog(LOG_INFO, "[Broadcast Graphics Live] No saved titles found for this scene collection, starting fresh.");
-        else
+            BGL_LOG_INFO("TitleStore", QStringLiteral(
+                "No saved title store; starting fresh path=%1")
+                .arg(QString::fromStdString(path)));
+        } else {
             blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to read scene collection titles file: %s", error.c_str());
+            BGL_LOG_WARNING("TitleStore", QStringLiteral(
+                "Failed to read title store path=%1 error=%2")
+                .arg(QString::fromStdString(path), QString::fromStdString(error)));
+        }
         return;
     }
 
@@ -2950,8 +3110,13 @@ void TitleDataStore::load()
             titles_ = std::move(loaded);
             loaded_count = titles_.size();
         }
+        bgs::ticker_runtime::clear_all();
         notify_change();
         blog(LOG_INFO, "[Broadcast Graphics Live] Loaded %zu title(s) for this scene collection.", loaded_count);
+        BGL_LOG_INFO("TitleStore", QStringLiteral(
+            "Loaded titles count=%1 path=%2")
+            .arg(static_cast<qulonglong>(loaded_count))
+            .arg(QString::fromStdString(path)));
     } catch (const std::exception &e) {
         bool preserved_existing_store = false;
         {
@@ -2972,6 +3137,7 @@ void TitleDataStore::load()
             return;
         }
 
+        bgs::ticker_runtime::clear_all();
         notify_change();
         blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to parse scene collection titles file: %s", e.what());
     }

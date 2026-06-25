@@ -33,6 +33,11 @@ enum class LayerTransitionType {
     TextWipe = 11,
     BlurSlide = 12,
     TextBlurSlide = 13,
+    Blocks = 14,
+    ImageWipe = 15,
+    Clock = 16,
+    Iris = 17,
+    GradientWipe = 18,
 };
 
 enum class LayerTransitionUnit {
@@ -82,6 +87,20 @@ struct LayerTransition {
     double stagger = 0.35;
     double softness = 0.0;
     bool reverse_order = false;
+
+    /* Procedural/matte transition controls. */
+    int blocks_columns = 8;
+    int blocks_rows = 6;
+    int random_seed = 1;
+    std::string image_path;
+    int image_channel = 0; /* 0=luma, 1=alpha, 2=R, 3=G, 4=B */
+    bool invert = false;
+    bool clockwise = true;
+    double center_x = 0.5;
+    double center_y = 0.5;
+    double rotation = 0.0;
+    double aspect = 1.0;
+    int profile = 0;
 };
 
 struct LayerTransitionVisualState {
@@ -94,6 +113,19 @@ struct LayerTransitionVisualState {
     double wipe = 1.0;
     LayerTransitionDirection wipe_direction = LayerTransitionDirection::None;
     double wipe_softness = 0.0;
+    LayerTransitionType type = LayerTransitionType::Dissolve;
+    int blocks_columns = 8;
+    int blocks_rows = 6;
+    int random_seed = 1;
+    int image_channel = 0;
+    std::string image_path;
+    bool invert = false;
+    bool clockwise = true;
+    double center_x = 0.5;
+    double center_y = 0.5;
+    double rotation = 0.0;
+    double aspect = 1.0;
+    int profile = 0;
     bool active = false;
 };
 
@@ -167,6 +199,19 @@ inline LayerTransitionVisualState evaluate_general_layer_transition(const LayerT
         return state;
 
     state.active = true;
+    state.type = transition.type;
+    state.blocks_columns = std::max(1, transition.blocks_columns);
+    state.blocks_rows = std::max(1, transition.blocks_rows);
+    state.random_seed = transition.random_seed;
+    state.image_channel = std::clamp(transition.image_channel, 0, 4);
+    state.image_path = transition.image_path;
+    state.invert = transition.invert;
+    state.clockwise = transition.clockwise;
+    state.center_x = std::clamp(transition.center_x, 0.0, 1.0);
+    state.center_y = std::clamp(transition.center_y, 0.0, 1.0);
+    state.rotation = transition.rotation;
+    state.aspect = std::max(0.01, transition.aspect);
+    state.profile = transition.profile;
     state.progress = layer_transition_progress(transition, layer_in_time, layer_out_time, title_time);
     const double hidden = 1.0 - state.progress;
 
@@ -208,6 +253,14 @@ inline LayerTransitionVisualState evaluate_general_layer_transition(const LayerT
         state.scale = transition.scale_from + (1.0 - transition.scale_from) * state.progress;
         state.blur = std::max(0.0, transition.blur_amount) * hidden;
         break;
+    case LayerTransitionType::Blocks:
+    case LayerTransitionType::ImageWipe:
+    case LayerTransitionType::Clock:
+    case LayerTransitionType::Iris:
+    case LayerTransitionType::GradientWipe:
+        state.wipe = state.progress;
+        state.wipe_softness = std::clamp(transition.softness, 0.0, 1.0);
+        break;
     default:
         break;
     }
@@ -236,6 +289,19 @@ inline LayerTransitionVisualState evaluate_layer_general_transitions(const std::
             result.wipe = state.wipe;
             result.wipe_direction = state.wipe_direction;
             result.wipe_softness = state.wipe_softness;
+            result.type = state.type;
+            result.blocks_columns = state.blocks_columns;
+            result.blocks_rows = state.blocks_rows;
+            result.random_seed = state.random_seed;
+            result.image_channel = state.image_channel;
+            result.image_path = state.image_path;
+            result.invert = state.invert;
+            result.clockwise = state.clockwise;
+            result.center_x = state.center_x;
+            result.center_y = state.center_y;
+            result.rotation = state.rotation;
+            result.aspect = state.aspect;
+            result.profile = state.profile;
         }
     }
     return result;

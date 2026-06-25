@@ -130,6 +130,11 @@ QString transition_type_id(LayerTransitionType type)
     case LayerTransitionType::TextWipe: return QStringLiteral("text-wipe");
     case LayerTransitionType::BlurSlide: return QStringLiteral("blur-slide");
     case LayerTransitionType::TextBlurSlide: return QStringLiteral("text-blur-slide");
+    case LayerTransitionType::Blocks: return QStringLiteral("blocks");
+    case LayerTransitionType::ImageWipe: return QStringLiteral("image-wipe");
+    case LayerTransitionType::Clock: return QStringLiteral("clock");
+    case LayerTransitionType::Iris: return QStringLiteral("iris");
+    case LayerTransitionType::GradientWipe: return QStringLiteral("gradient-wipe");
     default: return QStringLiteral("dissolve");
     }
 }
@@ -152,6 +157,11 @@ bool transition_type_from_id(const QString &id, LayerTransitionType *type)
     else if (value == QStringLiteral("text-wipe") || value == QStringLiteral("wipe-text")) *type = LayerTransitionType::TextWipe;
     else if (value == QStringLiteral("blur-slide") || value == QStringLiteral("slide-blur")) *type = LayerTransitionType::BlurSlide;
     else if (value == QStringLiteral("text-blur-slide") || value == QStringLiteral("blur-slide-text")) *type = LayerTransitionType::TextBlurSlide;
+    else if (value == QStringLiteral("blocks") || value == QStringLiteral("block-wipe")) *type = LayerTransitionType::Blocks;
+    else if (value == QStringLiteral("image-wipe") || value == QStringLiteral("matte-wipe")) *type = LayerTransitionType::ImageWipe;
+    else if (value == QStringLiteral("clock") || value == QStringLiteral("clock-wipe")) *type = LayerTransitionType::Clock;
+    else if (value == QStringLiteral("iris") || value == QStringLiteral("iris-wipe")) *type = LayerTransitionType::Iris;
+    else if (value == QStringLiteral("gradient-wipe") || value == QStringLiteral("gradient")) *type = LayerTransitionType::GradientWipe;
     else return false;
     return true;
 }
@@ -343,6 +353,18 @@ bool load_transition_preset_file(const QString &file_path,
     transition.offset = finite_clamp("offset", 80.0, 0.0, 10000.0);
     transition.stagger = finite_clamp("stagger", 0.35, 0.0, 0.95);
     transition.softness = finite_clamp("softness", 0.0, 0.0, 1.0);
+    transition.blocks_columns = std::clamp(object.value(QStringLiteral("columns")).toInt(12), 1, 256);
+    transition.blocks_rows = std::clamp(object.value(QStringLiteral("rows")).toInt(7), 1, 256);
+    transition.random_seed = std::clamp(object.value(QStringLiteral("seed")).toInt(1), 0, 1000000);
+    transition.image_path = object.value(QStringLiteral("image")).toString().trimmed().left(4096).toStdString();
+    transition.image_channel = std::clamp(object.value(QStringLiteral("channel")).toInt(0), 0, 4);
+    transition.invert = object.value(QStringLiteral("invert")).toBool(false);
+    transition.clockwise = object.value(QStringLiteral("clockwise")).toBool(true);
+    transition.center_x = finite_clamp("centerX", 0.5, -4.0, 4.0);
+    transition.center_y = finite_clamp("centerY", 0.5, -4.0, 4.0);
+    transition.rotation = finite_clamp("rotation", 0.0, -3600.0, 3600.0);
+    transition.aspect = finite_clamp("aspect", 1.0, 0.01, 100.0);
+    transition.profile = std::clamp(object.value(QStringLiteral("profile")).toInt(0), 0, 16);
     transition.reverse_order = object.value(QStringLiteral("reverseOrder")).toBool(false);
     transition_unit_from_id(object.value(QStringLiteral("unit")).toString(QStringLiteral("character")), &transition.unit);
     transition_direction_from_id(object.value(QStringLiteral("direction")).toString(QStringLiteral("none")), &transition.direction);

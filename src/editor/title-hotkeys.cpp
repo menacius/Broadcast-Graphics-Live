@@ -3,6 +3,8 @@
 #include "live-text-cue-utils.h"
 #include "cache/cache-manager.h"
 #include "image-layer-utils.h"
+#include "ticker-runtime.h"
+#include "title-logger.h"
 #include <obs-module.h>
 #include <QSettings>
 #include <QTimer>
@@ -29,6 +31,8 @@ enum class HotkeyAction {
     CueRow,
     NextCue,
     PreviousCue,
+    TickerTogglePause,
+    TickerStop,
 };
 
 struct HotkeyDescriptor {
@@ -37,6 +41,7 @@ struct HotkeyDescriptor {
     std::string title_id;
     HotkeyAction action = HotkeyAction::CueRow;
     int row = -1;
+    std::string layer_id;
 };
 
 struct HotkeyRegistration {
@@ -357,6 +362,35 @@ static void hotkey_callback(void *data, obs_hotkey_id, obs_hotkey_t *, bool pres
     case HotkeyAction::PreviousCue:
         cue_relative(title, -1);
         break;
+    case HotkeyAction::TickerTogglePause: {
+        auto layer = title->find_layer(descriptor->layer_id);
+        if (!layer || layer->type != LayerType::Ticker)
+            break;
+        const bool title_cued = title->current_cue_row >= 0 || title->pending_cue_row >= 0;
+        bgs::ticker_runtime::toggle_pause(title->id, *layer, title_cued);
+        const TickerRuntimeSnapshot state =
+            bgs::ticker_runtime::status(title->id, *layer, title_cued);
+        BGL_LOG_INFO("Ticker", QStringLiteral(
+            "action=toggle source=hotkey title=%1 layer=%2 paused=%3")
+            .arg(QString::fromStdString(title->id))
+            .arg(QString::fromStdString(layer->id))
+            .arg(state.paused ? 1 : 0));
+        TitleDataStore::instance().touch_runtime_change();
+        break;
+    }
+    case HotkeyAction::TickerStop: {
+        auto layer = title->find_layer(descriptor->layer_id);
+        if (!layer || layer->type != LayerType::Ticker)
+            break;
+        const bool title_cued = title->current_cue_row >= 0 || title->pending_cue_row >= 0;
+        bgs::ticker_runtime::stop(title->id, *layer, title_cued);
+        BGL_LOG_INFO("Ticker", QStringLiteral(
+            "action=stop source=hotkey title=%1 layer=%2")
+            .arg(QString::fromStdString(title->id))
+            .arg(QString::fromStdString(layer->id)));
+        TitleDataStore::instance().touch_runtime_change();
+        break;
+    }
     }
 }
 
@@ -376,6 +410,33 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
         const std::string safe_title_id = hotkey_safe_id(title->id);
         const std::string section_name = title_section_name(title, name_counts);
         sections.push_back({title->id, section_name, nullptr});
+
+        for (const auto &layer : title->layers) {
+            if (!layer || layer->type != LayerType::Ticker)
+                continue;
+            const std::string safe_layer_id = hotkey_safe_id(layer->id);
+            const std::string ticker_name = layer->name.empty()
+                ? std::string(obs_module_text("OBSTitles.Ticker"))
+                : layer->name;
+            descriptors.push_back({
+                "broadcast_graphics_live." + safe_title_id + ".ticker." +
+                    safe_layer_id + ".toggle",
+                ticker_name + " - " + obs_module_text("OBSTitles.TickerToggleHotkey"),
+                title->id,
+                HotkeyAction::TickerTogglePause,
+                -1,
+                layer->id,
+            });
+            descriptors.push_back({
+                "broadcast_graphics_live." + safe_title_id + ".ticker." +
+                    safe_layer_id + ".stop",
+                ticker_name + " - " + obs_module_text("OBSTitles.TickerStopHotkey"),
+                title->id,
+                HotkeyAction::TickerStop,
+                -1,
+                layer->id,
+            });
+        }
 
         auto exposed = exposed_text_layers(title);
         normalize_live_text_rows(title, exposed);
@@ -434,7 +495,8 @@ static std::string descriptor_signature(const std::vector<HotkeyDescriptor> &des
             << descriptor.description << '\t'
             << descriptor.title_id << '\t'
             << (int)descriptor.action << '\t'
-            << descriptor.row << '\n';
+            << descriptor.row << '\t'
+            << descriptor.layer_id << '\n';
     }
     return out.str();
 }

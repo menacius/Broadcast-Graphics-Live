@@ -343,6 +343,7 @@ private:
     QAction         *act_safe_guides_ = nullptr;
     QAction         *act_rulers_visible_ = nullptr;
     QAction         *act_guides_visible_ = nullptr;
+    QAction         *act_snap_enabled_ = nullptr;
     QAction         *act_guides_locked_ = nullptr;
     QAction         *act_clear_guides_ = nullptr;
     QAction         *act_guide_coordinates_ = nullptr;

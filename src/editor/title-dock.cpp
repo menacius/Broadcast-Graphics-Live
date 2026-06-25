@@ -2514,6 +2514,10 @@ TitleDock::TitleDock(QWidget *parent)
     install_obs_state_callbacks();
     populate_list();
     seen_store_revision_ = TitleDataStore::instance().revision();
+    BGL_LOG_INFO("Dock", QStringLiteral(
+        "Dock created titles=%1 revision=%2")
+        .arg(static_cast<int>(TitleDataStore::instance().titles().size()))
+        .arg(static_cast<qulonglong>(seen_store_revision_)));
     live_refresh_timer_ = new QTimer(this);
     live_refresh_timer_->setInterval(100);
     connect(live_refresh_timer_, &QTimer::timeout, this, [this]() {
@@ -2914,6 +2918,7 @@ void TitleDock::adjust_live_text_table_columns(bool fill_to_viewport)
 
 TitleDock::~TitleDock()
 {
+    BGL_LOG_INFO("Dock", QStringLiteral("Dock destroyed"));
     remove_obs_state_callbacks();
 
     TitleDataStore::instance().remove_change_callback(change_callback_id_);
@@ -3640,6 +3645,11 @@ void TitleDock::on_selection_changed()
         last_selected_title_id_ = current_title_id;
         save_dock_settings();
     }
+    BGL_LOG_DEBUG("Dock", QStringLiteral(
+        "Title selection changed count=%1 current=%2")
+        .arg(selected_count)
+        .arg(current_title_id.isEmpty() ? QStringLiteral("<none>")
+                                        : current_title_id));
 
     btn_dup_->setEnabled(single);
     btn_rename_->setEnabled(single);
@@ -4229,6 +4239,8 @@ void TitleDock::stop_playlist_for_title(const std::shared_ptr<Title> &title)
         return;
     title->playlist_active = false;
     title->playlist_next_due_ms = 0;
+    BGL_LOG_INFO("Playlist", QStringLiteral("Stopped playlist title=%1")
+        .arg(QString::fromStdString(title->id)));
     title->playlist_stop_after_due = false;
     TitleDataStore::instance().touch_runtime_change();
     seen_store_revision_ = TitleDataStore::instance().revision();
@@ -4321,6 +4333,12 @@ void TitleDock::start_playlist_step_for_title(const std::shared_ptr<Title> &titl
         title->playlist_next_row = title->playlist_reverse ? row_count - 1 : 0;
 
     const int row = title->playlist_next_row;
+    BGL_LOG_DEBUG("Playlist", QStringLiteral(
+        "Advancing playlist title=%1 row=%2 rows=%3 reverse=%4 loop=%5")
+        .arg(QString::fromStdString(title->id))
+        .arg(row).arg(row_count)
+        .arg(title->playlist_reverse ? 1 : 0)
+        .arg(title->playlist_loop ? 1 : 0));
     const bool already_active = title->pending_cue_row < 0 && title->current_cue_row == row;
     if (!already_active)
         cue_live_text_row_for_title(title, row, false);

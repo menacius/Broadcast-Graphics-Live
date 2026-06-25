@@ -138,7 +138,7 @@ else:
 
 render = block("static gs_texture_t *render_gpu_session_locked(",
                "TitleGpuRenderSession *title_gpu_render_session_create")
-if "all_required_rasters_ready" not in render or "preserving the previous frame" not in render:
+if "all_required_rasters_ready" not in render or "frame publication deferred" not in render:
     errors.append("incomplete primitive replacement can publish a mixed/black compositor frame")
 else:
     passes.append("incomplete primitive replacements preserve the last complete presentation frame")

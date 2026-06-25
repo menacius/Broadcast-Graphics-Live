@@ -1,4 +1,5 @@
 #include "title-editor-internal.h"
+#include "title-logger.h"
 
 #include <memory>
 #include <QRegularExpression>
@@ -10,6 +11,7 @@
 #include <QEventLoop>
 #include <QScopedValueRollback>
 #include <QStandardPaths>
+#include <QTimer>
 
 static QString auto_style_marker_label(const std::string &marker, size_t offset, const std::string &custom_chars)
 {
@@ -1042,6 +1044,27 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     chk_ignore_persistence_ = new QCheckBox(bgl_tr("OBSTitles.IgnorePersistence"), inner);
     chk_ignore_persistence_->setToolTip(bgl_tr("OBSTitles.IgnorePersistenceTooltip"));
     style_checkbox(chk_ignore_persistence_);
+    row_ticker_playback_ = new QWidget(inner);
+    auto *ticker_playback_layout = new QHBoxLayout(row_ticker_playback_);
+    ticker_playback_layout->setContentsMargins(0, 0, 0, 0);
+    ticker_playback_layout->setSpacing(6);
+    btn_ticker_pause_ = new QToolButton(row_ticker_playback_);
+    btn_ticker_pause_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btn_ticker_pause_->setFixedHeight(22);
+    btn_ticker_pause_->setAutoRaise(false);
+    btn_ticker_pause_->setStyleSheet(control_style);
+    cmb_ticker_playback_mode_ = new QComboBox(row_ticker_playback_);
+    cmb_ticker_playback_mode_->addItem(bgl_tr("OBSTitles.TickerAlwaysPlay"),
+                                       static_cast<int>(TickerPlaybackMode::AlwaysPlay));
+    cmb_ticker_playback_mode_->addItem(bgl_tr("OBSTitles.TickerPausedUntilCued"),
+                                       static_cast<int>(TickerPlaybackMode::PausedUntilCued));
+    cmb_ticker_playback_mode_->addItem(bgl_tr("OBSTitles.TickerPausedUntilHotkey"),
+                                       static_cast<int>(TickerPlaybackMode::PausedUntilHotkey));
+    cmb_ticker_playback_mode_->setFixedHeight(22);
+    cmb_ticker_playback_mode_->setStyleSheet(control_style);
+    ticker_playback_layout->addWidget(btn_ticker_pause_);
+    ticker_playback_layout->addWidget(cmb_ticker_playback_mode_, 1);
+
     cmb_ticker_style_ = new QComboBox(inner);
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerHorizontal"), 0);
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerVerticalLine"), 1);
@@ -1061,6 +1084,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(dynamic_form, bgl_tr("OBSTitles.OverflowLabel"), cmb_text_overflow_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.MinFitScaleLabel"), spn_text_fit_min_scale_);
     add_form_row(dynamic_form, "", lbl_text_fit_scale_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerPlaybackLabel"), row_ticker_playback_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerStyleLabel"), cmb_ticker_style_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerSpeedLabel"), spn_ticker_speed_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerLineHoldLabel"), spn_ticker_line_hold_);
@@ -2266,6 +2290,42 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     connect(spn_text_fit_min_scale_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, emit_change](double v) {
                 if (can_edit()) { layer_->text_fit_min_scale = (float)v; emit_change(); }
+            });
+    connect(btn_ticker_pause_, &QToolButton::clicked, this, [this]() {
+        if (loading_values_ || !layer_ || layer_->type != LayerType::Ticker)
+            return;
+        const std::string title_id = title_ ? title_->id : std::string();
+        const bool title_cued = title_ &&
+            (title_->current_cue_row >= 0 || title_->pending_cue_row >= 0);
+        bgs::ticker_runtime::toggle_pause(title_id, *layer_, title_cued);
+        const TickerRuntimeSnapshot state =
+            bgs::ticker_runtime::status(title_id, *layer_, title_cued);
+        BGL_LOG_INFO("Ticker", QStringLiteral(
+            "action=toggle source=properties title=%1 layer=%2 paused=%3")
+            .arg(QString::fromStdString(title_id))
+            .arg(QString::fromStdString(layer_->id))
+            .arg(state.paused ? 1 : 0));
+        TitleDataStore::instance().touch_runtime_change();
+        load_values();
+        emit runtime_visual_changed();
+    });
+    connect(cmb_ticker_playback_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this, can_edit, emit_change](int idx) {
+                if (!can_edit() || !layer_ || layer_->type != LayerType::Ticker)
+                    return;
+                layer_->ticker_playback_mode =
+                    cmb_ticker_playback_mode_->itemData(idx).toInt();
+                const std::string title_id = title_ ? title_->id : std::string();
+                const bool title_cued = title_ &&
+                    (title_->current_cue_row >= 0 || title_->pending_cue_row >= 0);
+                bgs::ticker_runtime::reset_for_mode_change(title_id, *layer_, title_cued);
+                BGL_LOG_INFO("Ticker", QStringLiteral(
+                    "action=mode-change source=properties title=%1 layer=%2 mode=%3")
+                    .arg(QString::fromStdString(title_id))
+                    .arg(QString::fromStdString(layer_->id))
+                    .arg(layer_->ticker_playback_mode));
+                emit_change();
+                load_values();
             });
     connect(cmb_ticker_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, emit_change](int idx) {
@@ -4987,11 +5047,20 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
         const auto &rule = layer_->rich_text.auto_style_rules[(size_t)row];
         load_rule_to_editor(rule);
     });
+
+    ticker_status_timer_ = new QTimer(this);
+    ticker_status_timer_->setInterval(150);
+    connect(ticker_status_timer_, &QTimer::timeout, this,
+            &PropertiesPanel::update_ticker_runtime_button);
+    ticker_status_timer_->start();
 }
 
 void PropertiesPanel::set_title(std::shared_ptr<Title> t)
 {
     title_ = t;
+    BGL_LOG_DEBUG("Properties", QStringLiteral("Properties title=%1")
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>")));
 }
 
 void PropertiesPanel::set_active_text_edit_layer(const std::string &layer_id)
@@ -5006,6 +5075,12 @@ void PropertiesPanel::set_layer(std::shared_ptr<Layer> layer, double t)
 {
     layer_    = layer;
     playhead_ = t;
+    BGL_LOG_DEBUG("Properties", QStringLiteral(
+        "Properties layer=%1 type=%2 playhead=%3")
+        .arg(layer_ ? QString::fromStdString(layer_->id)
+                    : QStringLiteral("<none>"))
+        .arg(layer_ ? static_cast<int>(layer_->type) : -1)
+        .arg(playhead_, 0, 'f', 6));
     load_values();
     emit gradient_model_refresh_requested();
 }
@@ -5198,6 +5273,24 @@ void PropertiesPanel::update_playhead(double t)
                                                     &layer_->fill_color_g, &layer_->fill_color_b});
 }
 
+void PropertiesPanel::update_ticker_runtime_button()
+{
+    if (!btn_ticker_pause_ || !layer_ || layer_->type != LayerType::Ticker)
+        return;
+    const std::string title_id = title_ ? title_->id : std::string();
+    const bool title_cued = title_ &&
+        (title_->current_cue_row >= 0 || title_->pending_cue_row >= 0);
+    const TickerRuntimeSnapshot state =
+        bgs::ticker_runtime::status(title_id, *layer_, title_cued);
+    btn_ticker_pause_->setIcon(obs_icon(state.paused ? "play.svg" : "pause.svg"));
+    btn_ticker_pause_->setText(state.paused
+        ? bgl_tr("OBSTitles.TickerPlay")
+        : bgl_tr("OBSTitles.TickerPause"));
+    btn_ticker_pause_->setToolTip(state.paused
+        ? bgl_tr("OBSTitles.TickerPlayTooltip")
+        : bgl_tr("OBSTitles.TickerPauseTooltip"));
+}
+
 void PropertiesPanel::load_values()
 {
     loading_values_ = true;
@@ -5318,6 +5411,11 @@ void PropertiesPanel::load_values()
             if (b) b->setChecked(false);
         if (cmb_text_style_) cmb_text_style_->setCurrentIndex(0);
         if (cmb_text_overflow_) cmb_text_overflow_->setCurrentIndex(0);
+        if (cmb_ticker_playback_mode_) cmb_ticker_playback_mode_->setCurrentIndex(0);
+        if (btn_ticker_pause_) {
+            btn_ticker_pause_->setIcon(obs_icon("pause.svg"));
+            btn_ticker_pause_->setText(bgl_tr("OBSTitles.TickerPause"));
+        }
         if (spn_text_fit_min_scale_) spn_text_fit_min_scale_->setValue(0.5);
         if (lbl_text_fit_scale_) lbl_text_fit_scale_->setText(bgl_tr("OBSTitles.Scale100"));
         if (chk_text_box_width_to_text_) chk_text_box_width_to_text_->setChecked(false);
@@ -5355,19 +5453,25 @@ void PropertiesPanel::load_values()
     const bool is_clock = layer_->type == LayerType::Clock;
     const bool is_ticker = layer_->type == LayerType::Ticker;
     const bool is_text_like = is_text || is_clock || is_ticker;
-    const bool is_rect = layer_->type == LayerType::SolidRect || layer_->type == LayerType::Shape;
+    const bool is_adjustment = layer_->type == LayerType::Adjustment;
+    const bool is_color_solid = layer_->type == LayerType::ColorSolid;
+    const bool is_fixed_canvas_layer = is_adjustment || is_color_solid;
+    const bool is_rect = layer_->type == LayerType::SolidRect ||
+                         layer_->type == LayerType::Shape || is_color_solid;
     const bool is_image = layer_->type == LayerType::Image;
     const bool is_scene_mask_layer = layer_->use_as_scene_mask;
     const bool supports_outline = is_text_like || is_rect || is_image;
-    if (transform_box_) transform_box_->setVisible(true);
-    if (appearance_box_) appearance_box_->setVisible(true);
-    if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(true);
+    if (transform_box_) transform_box_->setVisible(!is_fixed_canvas_layer);
+    if (appearance_box_) appearance_box_->setVisible(!is_adjustment);
+    if (btn_transform_defaults_) btn_transform_defaults_->setEnabled(!is_fixed_canvas_layer);
     text_box_->setVisible(is_text_like);
     if (type_options_box_) type_options_box_->setVisible(is_text_like);
     if (paragraph_box_) paragraph_box_->setVisible(is_text_like);
     if (dynamic_text_box_) dynamic_text_box_->setVisible(is_text_like);
     if (auto_style_box_) auto_style_box_->setVisible(is_text_like);
-    if (live_edit_box_) live_edit_box_->setVisible(is_rect || is_text_like || is_image);
+    if (live_edit_box_)
+        live_edit_box_->setVisible(!is_fixed_canvas_layer &&
+                                   (is_rect || is_text_like || is_image));
     if (bullets_box_) bullets_box_->setVisible(false);
     text_box_->setTitle("Character");
     if (row_text_color_) row_text_color_->setVisible(false);
@@ -5476,6 +5580,11 @@ void PropertiesPanel::load_values()
         }
         if (auto *label = dynamic_form->labelForField(spn_text_fit_min_scale_))
             label->setVisible(show_ticker_fit);
+        if (row_ticker_playback_) {
+            row_ticker_playback_->setVisible(is_ticker);
+            if (auto *label = dynamic_form->labelForField(row_ticker_playback_))
+                label->setVisible(is_ticker);
+        }
         if (cmb_ticker_style_) {
             cmb_ticker_style_->setVisible(is_ticker);
             if (auto *label = dynamic_form->labelForField(cmb_ticker_style_)) label->setVisible(is_ticker);
@@ -5526,7 +5635,8 @@ void PropertiesPanel::load_values()
                 label->setVisible(show_ignore_persistence);
         }
         if (live_edit_box_)
-            live_edit_box_->setVisible(show_scene_mask || show_expose_to_dock || show_ignore_persistence);
+            live_edit_box_->setVisible(!is_fixed_canvas_layer &&
+                                       (show_scene_mask || show_expose_to_dock || show_ignore_persistence));
     }
     rect_box_->setVisible(is_text_like || is_rect || is_image);
     rect_box_->setTitle(QString());
@@ -5872,6 +5982,11 @@ void PropertiesPanel::load_values()
         ? QString::fromStdString(layer_->clock_format)
         : QString::fromStdString((rich_text_document_ensure_canonical(*layer_), layer_->rich_text.plain_text));
     txt_content_->setPlainText(panel_text);
+    if (cmb_ticker_playback_mode_) {
+        const int playback_idx = cmb_ticker_playback_mode_->findData(layer_->ticker_playback_mode);
+        cmb_ticker_playback_mode_->setCurrentIndex(playback_idx >= 0 ? playback_idx : 0);
+    }
+    update_ticker_runtime_button();
     int ticker_style_idx = cmb_ticker_style_->findData(layer_->ticker_style);
     cmb_ticker_style_->setCurrentIndex(ticker_style_idx >= 0 ? ticker_style_idx : 0);
     spn_ticker_speed_->setValue(layer_->ticker_speed);

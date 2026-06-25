@@ -94,7 +94,8 @@ constexpr int kCacheTileSize = bgs::cache_tile_payload::kTileSize;
  * bounds expansion, or cache/readback semantics change. This is part of the
  * visual cache identity and prevents stale prerenders from surviving renderer
  * fixes. */
-constexpr const char *kGpuRendererCacheAbi = "gpu-renderer-v24-phase15-visibility-recovery";
+constexpr const char *kGpuRendererCacheAbi =
+    "gpu-renderer-v31-lens-flare-dx11-keyword-fix";
 
 static bool gpu_ram_frame_contains(const CacheFrameKey &key)
 {
@@ -841,6 +842,8 @@ void DiskFrameCache::clear()
     frame_tile_digests_.clear();
     tile_ref_counts_.clear();
     bytes_used_ = 0;
+    BGL_LOG_INFO("DiskCache", QStringLiteral("Cleared disk frame cache directory=%1")
+        .arg(cache_dir_));
 }
 
 void DiskFrameCache::clearFast()
@@ -861,6 +864,9 @@ void DiskFrameCache::clearFast()
     frame_tile_digests_.clear();
     tile_ref_counts_.clear();
     bytes_used_ = 0;
+    BGL_LOG_INFO("DiskCache", QStringLiteral(
+        "Detached disk cache generation directory=%1 tombstone=%2")
+        .arg(old_dir, tombstone));
 
     /* The active generation is detached synchronously, then reclaimed by the
      * owned writer thread. Unlike a detached cleanup thread, this worker is
@@ -886,6 +892,11 @@ void DiskFrameCache::setCacheDirectory(const QString &path)
     QDir().mkpath(cache_dir_);
     rebuildIndex();
     bytes_used_ = scanBytesUsed();
+    BGL_LOG_INFO("DiskCache", QStringLiteral(
+        "Set disk cache directory=%1 indexedFrames=%2 bytes=%3")
+        .arg(cache_dir_)
+        .arg(indexed_keys_.size())
+        .arg(bytes_used_));
 }
 
 QString DiskFrameCache::cacheDirectory() const
@@ -1351,7 +1362,14 @@ QString CacheManager::contentHash(const Title &title) const
         add((quint32)e.tint_color); add(e.tint_amount); add((quint32)e.effect_color);
         add(e.effect_opacity); add(e.effect_size); add(e.effect_distance); add(e.effect_angle);
         add(e.effect_spread); add(e.effect_falloff); add(e.effect_blur_type); add(e.effect_samples);
-        add(e.effect_centered); add((int)e.blend_mode); add(e.effect_fill_type); add(e.effect_join_style);
+        add(e.effect_centered); add((int)e.blend_mode);
+        add(e.effect_profile); add(e.effect_animated); add(e.effect_monochrome);
+        add(e.effect_invert); add(e.effect_seed); add(e.effect_amount);
+        add(e.effect_scale); add(e.effect_softness); add(e.effect_roundness);
+        add(e.effect_speed); add(e.effect_center_x); add(e.effect_center_y);
+        add(e.effect_complexity); add(e.effect_evolution);
+        add((quint32)e.effect_secondary_color);
+        add(e.effect_fill_type); add(e.effect_join_style);
         add(e.effect_on_front); add(e.effect_antialias); add(e.effect_owned_style_loaded);
         add((quint32)e.effect_stroke_color); add(e.effect_stroke_width); add(e.effect_stroke_opacity);
         add(e.effect_padding_left); add(e.effect_padding_right); add(e.effect_padding_top); add(e.effect_padding_bottom);
@@ -1363,12 +1381,18 @@ QString CacheManager::contentHash(const Title &title) const
         add(e.effect_gradient_angle); add(e.effect_gradient_center_x); add(e.effect_gradient_center_y);
         add(e.effect_gradient_scale); add(e.effect_gradient_focal_x); add(e.effect_gradient_focal_y);
         add_anim(e.enabled_prop); add_anim(e.opacity_prop); add_anim(e.size_prop); add_anim(e.distance_prop);
-        add_anim(e.angle_prop); add_anim(e.spread_prop); add_anim(e.falloff_prop); add_anim(e.stroke_width_prop);
+        add_anim(e.angle_prop); add_anim(e.spread_prop); add_anim(e.falloff_prop);
+        add_anim(e.amount_prop); add_anim(e.scale_prop); add_anim(e.softness_prop);
+        add_anim(e.roundness_prop); add_anim(e.speed_prop); add_anim(e.center_x_prop);
+        add_anim(e.center_y_prop); add_anim(e.complexity_prop); add_anim(e.evolution_prop);
+        add_anim(e.stroke_width_prop);
         add_anim(e.stroke_opacity_prop); add_anim(e.padding_left_prop); add_anim(e.padding_right_prop);
         add_anim(e.padding_top_prop); add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
         add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop); add_anim(e.corner_radius_bl_prop);
         add_anim(e.color_a); add_anim(e.color_r); add_anim(e.color_g); add_anim(e.color_b);
         add_anim(e.stroke_color_a); add_anim(e.stroke_color_r); add_anim(e.stroke_color_g); add_anim(e.stroke_color_b);
+        add_anim(e.secondary_color_a); add_anim(e.secondary_color_r);
+        add_anim(e.secondary_color_g); add_anim(e.secondary_color_b);
     };
     auto add_rich_text = [&](const RichTextDocument &rt) {
         add(rt.version); add(QString::fromStdString(rt.plain_text));
@@ -1479,6 +1503,7 @@ QString CacheManager::contentHash(const Title &title) const
         add_rich_text(layer->rich_text);
         add(QString::fromStdString(layer->clock_format));
         add(layer->ticker_style); add(layer->ticker_speed); add(layer->ticker_line_hold); add(layer->ticker_direction);
+        add(layer->ticker_playback_mode);
         add(QString::fromStdString(layer->font_family)); add(QString::fromStdString(layer->font_style));
         add(layer->font_size); add_anim(layer->font_size_prop);
         add(layer->font_bold); add(layer->font_italic); add(layer->font_kerning);
@@ -1619,6 +1644,16 @@ QString CacheManager::contentHash(const Title &title) const
             add((int)transition.easing); add(transition.duration); add(transition.blur_amount);
             add(transition.scale_from); add(transition.offset); add(transition.stagger);
             add(transition.softness); add(transition.reverse_order);
+            add(transition.blocks_columns); add(transition.blocks_rows);
+            add(transition.random_seed); add(QString::fromStdString(transition.image_path));
+            add(transition.image_channel); add(transition.invert); add(transition.clockwise);
+            add(transition.center_x); add(transition.center_y); add(transition.rotation);
+            add(transition.aspect); add(transition.profile);
+            if (!transition.image_path.empty()) {
+                const QFileInfo matte_info(QString::fromStdString(transition.image_path));
+                add(matte_info.exists()); add(matte_info.size());
+                add(matte_info.lastModified().toMSecsSinceEpoch());
+            }
         }
     }
     return QString::fromLatin1(hash.result().toHex());
@@ -1653,13 +1688,20 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
     auto add_effect = [&](const LayerEffect &e) {
         add_anim(e.enabled_prop); add_anim(e.opacity_prop); add_anim(e.size_prop);
         add_anim(e.distance_prop); add_anim(e.angle_prop); add_anim(e.spread_prop);
-        add_anim(e.falloff_prop); add_anim(e.stroke_width_prop); add_anim(e.stroke_opacity_prop);
+        add_anim(e.falloff_prop); add_anim(e.amount_prop); add_anim(e.scale_prop);
+        add_anim(e.softness_prop); add_anim(e.roundness_prop); add_anim(e.speed_prop);
+        add_anim(e.center_x_prop); add_anim(e.center_y_prop); add_anim(e.complexity_prop);
+        add_anim(e.evolution_prop); add_anim(e.stroke_width_prop); add_anim(e.stroke_opacity_prop);
         add_anim(e.padding_left_prop); add_anim(e.padding_right_prop); add_anim(e.padding_top_prop);
         add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
         add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop);
         add_anim(e.corner_radius_bl_prop); add_anim(e.color_a); add_anim(e.color_r);
         add_anim(e.color_g); add_anim(e.color_b); add_anim(e.stroke_color_a);
         add_anim(e.stroke_color_r); add_anim(e.stroke_color_g); add_anim(e.stroke_color_b);
+        add_anim(e.secondary_color_a); add_anim(e.secondary_color_r);
+        add_anim(e.secondary_color_g); add_anim(e.secondary_color_b);
+        if (e.type == LayerEffectType::Noise && e.effect_animated && e.enabled)
+            add(time);
     };
 
     for (const auto &layer : title.layers) {
@@ -1741,6 +1783,11 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(e.angle_prop, 0.05);
         add_anim(e.spread_prop, 0.25);
         add_anim(e.falloff_prop, 0.002);
+        add_anim(e.amount_prop, 0.002); add_anim(e.scale_prop, 0.002);
+        add_anim(e.softness_prop, 0.002); add_anim(e.roundness_prop, 0.002);
+        add_anim(e.speed_prop, 0.002); add_anim(e.center_x_prop, 0.0005);
+        add_anim(e.center_y_prop, 0.0005); add_anim(e.complexity_prop, 0.05);
+        add_anim(e.evolution_prop, 0.01);
         add_anim(e.stroke_width_prop, 0.25);
         add_anim(e.stroke_opacity_prop, 0.002);
         add_anim(e.padding_left_prop, 0.25); add_anim(e.padding_right_prop, 0.25);
@@ -1751,6 +1798,12 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_anim(e.color_g, 1.0 / 255.0); add_anim(e.color_b, 1.0 / 255.0);
         add_anim(e.stroke_color_a, 1.0 / 255.0); add_anim(e.stroke_color_r, 1.0 / 255.0);
         add_anim(e.stroke_color_g, 1.0 / 255.0); add_anim(e.stroke_color_b, 1.0 / 255.0);
+        add_anim(e.secondary_color_a, 1.0 / 255.0);
+        add_anim(e.secondary_color_r, 1.0 / 255.0);
+        add_anim(e.secondary_color_g, 1.0 / 255.0);
+        add_anim(e.secondary_color_b, 1.0 / 255.0);
+        if (e.type == LayerEffectType::Noise && e.effect_animated && e.enabled)
+            add(quant(time, 1.0 / 240.0));
     };
 
     for (const auto &layer : title.layers) {
@@ -1924,7 +1977,15 @@ bool CacheManager::titleHasTimelineChanges(const Title &title) const
                 animated(effect.corner_radius_bl_prop) || animated(effect.color_a) ||
                 animated(effect.color_r) || animated(effect.color_g) || animated(effect.color_b) ||
                 animated(effect.stroke_color_a) || animated(effect.stroke_color_r) ||
-                animated(effect.stroke_color_g) || animated(effect.stroke_color_b))
+                animated(effect.stroke_color_g) || animated(effect.stroke_color_b) ||
+                animated(effect.amount_prop) || animated(effect.scale_prop) ||
+                animated(effect.softness_prop) || animated(effect.roundness_prop) ||
+                animated(effect.speed_prop) || animated(effect.center_x_prop) ||
+                animated(effect.center_y_prop) || animated(effect.complexity_prop) ||
+                animated(effect.evolution_prop) || animated(effect.secondary_color_a) ||
+                animated(effect.secondary_color_r) || animated(effect.secondary_color_g) ||
+                animated(effect.secondary_color_b) ||
+                (effect.type == LayerEffectType::Noise && effect.effect_animated && effect.enabled))
                 return true;
         }
         if (layer->in_time > 0.0 || layer->out_time < title.duration)
@@ -2615,6 +2676,8 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
     const QRect frame_rect(QPoint(0, 0), frame_size);
     if (!layer.visible || layer.live_cue_hidden_if_empty)
         return QRect();
+    if (layer.type == LayerType::Adjustment || layer.type == LayerType::ColorSolid)
+        return frame_rect;
 
     /* Dirty tiles are shared by every invalidated frame in the layer range, so
      * their bounds must cover the whole animated envelope rather than only the
@@ -2748,6 +2811,11 @@ QRect CacheManager::layerDirtyRect(const Title &title, const Layer &layer) const
             top += effect_size;
             bottom += effect_size;
             break;
+        case LayerEffectType::LensFlare:
+        case LayerEffectType::Vignette:
+        case LayerEffectType::Noise:
+        case LayerEffectType::RoughenEdges:
+            return frame_rect;
         case LayerEffectType::InnerGlow:
         case LayerEffectType::InnerShadow:
         case LayerEffectType::BrightnessContrast:
@@ -2864,6 +2932,10 @@ static bool effect_requires_full_gpu_cache_frame(LayerEffectType type)
     case LayerEffectType::MotionBlur:
     case LayerEffectType::Bloom:
     case LayerEffectType::Emboss:
+    case LayerEffectType::LensFlare:
+    case LayerEffectType::Vignette:
+    case LayerEffectType::Noise:
+    case LayerEffectType::RoughenEdges:
         return true;
     default:
         return false;
@@ -2875,7 +2947,9 @@ static bool title_requires_full_gpu_cache_frame(const Title &title)
     for (const auto &layer : title.layers) {
         if (!layer)
             continue;
-        if (!layer->parent_id.empty() ||
+        if (layer->type == LayerType::Adjustment ||
+            layer->type == LayerType::ColorSolid ||
+            !layer->parent_id.empty() ||
             layer->mask_mode != MaskMode::None ||
             layer->use_as_scene_mask)
             return true;
@@ -2894,6 +2968,12 @@ static bool title_requires_full_gpu_cache_frame(const Title &title)
                 if (transition.blur_amount > 0.01)
                     return true;
                 break;
+            case LayerTransitionType::Blocks:
+            case LayerTransitionType::ImageWipe:
+            case LayerTransitionType::Clock:
+            case LayerTransitionType::Iris:
+            case LayerTransitionType::GradientWipe:
+                return true;
             default:
                 break;
             }
@@ -4898,6 +4978,93 @@ void CacheManager::workerLoop()
     disk_cache_.flushWrites();
 }
 
+bool CacheManager::retryFailedJob(RenderQueueManager::Job job,
+                                  const QString &live_state_key,
+                                  const char *stage)
+{
+    constexpr int kMaximumGpuReadbackRetries = 4;
+    if (worker_stop_.load() || !cache_enabled_.load() ||
+        !jobIsCurrent(job) || job.retry_count >= kMaximumGpuReadbackRetries)
+        return false;
+
+    /* The queue suppresses duplicate keys while a job is active. Release the
+     * active token before re-enqueuing the exact same content-addressed frame. */
+    queue_.complete(job);
+    ++job.retry_count;
+
+    if (job.live_cue) {
+        std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+        const QString state_key = liveCueStateReferencingKey(job.key, live_state_key);
+        if (!state_key.isEmpty()) {
+            job.cue_state_key = state_key;
+            job.cue_row = live_cue_rows_.value(state_key, job.cue_row);
+            live_cue_states_[state_key] = FrameCacheState::Queued;
+            live_cue_progress_percent_[state_key] = liveCueStoredProgress(state_key);
+            live_cue_last_emit_states_.remove(state_key);
+            live_cue_last_emit_buckets_.remove(state_key);
+            if (job.cue_row >= 0)
+                emit liveCueStateChanged(job.key.title_id, job.cue_row);
+        }
+    } else {
+        state_tracker_.setState(job.key, FrameCacheState::Queued);
+    }
+
+    const bool queued = queue_.enqueue(job);
+    if (!queued) {
+        /* Another producer can fill the small gap between complete() and
+         * enqueue(). In that case the retry has already been coalesced into a
+         * replacement job and must stay Queued instead of being mislabeled as
+         * Stale. If the queue is shutting down, consume the released active
+         * token here and publish a terminal state so the caller does not
+         * complete the same token twice. */
+        const bool replacement_queued = queue_.contains(job.key);
+        if (!replacement_queued) {
+            if (job.live_cue) {
+                std::lock_guard<std::recursive_mutex> live_lock(live_cue_mutex_);
+                const QString state_key = liveCueStateReferencingKey(job.key, live_state_key);
+                if (!state_key.isEmpty()) {
+                    const int signal_row = live_cue_rows_.value(state_key, job.cue_row);
+                    live_cue_states_[state_key] = FrameCacheState::NotCached;
+                    live_cue_progress_percent_[state_key] = liveCueStoredProgress(state_key);
+                    live_cue_last_emit_states_.remove(state_key);
+                    live_cue_last_emit_buckets_.remove(state_key);
+                    if (signal_row >= 0)
+                        emit liveCueStateChanged(job.key.title_id, signal_row);
+                }
+            }
+            state_tracker_.setState(job.key, FrameCacheState::Stale);
+            BGL_LOG_ERROR("CacheQueue", QStringLiteral(
+                "stage=%1 action=retry-enqueue-failed title=%2 frame=%3 attempt=%4 key=%5")
+                .arg(QString::fromUtf8(stage ? stage : "gpu-readback"))
+                .arg(job.key.title_id)
+                .arg(job.key.frame)
+                .arg(job.retry_count)
+                .arg(job.key.toString()));
+        } else {
+            BGL_LOG_DEBUG("CacheQueue", QStringLiteral(
+                "stage=%1 action=retry-coalesced title=%2 frame=%3 attempt=%4 key=%5")
+                .arg(QString::fromUtf8(stage ? stage : "gpu-readback"))
+                .arg(job.key.title_id)
+                .arg(job.key.frame)
+                .arg(job.retry_count)
+                .arg(job.key.toString()));
+            wakeWorker();
+        }
+        return true;
+    }
+
+    BGL_LOG_WARNING("CacheQueue", QStringLiteral(
+        "stage=%1 action=retry title=%2 frame=%3 attempt=%4/%5 key=%6")
+        .arg(QString::fromUtf8(stage ? stage : "gpu-readback"))
+        .arg(job.key.title_id)
+        .arg(job.key.frame)
+        .arg(job.retry_count)
+        .arg(kMaximumGpuReadbackRetries)
+        .arg(job.key.toString()));
+    wakeWorker();
+    return true;
+}
+
 bool CacheManager::renderJob(RenderQueueManager::Job job)
 {
     if (!job.title || !jobIsCurrent(job))
@@ -5043,8 +5210,13 @@ bool CacheManager::renderJob(RenderQueueManager::Job job)
             job.key.toString().toStdString(), readback_region, ticket);
     }
     if (!submitted) {
+        if (retryFailedJob(job, live_state_key, "submit"))
+            return true; // active token was completed and the job was requeued
         abandonJobState(job, live_state_key);
         state_tracker_.setState(job.key, FrameCacheState::Stale);
+        BGL_LOG_ERROR("Prerender", QStringLiteral(
+            "stage=submit action=failed-final title=%1 frame=%2 retries=%3")
+            .arg(job.key.title_id).arg(job.key.frame).arg(job.retry_count));
         return false;
     }
 
@@ -5076,14 +5248,24 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
     struct QueueCompletionGuard {
         RenderQueueManager &queue;
         RenderQueueManager::Job &job;
-        ~QueueCompletionGuard() { queue.complete(job); }
+        bool armed = true;
+        ~QueueCompletionGuard() { if (armed) queue.complete(job); }
+        void disarm() { armed = false; }
     } completion_guard {queue_, job};
     QString live_state_key = pending.live_state_key;
 
     if (!resolved || staged.isNull()) {
         title_gpu_frame_cache_remove(job.key.toString().toStdString());
+        if (retryFailedJob(job, live_state_key, "resolve")) {
+            completion_guard.disarm();
+            emit diagnosticsChanged();
+            return false;
+        }
         abandonJobState(job, live_state_key);
         state_tracker_.setState(job.key, FrameCacheState::Stale);
+        BGL_LOG_ERROR("Prerender", QStringLiteral(
+            "stage=resolve action=failed-final title=%1 frame=%2 retries=%3")
+            .arg(job.key.title_id).arg(job.key.frame).arg(job.retry_count));
         emit diagnosticsChanged();
         return false;
     }
@@ -5117,8 +5299,16 @@ bool CacheManager::resolveOldestGpuReadback(bool force)
 
     if (image.isNull()) {
         title_gpu_frame_cache_remove(job.key.toString().toStdString());
+        if (retryFailedJob(job, live_state_key, "payload")) {
+            completion_guard.disarm();
+            emit diagnosticsChanged();
+            return false;
+        }
         abandonJobState(job, live_state_key);
         state_tracker_.setState(job.key, FrameCacheState::Stale);
+        BGL_LOG_ERROR("Prerender", QStringLiteral(
+            "stage=payload action=failed-final title=%1 frame=%2 retries=%3")
+            .arg(job.key.title_id).arg(job.key.frame).arg(job.retry_count));
         emit diagnosticsChanged();
         return false;
     }

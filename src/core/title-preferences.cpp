@@ -5,6 +5,7 @@
 
 #include <QSettings>
 #include <QDir>
+#include <QFileInfo>
 #include <QStandardPaths>
 
 #include <atomic>
@@ -33,6 +34,8 @@ constexpr const char *kLoggingLevelKey = "level";
 constexpr const char *kLoggingMirrorToObsKey = "mirrorToObs";
 constexpr const char *kCachePlaybackLoggingKey = "cachePlayback";
 constexpr const char *kLoggingFilePathKey = "filePath";
+constexpr const char *kLoggingDirectoryKey = "directory";
+constexpr const char *kLoggingCategoriesGroup = "Categories";
 constexpr const char *kSceneMaskColorKey = "sceneMaskColor";
 std::atomic_bool g_gpu_available{true};
 std::mutex g_gpu_reason_mutex;
@@ -274,10 +277,46 @@ void set_logging_mirror_to_obs(bool enabled)
     notify_changed(nullptr);
 }
 
+bool logging_category_enabled(const QString &category, bool default_enabled)
+{
+    const QString clean = category.trimmed().isEmpty()
+        ? QStringLiteral("General") : category.trimmed();
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    settings.beginGroup(QString::fromUtf8(kLoggingCategoriesGroup));
+    const bool enabled = settings.value(clean, default_enabled).toBool();
+    settings.endGroup();
+    settings.endGroup();
+    return enabled;
+}
+
+void set_logging_category_enabled(const QString &category, bool enabled)
+{
+    const QString clean = category.trimmed().isEmpty()
+        ? QStringLiteral("General") : category.trimmed();
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    settings.beginGroup(QString::fromUtf8(kLoggingCategoriesGroup));
+    settings.setValue(clean, enabled);
+    settings.endGroup();
+    settings.endGroup();
+    settings.sync();
+    notify_changed(nullptr);
+}
+
 bool cache_playback_logging_enabled()
 {
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    settings.beginGroup(QString::fromUtf8(kLoggingCategoriesGroup));
+    if (settings.contains(QStringLiteral("CachePlayback"))) {
+        const bool enabled = settings.value(QStringLiteral("CachePlayback"), false).toBool();
+        settings.endGroup();
+        settings.endGroup();
+        return enabled;
+    }
+    settings.endGroup();
+    // Migrate the legacy dedicated toggle without changing its default.
     const bool enabled = settings.value(QString::fromUtf8(kCachePlaybackLoggingKey), false).toBool();
     settings.endGroup();
     return enabled;
@@ -285,9 +324,45 @@ bool cache_playback_logging_enabled()
 
 void set_cache_playback_logging_enabled(bool enabled)
 {
+    set_logging_category_enabled(QStringLiteral("CachePlayback"), enabled);
     QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
     settings.beginGroup(QString::fromUtf8(kLoggingGroup));
     settings.setValue(QString::fromUtf8(kCachePlaybackLoggingKey), enabled);
+    settings.endGroup();
+    settings.sync();
+}
+
+QString logging_directory()
+{
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    QString path = settings.value(QString::fromUtf8(kLoggingDirectoryKey)).toString();
+    if (path.trimmed().isEmpty()) {
+        const QString legacy_file = settings.value(QString::fromUtf8(kLoggingFilePathKey)).toString();
+        if (!legacy_file.trimmed().isEmpty())
+            path = QFileInfo(legacy_file).absolutePath();
+    }
+    settings.endGroup();
+    if (!path.trimmed().isEmpty())
+        return QDir::cleanPath(path);
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (base.isEmpty())
+        base = QDir::tempPath() + QStringLiteral("/BroadcastGraphicsLive");
+    return QDir(base).filePath(QStringLiteral("logs"));
+}
+
+void set_logging_directory(const QString &path)
+{
+    QString clean = path.trimmed();
+    if (!clean.isEmpty()) {
+        QFileInfo info(clean);
+        if (info.suffix().compare(QStringLiteral("log"), Qt::CaseInsensitive) == 0)
+            clean = info.absolutePath();
+        clean = QDir::cleanPath(clean);
+    }
+    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
+    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
+    settings.setValue(QString::fromUtf8(kLoggingDirectoryKey), clean);
     settings.endGroup();
     settings.sync();
     notify_changed(nullptr);
@@ -295,26 +370,15 @@ void set_cache_playback_logging_enabled(bool enabled)
 
 QString logging_file_path()
 {
-    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
-    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
-    QString path = settings.value(QString::fromUtf8(kLoggingFilePathKey)).toString();
-    settings.endGroup();
-    if (!path.trimmed().isEmpty())
-        return QDir::cleanPath(path);
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (base.isEmpty())
-        base = QDir::tempPath() + QStringLiteral("/BroadcastGraphicsLive");
-    return QDir(base).filePath(QStringLiteral("logs/broadcast-graphics-live.log"));
+    // Legacy API: return the folder plus a stable placeholder filename. New
+    // code should use TitleLogger::currentSessionFilePath().
+    return QDir(logging_directory()).filePath(
+        QStringLiteral("broadcast-graphics-live.log"));
 }
 
 void set_logging_file_path(const QString &path)
 {
-    QSettings settings(QString::fromUtf8(kSettingsOrg), QString::fromUtf8(kSettingsApp));
-    settings.beginGroup(QString::fromUtf8(kLoggingGroup));
-    settings.setValue(QString::fromUtf8(kLoggingFilePathKey), QDir::cleanPath(path));
-    settings.endGroup();
-    settings.sync();
-    notify_changed(nullptr);
+    set_logging_directory(path);
 }
 
 bool gpu_available()

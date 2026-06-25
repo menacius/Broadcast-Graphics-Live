@@ -26,6 +26,7 @@
 #include "title-gpu-text-renderer.h"
 #include "title-preferences.h"
 #include "title-logger.h"
+#include "ticker-runtime.h"
 #include "image-layer-utils.h"
 #include "title-text-layout.h"
 
@@ -606,7 +607,21 @@ static bool effect_has_animation(const LayerEffect &effect)
            effect.stroke_color_a.is_animated() ||
            effect.stroke_color_r.is_animated() ||
            effect.stroke_color_g.is_animated() ||
-           effect.stroke_color_b.is_animated();
+           effect.stroke_color_b.is_animated() ||
+           effect.amount_prop.is_animated() ||
+           effect.scale_prop.is_animated() ||
+           effect.softness_prop.is_animated() ||
+           effect.roundness_prop.is_animated() ||
+           effect.speed_prop.is_animated() ||
+           effect.center_x_prop.is_animated() ||
+           effect.center_y_prop.is_animated() ||
+           effect.complexity_prop.is_animated() ||
+           effect.evolution_prop.is_animated() ||
+           effect.secondary_color_a.is_animated() ||
+           effect.secondary_color_r.is_animated() ||
+           effect.secondary_color_g.is_animated() ||
+           effect.secondary_color_b.is_animated() ||
+           (effect.type == LayerEffectType::Noise && effect.effect_animated);
 }
 
 static bool layer_has_effect_animation(const Layer &layer)
@@ -837,6 +852,10 @@ static void refresh_scene_mask_configs(TitleSourceData *data, obs_data_t *settin
             data->scene_masks.push_back(std::move(cfg));
         }
     }
+    BGL_LOG_DEBUG("Masks", QStringLiteral(
+        "Refreshed scene-mask configuration title=%1 masks=%2")
+        .arg(QString::fromStdString(data->title_id))
+        .arg(static_cast<int>(data->scene_masks.size())));
 }
 
 static void release_active_scene_mask_scenes(TitleSourceData *data)
@@ -1842,6 +1861,14 @@ static uint32_t eval_effect_color(const LayerEffect &effect, double t)
            (uint32_t)eval_channel(effect.color_b, effect.effect_color & 0xFF, t);
 }
 
+static uint32_t eval_effect_secondary_color(const LayerEffect &effect, double t)
+{
+    return ((uint32_t)eval_channel(effect.secondary_color_a, (effect.effect_secondary_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.secondary_color_r, (effect.effect_secondary_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.secondary_color_g, (effect.effect_secondary_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.secondary_color_b, effect.effect_secondary_color & 0xFF, t);
+}
+
 static uint32_t eval_effect_stroke_color(const LayerEffect &effect, double t)
 {
     return ((uint32_t)eval_channel(effect.stroke_color_a, (effect.effect_stroke_color >> 24) & 0xFF, t) << 24) |
@@ -2657,11 +2684,6 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
 }
 
 
-static double ticker_time_seconds()
-{
-    return QDateTime::currentMSecsSinceEpoch() / 1000.0;
-}
-
 static QStringList ticker_lines(const QString &text)
 {
     QString normalized = text;
@@ -2678,14 +2700,17 @@ static QStringList ticker_lines(const QString &text)
 
 static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
                                      Qt::Alignment alignment, const QString &text,
-                                     const Layer &layer)
+                                     const Layer &layer, const std::string &title_id,
+                                     bool title_cued)
 {
     struct TickerCache { QString key; QPainterPath path; QRectF bounds; };
     static TickerCache cache;
     QPainterPath path;
     QFontMetricsF metrics(font);
     const double speed = std::max(1.0, layer.ticker_speed);
-    const double now = ticker_time_seconds();
+    const TickerRuntimeSnapshot ticker_state =
+        bgs::ticker_runtime::sample(title_id, layer, title_cued);
+    const double now = ticker_state.time_seconds;
 
     if (layer.ticker_style == 0) {
         QString single = text;
@@ -4863,7 +4888,8 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     QPainterPath text_path;
     if (!has_rich_text) {
         text_path = layer.type == LayerType::Ticker
-            ? ticker_text_path(font, text_rect, align, text, layer)
+            ? ticker_text_path(font, text_rect, align, text, layer, title.id,
+                               title.current_cue_row >= 0 || title.pending_cue_row >= 0)
             : text_overflow_path(font, text_rect, align, text, layer, t);
         text_path = apply_vertical_character_scale(text_path, text_rect, align, layer, t);
         if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
@@ -5426,6 +5452,7 @@ static void render_layer_unmasked_raw(cairo_t *cr, const Title &title, const Lay
         break;
     case LayerType::SolidRect:
     case LayerType::Shape:
+    case LayerType::ColorSolid:
         render_layer_rect(cr, title, layer, title_time);
         break;
     case LayerType::Image:
@@ -5549,6 +5576,10 @@ static bool layer_effect_requires_stack_surface(const LayerEffect &effect)
     case LayerEffectType::InnerGlow:
     case LayerEffectType::InnerShadow:
     case LayerEffectType::Blur:
+    case LayerEffectType::LensFlare:
+    case LayerEffectType::Vignette:
+    case LayerEffectType::Noise:
+    case LayerEffectType::RoughenEdges:
         return true;
     case LayerEffectType::MotionBlur:
         /* Motion blur is temporal, not a post-render image-space filter.
@@ -6157,6 +6188,10 @@ static bool effect_can_run_as_gpu_surface_pass(LayerEffectType type)
     case LayerEffectType::BrightnessContrast:
     case LayerEffectType::Saturation:
     case LayerEffectType::ColorOverlay:
+    case LayerEffectType::LensFlare:
+    case LayerEffectType::Vignette:
+    case LayerEffectType::Noise:
+    case LayerEffectType::RoughenEdges:
         return true;
     /* These effects now require the shared two-pass Gaussian backend and a
      * second blurred texture. The old readback-oriented surface helper owns
@@ -6233,20 +6268,31 @@ static void set_effect_color_param(gs_effect_t *effect, const char *name, uint32
 }
 
 static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect &resolved,
-                                          int width, int height)
+                                          int width, int height, double time = 0.0)
 {
     set_effect_vec2_param(effect, "texelSize", 1.0f / std::max(1, width), 1.0f / std::max(1, height));
     set_effect_color_param(effect, "effectColor", resolved.effect_color);
+    set_effect_color_param(effect, "secondaryColor", resolved.effect_secondary_color);
     set_effect_float_param(effect, "opacity", resolved.effect_opacity);
     set_effect_float_param(effect, "radius", resolved.effect_size);
     set_effect_float_param(effect, "width", resolved.effect_size);
     set_effect_float_param(effect, "blurRadius", resolved.effect_size);
     set_effect_float_param(effect, "spread", resolved.effect_spread);
+    set_effect_float_param(effect, "falloff", resolved.effect_falloff);
     set_effect_float_param(effect, "brightness", resolved.brightness);
     set_effect_float_param(effect, "contrast", resolved.contrast);
     set_effect_float_param(effect, "saturation", resolved.saturation);
     set_effect_int_param(effect, "blendMode", static_cast<int>(resolved.blend_mode));
-    set_effect_float_param(effect, "samples", static_cast<float>(std::clamp(resolved.effect_samples, 2, 64)));
+    if (resolved.type == LayerEffectType::LensFlare) {
+        /* Keep the lens-flare ghost count on a dedicated uniform.  Reusing
+         * the generic `samples` name made the effect depend on backend-specific
+         * shader parsing even though no texture sampling loop is involved. */
+        set_effect_float_param(effect, "ghostCount",
+            std::clamp(resolved.effect_complexity, 2.0f, 12.0f));
+    } else {
+        set_effect_float_param(effect, "samples",
+            static_cast<float>(std::clamp(resolved.effect_samples, 2, 64)));
+    }
     set_effect_float_param(effect, "threshold", std::clamp(resolved.effect_spread, 0.0f, 1.0f));
     set_effect_float_param(effect, "intensity", std::max(0.0f, resolved.effect_falloff));
     set_effect_float_param(effect, "strength", std::max(0.0f, resolved.effect_size) / 32.0f);
@@ -6257,6 +6303,24 @@ static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect
     set_effect_vec2_param(effect, "offset", dx, dy);
     set_effect_vec2_param(effect, "direction", std::cos(radians), std::sin(radians));
     set_effect_float_param(effect, "shadowLength", resolved.effect_distance);
+    if (resolved.type == LayerEffectType::LensFlare)
+        set_effect_float_param(effect, "profile", static_cast<float>(resolved.effect_profile));
+    else
+        set_effect_int_param(effect, "profile", resolved.effect_profile);
+    set_effect_int_param(effect, "animatedNoise", resolved.effect_animated ? 1 : 0);
+    set_effect_int_param(effect, "monochrome", resolved.effect_monochrome ? 1 : 0);
+    set_effect_int_param(effect, "invert", resolved.effect_invert ? 1 : 0);
+    set_effect_float_param(effect, "seed", static_cast<float>(resolved.effect_seed));
+    set_effect_float_param(effect, "amount", resolved.effect_amount);
+    set_effect_float_param(effect, "scale", resolved.effect_scale);
+    set_effect_float_param(effect, "softness", resolved.effect_softness);
+    set_effect_float_param(effect, "roundness", resolved.effect_roundness);
+    set_effect_float_param(effect, "speed", resolved.effect_speed);
+    set_effect_vec2_param(effect, "center", resolved.effect_center_x, resolved.effect_center_y);
+    set_effect_float_param(effect, "angle", resolved.effect_angle);
+    set_effect_float_param(effect, "complexity", resolved.effect_complexity);
+    set_effect_float_param(effect, "evolution", resolved.effect_evolution);
+    set_effect_float_param(effect, "time", static_cast<float>(time));
 }
 
 static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const Layer &layer, double t)
@@ -6717,7 +6781,14 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
             << effect.effect_opacity << ',' << effect.effect_size << ',' << effect.effect_distance << ','
             << effect.effect_angle << ',' << effect.effect_spread << ',' << effect.effect_falloff << ','
             << effect.effect_blur_type << ',' << effect.effect_samples << ',' << effect.effect_centered << ','
-            << (int)effect.blend_mode;
+            << (int)effect.blend_mode << ',' << effect.effect_profile << ','
+            << effect.effect_animated << ',' << effect.effect_monochrome << ','
+            << effect.effect_invert << ',' << effect.effect_seed << ','
+            << effect.effect_amount << ',' << effect.effect_scale << ','
+            << effect.effect_softness << ',' << effect.effect_roundness << ','
+            << effect.effect_speed << ',' << effect.effect_center_x << ','
+            << effect.effect_center_y << ',' << effect.effect_complexity << ','
+            << effect.effect_evolution << ',' << effect.effect_secondary_color;
     }
     return key.str();
 }
@@ -7860,6 +7931,11 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     data->dirty = true;
     data->first_frame_pending = true;
     data->consecutive_draw_failures = 0;
+    BGL_LOG_INFO("Source", QStringLiteral(
+        "Created OBS source=%1 title=%2 session=%3")
+        .arg(reinterpret_cast<quintptr>(source), 0, 16)
+        .arg(QString::fromStdString(data->title_id))
+        .arg(reinterpret_cast<quintptr>(data->gpu_render_session), 0, 16));
     return data;
 }
 
@@ -7867,6 +7943,10 @@ static void source_destroy(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
     if (!data) return;
+    BGL_LOG_INFO("Source", QStringLiteral(
+        "Destroying OBS source title=%1 session=%2")
+        .arg(QString::fromStdString(data->title_id))
+        .arg(reinterpret_cast<quintptr>(data->gpu_render_session), 0, 16));
     QObject::disconnect(data->cache_frame_ready_connection);
     data->cache_wake_state.reset();
     release_active_scene_mask_scenes(data);
@@ -7946,6 +8026,11 @@ static void source_update(void *priv, obs_data_t *settings)
     data->consecutive_draw_failures = 0;
     if (keep_scene_masks_foreground)
         sync_scene_mask_scenes_for_cue(data, TitleDataStore::instance().get_title(data->title_id));
+    BGL_LOG_INFO("Source", QStringLiteral(
+        "Updated source binding old=%1 new=%2 changed=%3")
+        .arg(QString::fromStdString(previous_title_id),
+             QString::fromStdString(data->title_id))
+        .arg(title_changed ? 1 : 0));
 }
 
 static void source_activate(void *priv)
@@ -7960,6 +8045,8 @@ static void source_activate(void *priv)
     data->dirty = true;
     data->first_frame_pending = true;
     data->consecutive_draw_failures = 0;
+    BGL_LOG_DEBUG("Source", QStringLiteral("Activated source title=%1")
+        .arg(QString::fromStdString(data->title_id)));
 
     auto title = TitleDataStore::instance().get_title(data->title_id);
     sync_scene_mask_scenes_for_cue(data, title);
@@ -7989,6 +8076,8 @@ static void source_deactivate(void *priv)
     if (!data)
         return;
     data->scene_mask_foreground_active = false;
+    BGL_LOG_DEBUG("Source", QStringLiteral("Deactivated source title=%1")
+        .arg(QString::fromStdString(data->title_id)));
     release_active_scene_mask_scenes(data);
     /* A deactivated source may remain alive across a scene or collection
      * change. Do not allow its old poster texture to become visible again
@@ -8014,6 +8103,8 @@ static void source_show(void *priv)
      * main output. Reconcile the current model before the source becomes
      * eligible to present a poster retained while it was not shown anywhere. */
     data->shown_on_display.store(true, std::memory_order_release);
+    BGL_LOG_TRACE("Source", QStringLiteral("Source shown title=%1")
+        .arg(QString::fromStdString(data->title_id)));
     request_source_presentation_reset(data, "source-shown");
     data->dirty = true;
     data->first_frame_pending = true;
@@ -8025,6 +8116,8 @@ static void source_hide(void *priv)
     if (!data)
         return;
     data->shown_on_display.store(false, std::memory_order_release);
+    BGL_LOG_TRACE("Source", QStringLiteral("Source hidden title=%1")
+        .arg(QString::fromStdString(data->title_id)));
     release_active_scene_mask_scenes(data);
     request_source_presentation_reset(data, "source-hidden");
 }
@@ -8632,10 +8725,23 @@ technique Draw
 static constexpr const char *kGpuLayerCopyEffect = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
+uniform texture2d transitionMatte;
 uniform float weight;
 uniform float wipeProgress;
 uniform float wipeSoftness;
 uniform int wipeDirection;
+uniform int transitionType;
+uniform int blocksColumns;
+uniform int blocksRows;
+uniform float randomSeed;
+uniform int transitionMatteEnabled;
+uniform int imageChannel;
+uniform int transitionInvert;
+uniform int transitionClockwise;
+uniform float2 transitionCenter;
+uniform float transitionRotation;
+uniform float transitionAspect;
+uniform int transitionProfile;
 uniform int imageClipEnabled;
 uniform float4 imageClipRect;
 uniform float4 imageCornerRadii;
@@ -8644,29 +8750,82 @@ sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Cla
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 VertDataOut VSDefault(VertDataIn v) { VertDataOut o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj); o.uv = v.uv; return o; }
-float wipe_alpha(float2 uv)
+float hash21(float2 p)
+{
+    p = frac(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32 + randomSeed);
+    return frac(p.x * p.y);
+}
+float directional_wipe(float2 uv, float reveal, float feather)
+{
+    if (wipeDirection == 2) {
+        float edge = 1.0 - reveal;
+        return wipeSoftness > 0.000001 ? smoothstep(edge, edge + feather, uv.x) : step(edge, uv.x);
+    }
+    if (wipeDirection == 3) {
+        float edge = 1.0 - reveal;
+        return wipeSoftness > 0.000001 ? smoothstep(edge, edge + feather, uv.y) : step(edge, uv.y);
+    }
+    if (wipeDirection == 4)
+        return wipeSoftness > 0.000001 ? 1.0 - smoothstep(reveal - feather, reveal, uv.y) : 1.0 - step(reveal, uv.y);
+    return wipeSoftness > 0.000001 ? 1.0 - smoothstep(reveal - feather, reveal, uv.x) : 1.0 - step(reveal, uv.x);
+}
+float transition_alpha(float2 uv)
 {
     float reveal = clamp(wipeProgress, 0.0, 1.0);
-    if (reveal >= 0.999999 || wipeDirection == 0)
+    if (reveal >= 0.999999)
         return 1.0;
     float feather = max(wipeSoftness, 0.000001);
-    if (wipeDirection == 2) { // Right: reveal from the right edge.
-        float edge = 1.0 - reveal;
-        return wipeSoftness > 0.000001 ? smoothstep(edge, edge + feather, uv.x)
-                                        : step(edge, uv.x);
+    float alpha = 1.0;
+    if (transitionType == 14) {
+        float2 grid = float2(max(blocksColumns, 1), max(blocksRows, 1));
+        float2 cell = floor(uv * grid);
+        float threshold = hash21(cell);
+        if (transitionInvert != 0) threshold = 1.0 - threshold;
+        alpha = wipeSoftness > 0.000001 ? smoothstep(threshold - feather, threshold + feather, reveal) : step(threshold, reveal);
+    } else if (transitionType == 15) {
+        float matte = uv.x;
+        if (transitionMatteEnabled != 0) {
+            float4 m = transitionMatte.Sample(textureSampler, uv);
+            if (imageChannel == 1) matte = m.a;
+            else if (imageChannel == 2) matte = m.r;
+            else if (imageChannel == 3) matte = m.g;
+            else if (imageChannel == 4) matte = m.b;
+            else matte = dot(m.rgb, float3(0.2126, 0.7152, 0.0722));
+        }
+        if (transitionInvert != 0) matte = 1.0 - matte;
+        alpha = smoothstep(matte - feather, matte + feather, reveal);
+    } else if (transitionType == 16) {
+        float2 p = uv - transitionCenter;
+        float angle = atan2(p.y, p.x) / 6.28318530718 + 0.5 + transitionRotation / 360.0;
+        angle = frac(angle + 1.0);
+        if (transitionClockwise == 0) angle = 1.0 - angle;
+        if (transitionInvert != 0) angle = 1.0 - angle;
+        alpha = smoothstep(angle - feather, angle + feather, reveal);
+    } else if (transitionType == 17) {
+        float2 p = (uv - transitionCenter) * 2.0;
+        p.x *= max(transitionAspect, 0.01);
+        float distanceValue = length(p) / 1.41421356;
+        if (transitionProfile == 1) distanceValue = max(abs(p.x), abs(p.y));
+        else if (transitionProfile == 2) distanceValue = (abs(p.x) + abs(p.y)) * 0.5;
+        distanceValue = clamp(distanceValue, 0.0, 1.0);
+        if (transitionInvert != 0) distanceValue = 1.0 - distanceValue;
+        alpha = smoothstep(distanceValue - feather, distanceValue + feather, reveal);
+    } else if (transitionType == 18) {
+        float2 p = uv - transitionCenter;
+        float radians = transitionRotation * 0.01745329252;
+        float2 q = float2(p.x * cos(radians) - p.y * sin(radians), p.x * sin(radians) + p.y * cos(radians));
+        q.x *= max(transitionAspect, 0.01);
+        float matte = q.x + 0.5;
+        if (transitionProfile == 1) matte = length(q) * 1.41421356;
+        else if (transitionProfile == 2) matte = (abs(q.x) + abs(q.y));
+        matte = clamp(matte, 0.0, 1.0);
+        if (transitionInvert != 0) matte = 1.0 - matte;
+        alpha = smoothstep(matte - feather, matte + feather, reveal);
+    } else if (wipeDirection != 0) {
+        alpha = directional_wipe(uv, reveal, feather);
     }
-    if (wipeDirection == 3) { // Up: reveal from the bottom edge.
-        float edge = 1.0 - reveal;
-        return wipeSoftness > 0.000001 ? smoothstep(edge, edge + feather, uv.y)
-                                        : step(edge, uv.y);
-    }
-    if (wipeDirection == 4) { // Down: reveal from the top edge.
-        return wipeSoftness > 0.000001 ? 1.0 - smoothstep(reveal - feather, reveal, uv.y)
-                                        : 1.0 - step(reveal, uv.y);
-    }
-    // Left/default: reveal from the left edge.
-    return wipeSoftness > 0.000001 ? 1.0 - smoothstep(reveal - feather, reveal, uv.x)
-                                    : 1.0 - step(reveal, uv.x);
+    return clamp(alpha, 0.0, 1.0);
 }
 float rounded_box_alpha(float2 p, float4 rect, float4 radii)
 {
@@ -8674,43 +8833,19 @@ float rounded_box_alpha(float2 p, float4 rect, float4 radii)
     float2 rectMax = rect.xy + rect.zw;
     if (p.x < rectMin.x || p.y < rectMin.y || p.x > rectMax.x || p.y > rectMax.y)
         return 0.0;
-
     float2 local = p - rectMin;
     float2 size = max(rect.zw, float2(0.0001, 0.0001));
     float maxRadius = min(size.x, size.y) * 0.5;
     float4 clampedRadii = clamp(radii, 0.0, maxRadius);
     float radius = 0.0;
     float2 center = float2(0.0, 0.0);
-
-    /* Test only the actual radius-by-radius square belonging to each corner.
-     * The old implementation selected an entire half of the rectangle and
-     * evaluated a full diameter-sized circle there. That removed an extra
-     * radius of pixels from both adjacent edges and produced four detached
-     * circular islands around the otherwise rectangular image. */
-    if (local.x <= clampedRadii.x && local.y <= clampedRadii.x) {
-        radius = clampedRadii.x;
-        center = float2(radius, radius);
-    } else if (local.x >= size.x - clampedRadii.y &&
-               local.y <= clampedRadii.y) {
-        radius = clampedRadii.y;
-        center = float2(size.x - radius, radius);
-    } else if (local.x >= size.x - clampedRadii.z &&
-               local.y >= size.y - clampedRadii.z) {
-        radius = clampedRadii.z;
-        center = float2(size.x - radius, size.y - radius);
-    } else if (local.x <= clampedRadii.w &&
-               local.y >= size.y - clampedRadii.w) {
-        radius = clampedRadii.w;
-        center = float2(radius, size.y - radius);
-    } else {
-        return 1.0;
-    }
-
-    if (radius <= 0.0001)
-        return 1.0;
-    float distanceFromCorner = length(local - center);
-    return 1.0 - smoothstep(max(0.0, radius - 1.0),
-                            radius + 1.0, distanceFromCorner);
+    if (local.x <= clampedRadii.x && local.y <= clampedRadii.x) { radius = clampedRadii.x; center = float2(radius, radius); }
+    else if (local.x >= size.x - clampedRadii.y && local.y <= clampedRadii.y) { radius = clampedRadii.y; center = float2(size.x - radius, radius); }
+    else if (local.x >= size.x - clampedRadii.z && local.y >= size.y - clampedRadii.z) { radius = clampedRadii.z; center = float2(size.x - radius, size.y - radius); }
+    else if (local.x <= clampedRadii.w && local.y >= size.y - clampedRadii.w) { radius = clampedRadii.w; center = float2(radius, size.y - radius); }
+    else return 1.0;
+    if (radius <= 0.0001) return 1.0;
+    return 1.0 - smoothstep(max(0.0, radius - 1.0), radius + 1.0, length(local - center));
 }
 float4 PSLayer(VertDataOut v) : TARGET
 {
@@ -8719,10 +8854,51 @@ float4 PSLayer(VertDataOut v) : TARGET
         float2 logicalPoint = v.uv * imageLogicalSize;
         clipAlpha = rounded_box_alpha(logicalPoint, imageClipRect, imageCornerRadii);
     }
-    return image.Sample(textureSampler, v.uv) *
-           (weight * wipe_alpha(v.uv) * clipAlpha);
+    return image.Sample(textureSampler, v.uv) * (weight * transition_alpha(v.uv) * clipAlpha);
 }
 technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSLayer(v); } }
+)";
+
+
+static constexpr const char *kGpuAdjustmentMixEffect = R"(
+uniform float4x4 ViewProj;
+uniform texture2d originalImage;
+uniform texture2d effectedImage;
+uniform texture2d transitionMatte;
+uniform float amount;
+uniform float wipeProgress;
+uniform float wipeSoftness;
+uniform int wipeDirection;
+uniform int transitionType;
+uniform int blocksColumns;
+uniform int blocksRows;
+uniform float randomSeed;
+uniform int transitionMatteEnabled;
+uniform int imageChannel;
+uniform int transitionInvert;
+uniform int transitionClockwise;
+uniform float2 transitionCenter;
+uniform float transitionRotation;
+uniform float transitionAspect;
+uniform int transitionProfile;
+sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VertDataOut VSDefault(VertDataIn v){VertDataOut o;o.pos=mul(float4(v.pos.xyz,1.0),ViewProj);o.uv=v.uv;return o;}
+float hash21(float2 p){p=frac(p*float2(123.34,456.21));p+=dot(p,p+45.32+randomSeed);return frac(p.x*p.y);}
+float transition_alpha(float2 uv)
+{
+ float r=clamp(wipeProgress,0.0,1.0);if(r>=0.999999)return 1.0;float f=max(wipeSoftness,0.000001);float a=1.0;
+ if(transitionType==14){float2 c=floor(uv*float2(max(blocksColumns,1),max(blocksRows,1)));float t=hash21(c);if(transitionInvert!=0)t=1.0-t;a=smoothstep(t-f,t+f,r);}
+ else if(transitionType==15){float m=uv.x;if(transitionMatteEnabled!=0){float4 x=transitionMatte.Sample(textureSampler,uv);m=imageChannel==1?x.a:imageChannel==2?x.r:imageChannel==3?x.g:imageChannel==4?x.b:dot(x.rgb,float3(0.2126,0.7152,0.0722));}if(transitionInvert!=0)m=1.0-m;a=smoothstep(m-f,m+f,r);}
+ else if(transitionType==16){float2 p=uv-transitionCenter;float x=frac(atan2(p.y,p.x)/6.28318530718+0.5+transitionRotation/360.0+1.0);if(transitionClockwise==0)x=1.0-x;if(transitionInvert!=0)x=1.0-x;a=smoothstep(x-f,x+f,r);}
+ else if(transitionType==17){float2 p=(uv-transitionCenter)*2.0;p.x*=max(transitionAspect,0.01);float d=length(p)/1.41421356;if(transitionProfile==1)d=max(abs(p.x),abs(p.y));else if(transitionProfile==2)d=(abs(p.x)+abs(p.y))*0.5;d=clamp(d,0.0,1.0);if(transitionInvert!=0)d=1.0-d;a=smoothstep(d-f,d+f,r);}
+ else if(transitionType==18){float2 p=uv-transitionCenter;float z=transitionRotation*0.01745329252;float2 q=float2(p.x*cos(z)-p.y*sin(z),p.x*sin(z)+p.y*cos(z));q.x*=max(transitionAspect,0.01);float m=q.x+0.5;if(transitionProfile==1)m=length(q)*1.41421356;else if(transitionProfile==2)m=abs(q.x)+abs(q.y);m=clamp(m,0.0,1.0);if(transitionInvert!=0)m=1.0-m;a=smoothstep(m-f,m+f,r);}
+ else if(wipeDirection!=0){if(wipeDirection==2){float e=1.0-r;a=smoothstep(e,e+f,uv.x);}else if(wipeDirection==3){float e=1.0-r;a=smoothstep(e,e+f,uv.y);}else if(wipeDirection==4)a=1.0-smoothstep(r-f,r,uv.y);else a=1.0-smoothstep(r-f,r,uv.x);}
+ return clamp(a,0.0,1.0);
+}
+float4 PSMix(VertDataOut v):TARGET{float4 a=originalImage.Sample(textureSampler,v.uv);float4 b=effectedImage.Sample(textureSampler,v.uv);return lerp(a,b,clamp(amount*transition_alpha(v.uv),0.0,1.0));}
+technique Draw{pass{vertex_shader=VSDefault(v);pixel_shader=PSMix(v);}}
 )";
 
 static constexpr const char *kGpuPrimitiveShapeEffect = R"(
@@ -8958,6 +9134,14 @@ struct TitleGpuRenderSession {
         uint64_t last_used = 0;
     };
 
+    struct TransitionMatteTexture {
+        gs_texture_t *texture = nullptr;
+        qint64 modified_msecs = 0;
+        qint64 file_size = -1;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+
     struct AsyncReadbackSlot {
         gs_stagesurf_t *stage = nullptr;
         gs_texrender_t *crop_target = nullptr;
@@ -9019,6 +9203,7 @@ struct TitleGpuRenderSession {
     uint64_t uploaded_final_serial = 0;
     uint64_t published_final_serial = 0;
     uint64_t draw_serial = 0;
+    bool lens_flare_pass_logged = false;
 
     gs_texture_t *base_frame_texture = nullptr;
     QImage pending_base_frame;
@@ -9049,12 +9234,14 @@ struct TitleGpuRenderSession {
      * texture that is still sampled by the currently published frame. */
     std::unordered_map<std::string, MaskTextureCacheEntry> mask_texture_cache;
     uint64_t mask_texture_cache_tick = 0;
+    std::unordered_map<std::string, TransitionMatteTexture> transition_matte_textures;
 
     /* Keep presentation/cache blits isolated from layer-copy uniforms.
      * Reusing copy_effect here leaked the last layer's wipe/crop state into the
      * whole frame and could make Preview/Program output disappear. */
     gs_effect_t *blit_effect = nullptr;
     gs_effect_t *copy_effect = nullptr;
+    gs_effect_t *adjustment_mix_effect = nullptr;
     gs_effect_t *primitive_shape_effect = nullptr;
     std::unique_ptr<bgs::gpu_text::Renderer> text_renderer;
     gs_effect_t *blend_effect = nullptr;
@@ -9200,6 +9387,16 @@ static LayerEffect resolve_gpu_layer_effect(const LayerEffect &effect, double t)
         effect.corner_radius_bl_prop.is_animated() ? effect.corner_radius_bl_prop.evaluate(t)
                                                     : (double)effect.effect_corner_radius_bl);
     resolved.effect_stroke_color = eval_effect_stroke_color(effect, t);
+    resolved.effect_secondary_color = eval_effect_secondary_color(effect, t);
+    resolved.effect_amount = (float)std::max(0.0, effect.amount_prop.is_animated() ? effect.amount_prop.evaluate(t) : (double)effect.effect_amount);
+    resolved.effect_scale = (float)std::max(0.001, effect.scale_prop.is_animated() ? effect.scale_prop.evaluate(t) : (double)effect.effect_scale);
+    resolved.effect_softness = (float)std::clamp(effect.softness_prop.is_animated() ? effect.softness_prop.evaluate(t) : (double)effect.effect_softness, 0.0, 1.0);
+    resolved.effect_roundness = (float)std::clamp(effect.roundness_prop.is_animated() ? effect.roundness_prop.evaluate(t) : (double)effect.effect_roundness, -1.0, 1.0);
+    resolved.effect_speed = (float)(effect.speed_prop.is_animated() ? effect.speed_prop.evaluate(t) : (double)effect.effect_speed);
+    resolved.effect_center_x = (float)(effect.center_x_prop.is_animated() ? effect.center_x_prop.evaluate(t) : (double)effect.effect_center_x);
+    resolved.effect_center_y = (float)(effect.center_y_prop.is_animated() ? effect.center_y_prop.evaluate(t) : (double)effect.effect_center_y);
+    resolved.effect_complexity = (float)std::clamp(effect.complexity_prop.is_animated() ? effect.complexity_prop.evaluate(t) : (double)effect.effect_complexity, 1.0, 12.0);
+    resolved.effect_evolution = (float)(effect.evolution_prop.is_animated() ? effect.evolution_prop.evaluate(t) : (double)effect.effect_evolution);
     return resolved;
 }
 
@@ -9246,10 +9443,12 @@ static bool layer_can_use_gpu_primitive_raster(const Layer &layer,
                                                 bool backend_available)
 {
     if (!backend_available ||
-        (layer.type != LayerType::SolidRect && layer.type != LayerType::Shape))
+        (layer.type != LayerType::SolidRect && layer.type != LayerType::Shape &&
+         layer.type != LayerType::ColorSolid))
         return false;
 
-    const ShapeType shape_type = layer.type == LayerType::SolidRect
+    const ShapeType shape_type = (layer.type == LayerType::SolidRect ||
+                                  layer.type == LayerType::ColorSolid)
         ? ShapeType::RoundedRectangle : layer.shape_type;
     /* Line is intentionally excluded from the Phase 11 shape contract. The
      * current line-shaped primitive is no longer exposed as a shape tool and
@@ -10218,7 +10417,7 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
     const bool can_cache = cache_entry && input == cache_entry->texture &&
                            !cache_entry->key.empty();
     const std::string desired_cache_key = can_cache
-        ? cache_entry->key + "|gpu-effects-v4-background-box-contract|" +
+        ? cache_entry->key + "|gpu-effects-v8-lens-flare-dx11-keyword-fix|" +
               effect_layer_cache_key(nullptr, session->title, layer, title_time,
                                      static_cast<int>(width), static_cast<int>(height),
                                      false, false)
@@ -10278,7 +10477,7 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
                 gs_effect_set_texture(shadow_image, long_shadow);
         }
         set_gpu_surface_effect_params(pass.effect, pass.resolved,
-                                      (int)width, (int)height);
+                                      (int)width, (int)height, local_time);
         if (pass.resolved.type == LayerEffectType::BackgroundColor)
             set_gpu_background_geometry_params(pass.effect, pass.resolved, layer,
                                                title_time, cache_entry, width, height);
@@ -10295,8 +10494,28 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
             default: break;
             }
         }
-        while (gs_effect_loop(pass.effect, technique))
+        int executed_passes = 0;
+        while (gs_effect_loop(pass.effect, technique)) {
+            ++executed_passes;
             gs_draw_sprite(current, 0, width, height);
+        }
+        if (pass.resolved.type == LayerEffectType::LensFlare) {
+            if (!session->lens_flare_pass_logged) {
+                BGL_LOG_INFO("Effects", QStringLiteral(
+                    "Lens flare GPU pass active passes=%1 size=%2x%3 profile=%4 radius=%5 amount=%6 opacity=%7")
+                    .arg(executed_passes).arg(width).arg(height)
+                    .arg(pass.resolved.effect_profile)
+                    .arg(pass.resolved.effect_size)
+                    .arg(pass.resolved.effect_amount)
+                    .arg(pass.resolved.effect_opacity));
+                session->lens_flare_pass_logged = true;
+            }
+            if (executed_passes == 0) {
+                session->last_error = "Lens flare effect compiled but Draw technique executed no passes.";
+                BGL_LOG_WARNING("Effects", QStringLiteral(
+                    "Lens flare Draw technique executed no passes"));
+            }
+        }
         gs_texrender_end(target);
         current = gs_texrender_get_texture(target);
         if (!current)
@@ -10309,6 +10528,117 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
         current == gs_texrender_get_texture(cache_entry->effect_cache))
         cache_entry->effect_cache_key = desired_cache_key;
     return current;
+}
+
+static gs_texture_t *gpu_transition_matte_texture(
+    TitleGpuRenderSession *session, const std::string &path_value)
+{
+    if (!session || path_value.empty())
+        return nullptr;
+    const QString path = QString::fromStdString(path_value);
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile() || !info.isReadable())
+        return nullptr;
+    const std::string key = info.absoluteFilePath().toStdString();
+    auto &entry = session->transition_matte_textures[key];
+    const qint64 modified = info.lastModified().toMSecsSinceEpoch();
+    const qint64 size = info.size();
+    if (entry.texture && entry.modified_msecs == modified && entry.file_size == size)
+        return entry.texture;
+
+    if (entry.texture) {
+        gs_texture_destroy(entry.texture);
+        entry.texture = nullptr;
+    }
+    QImage upload = load_cached_layer_image(info.absoluteFilePath());
+    if (upload.isNull())
+        return nullptr;
+    if (upload.format() != QImage::Format_ARGB32_Premultiplied)
+        upload = upload.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    upload.detach();
+    unpremultiply_bgra_for_obs(upload.bits(),
+        static_cast<size_t>(upload.width()) * static_cast<size_t>(upload.height()));
+    const uint8_t *data[1] = {upload.constBits()};
+    entry.texture = gs_texture_create(
+        static_cast<uint32_t>(upload.width()),
+        static_cast<uint32_t>(upload.height()), GS_BGRA, 1, data, 0);
+    if (!entry.texture)
+        return nullptr;
+    entry.modified_msecs = modified;
+    entry.file_size = size;
+    entry.width = static_cast<uint32_t>(upload.width());
+    entry.height = static_cast<uint32_t>(upload.height());
+    return entry.texture;
+}
+
+static void set_gpu_transition_effect_params(
+    TitleGpuRenderSession *session, gs_effect_t *effect,
+    const LayerTransitionVisualState &transition)
+{
+    if (!effect)
+        return;
+    set_effect_float_param(effect, "wipeProgress", static_cast<float>(transition.wipe));
+    set_effect_float_param(effect, "wipeSoftness", static_cast<float>(transition.wipe_softness));
+    set_effect_int_param(effect, "wipeDirection",
+        transition.active && transition.wipe < 0.999999
+            ? static_cast<int>(transition.wipe_direction) : 0);
+    set_effect_int_param(effect, "transitionType",
+        transition.active ? static_cast<int>(transition.type) : 0);
+    set_effect_int_param(effect, "blocksColumns", std::max(1, transition.blocks_columns));
+    set_effect_int_param(effect, "blocksRows", std::max(1, transition.blocks_rows));
+    set_effect_float_param(effect, "randomSeed", static_cast<float>(transition.random_seed));
+    set_effect_int_param(effect, "imageChannel", std::clamp(transition.image_channel, 0, 4));
+    set_effect_int_param(effect, "transitionInvert", transition.invert ? 1 : 0);
+    set_effect_int_param(effect, "transitionClockwise", transition.clockwise ? 1 : 0);
+    set_effect_vec2_param(effect, "transitionCenter",
+        static_cast<float>(transition.center_x), static_cast<float>(transition.center_y));
+    set_effect_float_param(effect, "transitionRotation", static_cast<float>(transition.rotation));
+    set_effect_float_param(effect, "transitionAspect", static_cast<float>(transition.aspect));
+    set_effect_int_param(effect, "transitionProfile", transition.profile);
+
+    gs_texture_t *matte = transition.type == LayerTransitionType::ImageWipe
+        ? gpu_transition_matte_texture(session, transition.image_path) : nullptr;
+    set_effect_int_param(effect, "transitionMatteEnabled", matte ? 1 : 0);
+    if (matte) {
+        if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, "transitionMatte"))
+            gs_effect_set_texture(param, matte);
+    }
+}
+
+static gs_texture_t *mix_gpu_adjustment_layer(
+    TitleGpuRenderSession *session, const Title &title, const Layer &layer,
+    double title_time, gs_texture_t *original, gs_texture_t *effected,
+    gs_texrender_t *target)
+{
+    if (!session || !original || !effected || !target)
+        return original;
+    if (!session->adjustment_mix_effect)
+        session->adjustment_mix_effect = gs_effect_create(
+            kGpuAdjustmentMixEffect, "obs-bgs-adjustment-mix.effect", nullptr);
+    if (!session->adjustment_mix_effect) {
+        session->last_error = "Could not compile adjustment-layer mix shader.";
+        return original;
+    }
+    struct vec4 clear;
+    vec4_zero(&clear);
+    if (!begin_gpu_target(target, session->width, session->height, clear))
+        return original;
+    gs_effect_t *effect = session->adjustment_mix_effect;
+    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, "originalImage"))
+        gs_effect_set_texture(param, original);
+    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, "effectedImage"))
+        gs_effect_set_texture(param, effected);
+    set_effect_float_param(effect, "amount", static_cast<float>(std::clamp(
+        layer_chain_opacity(title, layer, title_time), 0.0, 1.0)));
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    set_gpu_transition_effect_params(session, effect, transition);
+    gs_enable_blending(false);
+    while (gs_effect_loop(effect, "Draw"))
+        gs_draw_sprite(original, 0, session->width, session->height);
+    gs_texrender_end(target);
+    gs_texture_t *result = gs_texrender_get_texture(target);
+    return result ? result : original;
 }
 
 static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
@@ -10337,25 +10667,17 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     }
     gs_eparam_t *image = gs_effect_get_param_by_name(session->copy_effect, "image");
     gs_eparam_t *weight_param = gs_effect_get_param_by_name(session->copy_effect, "weight");
-    gs_eparam_t *wipe_progress = gs_effect_get_param_by_name(session->copy_effect, "wipeProgress");
-    gs_eparam_t *wipe_softness = gs_effect_get_param_by_name(session->copy_effect, "wipeSoftness");
-    gs_eparam_t *wipe_direction = gs_effect_get_param_by_name(session->copy_effect, "wipeDirection");
     gs_eparam_t *clip_enabled = gs_effect_get_param_by_name(session->copy_effect, "imageClipEnabled");
     gs_eparam_t *clip_rect = gs_effect_get_param_by_name(session->copy_effect, "imageClipRect");
     gs_eparam_t *corner_radii = gs_effect_get_param_by_name(session->copy_effect, "imageCornerRadii");
     gs_eparam_t *logical_size = gs_effect_get_param_by_name(session->copy_effect, "imageLogicalSize");
-    if (!image || !weight_param || !wipe_progress || !wipe_softness || !wipe_direction ||
-        !clip_enabled || !clip_rect || !corner_radii || !logical_size)
+    if (!image || !weight_param || !clip_enabled || !clip_rect || !corner_radii || !logical_size)
         return false;
     gs_effect_set_texture(image, texture);
     gs_effect_set_float(weight_param, weight);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
         layer.transitions, layer.in_time, layer.out_time, title_time);
-    gs_effect_set_float(wipe_progress, static_cast<float>(transition.wipe));
-    gs_effect_set_float(wipe_softness, static_cast<float>(transition.wipe_softness));
-    gs_effect_set_int(wipe_direction,
-                      transition.active && transition.wipe < 0.999999
-                          ? static_cast<int>(transition.wipe_direction) : 0);
+    set_gpu_transition_effect_params(session, session->copy_effect, transition);
     const bool gpu_image_clip = layer.type == LayerType::Image &&
         image_clip_rect.isValid() && !image_clip_rect.isEmpty() &&
         (layer.image_crop_when_outside_box ||
@@ -11252,43 +11574,18 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         return nullptr;
 
     /* Raster uploads can execute shader draws (notably Phase 11 primitives).
-     * Enter the isolated GPU state before the upload loop so those draws never
-     * inherit the editor display's artwork translation/projection and never
-     * leak their primitive-sized viewport or disabled blending back to the
-     * caller. The previous ordering scoped only the later compositor pass,
-     * allowing resize redraws to render outside their target and publish an
-     * empty texture. */
+     * Enter the isolated GPU state before either the complete-frame presentation
+     * path or the live compositor path so no caller state leaks into texrender
+     * operations. */
     ScopedGpuCompositorState state;
 
-    bool all_required_rasters_ready = true;
-    for (auto &pair : session->layers) {
-        auto &entry = pair.second;
-        const bool was_pending = entry.pending_upload;
-        /* A null pending image with no primitive is an intentional retirement,
-         * not a failed replacement. The upload helper destroys the old texture
-         * and returns false because there is no new raster. Treating that as a
-         * missing required raster preserved the previous complete compositor
-         * frame for one extra draw, visibly retaining deleted/hidden content. */
-        const bool retiring = was_pending && !entry.gpu_text &&
-                              !entry.gpu_primitive &&
-                              entry.pending_image.isNull();
-        const bool ready = upload_gpu_layer_raster(session, entry);
-        if (was_pending && !ready && !retiring)
-            all_required_rasters_ready = false;
-    }
-
-    /* Frame publication is transactional. During interactive shape creation or
-     * resize, never rebuild the compositor from a mixture of old and missing
-     * rasters. Keep presenting the last complete frame and retry on the next
-     * display tick. This removes the full-canvas black flash when a primitive
-     * target is temporarily unavailable or being resized. */
-    if (!all_required_rasters_ready &&
-        gpu_session_has_published_frame_for_current_title(session)) {
-        session->frame_dirty = true;
-        session->last_error = "GPU raster replacement is not ready; preserving the previous frame.";
-        return session->final_texture;
-    }
-
+    /* A submitted final cache frame is already the complete compositor output.
+     * It must be presented before inspecting or uploading live layer rasters.
+     * The previous ordering validated every stale/pending text and shape raster
+     * first, so a perfectly valid RAM/disk prerender was rejected with
+     * "GPU raster set is incomplete". Fresh editor sessions hit this reliably;
+     * OBS sources hit it nondeterministically depending on whether the live
+     * first-frame raster happened to finish before the cache token arrived. */
     if (!session->frame_dirty && gpu_session_final_matches_model(session))
         return session->final_texture;
 
@@ -11308,6 +11605,15 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         }
         session->frame_dirty = false;
         session->last_error = nullptr;
+        if (TitlePreferences::cache_playback_logging_enabled()) {
+            BGL_LOG_INFO("CachePlayback", QStringLiteral(
+                "stage=gpu-publish-ram-final title=%1 revision=%2 key=%3 published=%4 presentationTarget=%5")
+                .arg(QString::fromStdString(session->title.id))
+                .arg(session->model_revision)
+                .arg(QString::fromStdString(session->submitted_gpu_cache_key))
+                .arg(reinterpret_cast<quintptr>(published), 0, 16)
+                .arg(session->active_presentation_target));
+        }
         return published;
     }
 
@@ -11354,6 +11660,49 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         session->frame_dirty = false;
         session->last_error = nullptr;
         return published;
+    }
+
+    /* Only live composition and cached-prefix composition depend on layer
+     * rasters. Validate them transactionally after the full-frame cache paths
+     * have had the opportunity to publish their self-contained output. */
+    bool all_required_rasters_ready = true;
+    for (auto &pair : session->layers) {
+        /* Scene-mask rasters are an auxiliary output family. They are uploaded
+         * on demand by title_gpu_render_session_render_auxiliary_layer() and
+         * must never gate the main title frame in OBS. */
+        if (is_gpu_scene_mask_raster_id(pair.first))
+            continue;
+        auto &entry = pair.second;
+        const bool was_pending = entry.pending_upload;
+        /* A null pending image with no primitive is an intentional retirement,
+         * not a failed replacement. The upload helper destroys the old texture
+         * and returns false because there is no new raster. Treating that as a
+         * missing required raster preserved the previous complete compositor
+         * frame for one extra draw, visibly retaining deleted/hidden content. */
+        const bool retiring = was_pending && !entry.gpu_text &&
+                              !entry.gpu_primitive &&
+                              entry.pending_image.isNull();
+        const bool ready = upload_gpu_layer_raster(session, entry);
+        if (was_pending && !ready && !retiring)
+            all_required_rasters_ready = false;
+    }
+
+    /* Live frame publication remains transactional for the first frame as well
+     * as later replacements. A same-title complete frame may remain visible
+     * while live rasters retry; a new session/title returns no texture. */
+    if (!all_required_rasters_ready) {
+        session->frame_dirty = true;
+        session->last_error =
+            "GPU raster set is incomplete; frame publication deferred.";
+        BGL_LOG_DEBUG("GpuPipeline", QStringLiteral(
+            "stage=transactional-publication action=defer title=%1 revision=%2 hasPrevious=%3 mode=%4")
+            .arg(QString::fromStdString(session->title.id))
+            .arg(session->model_revision)
+            .arg(gpu_session_has_published_frame_for_current_title(session) ? 1 : 0)
+            .arg(session->use_base_frame ? QStringLiteral("cached-prefix")
+                                         : QStringLiteral("live")));
+        return gpu_session_has_published_frame_for_current_title(session)
+            ? session->final_texture : nullptr;
     }
 
     if (session->use_base_frame && !session->use_gpu_cached_base &&
@@ -11415,6 +11764,22 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         if (!layer_chain_visible(session->title, layer, layer_time) ||
             !layer_should_render_as_visible_content(session->title, layer))
             continue;
+        if (layer.type == LayerType::Adjustment) {
+            gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
+                session, layer, layer_time, frame, width, height);
+            if (adjusted && adjusted != frame) {
+                gs_texrender_t *next = current_is_a ? session->frame_b
+                                                    : session->frame_a;
+                gs_texture_t *mixed = mix_gpu_adjustment_layer(
+                    session, session->title, layer, layer_time,
+                    frame, adjusted, next);
+                if (mixed && mixed != frame) {
+                    frame = mixed;
+                    current_is_a = !current_is_a;
+                }
+            }
+            continue;
+        }
         const bool has_mask = layer.mask_mode != MaskMode::None &&
                               !layer.mask_source_id.empty();
         const bool effects_after_mask = has_mask &&
@@ -11616,6 +11981,11 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         }
     }
     session->mask_texture_cache.clear();
+    for (auto &cached : session->transition_matte_textures) {
+        if (cached.second.texture)
+            gs_texture_destroy(cached.second.texture);
+    }
+    session->transition_matte_textures.clear();
     /* submitted_final_texture/base_frame_texture are borrowed from the pool
      * whenever they have a cacheKey. Unkeyed temporary textures are owned
      * directly by the corresponding field. */
@@ -11628,6 +11998,8 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         gs_effect_destroy(session->blit_effect);
     if (session->copy_effect)
         gs_effect_destroy(session->copy_effect);
+    if (session->adjustment_mix_effect)
+        gs_effect_destroy(session->adjustment_mix_effect);
     if (session->primitive_shape_effect)
         gs_effect_destroy(session->primitive_shape_effect);
     if (session->blend_effect)
@@ -11740,8 +12112,10 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         const auto &layer = session->title.layers[index];
         if (!layer)
             continue;
-        needed_ids.insert(gpu_session_layer_id(*layer));
-        if (layer->mask_mode != MaskMode::None &&
+        if (layer->type != LayerType::Adjustment)
+            needed_ids.insert(gpu_session_layer_id(*layer));
+        if (layer->type != LayerType::Adjustment &&
+            layer->mask_mode != MaskMode::None &&
             !layer->mask_source_id.empty())
             needed_ids.insert(layer->mask_source_id);
     }
@@ -11892,8 +12266,9 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         if (gpu_text_prepared) {
             /* Geometry/material batches are now pending in entry.text_layer. */
         } else if (gpu_primitive) {
-            const ShapeType primitive_type = layer.type == LayerType::SolidRect
-                ? ShapeType::RoundedRectangle : layer.shape_type;
+            const ShapeType primitive_type =
+                (layer.type == LayerType::SolidRect || layer.type == LayerType::ColorSolid)
+                    ? ShapeType::RoundedRectangle : layer.shape_type;
             const bool has_stroke = layer_has_visible_outline(layer, base_local_time);
             const double padding = gpu_primitive_padding(
                 layer, base_local_time);
@@ -12512,7 +12887,7 @@ bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
     const uint64_t draw_serial = ++session->draw_serial;
     if (TitlePreferences::cache_playback_logging_enabled()) {
         BGL_LOG_INFO("CachePlayback", QStringLiteral(
-            "stage=gpu-draw title=%1 session=%2 drawSerial=%3 submittedSerial=%4 uploadedSerial=%5 publishedSerial=%6 texture=%7 output=%8x%9 dirty=%10 useSubmitted=%11")
+            "stage=gpu-draw title=%1 session=%2 drawSerial=%3 submittedSerial=%4 uploadedSerial=%5 publishedSerial=%6 texture=%7 output=%8x%9 dirty=%10 useSubmitted=%11 useGpuRam=%12")
             .arg(session->has_title
                      ? QString::fromStdString(session->title.id)
                      : QStringLiteral("<none>"))
@@ -12524,7 +12899,8 @@ bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
             .arg(reinterpret_cast<quintptr>(texture), 0, 16)
             .arg(output_width).arg(output_height)
             .arg(session->frame_dirty ? 1 : 0)
-            .arg(session->use_submitted_final ? 1 : 0));
+            .arg(session->use_submitted_final ? 1 : 0)
+            .arg(session->use_gpu_cached_final ? 1 : 0));
     }
     gs_blend_state_push();
     gs_enable_blending(true);
@@ -12560,7 +12936,25 @@ static bool title_gpu_render_session_submit_async_readback(
     }
 
     gs_texture_t *texture = render_gpu_session_locked(session);
-    if (!texture) {
+    /* A readback is valid only when the texture was published from the exact
+     * current model and the graph is clean. render_gpu_session_locked() may
+     * deliberately return the previous same-title frame while a replacement
+     * text/shape raster is pending; caching that fallback under the new key
+     * would permanently associate stale or transparent pixels with 100% cache
+     * progress. */
+    if (!texture || session->frame_dirty ||
+        !gpu_session_final_matches_model(session)) {
+        BGL_LOG_DEBUG("Prerender", QStringLiteral(
+            "stage=readback-submit action=reject-incomplete title=%1 revision=%2 publishedRevision=%3 dirty=%4 texture=%5 error=%6")
+            .arg(session->has_title
+                     ? QString::fromStdString(session->title.id)
+                     : QStringLiteral("<none>"))
+            .arg(session->model_revision)
+            .arg(session->published_model_revision)
+            .arg(session->frame_dirty ? 1 : 0)
+            .arg(texture ? 1 : 0)
+            .arg(session->last_error ? QString::fromUtf8(session->last_error)
+                                     : QStringLiteral("none")));
         lock.unlock();
         obs_leave_graphics();
         return false;
@@ -12766,6 +13160,20 @@ QImage title_gpu_render_session_readback(TitleGpuRenderSession *session)
         return QImage();
     }
     gs_texture_t *texture = render_gpu_session_locked(session);
+    const bool complete_current_frame = texture && !session->frame_dirty &&
+        gpu_session_final_matches_model(session);
+    if (!complete_current_frame) {
+        BGL_LOG_DEBUG("Prerender", QStringLiteral(
+            "stage=sync-readback action=reject-incomplete title=%1 revision=%2 publishedRevision=%3 dirty=%4 texture=%5")
+            .arg(session->has_title
+                     ? QString::fromStdString(session->title.id)
+                     : QStringLiteral("<none>"))
+            .arg(session->model_revision)
+            .arg(session->published_model_revision)
+            .arg(session->frame_dirty ? 1 : 0)
+            .arg(texture ? 1 : 0));
+        texture = nullptr;
+    }
     if (texture) {
         if (!session->stage || session->stage_width != session->width ||
             session->stage_height != session->height) {

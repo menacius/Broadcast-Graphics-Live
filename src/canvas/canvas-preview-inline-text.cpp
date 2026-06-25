@@ -1,4 +1,5 @@
 #include "title-editor-internal.h"
+#include "title-logger.h"
 
 #include <algorithm>
 #include <cmath>
@@ -767,6 +768,12 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
     committing_inline_text_ = false;
     dirty_ = true;
     update();
+    BGL_LOG_DEBUG("Text", QStringLiteral(
+        "Committed inline text edit title=%1 layer=%2 accepted=%3")
+        .arg(title_ ? QString::fromStdString(title_->id)
+                    : QStringLiteral("<none>"))
+        .arg(QString::fromStdString(layer_id))
+        .arg(accept_changes ? 1 : 0));
     emit text_edit_committed(layer_id);
 }
 

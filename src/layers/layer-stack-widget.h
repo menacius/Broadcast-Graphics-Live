@@ -87,6 +87,8 @@ private slots:
     void on_add_ticker();
     void on_add_rect();
     void on_add_image();
+    void on_add_adjustment();
+    void on_add_color_solid();
     void on_move_up();
     void on_move_down();
     void on_delete();

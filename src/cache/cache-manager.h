@@ -228,6 +228,7 @@ public:
         QString cue_state_key;
         quint64 cache_epoch = 0;
         quint64 title_generation = 0;
+        int retry_count = 0;
     };
 
     explicit RenderQueueManager(QObject *parent = nullptr);
@@ -416,6 +417,8 @@ private:
     void workerLoop();
     bool takePendingLiveCueStructureRefresh(std::shared_ptr<Title> &title);
     bool renderJob(RenderQueueManager::Job job);
+    bool retryFailedJob(RenderQueueManager::Job job, const QString &live_state_key,
+                        const char *stage);
     bool resolveOldestGpuReadback(bool force);
     bool hasPendingGpuReadbacks() const;
     void abandonJobState(const RenderQueueManager::Job &job, const QString &live_state_key);

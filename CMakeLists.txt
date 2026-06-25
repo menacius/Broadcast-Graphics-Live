@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.3)
+project(broadcast-graphics-live VERSION 0.8.4)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -343,6 +343,7 @@ set(OBS_BGS_CORE_SOURCES
     src/core/title-logger.cpp
     src/core/title-preferences.cpp
     src/core/system-memory.cpp
+    src/core/ticker-runtime.cpp
 )
 set(OBS_BGS_CORE_HEADERS
     src/core/live-text-cue-utils.h
@@ -352,6 +353,7 @@ set(OBS_BGS_CORE_HEADERS
     src/core/title-logger.h
     src/core/title-preferences.h
     src/core/system-memory.h
+    src/core/ticker-runtime.h
 )
 
 set(OBS_BGS_LAYER_HEADERS
@@ -738,6 +740,80 @@ if(OBS_BGS_BUILD_TESTS)
       tests/cache_time_contract_test.cpp)
   target_include_directories(cache_time_contract_test PRIVATE src/cache)
   add_test(NAME cache_time_contract_test COMMAND cache_time_contract_test)
+
+  add_executable(ticker_runtime_contract_test
+      tests/ticker_runtime_contract_test.cpp
+      src/core/ticker-runtime.cpp)
+  target_include_directories(ticker_runtime_contract_test PRIVATE
+      src src/core src/layers src/effects src/timeline src/text src/transitions)
+  add_test(NAME ticker_runtime_contract_test COMMAND ticker_runtime_contract_test)
+
+  add_executable(ticker_controls_contract_test
+      tests/ticker_controls_contract_test.cpp)
+  add_test(NAME ticker_controls_contract_test
+      COMMAND ticker_controls_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-hotkeys.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini)
+
+  add_executable(adjustment_effects_transitions_contract_test
+      tests/adjustment_effects_transitions_contract_test.cpp)
+  add_test(NAME adjustment_effects_transitions_contract_test
+      COMMAND adjustment_effects_transitions_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/layer-effects.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/transitions/layer-transition.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/transitions/transition-editor-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-presets-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-effect-registry.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp)
+
+  add_executable(effect_preview_shortcuts_contract_test
+      tests/effect_preview_shortcuts_contract_test.cpp)
+  add_test(NAME effect_preview_shortcuts_contract_test
+      COMMAND effect_preview_shortcuts_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/transitions/transition-editor-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/lens-flare/lens-flare.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/vignette/vignette.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/noise/noise.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp)
+
+  add_executable(procedural_effect_runtime_contract_test
+      tests/procedural_effect_runtime_contract_test.cpp)
+  add_test(NAME procedural_effect_runtime_contract_test
+      COMMAND procedural_effect_runtime_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-effect-registry.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/lens-flare/lens-flare.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/vignette/vignette.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/noise/noise.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect)
+
+  add_executable(lens_flare_runtime_contract_test
+      tests/lens_flare_runtime_contract_test.cpp)
+  add_test(NAME lens_flare_runtime_contract_test
+      COMMAND lens_flare_runtime_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-effect-registry.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/lens-flare/lens-flare.effect)
 
   add_executable(system_memory_contract_test
       tests/system_memory_contract_test.cpp

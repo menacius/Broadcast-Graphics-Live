@@ -6,20 +6,20 @@
 
 **Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.3-alpha`**
+**Current development version: `v0.8.4-alpha`**
 
 > [!WARNING]
-> `v0.8.3-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+> `v0.8.4-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
 
 Broadcast Graphics Live is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
 
 ## Development approach
 
-This project is the result of **vibe coding**. **[Antonios Dimopoulos](https://web.facebook.com/menacius)** defines the product vision, broadcast workflows, desired behavior, interface decisions, architecture goals, and acceptance criteria, while AI-assisted development tools help translate those requirements into C++/Qt implementation. He knows considerably more about what he wants to build than he does about C++.
+This project is the result of **vibe coding**. **Antonios Dimopoulos** defines the product vision, broadcast workflows, desired behavior, interface decisions, architecture goals, and acceptance criteria, while AI-assisted development tools help translate those requirements into C++/Qt implementation. He knows considerably more about what he wants to build than he does about C++.
 
 That development model makes validation especially important. This alpha should be treated as experimental: code changes need diff review, structural and build checks, focused automated tests, and real OBS runtime testing before they can be considered reliable for production use.
 
-## What changed in `v0.8.3-alpha`
+## What changed in `v0.8.4-alpha`
 
 Compared with the current GitHub `main` snapshot, this development archive advances the unified GPU pipeline through the Phase 12D–15 work:
 
@@ -34,6 +34,15 @@ Compared with the current GitHub `main` snapshot, this development archive advan
 - RAM allocation is dynamically clamped from 16 MB up to 50% of installed physical memory, according to the user preference.
 - Phase 15 runtime visibility recovery restored the last known working Phase 14 artwork path after premature legacy removal caused text, vectors, masks, and effects to disappear. Cache ABI v24 invalidates blank frames from that failed renderer generation.
 - The standalone Line primitive was removed from the shape-tool list; line artwork remains available through open Pen paths.
+- Added dedicated **Adjustment Layer** and **Color Solid** layer types for non-destructive full-frame compositing and reusable procedural backgrounds.
+- Added GPU effects for **Lens Flare**, **Vignette**, **Noise**, and **Roughen Edges**. Lens Flare includes five selectable flare profiles, aspect-correct placement, and premultiplied-alpha compositing.
+- Added general transitions for **Blocks**, **Image Wipe**, **Clock**, **Iris**, and **Gradient Wipe**, with editable transition-specific parameters and serialization.
+- Updated the A → B transition preview so the new transition families are represented by their real animation logic instead of a generic fallback.
+- Effects, transitions, and animation browsers now flatten single-item categories and omit empty category branches for a cleaner preset hierarchy.
+- Restored editor keyboard actions for Undo, Redo, Cut, Copy, Paste, Delete, New, and Save across native and embedded editor-window contexts.
+- Expanded cache and prerender hashing/invalidation for procedural effects, adjustment layers, temporal Noise state, and Image Wipe asset changes, preventing stale cached output.
+- Fixed OBS shader-loading and runtime failures affecting the new procedural effects, including the Lens Flare DX11 compile failure caused by reserved HLSL identifiers.
+- Added stronger diagnostics and crash-safety around effect creation, shader compilation, malformed preset data, and renderer fallback paths.
 
 ---
 
@@ -59,6 +68,8 @@ Compared with the current GitHub `main` snapshot, this development archive advan
   - Image
   - Solid rectangle
   - Vector shape
+  - Color Solid
+  - Adjustment Layer
 - Shape primitives:
   - Rectangle
   - Rounded rectangle
@@ -121,6 +132,10 @@ Stackable effects currently represented by the editor and renderer include:
 - Motion Blur
 - Bloom
 - Emboss
+- Lens Flare
+- Vignette
+- Noise
+- Roughen Edges
 
 Supported layer/effect blend modes include Normal, Multiply, Additive, Screen, Overlay, and Color.
 
@@ -135,12 +150,12 @@ Effects can be applied by drag-and-drop onto a timeline layer strip, directly on
 - Drag-and-drop from **Effects & Presets** directly onto either strip edge.
 - Timeline resizing controls the transition duration.
 - Double-click opens a transition editor with duration, easing, direction, offset, scale, blur radius, wipe softness, text-unit, stagger, and reverse-order controls where applicable.
-- Animated previews use an **A → B** demonstration for general transitions and **Abc De** for text transitions.
+- Animated previews use an **A → B** demonstration for general transitions and **Abc De** for text transitions, with transition-specific preview animation for the complete built-in transition set.
 - Transition overlays and empty In/Out targets are selectable timeline items with Copy, Cut, Paste, Delete, context-menu, and keyboard support.
 - Pasting or dropping onto an occupied slot replaces the existing transition while preserving the copied preset's complete configuration.
 - Text transitions can animate by grapheme/character, word, or sentence while preserving text shaping, kerning, tracking, ligatures, outlines, shadows, and overlapping glyph bounds.
 - Text blur transitions animate the actual blur radius down to zero rather than compositing a sharp glyph over a blurred halo.
-- General transition primitives include dissolve/fade, opacity and blur, scale change, directional slide, blur slide, wipe with feathering, and zoom blur.
+- General transition primitives include dissolve/fade, opacity and blur, scale change, directional slide, blur slide, wipe with feathering, zoom blur, blocks, image wipe, clock wipe, iris, and gradient wipe.
 - Text transition primitives include fade, slide, blur slide, blur, scale, and wipe, with configurable grouping and direction instead of duplicated directional/unit presets.
 - `.obgtranst` is reserved for text transitions and `.obgtransg` for general transitions; category metadata is validated against the file type.
 
@@ -237,7 +252,7 @@ The current implementation uses one cached prefix rather than multiple independe
 
 ## Current status and limitations
 
-- The current release line is **`v0.8.3-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
+- The current release line is **`v0.8.4-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
 - Remaining pre-beta work includes the final planned features, UI consistency and visual polish, broader workflow validation, performance verification, and focused bug hunting across editor, dock, cache, and OBS playback paths.
 - Supported Text and Clock layers use the Phase 12C/12D GPU text backend: immutable shaped glyph data feeds bounded R8 SDF atlas pages, GPU glyph quads, multiple per-range fills/gradients/strokes, globally correct Behind/Front stroke composition, persistent double-buffered layer textures, and shared editor caret/selection geometry.
 - The Phase 13 GPU mask graph handles alpha/luma variants, nested track-matte dependencies, scene masks, effect ordering, parent transforms, and bounded retained matte textures without CPU mask compositing.

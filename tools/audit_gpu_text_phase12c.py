@@ -357,10 +357,10 @@ require(
     "GPU text texture remains in the unified effects/mask/motion/presentation compositor",
 )
 
-if "gpu-renderer-v24-phase15-visibility-recovery" not in CACHE:
+if "gpu-renderer-v25-transactional-text-prerender" not in CACHE:
     errors.append("cache ABI does not supersede the Phase 12D text pixels/editor geometry generation")
 else:
-    passes.append("Phase 15 recovery ABI invalidates blank Phase 15 and older frame payloads")
+    passes.append("Transactional renderer ABI invalidates incomplete and older frame payloads")
 
 require(
     HEADER,

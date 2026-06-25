@@ -62,7 +62,7 @@ void test_worker_contract(const std::string &source,
     require(source, "animated_vec2_extents(layer.position)");
     require(source, "animated_scalar_max_nonnegative");
     require(source, "layer->mask_mode != MaskMode::None");
-    require(source, "gpu-renderer-v24-phase15-visibility-recovery");
+    require(source, "gpu-renderer-v31-lens-flare-dx11-keyword-fix");
     require(source, "std::memcpy(");
 
     reject(source, "QImage CacheManager::renderDirtyTiles");
