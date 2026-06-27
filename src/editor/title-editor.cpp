@@ -1,6 +1,7 @@
 #include "system-memory.h"
 #include "title-editor-internal.h"
 #include "title-logger.h"
+#include "build-info.h"
 #include "style-presets.h"
 #include "transition-editor-dialog.h"
 #include "transition-preset-catalog.h"
@@ -27,6 +28,11 @@
 #include <cmath>
 
 namespace {
+
+static QString bgl_editor_caption(const QString &base)
+{
+    return base + QStringLiteral(" — ") + QStringLiteral(BGL_BUILD_DISPLAY);
+}
 constexpr double kMaxPlaybackUiHz = 60.0;
 
 double editor_playback_ui_frame_duration()
@@ -374,6 +380,291 @@ bool editor_parenting_would_cycle(const std::shared_ptr<Title> &title,
     return false;
 }
 
+
+bool editor_layer_has_ancestor_for_grouping(const std::shared_ptr<Title> &title,
+                                            const Layer &layer,
+                                            const std::string &ancestor_id)
+{
+    std::string cursor = layer.parent_id;
+    int guard = 0;
+    while (!cursor.empty() && guard++ < 64) {
+        if (cursor == ancestor_id)
+            return true;
+        const Layer *parent = editor_layer_by_id_for_parenting(title, cursor);
+        if (!parent)
+            break;
+        cursor = parent->parent_id;
+    }
+    return false;
+}
+
+QRectF editor_layer_local_rect_for_grouping(const Layer &layer, double playhead)
+{
+    const double local_time = std::max(0.0, playhead - layer.in_time);
+    const double width = std::max(0.0, eval_box_width(layer, local_time));
+    const double height = std::max(0.0, eval_box_height(layer, local_time));
+    const double origin_x = eval_origin_x(layer, local_time);
+    const double origin_y = eval_origin_y(layer, local_time);
+    return QRectF(-origin_x * width, -origin_y * height, width, height);
+}
+
+QRectF editor_layer_canvas_bounds_for_grouping(const std::shared_ptr<Title> &title,
+                                                const Layer &layer,
+                                                double playhead)
+{
+    if (!title)
+        return {};
+    if (layer.type == LayerType::Group) {
+        QRectF combined;
+        bool have = false;
+        for (const auto &candidate : title->layers) {
+            if (!candidate || candidate->type == LayerType::Group ||
+                !editor_layer_has_ancestor_for_grouping(title, *candidate, layer.id))
+                continue;
+            const QRectF child = editor_layer_canvas_bounds_for_grouping(
+                title, *candidate, playhead);
+            if (!child.isValid() || child.isEmpty())
+                continue;
+            combined = have ? combined.united(child) : child;
+            have = true;
+        }
+        if (have)
+            return combined.normalized();
+        const QPointF origin = editor_layer_world_transform_for_parenting(
+            title, layer, playhead).map(QPointF(0.0, 0.0));
+        return QRectF(origin - QPointF(16.0, 16.0), QSizeF(32.0, 32.0));
+    }
+
+    const QRectF local = editor_layer_local_rect_for_grouping(layer, playhead);
+    if (!local.isValid() || local.isEmpty())
+        return {};
+    const QTransform world = editor_layer_world_transform_for_parenting(
+        title, layer, playhead);
+    QPolygonF polygon;
+    polygon << world.map(local.topLeft()) << world.map(local.topRight())
+            << world.map(local.bottomRight()) << world.map(local.bottomLeft());
+    return polygon.boundingRect().normalized();
+}
+
+void editor_offset_position_track(AnimatedVec2Property &position,
+                                  double dx, double dy)
+{
+    position.static_value.x += dx;
+    position.static_value.y += dy;
+    for (VectorKeyframe &keyframe : position.keyframes) {
+        keyframe.value.x += dx;
+        keyframe.value.y += dy;
+    }
+}
+
+void editor_set_local_transform_from_world(const std::shared_ptr<Title> &title,
+                                           Layer &layer,
+                                           const QTransform &world,
+                                           const std::string &new_parent_id,
+                                           double playhead)
+{
+    QTransform parent_world;
+    if (!new_parent_id.empty()) {
+        if (const Layer *parent = editor_layer_by_id_for_parenting(title,
+                                                                  new_parent_id))
+            parent_world = editor_layer_world_transform_for_parenting(
+                title, *parent, playhead);
+    }
+    bool invertible = false;
+    const QTransform parent_inverse = parent_world.inverted(&invertible);
+    const QTransform local = invertible ? parent_inverse * world : world;
+
+    const double scale_x = std::hypot(local.m11(), local.m12());
+    const double determinant = local.determinant();
+    double scale_y = scale_x > 1e-9
+        ? determinant / scale_x
+        : std::hypot(local.m21(), local.m22());
+    if (std::abs(scale_y) < 1e-9)
+        scale_y = scale_y < 0.0 ? -1e-9 : 1e-9;
+    const double rotation = std::atan2(local.m12(), local.m11()) *
+                            180.0 / std::acos(-1.0);
+    const double local_time = std::clamp(
+        playhead - layer.in_time, 0.0,
+        std::max(0.0, layer.out_time - layer.in_time));
+
+    layer.parent_id = new_parent_id;
+    set_animated_x(layer.position, local_time, local.dx());
+    set_animated_y(layer.position, local_time, local.dy());
+    set_animated_x(layer.scale, local_time, scale_x);
+    set_animated_y(layer.scale, local_time, scale_y);
+    set_animated_value(layer.rotation, local_time, rotation);
+}
+
+std::vector<std::shared_ptr<Layer>> editor_top_level_selected_layers(
+    const std::shared_ptr<Title> &title,
+    const std::vector<std::string> &ids)
+{
+    std::vector<std::shared_ptr<Layer>> result;
+    if (!title)
+        return result;
+    const std::set<std::string> selected(ids.begin(), ids.end());
+    for (const auto &layer : title->layers) {
+        if (!layer || selected.find(layer->id) == selected.end())
+            continue;
+        bool has_selected_ancestor = false;
+        std::string cursor = layer->parent_id;
+        int guard = 0;
+        while (!cursor.empty() && guard++ < 64) {
+            if (selected.find(cursor) != selected.end()) {
+                has_selected_ancestor = true;
+                break;
+            }
+            const Layer *parent = editor_layer_by_id_for_parenting(title, cursor);
+            if (!parent)
+                break;
+            cursor = parent->parent_id;
+        }
+        if (!has_selected_ancestor)
+            result.push_back(layer);
+    }
+    return result;
+}
+
+std::vector<std::string> editor_selection_with_group_descendants(
+    const std::shared_ptr<Title> &title,
+    const std::vector<std::string> &ids)
+{
+    if (!title)
+        return {};
+    std::set<std::string> expanded(ids.begin(), ids.end());
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto &layer : title->layers) {
+            if (!layer || layer->parent_id.empty() ||
+                expanded.find(layer->id) != expanded.end())
+                continue;
+            auto parent = title->find_layer(layer->parent_id);
+            if (parent && parent->type == LayerType::Group &&
+                expanded.find(parent->id) != expanded.end()) {
+                expanded.insert(layer->id);
+                changed = true;
+            }
+        }
+    }
+    std::vector<std::string> ordered;
+    ordered.reserve(expanded.size());
+    for (const auto &layer : title->layers) {
+        if (layer && expanded.find(layer->id) != expanded.end())
+            ordered.push_back(layer->id);
+    }
+    return ordered;
+}
+
+
+std::string editor_group_order_scope(const std::shared_ptr<Title> &title,
+                                     const Layer &layer)
+{
+    if (!title || layer.parent_id.empty()) return {};
+    const auto parent = title->find_layer(layer.parent_id);
+    return parent && parent->type == LayerType::Group ? layer.parent_id
+                                                       : std::string();
+}
+
+std::vector<std::shared_ptr<Layer>> editor_canonical_group_order(
+    const std::shared_ptr<Title> &title,
+    const std::map<std::string, std::vector<std::shared_ptr<Layer>>> &siblings_by_scope)
+{
+    std::vector<std::shared_ptr<Layer>> ordered;
+    if (!title) return ordered;
+
+    std::set<std::string> emitted;
+    std::function<void(const std::shared_ptr<Layer> &)> append_subtree;
+    append_subtree = [&](const std::shared_ptr<Layer> &layer) {
+        if (!layer || !emitted.insert(layer->id).second)
+            return;
+        const auto children = siblings_by_scope.find(layer->id);
+        if (children != siblings_by_scope.end()) {
+            for (const auto &child : children->second)
+                append_subtree(child);
+        }
+        ordered.push_back(layer);
+    };
+
+    const auto roots = siblings_by_scope.find(std::string());
+    if (roots != siblings_by_scope.end()) {
+        for (const auto &root : roots->second)
+            append_subtree(root);
+    }
+    for (const auto &layer : title->layers)
+        append_subtree(layer);
+    return ordered;
+}
+
+bool editor_reorder_selected_group_siblings(const std::shared_ptr<Title> &title,
+                                            const std::vector<std::string> &selected_ids,
+                                            int action)
+{
+    if (!title || selected_ids.empty() || action == 0)
+        return false;
+    const auto selected_roots = editor_top_level_selected_layers(title, selected_ids);
+    std::set<std::string> moving;
+    for (const auto &layer : selected_roots)
+        if (layer) moving.insert(layer->id);
+    if (moving.empty()) return false;
+
+    std::map<std::string, std::vector<std::shared_ptr<Layer>>> scopes;
+    for (const auto &layer : title->layers) {
+        if (!layer) continue;
+        scopes[editor_group_order_scope(title, *layer)].push_back(layer);
+    }
+
+    bool changed = false;
+    for (auto &[scope, siblings] : scopes) {
+        const bool scope_has_selection = std::any_of(
+            siblings.begin(), siblings.end(), [&](const auto &layer) {
+                return layer && moving.find(layer->id) != moving.end();
+            });
+        if (!scope_has_selection) continue;
+
+        auto is_moving = [&](const std::shared_ptr<Layer> &layer) {
+            return layer && moving.find(layer->id) != moving.end();
+        };
+        const auto before = siblings;
+        if (action >= 2 || action <= -2) {
+            std::vector<std::shared_ptr<Layer>> selected;
+            std::vector<std::shared_ptr<Layer>> stationary;
+            selected.reserve(siblings.size());
+            stationary.reserve(siblings.size());
+            for (const auto &layer : siblings)
+                (is_moving(layer) ? selected : stationary).push_back(layer);
+            siblings.clear();
+            if (action >= 2) {
+                siblings.insert(siblings.end(), stationary.begin(), stationary.end());
+                siblings.insert(siblings.end(), selected.begin(), selected.end());
+            } else {
+                siblings.insert(siblings.end(), selected.begin(), selected.end());
+                siblings.insert(siblings.end(), stationary.begin(), stationary.end());
+            }
+        } else if (action > 0) {
+            for (int i = static_cast<int>(siblings.size()) - 2; i >= 0; --i) {
+                if (is_moving(siblings[static_cast<size_t>(i)]) &&
+                    !is_moving(siblings[static_cast<size_t>(i + 1)]))
+                    std::swap(siblings[static_cast<size_t>(i)],
+                              siblings[static_cast<size_t>(i + 1)]);
+            }
+        } else {
+            for (size_t i = 1; i < siblings.size(); ++i) {
+                if (is_moving(siblings[i]) && !is_moving(siblings[i - 1]))
+                    std::swap(siblings[i], siblings[i - 1]);
+            }
+        }
+        changed = changed || siblings != before;
+    }
+
+    if (!changed) return false;
+    auto reordered = editor_canonical_group_order(title, scopes);
+    if (reordered.size() != title->layers.size())
+        return false;
+    title->layers = std::move(reordered);
+    return true;
+}
+
 // Editor-session-only defaults. These intentionally live only in process memory:
 // closing/reopening the editor window within the same OBS run keeps the user's
 // last foreground/background and new-layer style, but restarting OBS resets them
@@ -465,7 +756,7 @@ Layer g_editor_session_new_layer_style;
 TitleEditor::TitleEditor(QWidget *parent)
     : QMainWindow(parent, Qt::Window)
 {
-    setWindowTitle(bgl_tr("OBSTitles.EditorWindowTitle"));
+    setWindowTitle(bgl_editor_caption(bgl_tr("OBSTitles.EditorWindowTitle")));
     resize(1280, 760);
     setMinimumSize(900, 600);
 
@@ -2019,7 +2310,8 @@ std::shared_ptr<Layer> TitleEditor::create_basic_layer(LayerType type, const QSt
                   (type == LayerType::Ticker) ? editor_text_std("OBSTitles.Ticker") :
                   (type == LayerType::Image) ? editor_text_std("OBSTitles.Image") :
                   (type == LayerType::Adjustment) ? editor_text_std("OBSTitles.AdjustmentLayer") :
-                  (type == LayerType::ColorSolid) ? editor_text_std("OBSTitles.ColorSolid") : editor_text_std("OBSTitles.Shape");
+                  (type == LayerType::ColorSolid) ? editor_text_std("OBSTitles.ColorSolid") :
+                  (type == LayerType::Group) ? editor_text_std("OBSTitles.Group") : editor_text_std("OBSTitles.Shape");
     }
     l->name = unique_layer_name(l->name);
     l->type = type;
@@ -2503,6 +2795,19 @@ void TitleEditor::build_ui()
         if (editor_focus_accepts_text(focusWidget())) return;
         duplicate_selected_layers();
     });
+    QAction *group_action = edit_menu->addAction(bgl_tr("OBSTitles.GroupLayers"));
+    register_editor_shortcut(group_action, {QKeySequence(Qt::CTRL | Qt::Key_G)});
+    connect(group_action, &QAction::triggered, this, [this]() {
+        if (!editor_focus_accepts_text(focusWidget()))
+            group_selected_layers();
+    });
+    QAction *ungroup_action = edit_menu->addAction(bgl_tr("OBSTitles.UngroupLayers"));
+    register_editor_shortcut(ungroup_action,
+                             {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G)});
+    connect(ungroup_action, &QAction::triggered, this, [this]() {
+        if (!editor_focus_accepts_text(focusWidget()))
+            ungroup_selected_layers();
+    });
     edit_menu->addSeparator();
     QAction *preferences_action = edit_menu->addAction(bgl_tr("OBSTitles.Preferences"));
     connect(preferences_action, &QAction::triggered, this, &TitleEditor::show_preferences);
@@ -2673,6 +2978,13 @@ void TitleEditor::build_ui()
     canvas_layout->setSpacing(0);
     canvas_ = new CanvasPreview(canvas_panel);
     canvas_->setMinimumSize(300, 200);
+    if (effects_panel_) {
+        connect(effects_panel_, &EffectsPanel::extension_canvas_handles_changed,
+                canvas_, &CanvasPreview::set_extension_canvas_handles);
+        connect(canvas_, &CanvasPreview::extension_canvas_handle_moved,
+                effects_panel_, &EffectsPanel::set_extension_canvas_handle_position);
+        canvas_->set_extension_canvas_handles(effects_panel_->extension_canvas_handles());
+    }
     if (act_rulers_visible_) act_rulers_visible_->setChecked(canvas_->rulers_visible());
     if (act_guides_visible_) act_guides_visible_->setChecked(canvas_->guides_visible());
     if (act_guides_locked_) act_guides_locked_->setChecked(canvas_->guides_locked());
@@ -3258,33 +3570,47 @@ void TitleEditor::build_ui()
                 }
             });
 
+    connect(layers_, &LayerStack::group_collapsed_changed,
+            this, [this](const std::string &lid, bool collapsed) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid);
+                    layer && layer->type == LayerType::Group) {
+                    layer->group_collapsed = collapsed;
+                    sel_layer_id_ = lid;
+                    layers_->refresh();
+                    layers_->set_selected_layer(lid);
+                    canvas_->set_selected_layer(lid);
+                    timeline_->set_title(title_);
+                    timeline_->set_selected_layer(lid);
+                    update_layer_panels(layer, playhead_);
+                    on_title_modified(false);
+                }
+            });
+    connect(layers_, &LayerStack::group_layers_requested,
+            this, &TitleEditor::group_selected_layers);
+    connect(layers_, &LayerStack::ungroup_layers_requested,
+            this, &TitleEditor::ungroup_selected_layers);
+    connect(layers_, &LayerStack::add_to_group_requested,
+            this, &TitleEditor::add_selected_layers_to_group);
+    connect(layers_, &LayerStack::remove_from_group_requested,
+            this, &TitleEditor::remove_selected_layers_from_group);
+
     connect(layers_, &LayerStack::layer_parent_changed,
             this, [this](const std::string &lid, const std::string &parent_id) {
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
-                    const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
-                                                 std::max(0.0, layer->out_time - layer->in_time));
-                    const QPointF world_pos = editor_layer_world_transform_for_parenting(title_, *layer, playhead_)
-                        .map(QPointF(0.0, 0.0));
-
+                    const QTransform world = editor_layer_world_transform_for_parenting(
+                        title_, *layer, playhead_);
                     std::string next_parent_id = parent_id;
-                    if (next_parent_id == layer->id || editor_parenting_would_cycle(title_, layer->id, next_parent_id))
+                    if (next_parent_id == layer->id ||
+                        editor_parenting_would_cycle(title_, layer->id,
+                                                     next_parent_id))
                         next_parent_id.clear();
-
-                    layer->parent_id = next_parent_id;
-                    QPointF local_pos = world_pos;
-                    if (!next_parent_id.empty()) {
-                        if (const Layer *parent = editor_layer_by_id_for_parenting(title_, next_parent_id)) {
-                            bool invertible = false;
-                            QTransform parent_xf = editor_layer_world_transform_for_parenting(title_, *parent, playhead_);
-                            QTransform parent_inv = parent_xf.inverted(&invertible);
-                            if (invertible)
-                                local_pos = parent_inv.map(world_pos);
-                        }
-                    }
-                    set_animated_x(layer->position, lt, local_pos.x());
-                    set_animated_y(layer->position, lt, local_pos.y());
+                    editor_set_local_transform_from_world(title_, *layer, world,
+                                                          next_parent_id,
+                                                          playhead_);
                     layers_->refresh();
+                    force_next_title_visual_update();
                     on_title_modified();
                 }
             });
@@ -3530,6 +3856,68 @@ void TitleEditor::build_ui()
                 layers_->refresh();
                 timeline_->set_title(title_);
             });
+    connect(canvas_, &CanvasPreview::duplicate_layers_requested,
+            this, &TitleEditor::duplicate_selected_layers);
+    connect(canvas_, &CanvasPreview::copy_layers_requested,
+            this, &TitleEditor::copy_selected_layer);
+    connect(canvas_, &CanvasPreview::cut_layers_requested,
+            this, &TitleEditor::cut_selected_layer);
+    connect(canvas_, &CanvasPreview::paste_layers_requested,
+            this, [this]() {
+                if (!layer_clipboard_.empty())
+                    paste_layer_from_clipboard();
+                else
+                    paste_external_clipboard_to_canvas();
+            });
+    connect(canvas_, &CanvasPreview::delete_layers_requested,
+            this, &TitleEditor::delete_selected_layer);
+    connect(canvas_, &CanvasPreview::group_layers_requested,
+            this, &TitleEditor::group_selected_layers);
+    connect(canvas_, &CanvasPreview::ungroup_layers_requested,
+            this, &TitleEditor::ungroup_selected_layers);
+    connect(canvas_, &CanvasPreview::add_layers_to_group_requested,
+            this, &TitleEditor::add_selected_layers_to_group);
+    connect(canvas_, &CanvasPreview::remove_layers_from_group_requested,
+            this, &TitleEditor::remove_selected_layers_from_group);
+    connect(canvas_, &CanvasPreview::flip_layers_requested,
+            this, &TitleEditor::flip_selected_layers);
+    connect(canvas_, &CanvasPreview::rotate_layers_requested,
+            this, &TitleEditor::rotate_selected_layers);
+    connect(canvas_, &CanvasPreview::layer_order_requested,
+            this, &TitleEditor::reorder_selected_layers);
+    connect(canvas_, &CanvasPreview::set_layers_locked_requested,
+            this, [this](bool locked) {
+                if (!title_) return;
+                bool changed = false;
+                for (const auto &id : selected_layer_ids_for_operation()) {
+                    if (auto layer = title_->find_layer(id);
+                        layer && layer->locked != locked) {
+                        layer->locked = locked;
+                        changed = true;
+                    }
+                }
+                if (!changed) return;
+                layers_->refresh();
+                canvas_->refresh_preview();
+                on_title_modified();
+            });
+    connect(canvas_, &CanvasPreview::set_layers_visible_requested,
+            this, [this](bool visible) {
+                if (!title_) return;
+                bool changed = false;
+                for (const auto &id : selected_layer_ids_for_operation()) {
+                    if (auto layer = title_->find_layer(id);
+                        layer && layer->visible != visible) {
+                        layer->visible = visible;
+                        changed = true;
+                    }
+                }
+                if (!changed) return;
+                layers_->refresh();
+                canvas_->refresh_preview();
+                timeline_->set_title(title_);
+                on_title_modified();
+            });
     connect(canvas_, &CanvasPreview::shape_drawing_started,
             this, &TitleEditor::create_shape_layer_from_canvas);
     connect(canvas_, &CanvasPreview::text_drawing_started,
@@ -3685,6 +4073,23 @@ void TitleEditor::rotate_selected_layers(double degrees)
     if (!last_layer) return;
     on_title_modified();
     update_layer_panels(last_layer, playhead_);
+}
+
+void TitleEditor::reorder_selected_layers(int action)
+{
+    if (!title_)
+        return;
+    const auto requested_ids = selected_layer_ids_for_operation();
+    if (!editor_reorder_selected_group_siblings(title_, requested_ids, action))
+        return;
+
+    layers_->refresh();
+    layers_->set_selected_layers(requested_ids);
+    canvas_->set_selected_layers(requested_ids);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layers(requested_ids);
+    force_next_title_visual_update();
+    on_title_modified();
 }
 
 void TitleEditor::align_selected_layers_horizontal()
@@ -4678,7 +5083,10 @@ bool TitleEditor::persist_title_changes(bool update_preview_screenshot, bool sho
         // Reuse the already rendered editor frame instead of performing another
         // full title render during Save. This removes the largest UI-thread spike
         // for complex titles. Fall back only when no canvas frame exists yet.
-        const QImage current_preview = canvas_ ? canvas_->current_rendered_frame() : QImage();
+        const bool destination_aware =
+            title_requires_destination_compositing(*title_);
+        const QImage current_preview = (!destination_aware && canvas_)
+            ? canvas_->current_rendered_frame() : QImage();
         title_->preview_screenshot_png_base64 = current_preview.isNull()
             ? title_manual_screenshot_png_base64(*title_)
             : title_screenshot_png_base64(current_preview);
@@ -4692,7 +5100,7 @@ bool TitleEditor::persist_title_changes(bool update_preview_screenshot, bool sho
     if (autosave_operation)
         show_editor_activity(bgl_tr("OBSTitles.AutosavedStatusFormat").arg(saved_time));
     else if (show_saved_status) {
-        setWindowTitle(bgl_tr("OBSTitles.EditorSavedTitle"));
+        setWindowTitle(bgl_editor_caption(bgl_tr("OBSTitles.EditorSavedTitle")));
         show_editor_activity(bgl_tr("OBSTitles.SavedStatusFormat").arg(saved_time));
     }
     return true;
@@ -4807,7 +5215,7 @@ void TitleEditor::save_title_as_new()
     TitleDataStore::instance().save_async();
     emit title_saved(created->id);
     set_dirty(false);
-    setWindowTitle(bgl_tr("OBSTitles.EditorSavedTitle"));
+    setWindowTitle(bgl_editor_caption(bgl_tr("OBSTitles.EditorSavedTitle")));
 }
 
 void TitleEditor::export_title_template(bool save_in_library)
@@ -5395,8 +5803,9 @@ void TitleEditor::apply_picked_color_to_selection(const QColor &color, bool comm
 void TitleEditor::duplicate_selected_layers()
 {
     if (!title_) return;
-    const auto ids = selected_layer_ids_for_operation();
-    if (ids.empty()) return;
+    const auto requested_ids = selected_layer_ids_for_operation();
+    if (requested_ids.empty()) return;
+    const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
 
     std::set<std::string> selected_ids(ids.begin(), ids.end());
     std::vector<std::shared_ptr<Layer>> originals;
@@ -5425,9 +5834,12 @@ void TitleEditor::duplicate_selected_layers()
     title_->layers = std::move(next_layers);
 
     std::vector<std::string> clone_ids;
-    clone_ids.reserve(clones.size());
-    for (const auto &clone : clones)
-        if (clone) clone_ids.push_back(clone->id);
+    clone_ids.reserve(requested_ids.size());
+    for (const auto &requested_id : requested_ids) {
+        const auto found = clones_by_original.find(requested_id);
+        if (found != clones_by_original.end() && found->second)
+            clone_ids.push_back(found->second->id);
+    }
 
     sel_layer_id_ = clone_ids.empty() ? std::string() : clone_ids.back();
     layers_->refresh();
@@ -5441,11 +5853,248 @@ void TitleEditor::duplicate_selected_layers()
     on_title_modified();
 }
 
+
+void TitleEditor::group_selected_layers()
+{
+    if (!title_)
+        return;
+    const auto selected_ids = selected_layer_ids_for_operation();
+    auto roots = editor_top_level_selected_layers(title_, selected_ids);
+    if (roots.size() < 2)
+        return;
+
+    std::string common_parent = roots.front()->parent_id;
+    for (const auto &layer : roots) {
+        if (!layer || layer->parent_id != common_parent) {
+            common_parent.clear();
+            break;
+        }
+    }
+
+    QRectF canvas_bounds;
+    bool have_bounds = false;
+    int insertion_index = -1;
+    for (const auto &layer : roots) {
+        if (!layer)
+            continue;
+        const QRectF bounds = editor_layer_canvas_bounds_for_grouping(
+            title_, *layer, playhead_);
+        if (bounds.isValid() && !bounds.isEmpty()) {
+            canvas_bounds = have_bounds ? canvas_bounds.united(bounds) : bounds;
+            have_bounds = true;
+        }
+        auto it = std::find(title_->layers.begin(), title_->layers.end(), layer);
+        if (it != title_->layers.end())
+            insertion_index = std::max(insertion_index,
+                static_cast<int>(std::distance(title_->layers.begin(), it)));
+    }
+    if (!have_bounds)
+        return;
+
+    auto group = std::make_shared<Layer>();
+    group->id = TitleDataStore::make_uuid();
+    group->name = unique_layer_name(editor_text_std("OBSTitles.Group"));
+    group->type = LayerType::Group;
+    group->parent_id = common_parent;
+    group->in_time = 0.0;
+    group->out_time = title_->duration;
+    group->origin_x = 0.5f;
+    group->origin_y = 0.5f;
+    group->origin_prop.static_value = {0.5, 0.5};
+    group->rect_width = static_cast<float>(std::max(1.0, canvas_bounds.width()));
+    group->rect_height = static_cast<float>(std::max(1.0, canvas_bounds.height()));
+    group->size.static_value = {group->rect_width, group->rect_height};
+
+    QPointF group_local_center = canvas_bounds.center();
+    if (!common_parent.empty()) {
+        if (const Layer *parent = editor_layer_by_id_for_parenting(
+                title_, common_parent)) {
+            bool invertible = false;
+            const QTransform inverse = editor_layer_world_transform_for_parenting(
+                title_, *parent, playhead_).inverted(&invertible);
+            if (invertible)
+                group_local_center = inverse.map(canvas_bounds.center());
+        }
+    }
+    group->position.static_value = {group_local_center.x(),
+                                    group_local_center.y()};
+
+    if (insertion_index < 0 ||
+        insertion_index >= static_cast<int>(title_->layers.size()))
+        title_->layers.push_back(group);
+    else
+        title_->layers.insert(title_->layers.begin() + insertion_index + 1,
+                              group);
+
+    for (const auto &layer : roots) {
+        if (!layer)
+            continue;
+        if (layer->parent_id == common_parent) {
+            /* The new group is a pure translation inside the same parent.
+             * Offset the complete position track, not just the current frame,
+             * so grouping never changes animated artwork. */
+            editor_offset_position_track(layer->position,
+                                         -group_local_center.x(),
+                                         -group_local_center.y());
+            layer->parent_id = group->id;
+        } else {
+            const QTransform world = editor_layer_world_transform_for_parenting(
+                title_, *layer, playhead_);
+            editor_set_local_transform_from_world(title_, *layer, world,
+                                                  group->id, playhead_);
+        }
+    }
+
+    sel_layer_id_ = group->id;
+    layers_->refresh();
+    layers_->set_selected_layer(group->id);
+    canvas_->set_selected_layer(group->id);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layer(group->id);
+    update_layer_panels(group, playhead_);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
+void TitleEditor::ungroup_selected_layers()
+{
+    if (!title_)
+        return;
+    const auto selected_ids = selected_layer_ids_for_operation();
+    std::vector<std::shared_ptr<Layer>> groups;
+    for (const auto &id : selected_ids) {
+        auto layer = title_->find_layer(id);
+        if (layer && layer->type == LayerType::Group)
+            groups.push_back(layer);
+    }
+    if (groups.empty())
+        return;
+
+    std::vector<std::string> next_selection;
+    std::set<std::string> removed_group_ids;
+    for (const auto &group : groups) {
+        if (!group)
+            continue;
+        removed_group_ids.insert(group->id);
+        std::vector<std::shared_ptr<Layer>> children;
+        for (const auto &candidate : title_->layers) {
+            if (candidate && candidate->parent_id == group->id)
+                children.push_back(candidate);
+        }
+        for (const auto &child : children) {
+            const QTransform world = editor_layer_world_transform_for_parenting(
+                title_, *child, playhead_);
+            editor_set_local_transform_from_world(title_, *child, world,
+                                                  group->parent_id, playhead_);
+            next_selection.push_back(child->id);
+        }
+    }
+
+    title_->layers.erase(std::remove_if(title_->layers.begin(),
+                                        title_->layers.end(),
+        [&](const std::shared_ptr<Layer> &layer) {
+            return !layer || removed_group_ids.find(layer->id) !=
+                             removed_group_ids.end();
+        }), title_->layers.end());
+
+    for (auto &layer : title_->layers) {
+        if (!layer)
+            continue;
+        if (removed_group_ids.find(layer->mask_source_id) !=
+            removed_group_ids.end()) {
+            layer->mask_source_id.clear();
+            layer->mask_mode = MaskMode::None;
+        }
+    }
+
+    sel_layer_id_ = next_selection.empty() ? std::string()
+                                           : next_selection.back();
+    layers_->refresh();
+    layers_->set_selected_layers(next_selection);
+    canvas_->set_selected_layers(next_selection);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layers(next_selection);
+    update_layer_panels(sel_layer_id_.empty() ? nullptr
+                                              : title_->find_layer(sel_layer_id_),
+                        playhead_);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
+void TitleEditor::add_selected_layers_to_group(const std::string &group_id)
+{
+    if (!title_ || group_id.empty())
+        return;
+    auto group = title_->find_layer(group_id);
+    if (!group || group->type != LayerType::Group || group->locked)
+        return;
+
+    const auto selected_ids = selected_layer_ids_for_operation();
+    auto roots = editor_top_level_selected_layers(title_, selected_ids);
+    bool changed = false;
+    for (const auto &layer : roots) {
+        if (!layer || layer->id == group_id || layer->locked ||
+            editor_layer_has_ancestor_for_grouping(title_, *group,
+                                                   layer->id))
+            continue;
+        const QTransform world = editor_layer_world_transform_for_parenting(
+            title_, *layer, playhead_);
+        editor_set_local_transform_from_world(title_, *layer, world,
+                                              group_id, playhead_);
+        changed = true;
+    }
+    if (!changed)
+        return;
+
+    group->group_collapsed = false;
+    sel_layer_id_ = group_id;
+    layers_->refresh();
+    layers_->set_selected_layer(group_id);
+    canvas_->set_selected_layer(group_id);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layer(group_id);
+    update_layer_panels(group, playhead_);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
+void TitleEditor::remove_selected_layers_from_group()
+{
+    if (!title_)
+        return;
+    const auto selected_ids = selected_layer_ids_for_operation();
+    bool changed = false;
+    for (const auto &id : selected_ids) {
+        auto layer = title_->find_layer(id);
+        if (!layer || layer->locked || layer->parent_id.empty())
+            continue;
+        auto parent = title_->find_layer(layer->parent_id);
+        if (!parent || parent->type != LayerType::Group)
+            continue;
+        const QTransform world = editor_layer_world_transform_for_parenting(
+            title_, *layer, playhead_);
+        editor_set_local_transform_from_world(title_, *layer, world,
+                                              parent->parent_id, playhead_);
+        changed = true;
+    }
+    if (!changed)
+        return;
+
+    layers_->refresh();
+    layers_->set_selected_layers(selected_ids);
+    canvas_->set_selected_layers(selected_ids);
+    timeline_->set_title(title_);
+    timeline_->set_selected_layers(selected_ids);
+    force_next_title_visual_update();
+    on_title_modified();
+}
+
 void TitleEditor::copy_selected_layer()
 {
     if (!title_) return;
-    const auto ids = selected_layer_ids_for_operation();
-    if (ids.empty()) return;
+    const auto requested_ids = selected_layer_ids_for_operation();
+    if (requested_ids.empty()) return;
+    const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
 
     layer_clipboard_.clear();
     layer_clipboard_.reserve(ids.size());
@@ -5476,10 +6125,25 @@ void TitleEditor::paste_layer_from_clipboard()
     }
     title_->layers.insert(insert_pos, pasted_layers.begin(), pasted_layers.end());
 
+    std::set<std::string> clipboard_ids;
+    for (const auto &layer : clipboard_layers)
+        if (layer) clipboard_ids.insert(layer->id);
     std::vector<std::string> pasted_ids;
     pasted_ids.reserve(pasted_layers.size());
-    for (const auto &layer : pasted_layers)
-        if (layer) pasted_ids.push_back(layer->id);
+    for (size_t index = 0; index < pasted_layers.size() &&
+                           index < clipboard_layers.size(); ++index) {
+        const auto &source = clipboard_layers[index];
+        const auto &pasted = pasted_layers[index];
+        if (!source || !pasted)
+            continue;
+        if (source->parent_id.empty() ||
+            clipboard_ids.find(source->parent_id) == clipboard_ids.end())
+            pasted_ids.push_back(pasted->id);
+    }
+    if (pasted_ids.empty()) {
+        for (const auto &layer : pasted_layers)
+            if (layer) pasted_ids.push_back(layer->id);
+    }
 
     sel_layer_id_ = pasted_ids.empty() ? std::string() : pasted_ids.back();
     layers_->refresh();
@@ -5551,8 +6215,9 @@ bool TitleEditor::paste_external_clipboard_to_canvas()
 void TitleEditor::delete_selected_layer()
 {
     if (!title_) return;
-    const auto ids = selected_layer_ids_for_operation();
-    if (ids.empty()) return;
+    const auto requested_ids = selected_layer_ids_for_operation();
+    if (requested_ids.empty()) return;
+    const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
 
     std::set<std::string> removed_ids(ids.begin(), ids.end());
     int first_removed_index = (int)title_->layers.size();
@@ -5734,7 +6399,7 @@ void TitleEditor::set_dirty(bool dirty)
     if (dirty_indicator_)
         dirty_indicator_->setVisible(dirty_);
     update_title_bar();
-    setWindowTitle(bgl_tr(dirty_ ? "OBSTitles.EditorModifiedTitle" : "OBSTitles.EditorWindowTitle"));
+    setWindowTitle(bgl_editor_caption(bgl_tr(dirty_ ? "OBSTitles.EditorModifiedTitle" : "OBSTitles.EditorWindowTitle")));
 }
 
 bool TitleEditor::confirm_save_before_close()
@@ -6045,7 +6710,7 @@ void TitleEditor::show_about()
     layout->addWidget(logo, 1);
 
     auto *text = new QLabel(
-        bgl_tr("OBSTitles.AboutTextFormat").arg(QStringLiteral(PLUGIN_VERSION)),
+        bgl_tr("OBSTitles.AboutTextFormat").arg(QStringLiteral(BGL_FULL_VERSION_DISPLAY)),
         &dialog);
     text->setTextFormat(Qt::RichText);
     text->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
@@ -6275,6 +6940,7 @@ void TitleEditor::show_preferences_dialog(QWidget *parent, TitleEditor *editor)
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.TickerLayers"), TitlePreferences::TimelineColorRole::TickerLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.ObjectLayers"), TitlePreferences::TimelineColorRole::ObjectLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.ImageLayers"), TitlePreferences::TimelineColorRole::ImageLayer);
+    add_timeline_color_row(color_row++, bgl_tr("OBSTitles.GroupLayers"), TitlePreferences::TimelineColorRole::GroupLayer);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.CurrentTime"), TitlePreferences::TimelineColorRole::Current);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.PauseMarker"), TitlePreferences::TimelineColorRole::Pause);
     add_timeline_color_row(color_row++, bgl_tr("OBSTitles.LoopStartEnd"), TitlePreferences::TimelineColorRole::Loop);

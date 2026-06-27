@@ -5455,7 +5455,7 @@ void PropertiesPanel::load_values()
     const bool is_text_like = is_text || is_clock || is_ticker;
     const bool is_adjustment = layer_->type == LayerType::Adjustment;
     const bool is_color_solid = layer_->type == LayerType::ColorSolid;
-    const bool is_fixed_canvas_layer = is_adjustment || is_color_solid;
+    const bool is_fixed_canvas_layer = false;
     const bool is_rect = layer_->type == LayerType::SolidRect ||
                          layer_->type == LayerType::Shape || is_color_solid;
     const bool is_image = layer_->type == LayerType::Image;
@@ -5470,8 +5470,8 @@ void PropertiesPanel::load_values()
     if (dynamic_text_box_) dynamic_text_box_->setVisible(is_text_like);
     if (auto_style_box_) auto_style_box_->setVisible(is_text_like);
     if (live_edit_box_)
-        live_edit_box_->setVisible(!is_fixed_canvas_layer &&
-                                   (is_rect || is_text_like || is_image));
+        live_edit_box_->setVisible(is_rect || is_text_like || is_image ||
+                                   is_adjustment || is_color_solid);
     if (bullets_box_) bullets_box_->setVisible(false);
     text_box_->setTitle("Character");
     if (row_text_color_) row_text_color_->setVisible(false);

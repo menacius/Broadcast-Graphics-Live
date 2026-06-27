@@ -152,6 +152,7 @@ private:
     void distribute_selected_layers(bool horizontal);
     void flip_selected_layers(bool horizontal);
     void rotate_selected_layers(double degrees);
+    void reorder_selected_layers(int action);
     enum class BooleanShapeOperation { Union, SubtractFront, Intersect, Exclude };
     bool boolean_shape_selection_available() const;
     void apply_boolean_shape_operation(BooleanShapeOperation operation);
@@ -166,6 +167,10 @@ private:
     std::vector<std::shared_ptr<Layer>> clone_layers_for_insert(const std::vector<std::shared_ptr<Layer>> &layers, bool suffix_name) const;
     void apply_picked_color_to_selection(const QColor &color, bool commit = true);
     void duplicate_selected_layers();
+    void group_selected_layers();
+    void ungroup_selected_layers();
+    void add_selected_layers_to_group(const std::string &group_id);
+    void remove_selected_layers_from_group();
     void copy_selected_layer();
     void cut_selected_layer();
     void paste_layer_from_clipboard();

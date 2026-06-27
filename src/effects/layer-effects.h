@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <string>
 
 #include "animation.h"
 
@@ -55,6 +56,15 @@ enum class EffectBlendMode {
 };
 
 struct LayerEffect {
+    /* Stable extension identity. Empty means use the built-in ID mapped from type.
+     * Unknown IDs and their parameter payload survive project round-trips. */
+    std::string extension_id;
+    std::string extension_parameters_json = "{}";
+    uint32_t extension_schema_version = 1;
+    /* Host-owned animation tracks for extension parameters. JSON object keyed by
+     * parameter path (for example "intensity" or "elements.0.opacity"). */
+    std::string extension_keyframes_json = "{}";
+
     LayerEffectType type = LayerEffectType::BackgroundColor;
     bool enabled = true;
 
@@ -74,6 +84,10 @@ struct LayerEffect {
     int effect_blur_type = (int)ShadowBlurType::StackFast;
     int effect_samples = 8;
     bool effect_centered = true;
+    bool effect_outside_hard_alpha = false;
+    bool effect_outside_hard_alpha_invert = false;
+    bool affect_layers_behind = false;
+    bool affect_layers_behind_invert = false;
     EffectBlendMode blend_mode = EffectBlendMode::Normal;
 
     /* Procedural effect controls. These fields are shared by Lens Flare,
@@ -132,6 +146,9 @@ struct LayerEffect {
     float effect_gradient_focal_y = 0.5f;
 
     AnimatedProperty enabled_prop { "effect_enabled", 1.0 };
+    AnimatedProperty brightness_prop { "effect_brightness", 0.0 };
+    AnimatedProperty contrast_prop { "effect_contrast", 1.0 };
+    AnimatedProperty saturation_prop { "effect_saturation", 1.0 };
     AnimatedProperty opacity_prop { "effect_opacity", 1.0 };
     AnimatedProperty size_prop { "effect_size", 16.0 };
     AnimatedProperty distance_prop { "effect_distance", 8.0 };
@@ -157,6 +174,25 @@ struct LayerEffect {
     AnimatedProperty corner_radius_tr_prop { "effect_corner_radius_tr", 0.0 };
     AnimatedProperty corner_radius_br_prop { "effect_corner_radius_br", 0.0 };
     AnimatedProperty corner_radius_bl_prop { "effect_corner_radius_bl", 0.0 };
+    AnimatedProperty gradient_start_pos_prop { "effect_gradient_start_pos", 0.0 };
+    AnimatedProperty gradient_end_pos_prop { "effect_gradient_end_pos", 1.0 };
+    AnimatedProperty gradient_start_opacity_prop { "effect_gradient_start_opacity", 1.0 };
+    AnimatedProperty gradient_end_opacity_prop { "effect_gradient_end_opacity", 1.0 };
+    AnimatedProperty gradient_angle_prop { "effect_gradient_angle", 0.0 };
+    AnimatedProperty gradient_center_x_prop { "effect_gradient_center_x", 0.5 };
+    AnimatedProperty gradient_center_y_prop { "effect_gradient_center_y", 0.5 };
+    AnimatedProperty gradient_scale_prop { "effect_gradient_scale", 1.0 };
+    AnimatedProperty gradient_focal_x_prop { "effect_gradient_focal_x", 0.5 };
+    AnimatedProperty gradient_focal_y_prop { "effect_gradient_focal_y", 0.5 };
+    AnimatedProperty gradient_opacity_prop { "effect_gradient_opacity", 1.0 };
+    AnimatedProperty gradient_start_color_a { "effect_gradient_start_color_a", 255.0 };
+    AnimatedProperty gradient_start_color_r { "effect_gradient_start_color_r", 75.0 };
+    AnimatedProperty gradient_start_color_g { "effect_gradient_start_color_g", 110.0 };
+    AnimatedProperty gradient_start_color_b { "effect_gradient_start_color_b", 168.0 };
+    AnimatedProperty gradient_end_color_a { "effect_gradient_end_color_a", 255.0 };
+    AnimatedProperty gradient_end_color_r { "effect_gradient_end_color_r", 27.0 };
+    AnimatedProperty gradient_end_color_g { "effect_gradient_end_color_g", 27.0 };
+    AnimatedProperty gradient_end_color_b { "effect_gradient_end_color_b", 27.0 };
     AnimatedProperty color_a { "effect_color_a", 255.0 };
     AnimatedProperty color_r { "effect_color_r", 255.0 };
     AnimatedProperty color_g { "effect_color_g", 255.0 };

@@ -28,7 +28,9 @@
 #include <QColor>
 #include <QPixmap>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QPointer>
+#include <QVariant>
 #include <functional>
 #include <memory>
 #include <string>
@@ -59,9 +61,12 @@ public:
     void set_layer(std::shared_ptr<Layer> layer, double playhead);
     void update_playhead(double playhead);
     bool add_effect_from_preset_file(const QString &file_path);
+    QJsonArray extension_canvas_handles() const;
+    void set_extension_canvas_handle_position(const QString &path, const QPointF &normalized_position, bool final_change);
 
 signals:
     void property_changed(bool push_undo_snapshot = true);
+    void extension_canvas_handles_changed(const QJsonArray &handles);
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -79,6 +84,7 @@ private:
     bool settings_editor_has_focus() const;
     void apply_effect_list_order_from_items();
     void update_bound_controls();
+    double current_local_time() const;
 
     struct NumericBinding {
         QPointer<QDoubleSpinBox> spin;
@@ -88,6 +94,18 @@ private:
         QPointer<QPushButton> button;
         std::function<uint32_t(const LayerEffect &, double)> value;
     };
+    struct BoolBinding {
+        QPointer<QCheckBox> checkbox;
+        std::function<bool(const LayerEffect &, double)> value;
+    };
+    struct ComboBinding {
+        QPointer<QComboBox> combo;
+        std::function<QVariant(const LayerEffect &, double)> value;
+    };
+    struct KeyframeBinding {
+        QPointer<QPushButton> button;
+        std::function<bool(const LayerEffect &, double)> has_keyframe;
+    };
 
     std::shared_ptr<Layer> layer_;
     double playhead_ = 0.0;
@@ -96,6 +114,9 @@ private:
     int selected_index_ = -1;
     std::vector<NumericBinding> numeric_bindings_;
     std::vector<ColorBinding> color_bindings_;
+    std::vector<BoolBinding> bool_bindings_;
+    std::vector<ComboBinding> combo_bindings_;
+    std::vector<KeyframeBinding> keyframe_bindings_;
 
     QListWidget *effect_list_ = nullptr;
     QWidget *settings_container_ = nullptr;

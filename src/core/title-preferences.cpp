@@ -54,6 +54,8 @@ QString timeline_color_key(TitlePreferences::TimelineColorRole role)
         return QStringLiteral("objectLayer");
     case TitlePreferences::TimelineColorRole::ImageLayer:
         return QStringLiteral("imageLayer");
+    case TitlePreferences::TimelineColorRole::GroupLayer:
+        return QStringLiteral("groupLayer");
     case TitlePreferences::TimelineColorRole::Current:
         return QStringLiteral("current");
     case TitlePreferences::TimelineColorRole::Pause:
@@ -416,6 +418,8 @@ QColor default_timeline_color(TimelineColorRole role)
         return QColor(0x4f, 0x8f, 0x58);
     case TimelineColorRole::ImageLayer:
         return QColor(0x7d, 0x8b, 0x7f);
+    case TimelineColorRole::GroupLayer:
+        return QColor(0x65, 0x6f, 0xc8);
     case TimelineColorRole::Current:
         return QColor(0xff, 0x44, 0x44);
     case TimelineColorRole::Pause:

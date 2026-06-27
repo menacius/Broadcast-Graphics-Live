@@ -2726,6 +2726,8 @@ static QColor layer_type_color(LayerType type)
     case LayerType::Adjustment:
     case LayerType::ColorSolid:
         return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
+    case LayerType::Group:
+        return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::GroupLayer);
     }
     return TitlePreferences::timeline_color(TitlePreferences::TimelineColorRole::ObjectLayer);
 }
@@ -2746,6 +2748,7 @@ static QString layer_type_short(LayerType type)
     case LayerType::Shape: return "◆";
     case LayerType::Adjustment: return "FX";
     case LayerType::ColorSolid: return "■";
+    case LayerType::Group: return "G";
     }
     return "•";
 }
@@ -4884,6 +4887,25 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
         switch (effect.type) {
         case LayerEffectType::BackgroundColor:
             name(effect.opacity_prop, "opacity");
+            name(effect.gradient_start_pos_prop, "gradient_start_pos");
+            name(effect.gradient_end_pos_prop, "gradient_end_pos");
+            name(effect.gradient_start_opacity_prop, "gradient_start_opacity");
+            name(effect.gradient_end_opacity_prop, "gradient_end_opacity");
+            name(effect.gradient_angle_prop, "gradient_angle");
+            name(effect.gradient_center_x_prop, "gradient_center_x");
+            name(effect.gradient_center_y_prop, "gradient_center_y");
+            name(effect.gradient_scale_prop, "gradient_scale");
+            name(effect.gradient_focal_x_prop, "gradient_focal_x");
+            name(effect.gradient_focal_y_prop, "gradient_focal_y");
+            name(effect.gradient_opacity_prop, "gradient_opacity");
+            name(effect.gradient_start_color_a, "gradient_start_color_a");
+            name(effect.gradient_start_color_r, "gradient_start_color_r");
+            name(effect.gradient_start_color_g, "gradient_start_color_g");
+            name(effect.gradient_start_color_b, "gradient_start_color_b");
+            name(effect.gradient_end_color_a, "gradient_end_color_a");
+            name(effect.gradient_end_color_r, "gradient_end_color_r");
+            name(effect.gradient_end_color_g, "gradient_end_color_g");
+            name(effect.gradient_end_color_b, "gradient_end_color_b");
             name(effect.padding_left_prop, "padding_left");
             name(effect.padding_right_prop, "padding_right");
             name(effect.padding_top_prop, "padding_top");
@@ -4922,6 +4944,13 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
             name(effect.color_r, "color_r");
             name(effect.color_g, "color_g");
             name(effect.color_b, "color_b");
+            break;
+        case LayerEffectType::BrightnessContrast:
+            name(effect.brightness_prop, "brightness");
+            name(effect.contrast_prop, "contrast");
+            break;
+        case LayerEffectType::Saturation:
+            name(effect.saturation_prop, "saturation");
             break;
         case LayerEffectType::LongShadow:
             name(effect.opacity_prop, "opacity");
@@ -5120,6 +5149,106 @@ static QString property_value_text(const TimelinePropertyRef &prop, const Layer 
     return QString::fromStdString(prop.name());
 }
 
+struct LayerHierarchyRow {
+    std::shared_ptr<Layer> layer;
+    int depth = 0;
+};
+
+static bool layer_has_collapsed_group_ancestor(const std::shared_ptr<Title> &title,
+                                               const Layer &layer)
+{
+    if (!title) return false;
+    std::string parent_id = layer.parent_id;
+    std::set<std::string> visited;
+    while (!parent_id.empty() && visited.insert(parent_id).second) {
+        auto parent = title->find_layer(parent_id);
+        if (!parent || parent->type != LayerType::Group)
+            break;
+        if (parent->group_collapsed)
+            return true;
+        parent_id = parent->parent_id;
+    }
+    return false;
+}
+
+/* Shared hierarchy model for the Layers panel and timeline.  The source model
+ * remains bottom-to-top; this helper returns the visible UI order (top-to-bottom)
+ * and hides descendants of collapsed groups.  Malformed legacy/cyclic rows are
+ * still surfaced, but never by bypassing an intentional collapsed ancestor. */
+static std::vector<LayerHierarchyRow> visible_layer_hierarchy_rows(
+    const std::shared_ptr<Title> &title)
+{
+    std::vector<LayerHierarchyRow> rows;
+    if (!title) return rows;
+
+    std::map<std::string, std::vector<std::shared_ptr<Layer>>> children;
+    auto valid_group_parent = [&](const std::string &parent_id) {
+        auto parent = title->find_layer(parent_id);
+        return parent && parent->type == LayerType::Group;
+    };
+    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (layer && !layer->parent_id.empty() && valid_group_parent(layer->parent_id))
+            children[layer->parent_id].push_back(layer);
+    }
+
+    std::set<std::string> emitted;
+    std::function<void(const std::shared_ptr<Layer> &, int)> append;
+    append = [&](const std::shared_ptr<Layer> &layer, int depth) {
+        if (!layer || !emitted.insert(layer->id).second)
+            return;
+        rows.push_back({layer, depth});
+        if (layer->type != LayerType::Group || layer->group_collapsed)
+            return;
+        const auto found = children.find(layer->id);
+        if (found == children.end())
+            return;
+        for (const auto &child : found->second)
+            append(child, depth + 1);
+    };
+
+    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (!layer) continue;
+        if (layer->parent_id.empty() || !valid_group_parent(layer->parent_id))
+            append(layer, 0);
+    }
+
+    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (!layer || emitted.find(layer->id) != emitted.end())
+            continue;
+        if (layer_has_collapsed_group_ancestor(title, *layer))
+            continue;
+        append(layer, 0);
+    }
+    return rows;
+}
+
+static int group_descendant_object_count(const std::shared_ptr<Title> &title,
+                                         const std::string &group_id)
+{
+    if (!title || group_id.empty()) return 0;
+    int count = 0;
+    for (const auto &layer : title->layers) {
+        if (!layer || layer->type == LayerType::Group)
+            continue;
+        std::string parent_id = layer->parent_id;
+        std::set<std::string> visited;
+        while (!parent_id.empty() && visited.insert(parent_id).second) {
+            if (parent_id == group_id) {
+                ++count;
+                break;
+            }
+            auto parent = title->find_layer(parent_id);
+            if (!parent || parent->type != LayerType::Group)
+                break;
+            parent_id = parent->parent_id;
+        }
+    }
+    return count;
+}
+
 struct TimelineRow {
     std::shared_ptr<Layer> layer;
     TimelinePropertyRef prop;
@@ -5130,10 +5259,12 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
 {
     std::vector<TimelineRow> rows;
     if (!title) return rows;
-    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
-        auto layer = *it;
+    for (const auto &hierarchy_row : visible_layer_hierarchy_rows(title)) {
+        auto layer = hierarchy_row.layer;
+        if (!layer) continue;
         rows.push_back({layer, TimelinePropertyRef{}, false});
-        if (!layer->properties_expanded) continue;
+        if (layer->type == LayerType::Group || !layer->properties_expanded)
+            continue;
         std::set<std::string> seen;
         for (auto prop : timeline_properties(*layer)) {
             if (!prop.is_animated()) continue;

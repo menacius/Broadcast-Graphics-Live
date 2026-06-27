@@ -1,11 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.4)
+project(broadcast-graphics-live VERSION 0.8.5)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
 # prerelease channel separately.
 set(OBS_BGS_PRERELEASE "alpha")
 set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
+
+# Manually assigned development delivery identifier. Update this once for each
+# package handed to the user. It is intentionally source-controlled and does
+# not change when the same checkout is rebuilt.
+set(OBS_BGS_DEVELOPMENT_VERSION "025")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -346,6 +351,7 @@ set(OBS_BGS_CORE_SOURCES
     src/core/ticker-runtime.cpp
 )
 set(OBS_BGS_CORE_HEADERS
+    src/core/build-info.h
     src/core/live-text-cue-utils.h
     src/core/title-data.h
     src/core/title-snapshot.h
@@ -367,6 +373,14 @@ set(OBS_BGS_LAYER_SOURCES
     src/layers/image-layer-utils.cpp
     src/layers/path-geometry.cpp
     src/layers/layer-stack-widget.cpp
+)
+
+set(OBS_BGS_EXTENSION_HEADERS
+    src/extensions/bgl-plugin-api.h
+    src/extensions/effect-extension-catalog.h
+)
+set(OBS_BGS_EXTENSION_SOURCES
+    src/extensions/effect-extension-catalog.cpp
 )
 
 set(OBS_BGS_EFFECT_HEADERS
@@ -482,6 +496,7 @@ set(OBS_BGS_EDITOR_HEADERS
 set(PLUGIN_SOURCES
     ${OBS_BGS_CORE_SOURCES}
     ${OBS_BGS_LAYER_SOURCES}
+    ${OBS_BGS_EXTENSION_SOURCES}
     ${OBS_BGS_EFFECT_SOURCES}
     ${OBS_BGS_TIMELINE_SOURCES}
     ${OBS_BGS_TRANSITION_SOURCES}
@@ -496,6 +511,7 @@ set(PLUGIN_SOURCES
 set(PLUGIN_HEADERS
     ${OBS_BGS_CORE_HEADERS}
     ${OBS_BGS_LAYER_HEADERS}
+    ${OBS_BGS_EXTENSION_HEADERS}
     ${OBS_BGS_EFFECT_HEADERS}
     ${OBS_BGS_TIMELINE_HEADERS}
     ${OBS_BGS_TRANSITION_HEADERS}
@@ -570,6 +586,7 @@ target_include_directories(broadcast-graphics-live PRIVATE
     src/canvas
     src/obs
     src/editor
+    src/extensions
     ${CAIRO_INCLUDE_DIRS}
     ${PANGO_INCLUDE_DIRS}
     ${PANGOCAIRO_INCLUDE_DIRS}
@@ -599,6 +616,7 @@ endif()
 target_compile_definitions(broadcast-graphics-live PRIVATE
     PLUGIN_NAME="${OBS_TITLES_PLUGIN_NAME}"
     PLUGIN_VERSION="${OBS_BGS_VERSION}"
+    BGL_DEVELOPMENT_VERSION="${OBS_BGS_DEVELOPMENT_VERSION}"
 )
 if(OBS_BGS_LZ4_TARGET)
     target_compile_definitions(broadcast-graphics-live PRIVATE OBS_BGS_HAVE_LZ4=1)
@@ -884,6 +902,60 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-preferences.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(development_audit_contract_test
+      tests/development_audit_contract_test.cpp)
+  add_test(NAME development_audit_contract_test
+      COMMAND development_audit_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/build-info.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/extensions/effect-extension-catalog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-effect-registry.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/plugin-main.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/README.md
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/layer-effects.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.cpp)
+
+  add_executable(group_container_contract_test
+      tests/group_container_contract_test.cpp)
+  add_test(NAME group_container_contract_test
+      COMMAND group_container_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp)
+
+  add_executable(grouped_child_resize_canvas_menu_contract_test
+      tests/grouped_child_resize_canvas_menu_contract_test.cpp)
+  add_test(NAME grouped_child_resize_canvas_menu_contract_test
+      COMMAND grouped_child_resize_canvas_menu_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp)
+
+  add_executable(group_hierarchy_timeline_contract_test
+      tests/group_hierarchy_timeline_contract_test.cpp)
+  add_test(NAME group_hierarchy_timeline_contract_test
+      COMMAND group_hierarchy_timeline_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini)
+
+  add_executable(layer_color_visual_contract_test
+      tests/layer_color_visual_contract_test.cpp)
+  add_test(NAME layer_color_visual_contract_test
+      COMMAND layer_color_visual_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-preferences.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-preferences.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp)
 
   add_executable(gpu_prerender_phase14_contract_test
       tests/gpu_prerender_phase14_contract_test.cpp)

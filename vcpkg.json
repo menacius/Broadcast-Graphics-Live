@@ -1,6 +1,6 @@
 {
   "name": "broadcast-graphics-live-deps",
-  "version-string": "0.8.4-alpha",
+  "version-string": "0.8.5-alpha",
   "dependencies": [
     "cairo",
     "pango",

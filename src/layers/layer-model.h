@@ -21,6 +21,7 @@ enum class LayerType {
     Ticker = 5,
     Adjustment = 6,
     ColorSolid = 7,
+    Group = 8,
 };
 
 enum class ShapeType {
@@ -106,6 +107,9 @@ struct Layer {
     bool        visible  = true;
     bool        locked   = false;
     bool        properties_expanded = false;
+    /* Group rows can collapse their descendants in the layer/timeline UI.
+     * This is presentation state only; it never affects rendering. */
+    bool        group_collapsed = false;
     std::string parent_id;
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;

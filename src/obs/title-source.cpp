@@ -23,6 +23,7 @@
 #include "plugin-main.h"
 #include "title-localization.h"
 #include "title-effect-registry.h"
+#include "extensions/effect-extension-catalog.h"
 #include "title-gpu-text-renderer.h"
 #include "title-preferences.h"
 #include "title-logger.h"
@@ -34,7 +35,10 @@
 #include <obs-frontend-api.h>
 #include <graphics/graphics.h>
 #include <graphics/vec2.h>
+#include <graphics/vec3.h>
 #include <graphics/vec4.h>
+#include <graphics/matrix4.h>
+#include <graphics/image-file.h>
 #include <util/threading.h>
 
 #include <cairo/cairo.h>
@@ -63,6 +67,7 @@
 #include <QTextBoundaryFinder>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QDir>
 #include <QTransform>
 #include <QColor>
 #include <QLinearGradient>
@@ -70,6 +75,9 @@
 #include <QConicalGradient>
 #include <QCryptographicHash>
 #include <QByteArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QRegularExpression>
 #include <QMetaObject>
 #include <QObject>
@@ -183,6 +191,7 @@ struct CachedLayerImage {
     QImage image;
     qint64 last_modified_msecs = 0;
     qint64 file_size = -1;
+    uint64_t last_used = 0;
 };
 
 static cairo_filter_t cairo_filter_for_image_scale_filter(ImageScaleFilter filter)
@@ -293,6 +302,10 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
 
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, CachedLayerImage> cache;
+    static uint64_t cache_tick = 0;
+    static qsizetype cache_bytes = 0;
+    constexpr std::size_t kMaxLayerImageCacheEntries = 128;
+    constexpr qsizetype kMaxLayerImageCacheBytes = 256ll * 1024ll * 1024ll;
 
     const std::string key = cache_key.toStdString();
     {
@@ -300,6 +313,7 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
         auto it = cache.find(key);
         if (it != cache.end() && it->second.last_modified_msecs == modified &&
             it->second.file_size == size_on_disk) {
+            it->second.last_used = ++cache_tick;
             return it->second.image;
         }
     }
@@ -333,9 +347,30 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
 
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        if (cache.size() > 64)
-            cache.clear();
-        cache[key] = CachedLayerImage{loaded, modified, size_on_disk};
+        if (auto existing = cache.find(key); existing != cache.end()) {
+            cache_bytes -= std::min(cache_bytes,
+                                    std::max<qsizetype>(0, existing->second.image.sizeInBytes()));
+            cache.erase(existing);
+        }
+        cache.emplace(key, CachedLayerImage{loaded, modified, size_on_disk,
+                                            ++cache_tick});
+        cache_bytes += std::max<qsizetype>(0, loaded.sizeInBytes());
+        while ((cache.size() > kMaxLayerImageCacheEntries ||
+                cache_bytes > kMaxLayerImageCacheBytes) && cache.size() > 1) {
+            auto oldest = cache.end();
+            for (auto it = cache.begin(); it != cache.end(); ++it) {
+                if (it->first == key)
+                    continue;
+                if (oldest == cache.end() ||
+                    it->second.last_used < oldest->second.last_used)
+                    oldest = it;
+            }
+            if (oldest == cache.end())
+                break;
+            cache_bytes -= std::min(cache_bytes,
+                                    std::max<qsizetype>(0, oldest->second.image.sizeInBytes()));
+            cache.erase(oldest);
+        }
     }
     return loaded;
 }
@@ -344,12 +379,14 @@ static QImage load_cached_layer_image(const QString &path, const QSize &fallback
 // Forward declaration must live in the same (global) scope as the definition below.
 // Keeping it inside the anonymous namespace creates a second overload on MSVC.
 static void box_blur_pixels(std::vector<uint8_t> &pixels, int w, int h, int radius);
+static void clear_extension_image_textures();
 
 /* ══════════════════════════════════════════════════════════════════
  *  Source private data
  * ══════════════════════════════════════════════════════════════════ */
 static std::atomic<uint64_t> g_source_frontend_presentation_generation {1};
 static std::atomic<bool> g_source_scene_collection_transition {false};
+static std::atomic<bool> g_source_frontend_shutting_down {false};
 
 void title_source_invalidate_all_presentations()
 {
@@ -361,6 +398,13 @@ void title_source_begin_scene_collection_transition()
 {
     g_source_scene_collection_transition.store(true,
                                                std::memory_order_release);
+    title_source_invalidate_all_presentations();
+}
+
+void title_source_begin_shutdown()
+{
+    g_source_frontend_shutting_down.store(true, std::memory_order_release);
+    g_source_scene_collection_transition.store(true, std::memory_order_release);
     title_source_invalidate_all_presentations();
 }
 
@@ -416,6 +460,7 @@ struct TitleSourceData {
     std::atomic<bool> shown_on_display {true};
     bool        manual_uncue = false;
     bool        auto_advance = false;  /* future: playlist mode */
+    bool        cue_first_row_when_active = false;
 
     enum class CuePhase { FreeRun, IntroLoop, OutroThenIntro, OutroOnly };
 
@@ -445,6 +490,7 @@ struct TitleSourceData {
     /* Scene-mask GPU resources. */
     std::mutex    texture_mutex;
     gs_texrender_t *scene_mask_scene_texrender = nullptr;
+    gs_texrender_t *scene_mask_matted_texrender = nullptr;
     gs_effect_t  *scene_mask_effect = nullptr;
     /* Logical source canvas used by the scene-mask GPU pass. */
     uint32_t      tex_w      = 0;
@@ -865,7 +911,18 @@ static void release_active_scene_mask_scenes(TitleSourceData *data)
 
     for (auto &active : data->active_scene_mask_scenes) {
         if (active.source) {
-            obs_source_dec_active(active.source);
+            /* Manual scene rendering must mirror OBS scene-item lifecycle.
+             * active keeps media/ticks alive; showing allows the scene and its
+             * child sources to participate in video rendering. */
+            /* During frontend teardown OBS may already be dismantling the
+             * nested scene graph. Calling dec_showing/dec_active at that point
+             * can synchronously re-enter partially destroyed child sources.
+             * Runtime deactivation remains fully balanced; process shutdown
+             * only drops our strong reference and lets OBS finish teardown. */
+            if (!g_source_frontend_shutting_down.load(std::memory_order_acquire)) {
+                obs_source_dec_showing(active.source);
+                obs_source_dec_active(active.source);
+            }
             obs_source_release(active.source);
             active.source = nullptr;
         }
@@ -875,6 +932,13 @@ static void release_active_scene_mask_scenes(TitleSourceData *data)
 
 static bool title_has_valid_scene_mask_cue(const TitleSourceData *data, const Title &title)
 {
+    /* Titles without exposed live-text fields are ordinary, continuously
+     * visible sources. They do not require a dock cue before their configured
+     * OBS scene masks may render. Requiring live_text_rows here left every
+     * static scene-mask title permanently inactive in Preview/Program. */
+    if (exposed_text_layers(title).empty())
+        return true;
+
     const int row_count = static_cast<int>(title.live_text_rows.size());
     if (row_count <= 0)
         return false;
@@ -926,7 +990,12 @@ static void activate_scene_mask_scenes(TitleSourceData *data)
         if (!scene)
             continue;
 
+        /* The configured scene is rendered outside a normal obs_sceneitem.
+         * Supply both lifecycle references that OBS would normally maintain
+         * for a visible scene item, otherwise nested sources can remain hidden
+         * or inactive even though obs_source_video_render() is called. */
         obs_source_inc_active(scene);
+        obs_source_inc_showing(scene);
         data->active_scene_mask_scenes.push_back({cfg.scene_name, scene});
     }
 }
@@ -1187,7 +1256,30 @@ static bool layer_should_render_as_visible_content(const Title &title, const Lay
      * mask is not composited as normal visible artwork, but it is still
      * rendered into a cached GPU matte texture by the Phase 13 mask graph.
      */
+    /* Scene-mask layers are matte controls, not ordinary visible artwork.
+     * Their editor hatch is painted by CanvasPreview while the selected OBS
+     * scene is composited through the auxiliary scene-mask pass. */
     return !layer.use_as_scene_mask && !layer_is_track_matte_source(title, layer);
+}
+
+bool title_requires_destination_compositing(const Title &title)
+{
+    /* Keep editor and OBS source selection on the same compositor path. Any
+     * layer (including a group) with a backdrop effect needs the destination
+     * snapshot even when its own blend mode is Normal. */
+    for (const auto &layer_ptr : title.layers) {
+        if (!layer_ptr)
+            continue;
+        const Layer &layer = *layer_ptr;
+        if (layer.type == LayerType::Adjustment ||
+            layer.blend_mode != EffectBlendMode::Normal)
+            return true;
+        for (const LayerEffect &effect : layer.effects) {
+            if (effect.enabled && effect.affect_layers_behind)
+                return true;
+        }
+    }
+    return false;
 }
 
 static void apply_layer_world_transform(cairo_t *cr, const Title &title, const Layer &layer,
@@ -1875,6 +1967,22 @@ static uint32_t eval_effect_stroke_color(const LayerEffect &effect, double t)
            ((uint32_t)eval_channel(effect.stroke_color_r, (effect.effect_stroke_color >> 16) & 0xFF, t) << 16) |
            ((uint32_t)eval_channel(effect.stroke_color_g, (effect.effect_stroke_color >> 8) & 0xFF, t) << 8) |
            (uint32_t)eval_channel(effect.stroke_color_b, effect.effect_stroke_color & 0xFF, t);
+}
+
+static uint32_t eval_effect_gradient_start_color(const LayerEffect &effect, double t)
+{
+    return ((uint32_t)eval_channel(effect.gradient_start_color_a, (effect.effect_gradient_start_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.gradient_start_color_r, (effect.effect_gradient_start_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.gradient_start_color_g, (effect.effect_gradient_start_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.gradient_start_color_b, effect.effect_gradient_start_color & 0xFF, t);
+}
+
+static uint32_t eval_effect_gradient_end_color(const LayerEffect &effect, double t)
+{
+    return ((uint32_t)eval_channel(effect.gradient_end_color_a, (effect.effect_gradient_end_color >> 24) & 0xFF, t) << 24) |
+           ((uint32_t)eval_channel(effect.gradient_end_color_r, (effect.effect_gradient_end_color >> 16) & 0xFF, t) << 16) |
+           ((uint32_t)eval_channel(effect.gradient_end_color_g, (effect.effect_gradient_end_color >> 8) & 0xFF, t) << 8) |
+           (uint32_t)eval_channel(effect.gradient_end_color_b, effect.effect_gradient_end_color & 0xFF, t);
 }
 
 static bool eval_outline_enabled(const Layer &layer, double)
@@ -6310,6 +6418,8 @@ static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect
     set_effect_int_param(effect, "animatedNoise", resolved.effect_animated ? 1 : 0);
     set_effect_int_param(effect, "monochrome", resolved.effect_monochrome ? 1 : 0);
     set_effect_int_param(effect, "invert", resolved.effect_invert ? 1 : 0);
+    set_effect_int_param(effect, "outsideHardAlpha", resolved.effect_outside_hard_alpha ? 1 : 0);
+    set_effect_int_param(effect, "outsideHardAlphaInvert", resolved.effect_outside_hard_alpha_invert ? 1 : 0);
     set_effect_float_param(effect, "seed", static_cast<float>(resolved.effect_seed));
     set_effect_float_param(effect, "amount", resolved.effect_amount);
     set_effect_float_param(effect, "scale", resolved.effect_scale);
@@ -6322,6 +6432,9 @@ static void set_gpu_surface_effect_params(gs_effect_t *effect, const LayerEffect
     set_effect_float_param(effect, "evolution", resolved.effect_evolution);
     set_effect_float_param(effect, "time", static_cast<float>(time));
 }
+
+static std::mutex g_surface_effect_registry_mutex;
+static std::unique_ptr<TitleEffectRegistry> g_surface_effect_registry;
 
 static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const Layer &layer, double t)
 {
@@ -6338,12 +6451,12 @@ static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const
     if (pixels.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 4)
         return false;
 
-    static std::mutex gpu_effect_mutex;
-    static TitleEffectRegistry registry;
-    std::lock_guard<std::mutex> lock(gpu_effect_mutex);
+    std::lock_guard<std::mutex> lock(g_surface_effect_registry_mutex);
 
     bool success = false;
     obs_enter_graphics();
+    if (!g_surface_effect_registry)
+        g_surface_effect_registry = std::make_unique<TitleEffectRegistry>();
 
     const uint8_t *initial_data[1] = {pixels.data()};
     gs_texture_t *source = gs_texture_create(width, height, GS_BGRA, 1, initial_data, 0);
@@ -6381,7 +6494,7 @@ static bool apply_gpu_surface_effects_to_surface(cairo_surface_t *surface, const
                 0.0, effect_config.falloff_prop.is_animated() ? effect_config.falloff_prop.evaluate(t)
                                                               : (double)effect_config.effect_falloff);
 
-            gs_effect_t *gpu_effect = registry.compile(resolved.type);
+            gs_effect_t *gpu_effect = g_surface_effect_registry->compile(resolved.type);
             gs_texrender_t *target = use_ping ? ping : pong;
             if (!gpu_effect || !target || !current) {
                 success = false;
@@ -6614,7 +6727,8 @@ static double stackable_effect_padding(const Layer &layer, double t)
                                                 : (double)effect.effect_spread);
         switch (effect.type) {
         case LayerEffectType::DropShadow:
-            required += distance + gaussian_blur_support(size + spread) + 4.0;
+            required += distance + gaussian_blur_support(size + spread) +
+                        size + spread + 12.0;
             break;
         case LayerEffectType::InnerShadow:
             /* Inner effects do not expand the layer alpha. */
@@ -6622,14 +6736,15 @@ static double stackable_effect_padding(const Layer &layer, double t)
         case LayerEffectType::LongShadow:
             required += distance +
                 (effect.effect_blur_type == static_cast<int>(LongShadowBlurType::None)
-                    ? 0.0 : gaussian_blur_support(size)) + 4.0;
+                    ? 0.0 : gaussian_blur_support(size) + size) + 12.0;
             break;
         case LayerEffectType::Outline:
             required += size + distance + 4.0;
             break;
         case LayerEffectType::Glow:
         case LayerEffectType::Bloom:
-            required += gaussian_blur_support(size) + 4.0;
+            required += gaussian_blur_support(size + spread) +
+                        size + spread + 12.0;
             break;
         case LayerEffectType::InnerGlow:
             /* Inner glow never expands alpha outside the source. */
@@ -6781,6 +6896,8 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
             << effect.effect_opacity << ',' << effect.effect_size << ',' << effect.effect_distance << ','
             << effect.effect_angle << ',' << effect.effect_spread << ',' << effect.effect_falloff << ','
             << effect.effect_blur_type << ',' << effect.effect_samples << ',' << effect.effect_centered << ','
+            << effect.effect_outside_hard_alpha << ',' << effect.effect_outside_hard_alpha_invert << ','
+            << effect.affect_layers_behind << ',' << effect.affect_layers_behind_invert << ','
             << (int)effect.blend_mode << ',' << effect.effect_profile << ','
             << effect.effect_animated << ',' << effect.effect_monochrome << ','
             << effect.effect_invert << ',' << effect.effect_seed << ','
@@ -7784,10 +7901,21 @@ QImage render_title_region_to_image(const Title &title, double t,
     return clipped.isEmpty() ? QImage() : full.copy(clipped);
 }
 
+static bool prepare_external_composite_dimensions_locked(
+    TitleGpuRenderSession *session);
+static QImage title_gpu_render_session_readback_over_checkerboard(
+    TitleGpuRenderSession *session);
+
 QImage render_title_to_image(const Title &title, double t,
                              uint64_t model_revision)
 {
-    return render_title_gpu_frame_readback(title, t, model_revision);
+    if (!title_requires_destination_compositing(title))
+        return render_title_gpu_frame_readback(title, t, model_revision);
+
+    const auto acquired = acquire_gpu_readback_session(model_revision);
+    title_gpu_render_session_update(acquired.first, title, t,
+                                    acquired.second);
+    return title_gpu_render_session_readback_over_checkerboard(acquired.first);
 }
 
 QImage render_title_cache_region_to_image(const Title &title, double t,
@@ -7841,6 +7969,13 @@ void release_title_gpu_render_resources()
             title_gpu_render_session_destroy(entry.second.session);
         g_gpu_readback_sessions.clear();
     }
+    {
+        std::lock_guard<std::mutex> surfaceLock(g_surface_effect_registry_mutex);
+        obs_enter_graphics();
+        g_surface_effect_registry.reset();
+        clear_extension_image_textures();
+        obs_leave_graphics();
+    }
     std::lock_guard<std::mutex> lock(g_temporal_gpu_mutex);
     obs_enter_graphics();
     destroy_temporal_gpu_resources_locked();
@@ -7851,7 +7986,7 @@ QImage render_title_to_image_scaled(const Title &title, double t, double scale,
                                     bool /*editor_draft*/)
 {
     const double clamped_scale = std::clamp(scale, 0.125, 1.0);
-    QImage image = render_title_gpu_frame_readback(title, t);
+    QImage image = render_title_to_image(title, t);
     if (image.isNull())
         return image;
     if (clamped_scale < 0.999) {
@@ -7888,6 +8023,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
     data->gpu_render_session = title_gpu_render_session_create();
     if (settings) {
         data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
+        data->cue_first_row_when_active = obs_data_get_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE);
         refresh_scene_mask_configs(data, settings);
     }
     data->cache_wake_state = std::make_shared<SourceCacheWakeState>();
@@ -7956,9 +8092,11 @@ static void source_destroy(void *priv)
         std::lock_guard<std::mutex> lock(data->texture_mutex);
         obs_enter_graphics();
         if (data->scene_mask_scene_texrender) gs_texrender_destroy(data->scene_mask_scene_texrender);
+        if (data->scene_mask_matted_texrender) gs_texrender_destroy(data->scene_mask_matted_texrender);
         if (data->scene_mask_effect) gs_effect_destroy(data->scene_mask_effect);
         obs_leave_graphics();
         data->scene_mask_scene_texrender = nullptr;
+        data->scene_mask_matted_texrender = nullptr;
         data->scene_mask_effect = nullptr;
         data->tex_w = 0;
         data->tex_h = 0;
@@ -7976,6 +8114,7 @@ static void source_update(void *priv, obs_data_t *settings)
         release_active_scene_mask_scenes(data);
 
     data->title_id = obs_data_get_string(settings, PROP_TITLE_ID);
+    data->cue_first_row_when_active = obs_data_get_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE);
     const bool title_changed = data->title_id != previous_title_id;
     if (title_changed) {
         request_source_presentation_reset(data, "source-title-binding-changed");
@@ -8033,6 +8172,45 @@ static void source_update(void *priv, obs_data_t *settings)
         .arg(title_changed ? 1 : 0));
 }
 
+static bool cue_first_live_text_row_on_activation(
+    TitleSourceData *data, const std::shared_ptr<Title> &title)
+{
+    if (!data || !data->cue_first_row_when_active || !title)
+        return false;
+
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty())
+        return false;
+
+    bgs::live_text::normalize_live_text_rows(title, exposed);
+    if (title->live_text_rows.empty())
+        return false;
+
+    /* Activation starts from a clean first-row state. Unlike a cue issued
+     * while the source is already live, there is no outgoing frame that needs
+     * an outro/persistence hand-off. Apply the values immediately and let the
+     * normal source cue state machine start the intro/playback on the next
+     * video tick. */
+    apply_live_text_row(title, 0);
+    title->current_cue_row = 0;
+    title->pending_cue_row = -1;
+    title->cue_uncue_requested = false;
+    title->cue_persistence_transition = false;
+    title->cue_persistent_text_columns.clear();
+    ++title->cue_revision;
+    TitleDataStore::instance().touch_runtime_change();
+
+    data->force_cue_state_sync = true;
+    data->waiting_for_cue = true;
+    data->dirty = true;
+    data->first_frame_pending = true;
+    BGL_LOG_INFO("LiveCue", QStringLiteral(
+        "Cueing first row on source activation title=%1 revision=%2")
+        .arg(QString::fromStdString(title->id))
+        .arg(static_cast<qulonglong>(title->cue_revision)));
+    return true;
+}
+
 static void source_activate(void *priv)
 {
     auto *data = static_cast<TitleSourceData *>(priv);
@@ -8049,6 +8227,7 @@ static void source_activate(void *priv)
         .arg(QString::fromStdString(data->title_id)));
 
     auto title = TitleDataStore::instance().get_title(data->title_id);
+    cue_first_live_text_row_on_activation(data, title);
     sync_scene_mask_scenes_for_cue(data, title);
     if (!title || !title->playlist_restart_on_source_active)
         return;
@@ -8061,13 +8240,21 @@ static void source_activate(void *priv)
     title->playlist_next_row = title->playlist_reverse ? row_count - 1 : 0;
     title->playlist_next_due_ms = 1;
     title->playlist_stop_after_due = false;
-    title->current_cue_row = -1;
-    title->pending_cue_row = -1;
-    title->cue_uncue_requested = false;
-    title->cue_persistence_transition = false;
-    title->cue_persistent_text_columns.clear();
-    ++title->cue_revision;
-    TitleDataStore::instance().touch_runtime_change();
+    if (!data->cue_first_row_when_active) {
+        title->current_cue_row = -1;
+        title->pending_cue_row = -1;
+        title->cue_uncue_requested = false;
+        title->cue_persistence_transition = false;
+        title->cue_persistent_text_columns.clear();
+        ++title->cue_revision;
+        TitleDataStore::instance().touch_runtime_change();
+    } else {
+        /* Row zero is already active. Continue a forward playlist from the
+         * following row; reverse mode keeps its configured reverse start. */
+        title->playlist_next_row = title->playlist_reverse
+            ? row_count - 1
+            : (row_count > 1 ? 1 : 0);
+    }
 }
 
 static void source_deactivate(void *priv)
@@ -8108,6 +8295,8 @@ static void source_show(void *priv)
     request_source_presentation_reset(data, "source-shown");
     data->dirty = true;
     data->first_frame_pending = true;
+    sync_scene_mask_scenes_for_cue(
+        data, TitleDataStore::instance().get_title(data->title_id));
 }
 
 static void source_hide(void *priv)
@@ -8502,7 +8691,13 @@ static void source_video_tick(void *priv, float seconds)
         CacheManager &cache = CacheManager::instance();
         const CachePlaybackSettings playback = cache.playbackSettings();
         const TitleCacheability cacheability = cache.titleCacheability(title);
-        if (cache.cacheEnabled() && cacheability != TitleCacheability::NonCacheable) {
+        const bool destination_composite =
+            title_requires_destination_compositing(*title);
+        /* A flattened cache frame has already lost the destination-dependent
+         * layer operations. Screen/Multiply/Overlay/Color and adjustment
+         * layers must be evaluated against the actual canvas/scene backdrop. */
+        if (!destination_composite && cache.cacheEnabled() &&
+            cacheability != TitleCacheability::NonCacheable) {
             if (data->cached_content_hash.isEmpty() ||
                 data->cache_hash_revision != revision) {
                 data->cached_content_hash = cache.contentHashForTitle(*title);
@@ -8864,8 +9059,11 @@ static constexpr const char *kGpuAdjustmentMixEffect = R"(
 uniform float4x4 ViewProj;
 uniform texture2d originalImage;
 uniform texture2d effectedImage;
+uniform texture2d coverageImage;
 uniform texture2d transitionMatte;
 uniform float amount;
+uniform int blendMode;
+uniform int coverageInvert;
 uniform float wipeProgress;
 uniform float wipeSoftness;
 uniform int wipeDirection;
@@ -8897,8 +9095,26 @@ float transition_alpha(float2 uv)
  else if(wipeDirection!=0){if(wipeDirection==2){float e=1.0-r;a=smoothstep(e,e+f,uv.x);}else if(wipeDirection==3){float e=1.0-r;a=smoothstep(e,e+f,uv.y);}else if(wipeDirection==4)a=1.0-smoothstep(r-f,r,uv.y);else a=1.0-smoothstep(r-f,r,uv.x);}
  return clamp(a,0.0,1.0);
 }
-float4 PSMix(VertDataOut v):TARGET{float4 a=originalImage.Sample(textureSampler,v.uv);float4 b=effectedImage.Sample(textureSampler,v.uv);return lerp(a,b,clamp(amount*transition_alpha(v.uv),0.0,1.0));}
+float mix_lum(float3 c){return dot(c,float3(0.30,0.59,0.11));}
+float mix_sat(float3 c){return max(c.r,max(c.g,c.b))-min(c.r,min(c.g,c.b));}
+float3 mix_clip(float3 c){float l=mix_lum(c);float n=min(c.r,min(c.g,c.b));float x=max(c.r,max(c.g,c.b));if(n<0.0)c=l+((c-l)*l)/max(l-n,0.000001);if(x>1.0)c=l+((c-l)*(1.0-l))/max(x-l,0.000001);return clamp(c,0.0,1.0);}
+float3 mix_set_lum(float3 c,float l){return mix_clip(c+(l-mix_lum(c)));}
+float3 mix_set_sat(float3 c,float sat){float n=min(c.r,min(c.g,c.b));float x=max(c.r,max(c.g,c.b));return x>n?(c-n)*(sat/(x-n)):float3(0.0,0.0,0.0);}
+float3 adjustment_blend(float3 base,float3 src){if(blendMode==1)return base*src;if(blendMode==2)return min(base+src,1.0);if(blendMode==3)return 1.0-(1.0-base)*(1.0-src);if(blendMode==4)return lerp(2.0*base*src,1.0-2.0*(1.0-base)*(1.0-src),step(0.5,base));if(blendMode==5)return mix_set_lum(mix_set_sat(src,mix_sat(base)),mix_lum(base));return src;}
+float4 PSMix(VertDataOut v):TARGET{float4 a=originalImage.Sample(textureSampler,v.uv);float4 b=effectedImage.Sample(textureSampler,v.uv);float coverage=step(0.5,clamp(coverageImage.Sample(textureSampler,v.uv).a,0.0,1.0));if(coverageInvert!=0)coverage=1.0-coverage;float aa=clamp(a.a,0.0,1.0);float ba=clamp(b.a,0.0,1.0);float3 ac=aa>0.000001?a.rgb/aa:float3(0.0,0.0,0.0);float3 bc=ba>0.000001?b.rgb/ba:float3(0.0,0.0,0.0);float3 blended=adjustment_blend(ac,bc);/* Process the existing artwork only inside the adjustment coverage. The editor checkerboard is not part of either texture, so it cannot be blurred or color-corrected. *//* The effect is evaluated from the complete lower composite. Inside the
+coverage use the effected alpha as well as its color, otherwise blur kernels
+are clipped back to the original per-pixel alpha and crossing text/shapes only
+blur partially. Color-only effects keep the same alpha naturally. */float4 inside=float4(blended*ba,ba);float t=clamp(amount*coverage*transition_alpha(v.uv),0.0,1.0);float4 result=lerp(a,inside,t);/* Preserve effect-generated pixels that expand beyond the adjustment bounds (drop shadow, glow, bloom, blur tails). Only the alpha newly created by the effect is admitted outside coverage, so opaque background pixels outside the adjustment region are not recolored. */float halo=0.0;return lerp(result,b,halo);}
 technique Draw{pass{vertex_shader=VSDefault(v);pixel_shader=PSMix(v);}}
+)";
+
+static constexpr const char *kGpuAdjustmentCoverageEffect = R"(
+uniform float4x4 ViewProj;
+struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VertDataOut VSDefault(VertDataIn v){VertDataOut o;o.pos=mul(float4(v.pos.xyz,1.0),ViewProj);o.uv=v.uv;return o;}
+float4 PSCoverage(VertDataOut v):TARGET{return float4(1.0,1.0,1.0,1.0);}
+technique Draw{pass{vertex_shader=VSDefault(v);pixel_shader=PSCoverage(v);}}
 )";
 
 static constexpr const char *kGpuPrimitiveShapeEffect = R"(
@@ -9005,6 +9221,7 @@ uniform float4x4 ViewProj;
 uniform texture2d background;
 uniform texture2d foreground;
 uniform int blendMode;
+uniform float opacity;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
@@ -9044,15 +9261,58 @@ float4 PSBlend(VertDataOut v) : TARGET
     float4 dst = background.Sample(textureSampler, v.uv);
     float4 src = foreground.Sample(textureSampler, v.uv);
     float da = clamp(dst.a, 0.0, 1.0);
-    float sa = clamp(src.a, 0.0, 1.0);
+    float sourceAlpha = clamp(src.a, 0.0, 1.0);
+    float layerOpacity = clamp(opacity, 0.0, 1.0);
+    float sa = sourceAlpha * layerOpacity;
     float3 cb = da > 0.000001 ? dst.rgb / da : float3(0.0, 0.0, 0.0);
-    float3 cs = sa > 0.000001 ? src.rgb / sa : float3(0.0, 0.0, 0.0);
+    float3 cs = sourceAlpha > 0.000001 ? src.rgb / sourceAlpha : float3(0.0, 0.0, 0.0);
     float3 blended = blend_color(cb, cs, blendMode);
     float outA = sa + da * (1.0 - sa);
-    float3 outRGB = dst.rgb * (1.0 - sa) + src.rgb * (1.0 - da) + blended * (sa * da);
+    // AE-style source-over composition in premultiplied-alpha space.
+    // The foreground texture is already premultiplied by sourceAlpha, so its
+    // RGB contribution must also be scaled by the animated layer opacity.
+    // Without this, lowering opacity only changed alpha while RGB stayed at
+    // full strength, making Screen/Add layers look opaque in Preview/Program
+    // and preventing the canvas checkerboard from showing through correctly.
+    float3 effectiveSrc = src.rgb * layerOpacity;
+    float3 outRGB = dst.rgb * (1.0 - sa) +
+                    effectiveSrc * (1.0 - da) +
+                    blended * (sa * da);
     return float4(clamp(outRGB, 0.0, 1.0), clamp(outA, 0.0, 1.0));
 }
 technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSBlend(v); } }
+)";
+
+static constexpr const char *kGpuExternalBackgroundEffect = R"(
+uniform float4x4 ViewProj;
+uniform texture2d background;
+uniform float4x4 localToBackground;
+uniform float2 backgroundSize;
+uniform float2 logicalSize;
+uniform float4 backgroundRect;
+uniform float4 titleBackground;
+uniform int mappingMode;
+sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+struct VertDataIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertDataOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VertDataOut VSDefault(VertDataIn v) { VertDataOut o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj); o.uv = v.uv; return o; }
+float4 PSBackground(VertDataOut v) : TARGET
+{
+    float2 pixel;
+    if (mappingMode == 0) {
+        pixel = backgroundRect.xy + v.uv * backgroundRect.zw;
+    } else {
+        float4 mapped = mul(float4(v.uv * logicalSize, 0.0, 1.0), localToBackground);
+        pixel = mapped.xy;
+    }
+    float2 size = max(backgroundSize, float2(1.0, 1.0));
+    float2 uv = pixel / size;
+    float inside = step(0.0, uv.x) * step(0.0, uv.y) *
+                   step(uv.x, 1.0) * step(uv.y, 1.0);
+    float4 dst = background.Sample(textureSampler, clamp(uv, 0.0, 1.0)) * inside;
+    return titleBackground + dst * (1.0 - titleBackground.a);
+}
+technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSBackground(v); } }
 )";
 
 static constexpr const char *kGpuMaskEffect = R"(
@@ -9079,6 +9339,93 @@ float4 PSMask(VertDataOut v) : TARGET
 }
 technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSMask(v); } }
 )";
+
+
+struct ExtensionImageTexture {
+    gs_image_file_t image{};
+    bool initialized = false;
+    qint64 modified_msecs = 0;
+    qint64 file_size = -1;
+    uint64_t last_used = 0;
+    ~ExtensionImageTexture()
+    {
+        if (initialized)
+            gs_image_file_free(&image);
+    }
+};
+
+static std::mutex g_extension_image_texture_mutex;
+static std::unordered_map<std::string, std::unique_ptr<ExtensionImageTexture>>
+    g_extension_image_textures;
+static uint64_t g_extension_image_texture_tick = 0;
+static constexpr std::size_t kMaxExtensionImageTextures = 64;
+
+static void clear_extension_image_textures_locked()
+{
+    g_extension_image_textures.clear();
+    g_extension_image_texture_tick = 0;
+}
+
+static void clear_extension_image_textures()
+{
+    std::lock_guard<std::mutex> lock(g_extension_image_texture_mutex);
+    clear_extension_image_textures_locked();
+}
+
+static gs_texture_t *extension_image_texture(const QString &absolute_path)
+{
+    if (absolute_path.trimmed().isEmpty())
+        return nullptr;
+    const QFileInfo info(absolute_path);
+    if (!info.isFile() || !info.isReadable())
+        return nullptr;
+    const QString canonical = info.canonicalFilePath().isEmpty()
+        ? info.absoluteFilePath() : info.canonicalFilePath();
+    const std::string key = canonical.toUtf8().constData();
+    const qint64 modified = info.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = info.size();
+
+    std::lock_guard<std::mutex> lock(g_extension_image_texture_mutex);
+    auto found = g_extension_image_textures.find(key);
+    if (found != g_extension_image_textures.end()) {
+        if (found->second->modified_msecs == modified &&
+            found->second->file_size == fileSize) {
+            found->second->last_used = ++g_extension_image_texture_tick;
+            return found->second->image.texture;
+        }
+        g_extension_image_textures.erase(found);
+    }
+
+    auto entry = std::make_unique<ExtensionImageTexture>();
+    gs_image_file_init(&entry->image, key.c_str());
+    entry->initialized = true;
+    if (!entry->image.loaded)
+        return nullptr;
+    gs_image_file_init_texture(&entry->image);
+    if (!entry->image.texture)
+        return nullptr;
+    entry->modified_msecs = modified;
+    entry->file_size = fileSize;
+    entry->last_used = ++g_extension_image_texture_tick;
+    gs_texture_t *texture = entry->image.texture;
+    g_extension_image_textures.emplace(key, std::move(entry));
+
+    while (g_extension_image_textures.size() > kMaxExtensionImageTextures) {
+        auto oldest = g_extension_image_textures.end();
+        for (auto it = g_extension_image_textures.begin();
+             it != g_extension_image_textures.end(); ++it) {
+            if (it->first == key)
+                continue;
+            if (oldest == g_extension_image_textures.end() ||
+                it->second->last_used < oldest->second->last_used)
+                oldest = it;
+        }
+        if (oldest == g_extension_image_textures.end())
+            break;
+        g_extension_image_textures.erase(oldest);
+    }
+    return texture;
+}
 
 struct TitleGpuRenderSession {
     struct LayerRaster {
@@ -9179,6 +9526,7 @@ struct TitleGpuRenderSession {
     gs_texrender_t *layer_target = nullptr;
     gs_texrender_t *mask_target = nullptr;
     gs_texrender_t *masked_target = nullptr;
+    gs_texrender_t *adjustment_coverage_target = nullptr;
     gs_texrender_t *effect_a = nullptr;
     gs_texrender_t *effect_b = nullptr;
     gs_texrender_t *blur_a = nullptr;
@@ -9242,10 +9590,17 @@ struct TitleGpuRenderSession {
     gs_effect_t *blit_effect = nullptr;
     gs_effect_t *copy_effect = nullptr;
     gs_effect_t *adjustment_mix_effect = nullptr;
+    gs_effect_t *adjustment_coverage_effect = nullptr;
     gs_effect_t *primitive_shape_effect = nullptr;
     std::unique_ptr<bgs::gpu_text::Renderer> text_renderer;
     gs_effect_t *blend_effect = nullptr;
     gs_effect_t *mask_effect = nullptr;
+    gs_effect_t *external_background_effect = nullptr;
+    gs_texrender_t *external_background_local = nullptr;
+    gs_texture_t *external_background_snapshot = nullptr;
+    uint32_t external_background_snapshot_width = 0;
+    uint32_t external_background_snapshot_height = 0;
+    enum gs_color_format external_background_snapshot_format = GS_UNKNOWN;
     std::unique_ptr<TitleEffectRegistry> effect_registry;
     gs_texture_t *final_texture = nullptr;
     /* A published texture is valid only for the exact model that produced it.
@@ -9336,6 +9691,18 @@ static double gpu_layer_render_time(const Title &title, const Layer &layer,
 static LayerEffect resolve_gpu_layer_effect(const LayerEffect &effect, double t)
 {
     LayerEffect resolved = effect;
+    resolved.brightness = static_cast<float>(std::clamp(
+        effect.brightness_prop.is_animated() ? effect.brightness_prop.evaluate(t)
+                                              : static_cast<double>(effect.brightness),
+        -1.0, 1.0));
+    resolved.contrast = static_cast<float>(std::clamp(
+        effect.contrast_prop.is_animated() ? effect.contrast_prop.evaluate(t)
+                                            : static_cast<double>(effect.contrast),
+        0.0, 4.0));
+    resolved.saturation = static_cast<float>(std::clamp(
+        effect.saturation_prop.is_animated() ? effect.saturation_prop.evaluate(t)
+                                              : static_cast<double>(effect.saturation),
+        0.0, 4.0));
     resolved.effect_color = eval_effect_color(effect, t);
     resolved.effect_opacity = (float)std::clamp(
         effect.opacity_prop.is_animated() ? effect.opacity_prop.evaluate(t)
@@ -9397,6 +9764,46 @@ static LayerEffect resolve_gpu_layer_effect(const LayerEffect &effect, double t)
     resolved.effect_center_y = (float)(effect.center_y_prop.is_animated() ? effect.center_y_prop.evaluate(t) : (double)effect.effect_center_y);
     resolved.effect_complexity = (float)std::clamp(effect.complexity_prop.is_animated() ? effect.complexity_prop.evaluate(t) : (double)effect.effect_complexity, 1.0, 12.0);
     resolved.effect_evolution = (float)(effect.evolution_prop.is_animated() ? effect.evolution_prop.evaluate(t) : (double)effect.effect_evolution);
+    resolved.effect_gradient_start_pos = static_cast<float>(std::clamp(
+        effect.gradient_start_pos_prop.is_animated() ? effect.gradient_start_pos_prop.evaluate(t)
+                                                     : static_cast<double>(effect.effect_gradient_start_pos),
+        0.0, 1.0));
+    resolved.effect_gradient_end_pos = static_cast<float>(std::clamp(
+        effect.gradient_end_pos_prop.is_animated() ? effect.gradient_end_pos_prop.evaluate(t)
+                                                   : static_cast<double>(effect.effect_gradient_end_pos),
+        0.0, 1.0));
+    resolved.effect_gradient_start_opacity = static_cast<float>(std::clamp(
+        effect.gradient_start_opacity_prop.is_animated() ? effect.gradient_start_opacity_prop.evaluate(t)
+                                                         : static_cast<double>(effect.effect_gradient_start_opacity),
+        0.0, 1.0));
+    resolved.effect_gradient_end_opacity = static_cast<float>(std::clamp(
+        effect.gradient_end_opacity_prop.is_animated() ? effect.gradient_end_opacity_prop.evaluate(t)
+                                                       : static_cast<double>(effect.effect_gradient_end_opacity),
+        0.0, 1.0));
+    resolved.effect_gradient_angle = static_cast<float>(
+        effect.gradient_angle_prop.is_animated() ? effect.gradient_angle_prop.evaluate(t)
+                                                  : static_cast<double>(effect.effect_gradient_angle));
+    resolved.effect_gradient_center_x = static_cast<float>(
+        effect.gradient_center_x_prop.is_animated() ? effect.gradient_center_x_prop.evaluate(t)
+                                                     : static_cast<double>(effect.effect_gradient_center_x));
+    resolved.effect_gradient_center_y = static_cast<float>(
+        effect.gradient_center_y_prop.is_animated() ? effect.gradient_center_y_prop.evaluate(t)
+                                                     : static_cast<double>(effect.effect_gradient_center_y));
+    resolved.effect_gradient_scale = static_cast<float>(std::max(
+        0.001, effect.gradient_scale_prop.is_animated() ? effect.gradient_scale_prop.evaluate(t)
+                                                         : static_cast<double>(effect.effect_gradient_scale)));
+    resolved.effect_gradient_focal_x = static_cast<float>(
+        effect.gradient_focal_x_prop.is_animated() ? effect.gradient_focal_x_prop.evaluate(t)
+                                                    : static_cast<double>(effect.effect_gradient_focal_x));
+    resolved.effect_gradient_focal_y = static_cast<float>(
+        effect.gradient_focal_y_prop.is_animated() ? effect.gradient_focal_y_prop.evaluate(t)
+                                                    : static_cast<double>(effect.effect_gradient_focal_y));
+    resolved.effect_gradient_opacity = static_cast<float>(std::clamp(
+        effect.gradient_opacity_prop.is_animated() ? effect.gradient_opacity_prop.evaluate(t)
+                                                    : static_cast<double>(effect.effect_gradient_opacity),
+        0.0, 1.0));
+    resolved.effect_gradient_start_color = eval_effect_gradient_start_color(effect, t);
+    resolved.effect_gradient_end_color = eval_effect_gradient_end_color(effect, t);
     return resolved;
 }
 
@@ -9836,7 +10243,7 @@ static bool ensure_gpu_session_objects(TitleGpuRenderSession *session,
         !create_target(session->presentation_targets[0]) ||
         !create_target(session->presentation_targets[1]) ||
         !create_target(session->layer_target) || !create_target(session->mask_target) ||
-        !create_target(session->masked_target) || !create_target(session->effect_a) ||
+        !create_target(session->masked_target) || !create_target(session->adjustment_coverage_target) || !create_target(session->effect_a) ||
         !create_target(session->effect_b) || !create_target(session->blur_a) ||
         !create_target(session->blur_b)) {
         session->last_error = "Could not allocate GPU render targets.";
@@ -10334,7 +10741,8 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
                                                    gs_texture_t *input,
                                                    uint32_t width,
                                                    uint32_t height,
-                                                   TitleGpuRenderSession::LayerRaster *cache_entry = nullptr)
+                                                   TitleGpuRenderSession::LayerRaster *cache_entry = nullptr,
+                                                   bool adjustment_only = false)
 {
     if (!session || !input)
         return input;
@@ -10356,7 +10764,13 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
         const LayerEffectType shader_type = effect_uses_separable_gaussian(resolved.type)
             ? LayerEffectType::Blur
             : resolved.type;
-        gs_effect_t *effect = session->effect_registry->compile(shader_type);
+        LayerEffectType registered_builtin_type{};
+        const bool is_registered_builtin = BglEffectExtensionCatalog::builtInTypeForId(
+            QString::fromStdString(resolved.extension_id), &registered_builtin_type);
+        const std::string execution_id = (resolved.extension_id.empty() || is_registered_builtin)
+            ? BglEffectExtensionCatalog::builtInId(shader_type).toStdString()
+            : resolved.extension_id;
+        gs_effect_t *effect = session->effect_registry->compile(execution_id);
         if (!effect) {
             /* GPU-only means there is no CPU compositor fallback. Keep the
              * layer visible if an optional shader asset is unavailable and
@@ -10370,20 +10784,27 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
 
     for (const LayerEffect &effect_config : layer.effects) {
         if (!eval_effect_enabled(effect_config, local_time) ||
-            effect_config.type == LayerEffectType::MotionBlur)
+            effect_config.type == LayerEffectType::MotionBlur ||
+            (adjustment_only && !effect_config.affect_layers_behind) ||
+            (!adjustment_only && effect_config.affect_layers_behind))
             continue;
         LayerEffect resolved = resolve_gpu_layer_effect(effect_config, local_time);
         if (session->editor_draft) {
+            /* Draft preview must preserve the same effect topology as final
+             * rendering. Omitting shadows/glows here made group effects appear
+             * unsupported and hid clipping bugs. Reduce expensive radii rather
+             * than dropping the pass entirely. */
             switch (resolved.type) {
-            case LayerEffectType::Bloom:
+            case LayerEffectType::Blur:
+            case LayerEffectType::DropShadow:
             case LayerEffectType::Glow:
             case LayerEffectType::InnerGlow:
             case LayerEffectType::InnerShadow:
-            case LayerEffectType::DropShadow:
+            case LayerEffectType::Bloom:
+                resolved.effect_size *= session->preview_quality_scale;
+                break;
             case LayerEffectType::LongShadow:
-            case LayerEffectType::Emboss:
-                continue;
-            case LayerEffectType::Blur:
+                resolved.effect_distance *= session->preview_quality_scale;
                 resolved.effect_size *= session->preview_quality_scale;
                 break;
             default:
@@ -10466,6 +10887,13 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
         }
         if (gs_eparam_t *image = gs_effect_get_param_by_name(pass.effect, "image"))
             gs_effect_set_texture(image, current);
+        /* Outside/inside hard-alpha clipping must always use the untouched
+         * artwork silhouette, not the output of an earlier effect pass. This is
+         * especially important for groups, whose first effect can expand alpha
+         * over the complete child composite. */
+        if (gs_eparam_t *hard_mask =
+                gs_effect_get_param_by_name(pass.effect, "hardMask"))
+            gs_effect_set_texture(hard_mask, input);
         if (blurred) {
             if (gs_eparam_t *blurred_image =
                     gs_effect_get_param_by_name(pass.effect, "blurredImage"))
@@ -10478,6 +10906,130 @@ static gs_texture_t *apply_gpu_layer_effect_stack(TitleGpuRenderSession *session
         }
         set_gpu_surface_effect_params(pass.effect, pass.resolved,
                                       (int)width, (int)height, local_time);
+        /* Extension parameters use a name-based ABI: scalar JSON values map to
+         * same-named shader uniforms. Compound graphs are flattened to
+         * element<N>_<property> uniforms, keeping native plugins optional. */
+        if (!pass.resolved.extension_id.empty()) {
+            const QJsonDocument extDoc = QJsonDocument::fromJson(
+                QByteArray::fromStdString(pass.resolved.extension_parameters_json));
+            if (extDoc.isObject()) {
+                auto setUniform = [&](const QString &name, const QJsonValue &value) {
+                    gs_eparam_t *param = gs_effect_get_param_by_name(pass.effect, name.toUtf8().constData());
+                    if (!param) return;
+                    if (value.isBool()) gs_effect_set_bool(param, value.toBool());
+                    else if (value.isDouble()) gs_effect_set_float(param, static_cast<float>(value.toDouble()));
+                    else if (value.isString()) {
+                        const QColor color(value.toString());
+                        if (color.isValid()) {
+                            vec4 v; vec4_set(&v, color.redF(), color.greenF(), color.blueF(), color.alphaF());
+                            gs_effect_set_vec4(param, &v);
+                        }
+                    } else if (value.isArray()) {
+                        const QJsonArray a = value.toArray();
+                        if (a.size() == 2) {
+                            vec2 v;
+                            vec2_set(&v, static_cast<float>(a.at(0).toDouble()),
+                                         static_cast<float>(a.at(1).toDouble()));
+                            gs_effect_set_vec2(param, &v);
+                        } else if (a.size() == 3) {
+                            vec3 v;
+                            vec3_set(&v, static_cast<float>(a.at(0).toDouble()),
+                                         static_cast<float>(a.at(1).toDouble()),
+                                         static_cast<float>(a.at(2).toDouble()));
+                            gs_effect_set_vec3(param, &v);
+                        } else if (a.size() == 4) {
+                            vec4 v;
+                            vec4_set(&v, static_cast<float>(a.at(0).toDouble()),
+                                         static_cast<float>(a.at(1).toDouble()),
+                                         static_cast<float>(a.at(2).toDouble()),
+                                         static_cast<float>(a.at(3).toDouble()));
+                            gs_effect_set_vec4(param, &v);
+                        }
+                    }
+                };
+                QJsonObject object = extDoc.object();
+                /* Evaluate host-owned extension animation tracks before binding
+                 * uniforms. Tracks are keyed by JSON paths such as
+                 * "intensity" or "elements.0.opacity". */
+                const QJsonDocument tracksDoc = QJsonDocument::fromJson(
+                    QByteArray::fromStdString(pass.resolved.extension_keyframes_json));
+                auto interpolateValue = [](const QJsonValue &a, const QJsonValue &b, double t) -> QJsonValue {
+                    if (a.isDouble() && b.isDouble())
+                        return a.toDouble() + (b.toDouble() - a.toDouble()) * t;
+                    if (a.isArray() && b.isArray()) {
+                        const QJsonArray aa = a.toArray(), bb = b.toArray();
+                        QJsonArray out;
+                        const qsizetype n = std::min(aa.size(), bb.size());
+                        for (qsizetype i = 0; i < n; ++i)
+                            out.append(aa.at(i).toDouble() + (bb.at(i).toDouble() - aa.at(i).toDouble()) * t);
+                        return out;
+                    }
+                    return t < 1.0 ? a : b;
+                };
+                auto setPath = [](QJsonObject &root, const QString &path, const QJsonValue &value) {
+                    const QStringList parts = path.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+                    if (parts.size() == 1) { root.insert(parts.front(), value); return; }
+                    if (parts.size() == 3 && parts.at(0) == QStringLiteral("elements")) {
+                        bool ok = false; const int index = parts.at(1).toInt(&ok);
+                        QJsonArray elements = root.value(QStringLiteral("elements")).toArray();
+                        if (ok && index >= 0 && index < elements.size()) {
+                            QJsonObject element = elements.at(index).toObject();
+                            element.insert(parts.at(2), value);
+                            elements.replace(index, element);
+                            root.insert(QStringLiteral("elements"), elements);
+                        }
+                    }
+                };
+                if (tracksDoc.isObject()) {
+                    const QJsonObject tracks = tracksDoc.object();
+                    for (auto trackIt = tracks.begin(); trackIt != tracks.end(); ++trackIt) {
+                        const QJsonArray keys = trackIt.value().toArray();
+                        if (keys.isEmpty()) continue;
+                        QJsonObject left = keys.first().toObject(), right = keys.last().toObject();
+                        for (int k = 0; k < keys.size(); ++k) {
+                            const QJsonObject key = keys.at(k).toObject();
+                            const double kt = key.value(QStringLiteral("time")).toDouble();
+                            if (kt <= local_time) left = key;
+                            if (kt >= local_time) { right = key; break; }
+                        }
+                        const double lt0 = left.value(QStringLiteral("time")).toDouble();
+                        const double rt0 = right.value(QStringLiteral("time")).toDouble();
+                        double mix = rt0 > lt0 ? (local_time - lt0) / (rt0 - lt0) : 0.0;
+                        mix = std::clamp(mix, 0.0, 1.0);
+                        if (left.value(QStringLiteral("interpolation")).toString() == QStringLiteral("hold")) mix = 0.0;
+                        setPath(object, trackIt.key(), interpolateValue(left.value(QStringLiteral("value")), right.value(QStringLiteral("value")), mix));
+                    }
+                }
+                const auto &extensionCatalog = BglEffectExtensionCatalog::instance();
+                if (const auto *definition = extensionCatalog.find(QString::fromStdString(pass.resolved.extension_id))) {
+                    const QJsonArray assets = definition->assetIndex.value(QStringLiteral("items")).toArray();
+                    for (const QJsonValue &assetValue : assets) {
+                        const QJsonObject asset = assetValue.toObject();
+                        const QString uniformName = asset.value(QStringLiteral("uniform")).toString();
+                        const QString relativeFile = asset.value(QStringLiteral("file")).toString();
+                        if (uniformName.isEmpty() || relativeFile.isEmpty()) continue;
+                        gs_eparam_t *textureParam = gs_effect_get_param_by_name(pass.effect, uniformName.toUtf8().constData());
+                        if (!textureParam) continue;
+                        const QString assetPath = QFileInfo(relativeFile).isAbsolute()
+                            ? relativeFile : QDir(definition->basePath).filePath(relativeFile);
+                        if (gs_texture_t *assetTexture = extension_image_texture(assetPath))
+                            gs_effect_set_texture(textureParam, assetTexture);
+                    }
+                }
+                for (auto it = object.begin(); it != object.end(); ++it) {
+                    if (it.key() == QStringLiteral("elements") && it.value().isArray()) {
+                        const QJsonArray elements = it.value().toArray();
+                        if (gs_eparam_t *count = gs_effect_get_param_by_name(pass.effect, "elementCount"))
+                            gs_effect_set_int(count, std::min<int>(static_cast<int>(elements.size()), 16));
+                        for (int ei = 0; ei < elements.size() && ei < 16; ++ei) {
+                            const QJsonObject element = elements.at(ei).toObject();
+                            for (auto ep = element.begin(); ep != element.end(); ++ep)
+                                setUniform(QStringLiteral("element%1_%2").arg(ei).arg(ep.key()), ep.value());
+                        }
+                    } else setUniform(it.key(), it.value());
+                }
+            }
+        }
         if (pass.resolved.type == LayerEffectType::BackgroundColor)
             set_gpu_background_geometry_params(pass.effect, pass.resolved, layer,
                                                title_time, cache_entry, width, height);
@@ -10605,12 +11157,75 @@ static void set_gpu_transition_effect_params(
     }
 }
 
+static gs_texture_t *render_gpu_mask_graph_texture(
+    TitleGpuRenderSession *session, const Title &title, const Layer &layer,
+    double title_time, const std::string &raster_id);
+
+static gs_texture_t *apply_gpu_mask(TitleGpuRenderSession *session,
+                                    gs_texture_t *layer_texture,
+                                    gs_texture_t *mask_texture,
+                                    MaskMode mode);
+
+static gs_texture_t *render_gpu_adjustment_coverage(
+    TitleGpuRenderSession *session, const Title &title, const Layer &layer,
+    double title_time)
+{
+    if (!session || !session->adjustment_coverage_target)
+        return nullptr;
+    if (!session->adjustment_coverage_effect)
+        session->adjustment_coverage_effect = gs_effect_create(
+            kGpuAdjustmentCoverageEffect, "obs-bgs-adjustment-coverage.effect", nullptr);
+    if (!session->adjustment_coverage_effect)
+        return nullptr;
+    struct vec4 clear; vec4_zero(&clear);
+    if (!begin_gpu_target(session->adjustment_coverage_target,
+                          session->width, session->height, clear))
+        return nullptr;
+    const double lt = std::max(0.0, title_time - layer.in_time);
+    const double w = std::max(0.0001, eval_box_width(layer, lt));
+    const double h = std::max(0.0001, eval_box_height(layer, lt));
+    gs_enable_blending(false);
+    gs_matrix_push();
+    gs_matrix_identity();
+    const float frame_scale = session->editor_draft
+        ? std::clamp(session->preview_quality_scale, 0.25f, 1.0f) : 1.0f;
+    gs_matrix_scale3f(frame_scale, frame_scale, 1.0f);
+    apply_layer_world_transform_gs(title, layer, title_time, 0);
+    gs_matrix_translate3f(static_cast<float>(-eval_origin_x(layer, lt) * w),
+                          static_cast<float>(-eval_origin_y(layer, lt) * h), 0.0f);
+    while (gs_effect_loop(session->adjustment_coverage_effect, "Draw"))
+        gs_draw_sprite(nullptr, 0, static_cast<uint32_t>(std::ceil(w)),
+                       static_cast<uint32_t>(std::ceil(h)));
+    gs_matrix_pop();
+    gs_texrender_end(session->adjustment_coverage_target);
+    gs_texture_t *coverage = gs_texrender_get_texture(session->adjustment_coverage_target);
+    if (!coverage)
+        return nullptr;
+    if (layer.mask_mode != MaskMode::None && !layer.mask_source_id.empty()) {
+        const Layer *mask_layer = find_layer_by_id(title, layer.mask_source_id);
+        const double mask_time = mask_layer
+            ? gpu_layer_render_time(title, *mask_layer, title_time) : title_time;
+        if (mask_layer && layer_chain_visible(title, *mask_layer, mask_time)) {
+            gs_texture_t *mask = render_gpu_mask_graph_texture(
+                session, title, *mask_layer, title_time, std::string());
+            if (mask)
+                coverage = apply_gpu_mask(session, coverage, mask, layer.mask_mode);
+            else if (!mask_mode_is_inverted(layer.mask_mode))
+                return nullptr;
+        } else if (!mask_mode_is_inverted(layer.mask_mode)) {
+            return nullptr;
+        }
+    }
+    return coverage;
+}
+
 static gs_texture_t *mix_gpu_adjustment_layer(
     TitleGpuRenderSession *session, const Title &title, const Layer &layer,
     double title_time, gs_texture_t *original, gs_texture_t *effected,
-    gs_texrender_t *target)
+    gs_texture_t *coverage, gs_texrender_t *target,
+    bool bounded_backdrop = false)
 {
-    if (!session || !original || !effected || !target)
+    if (!session || !original || !effected || !coverage || !target)
         return original;
     if (!session->adjustment_mix_effect)
         session->adjustment_mix_effect = gs_effect_create(
@@ -10628,8 +11243,26 @@ static gs_texture_t *mix_gpu_adjustment_layer(
         gs_effect_set_texture(param, original);
     if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, "effectedImage"))
         gs_effect_set_texture(param, effected);
-    set_effect_float_param(effect, "amount", static_cast<float>(std::clamp(
-        layer_chain_opacity(title, layer, title_time), 0.0, 1.0)));
+    if (gs_eparam_t *param = gs_effect_get_param_by_name(effect, "coverageImage"))
+        gs_effect_set_texture(param, coverage);
+    /* A bounded backdrop effect is a replacement of the pixels behind the
+     * artwork, not another semi-transparent copy of them.  Layer opacity and
+     * blend mode belong exclusively to the later artwork composite. */
+    const float amount = bounded_backdrop
+        ? 1.0f
+        : static_cast<float>(std::clamp(
+              layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+    set_effect_float_param(effect, "amount", amount);
+    set_effect_int_param(effect, "blendMode", static_cast<int>(
+        bounded_backdrop ? EffectBlendMode::Normal : layer.blend_mode));
+    bool invert_coverage = false;
+    for (const LayerEffect &candidate : layer.effects) {
+        if (candidate.enabled && candidate.affect_layers_behind && candidate.affect_layers_behind_invert) {
+            invert_coverage = true;
+            break;
+        }
+    }
+    set_effect_int_param(effect, "coverageInvert", invert_coverage ? 1 : 0);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
         layer.transitions, layer.in_time, layer.out_time, title_time);
     set_gpu_transition_effect_params(session, effect, transition);
@@ -10729,14 +11362,69 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     return true;
 }
 
+static bool copy_full_canvas_gpu_texture(TitleGpuRenderSession *session,
+                                         gs_texture_t *texture,
+                                         gs_texrender_t *target);
+
+static bool layer_requires_full_canvas_effect_pass(const Layer &layer,
+                                                   double title_time)
+{
+    const double local_time = std::max(0.0, title_time - layer.in_time);
+    for (const LayerEffect &effect : layer.effects) {
+        if (!eval_effect_enabled(effect, local_time) ||
+            effect.affect_layers_behind ||
+            effect.type == LayerEffectType::MotionBlur)
+            continue;
+        switch (effect.type) {
+        case LayerEffectType::BackgroundColor:
+        case LayerEffectType::Outline:
+        case LayerEffectType::DropShadow:
+        case LayerEffectType::LongShadow:
+        case LayerEffectType::Glow:
+        case LayerEffectType::Bloom:
+        case LayerEffectType::LensFlare:
+        case LayerEffectType::RoughenEdges:
+            return true;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
                                        const Title &title,
                                        const Layer &layer,
                                        double title_time,
                                        gs_texrender_t *target,
                                        bool apply_pixel_effects = true,
-                                       const std::string &raster_id = std::string())
+                                       const std::string &raster_id = std::string(),
+                                       double opacity_override = -1.0)
 {
+    /* Effects that can generate pixels outside the source raster must run on a
+     * full-canvas texture. Running them on the compact per-layer raster clips
+     * outline, shadows, glow/bloom and flare/glare at the raster bounds. */
+    if (apply_pixel_effects &&
+        layer_requires_full_canvas_effect_pass(layer, title_time)) {
+        gs_texrender_t *raw_target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+        if (!raw_target)
+            return false;
+        const bool rendered = render_gpu_layer_to_target(
+            session, title, layer, title_time, raw_target, false,
+            raster_id, opacity_override);
+        gs_texture_t *raw_texture = rendered
+            ? gs_texrender_get_texture(raw_target) : nullptr;
+        gs_texture_t *effected = raw_texture
+            ? apply_gpu_layer_effect_stack(session, layer, title_time,
+                                           raw_texture, session->width,
+                                           session->height, nullptr)
+            : nullptr;
+        const bool copied = effected &&
+            copy_full_canvas_gpu_texture(session, effected, target);
+        gs_texrender_destroy(raw_target);
+        return copied;
+    }
+
     const std::string resolved_raster_id = raster_id.empty()
         ? gpu_session_layer_id(layer) : raster_id;
     auto found = session->layers.find(resolved_raster_id);
@@ -10757,7 +11445,9 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
         return false;
 
     const double current_opacity = layer_chain_visible(title, layer, title_time)
-        ? std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0)
+        ? (opacity_override >= 0.0
+            ? std::clamp(opacity_override, 0.0, 1.0)
+            : std::clamp(layer_chain_opacity(title, layer, title_time), 0.0, 1.0))
         : 0.0;
     const LayerEffect *motion_config = layer_motion_blur_effect(layer);
     const LayerEffect motion = motion_config
@@ -10872,8 +11562,16 @@ static gs_texture_t *apply_gpu_mask(TitleGpuRenderSession *session,
     gs_effect_set_texture(mask, mask_texture);
     gs_effect_set_int(mask_mode, (int)mode);
     gs_enable_blending(false);
+    /* Full-canvas mask composition must never inherit the model matrix left by
+     * the OBS source, editor presentation, or a preceding transformed layer.
+     * The mask shader samples both full-canvas textures in normalized UV space;
+     * applying an inherited translate/scale/rotation moves the fullscreen quad
+     * away from the target and makes otherwise valid layer masks appear empty. */
+    gs_matrix_push();
+    gs_matrix_identity();
     while (gs_effect_loop(session->mask_effect, "Draw"))
         gs_draw_sprite(layer_texture, 0, session->width, session->height);
+    gs_matrix_pop();
     gs_texrender_end(session->masked_target);
     return gs_texrender_get_texture(session->masked_target);
 }
@@ -10898,11 +11596,133 @@ static bool copy_full_canvas_gpu_texture(TitleGpuRenderSession *session,
         }
         gs_effect_set_texture(image, texture);
         gs_enable_blending(false);
+        /* Publishing a retained matte is also a full-canvas pass. Keep it
+         * transform-neutral for the same reason as apply_gpu_mask(). */
+        gs_matrix_push();
+        gs_matrix_identity();
         while (gs_effect_loop(session->blit_effect, "Draw"))
             gs_draw_sprite(texture, 0, session->width, session->height);
+        gs_matrix_pop();
     }
     gs_texrender_end(target);
     return true;
+}
+
+
+enum class ExternalBackgroundMapping {
+    Rectangle = 0,
+    CurrentTransform = 1,
+};
+
+static bool ensure_external_background_snapshot(
+    TitleGpuRenderSession *session, uint32_t width, uint32_t height,
+    enum gs_color_format format)
+{
+    if (!session || width == 0 || height == 0 || format == GS_UNKNOWN)
+        return false;
+    const bool recreate = !session->external_background_snapshot ||
+        session->external_background_snapshot_width != width ||
+        session->external_background_snapshot_height != height ||
+        session->external_background_snapshot_format != format;
+    if (!recreate)
+        return true;
+    if (session->external_background_snapshot)
+        gs_texture_destroy(session->external_background_snapshot);
+    session->external_background_snapshot = gs_texture_create(
+        width, height, format, 1, nullptr, 0);
+    if (!session->external_background_snapshot) {
+        session->external_background_snapshot_width = 0;
+        session->external_background_snapshot_height = 0;
+        session->external_background_snapshot_format = GS_UNKNOWN;
+        return false;
+    }
+    session->external_background_snapshot_width = width;
+    session->external_background_snapshot_height = height;
+    session->external_background_snapshot_format = format;
+    return true;
+}
+
+static gs_texture_t *render_external_background_local_locked(
+    TitleGpuRenderSession *session, gs_texture_t *background,
+    uint32_t background_width, uint32_t background_height,
+    ExternalBackgroundMapping mapping, const struct matrix4 *local_to_background,
+    float rect_x, float rect_y, float rect_width, float rect_height,
+    uint32_t logical_width, uint32_t logical_height)
+{
+    if (!session || !background || background_width == 0 ||
+        background_height == 0 || session->width == 0 || session->height == 0)
+        return nullptr;
+    if (!session->external_background_local)
+        session->external_background_local =
+            gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+    if (!session->external_background_effect)
+        session->external_background_effect = gs_effect_create(
+            kGpuExternalBackgroundEffect,
+            "obs-bgs-external-background.effect", nullptr);
+    if (!session->external_background_local ||
+        !session->external_background_effect)
+        return nullptr;
+
+    struct vec4 clear;
+    vec4_zero(&clear);
+    if (!begin_gpu_target(session->external_background_local,
+                          session->width, session->height, clear))
+        return nullptr;
+
+    gs_effect_t *effect = session->external_background_effect;
+    gs_eparam_t *background_param =
+        gs_effect_get_param_by_name(effect, "background");
+    gs_eparam_t *matrix_param =
+        gs_effect_get_param_by_name(effect, "localToBackground");
+    gs_eparam_t *background_size_param =
+        gs_effect_get_param_by_name(effect, "backgroundSize");
+    gs_eparam_t *logical_size_param =
+        gs_effect_get_param_by_name(effect, "logicalSize");
+    gs_eparam_t *rect_param =
+        gs_effect_get_param_by_name(effect, "backgroundRect");
+    gs_eparam_t *title_background_param =
+        gs_effect_get_param_by_name(effect, "titleBackground");
+    gs_eparam_t *mapping_param =
+        gs_effect_get_param_by_name(effect, "mappingMode");
+    if (!background_param || !matrix_param || !background_size_param ||
+        !logical_size_param || !rect_param || !title_background_param ||
+        !mapping_param) {
+        gs_texrender_end(session->external_background_local);
+        return nullptr;
+    }
+
+    struct matrix4 mapping_matrix;
+    if (local_to_background)
+        matrix4_copy(&mapping_matrix, local_to_background);
+    else
+        matrix4_identity(&mapping_matrix);
+    struct vec2 background_size;
+    vec2_set(&background_size, static_cast<float>(background_width),
+             static_cast<float>(background_height));
+    struct vec2 logical_size;
+    vec2_set(&logical_size, static_cast<float>(std::max(1u, logical_width)),
+             static_cast<float>(std::max(1u, logical_height)));
+    struct vec4 background_rect;
+    vec4_set(&background_rect, rect_x, rect_y, rect_width, rect_height);
+    double r, g, b, a;
+    unpack_color(session->title.bg_color, r, g, b, a);
+    struct vec4 title_background;
+    vec4_set(&title_background, static_cast<float>(r * a),
+             static_cast<float>(g * a), static_cast<float>(b * a),
+             static_cast<float>(a));
+
+    gs_effect_set_texture(background_param, background);
+    gs_effect_set_matrix4(matrix_param, &mapping_matrix);
+    gs_effect_set_vec2(background_size_param, &background_size);
+    gs_effect_set_vec2(logical_size_param, &logical_size);
+    gs_effect_set_vec4(rect_param, &background_rect);
+    gs_effect_set_vec4(title_background_param, &title_background);
+    gs_effect_set_int(mapping_param, static_cast<int>(mapping));
+    gs_enable_blending(false);
+    while (gs_effect_loop(effect, "Draw"))
+        gs_draw_sprite(background, 0, session->width, session->height);
+    gs_texrender_end(session->external_background_local);
+    return gs_texrender_get_texture(session->external_background_local);
 }
 
 static std::string gpu_mask_texture_key(
@@ -10972,6 +11792,17 @@ static void prune_gpu_mask_texture_cache(TitleGpuRenderSession *session)
     }
 }
 
+static gs_texture_t *render_gpu_group_graph_texture(
+    TitleGpuRenderSession *session, const Title &title, const Layer &group,
+    double title_time, std::unordered_set<std::string> &visiting);
+
+static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
+                                      gs_texture_t *background,
+                                      gs_texture_t *foreground,
+                                      EffectBlendMode mode,
+                                      double opacity,
+                                      gs_texrender_t *target);
+
 static gs_texture_t *render_gpu_mask_graph_texture(
     TitleGpuRenderSession *session, const Title &title, const Layer &layer,
     double title_time, const std::string &raster_id,
@@ -10981,6 +11812,9 @@ static gs_texture_t *render_gpu_mask_graph_texture(
         return nullptr;
     const std::string resolved_raster_id = raster_id.empty()
         ? gpu_session_layer_id(layer) : raster_id;
+    if (layer.type == LayerType::Group)
+        return render_gpu_group_graph_texture(session, title, layer,
+                                              title_time, visiting);
     auto raster_found = session->layers.find(resolved_raster_id);
     if (raster_found == session->layers.end())
         return nullptr;
@@ -11106,6 +11940,7 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
                                       gs_texture_t *background,
                                       gs_texture_t *foreground,
                                       EffectBlendMode mode,
+                                      double opacity,
                                       gs_texrender_t *target)
 {
     if (!session || !background || !foreground || !target)
@@ -11124,18 +11959,187 @@ static bool composite_gpu_frame_layer(TitleGpuRenderSession *session,
     gs_eparam_t *bg = gs_effect_get_param_by_name(session->blend_effect, "background");
     gs_eparam_t *fg = gs_effect_get_param_by_name(session->blend_effect, "foreground");
     gs_eparam_t *blend_mode = gs_effect_get_param_by_name(session->blend_effect, "blendMode");
-    if (!bg || !fg || !blend_mode) {
+    gs_eparam_t *opacity_param = gs_effect_get_param_by_name(session->blend_effect, "opacity");
+    if (!bg || !fg || !blend_mode || !opacity_param) {
         gs_texrender_end(target);
         return false;
     }
     gs_effect_set_texture(bg, background);
     gs_effect_set_texture(fg, foreground);
     gs_effect_set_int(blend_mode, (int)mode);
+    gs_effect_set_float(opacity_param, static_cast<float>(std::clamp(opacity, 0.0, 1.0)));
     gs_enable_blending(false);
     while (gs_effect_loop(session->blend_effect, "Draw"))
         gs_draw_sprite(background, 0, session->width, session->height);
     gs_texrender_end(target);
     return gs_texrender_get_texture(target) != nullptr;
+}
+
+static double gpu_layer_local_opacity(const Layer &layer, double title_time)
+{
+    const double local_time = std::max(0.0, title_time - layer.in_time);
+    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
+        layer.transitions, layer.in_time, layer.out_time, title_time);
+    return std::clamp(layer.opacity.evaluate(local_time) * transition.opacity,
+                      0.0, 1.0);
+}
+
+static gs_texture_t *render_gpu_group_graph_texture(
+    TitleGpuRenderSession *session, const Title &title, const Layer &group,
+    double title_time, std::unordered_set<std::string> &visiting)
+{
+    if (!session || group.type != LayerType::Group)
+        return nullptr;
+    const std::string visit_id = std::string("group|") + group.id;
+    if (!visiting.insert(visit_id).second) {
+        session->last_error = "GPU group graph contains a cyclic dependency.";
+        return nullptr;
+    }
+
+    gs_texrender_t *ping = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+    gs_texrender_t *pong = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+    gs_texrender_t *published = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+    if (!ping || !pong || !published) {
+        if (ping) gs_texrender_destroy(ping);
+        if (pong) gs_texrender_destroy(pong);
+        if (published) gs_texrender_destroy(published);
+        visiting.erase(visit_id);
+        return nullptr;
+    }
+
+    struct vec4 clear; vec4_zero(&clear);
+    if (!begin_gpu_target(ping, session->width, session->height, clear)) {
+        gs_texrender_destroy(ping); gs_texrender_destroy(pong);
+        gs_texrender_destroy(published); visiting.erase(visit_id);
+        return nullptr;
+    }
+    gs_texrender_end(ping);
+    gs_texture_t *frame = gs_texrender_get_texture(ping);
+    bool current_ping = true;
+
+    for (const auto &child_ptr : title.layers) {
+        if (!child_ptr || child_ptr->parent_id != group.id)
+            continue;
+        const Layer &child = *child_ptr;
+        const double child_time = gpu_layer_render_time(title, child, title_time);
+        if (!layer_chain_visible(title, child, child_time) ||
+            !layer_should_render_as_visible_content(title, child))
+            continue;
+
+        gs_texture_t *foreground = nullptr;
+        if (child.type == LayerType::Group) {
+            foreground = render_gpu_group_graph_texture(
+                session, title, child, title_time, visiting);
+        } else if (child.type == LayerType::Adjustment) {
+            gs_texture_t *coverage = render_gpu_adjustment_coverage(
+                session, title, child, child_time);
+            gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
+                session, child, child_time, frame, session->width, session->height);
+            gs_texrender_t *next = current_ping ? pong : ping;
+            gs_texture_t *mixed = coverage && adjusted
+                ? mix_gpu_adjustment_layer(session, title, child, child_time,
+                                           frame, adjusted, coverage, next)
+                : nullptr;
+            if (mixed && mixed != frame) {
+                frame = mixed;
+                current_ping = !current_ping;
+            }
+            continue;
+        } else {
+            const bool has_mask = child.mask_mode != MaskMode::None &&
+                                  !child.mask_source_id.empty();
+            const bool effects_after_mask = has_mask &&
+                                            child.effect_stack_respects_masks;
+            if (!render_gpu_layer_to_target(session, title, child, child_time,
+                                            session->layer_target,
+                                            !effects_after_mask,
+                                            std::string(), 1.0))
+                continue;
+            foreground = gs_texrender_get_texture(session->layer_target);
+            if (has_mask) {
+                const Layer *mask_layer = find_layer_by_id(title,
+                                                           child.mask_source_id);
+                const double mask_time = mask_layer
+                    ? gpu_layer_render_time(title, *mask_layer, title_time)
+                    : title_time;
+                if (mask_layer && layer_chain_visible(title, *mask_layer, mask_time)) {
+                    gs_texture_t *mask_texture = render_gpu_mask_graph_texture(
+                        session, title, *mask_layer, title_time,
+                        gpu_session_layer_id(*mask_layer), visiting);
+                    if (mask_texture)
+                        foreground = apply_gpu_mask(session, foreground,
+                                                    mask_texture, child.mask_mode);
+                    else if (!mask_mode_is_inverted(child.mask_mode))
+                        foreground = nullptr;
+                } else if (!mask_mode_is_inverted(child.mask_mode)) {
+                    foreground = nullptr;
+                }
+            }
+            if (foreground && effects_after_mask)
+                foreground = apply_gpu_layer_effect_stack(
+                    session, child, child_time, foreground,
+                    session->width, session->height);
+        }
+        if (!foreground)
+            continue;
+        gs_texrender_t *next = current_ping ? pong : ping;
+        if (composite_gpu_frame_layer(session, frame, foreground,
+                                      child.blend_mode,
+                                      gpu_layer_local_opacity(child, child_time),
+                                      next)) {
+            frame = gs_texrender_get_texture(next);
+            current_ping = !current_ping;
+        }
+    }
+
+    const double group_time = gpu_layer_render_time(title, group, title_time);
+    const bool has_mask = group.mask_mode != MaskMode::None &&
+                          !group.mask_source_id.empty();
+    const bool effects_after_mask = has_mask && group.effect_stack_respects_masks;
+    if (!effects_after_mask)
+        frame = apply_gpu_layer_effect_stack(session, group, group_time, frame,
+                                             session->width, session->height);
+    if (frame && has_mask) {
+        const Layer *mask_layer = find_layer_by_id(title, group.mask_source_id);
+        const double mask_time = mask_layer
+            ? gpu_layer_render_time(title, *mask_layer, title_time) : title_time;
+        if (mask_layer && layer_chain_visible(title, *mask_layer, mask_time)) {
+            gs_texture_t *mask_texture = render_gpu_mask_graph_texture(
+                session, title, *mask_layer, title_time,
+                gpu_session_layer_id(*mask_layer), visiting);
+            if (mask_texture)
+                frame = apply_gpu_mask(session, frame, mask_texture,
+                                       group.mask_mode);
+            else if (!mask_mode_is_inverted(group.mask_mode))
+                frame = nullptr;
+        } else if (!mask_mode_is_inverted(group.mask_mode)) {
+            frame = nullptr;
+        }
+    }
+    if (frame && effects_after_mask)
+        frame = apply_gpu_layer_effect_stack(session, group, group_time, frame,
+                                             session->width, session->height);
+
+    gs_texture_t *result = nullptr;
+    if (copy_full_canvas_gpu_texture(session, frame, published))
+        result = gs_texrender_get_texture(published);
+
+    /* Keep the published texture alive in the existing per-session matte cache.
+     * This also avoids returning a texture owned by a temporary ping-pong target. */
+    auto &cache = session->mask_texture_cache[std::string("group-result|") + group.id];
+    destroy_gpu_mask_cache_entry(cache);
+    cache.targets[0] = published;
+    cache.active_target = 0;
+    cache.width = session->width;
+    cache.height = session->height;
+    cache.key = std::to_string(title_time);
+    cache.last_used = ++session->mask_texture_cache_tick;
+    result = gs_texrender_get_texture(published);
+
+    gs_texrender_destroy(ping);
+    gs_texrender_destroy(pong);
+    visiting.erase(visit_id);
+    return result;
 }
 
 static bool gpu_cached_image_rect(const QImage &image, const Title &title,
@@ -11554,13 +12558,19 @@ public:
     }
 };
 
-static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
+static gs_texture_t *render_gpu_session_locked(
+    TitleGpuRenderSession *session, gs_texture_t *external_background = nullptr,
+    bool isolate_editor_background_from_effects = false)
 {
     if (!session || !session->has_title)
         return nullptr;
+    const bool destination_composite = external_background != nullptr;
     if (session->state_transaction_pending.load(std::memory_order_acquire))
-        return gpu_session_has_published_frame_for_current_title(session)
-            ? session->final_texture : nullptr;
+        return destination_composite
+            ? nullptr
+            : (gpu_session_has_published_frame_for_current_title(session)
+                   ? session->final_texture
+                   : nullptr);
     const double render_scale = session->editor_draft
         ? std::clamp(static_cast<double>(session->preview_quality_scale), 0.25, 1.0)
         : 1.0;
@@ -11586,10 +12596,11 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
      * "GPU raster set is incomplete". Fresh editor sessions hit this reliably;
      * OBS sources hit it nondeterministically depending on whether the live
      * first-frame raster happened to finish before the cache token arrived. */
-    if (!session->frame_dirty && gpu_session_final_matches_model(session))
+    if (!destination_composite && !session->frame_dirty &&
+        gpu_session_final_matches_model(session))
         return session->final_texture;
 
-    if (session->use_gpu_cached_final) {
+    if (!destination_composite && session->use_gpu_cached_final) {
         if (!draw_global_gpu_frame_locked(
                 session, session->submitted_gpu_cache_key,
                 session->frame_a)) {
@@ -11617,7 +12628,7 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         return published;
     }
 
-    if (session->use_submitted_final) {
+    if (!destination_composite && session->use_submitted_final) {
         if (!upload_gpu_cached_image(session,
                                      session->pending_submitted_final,
                                      session->submitted_final_pending,
@@ -11705,7 +12716,8 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
             ? session->final_texture : nullptr;
     }
 
-    if (session->use_base_frame && !session->use_gpu_cached_base &&
+    if (!destination_composite && session->use_base_frame &&
+        !session->use_gpu_cached_base &&
         !upload_gpu_cached_image(session,
                                  session->pending_base_frame,
                                  session->base_frame_pending,
@@ -11718,7 +12730,21 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
     }
 
     gs_texture_t *frame = nullptr;
-    if (session->use_base_frame && session->use_gpu_cached_base) {
+    if (destination_composite && !isolate_editor_background_from_effects) {
+        if (!copy_full_canvas_gpu_texture(session, external_background,
+                                          session->frame_a)) {
+            session->last_error =
+                "Could not initialize GPU frame from destination background.";
+            return nullptr;
+        }
+        frame = gs_texrender_get_texture(session->frame_a);
+    } else if (destination_composite && isolate_editor_background_from_effects) {
+        struct vec4 transparent; vec4_zero(&transparent);
+        if (!begin_gpu_target(session->frame_a, width, height, transparent))
+            return nullptr;
+        gs_texrender_end(session->frame_a);
+        frame = gs_texrender_get_texture(session->frame_a);
+    } else if (session->use_base_frame && session->use_gpu_cached_base) {
         if (!draw_global_gpu_frame_locked(
                 session, session->base_gpu_cache_key,
                 session->frame_a)) {
@@ -11752,6 +12778,9 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
 
     bool current_is_a = true;
     const std::size_t layer_count = session->title.layers.size();
+    /* Respect the configured layer range for destination-aware passes too.
+     * This allows OBS scene masks to be inserted at their real stack position
+     * and then re-composite only the layers above them. */
     const std::size_t first = std::min(session->first_layer, layer_count);
     const std::size_t last = std::min(session->last_layer, layer_count);
     for (std::size_t index = first; index < last; ++index) {
@@ -11764,7 +12793,100 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
         if (!layer_chain_visible(session->title, layer, layer_time) ||
             !layer_should_render_as_visible_content(session->title, layer))
             continue;
+        /* Children are composited through their group surface so the group can
+         * behave exactly like a normal layer for effects, masks and blending. */
+        if (!layer.parent_id.empty()) {
+            const Layer *parent = find_layer_by_id(session->title, layer.parent_id);
+            if (parent && parent->type == LayerType::Group)
+                continue;
+        }
+        if (layer.type == LayerType::Group) {
+            /* Preserve a pre-group-effects copy for bounded adjustment
+             * coverage.  The normal group render below may contain blur, glow
+             * or shadows and therefore must not define the hard silhouette. */
+            gs_texrender_t *group_silhouette_target = nullptr;
+            gs_texture_t *group_silhouette = nullptr;
+            Layer silhouette_group = layer;
+            silhouette_group.effects.clear();
+            {
+                std::unordered_set<std::string> silhouette_visiting;
+                gs_texture_t *raw_group = render_gpu_group_graph_texture(
+                    session, session->title, silhouette_group, session->time,
+                    silhouette_visiting);
+                if (raw_group) {
+                    group_silhouette_target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+                    if (group_silhouette_target &&
+                        copy_full_canvas_gpu_texture(session, raw_group,
+                                                     group_silhouette_target))
+                        group_silhouette = gs_texrender_get_texture(
+                            group_silhouette_target);
+                }
+            }
+
+            std::unordered_set<std::string> visiting;
+            gs_texture_t *foreground = render_gpu_group_graph_texture(
+                session, session->title, layer, session->time, visiting);
+            if (!foreground) {
+                if (group_silhouette_target)
+                    gs_texrender_destroy(group_silhouette_target);
+                continue;
+            }
+            if (!group_silhouette)
+                group_silhouette = foreground;
+
+            /* A group can also be a bounded adjustment layer.  Its composed
+             * alpha is the coverage silhouette, while the actual group artwork
+             * is still composited normally afterwards. */
+            for (const LayerEffect &backdrop_effect : layer.effects) {
+                if (!eval_effect_enabled(backdrop_effect,
+                                         std::max(0.0, layer_time - layer.in_time)) ||
+                    !backdrop_effect.affect_layers_behind)
+                    continue;
+                Layer adjustment_group = layer;
+                adjustment_group.effects.clear();
+                adjustment_group.effects.push_back(backdrop_effect);
+                gs_texture_t *adjusted_background = apply_gpu_layer_effect_stack(
+                    session, adjustment_group, layer_time, frame,
+                    width, height, nullptr, true);
+                if (!adjusted_background || adjusted_background == frame)
+                    continue;
+                gs_texrender_t *backdrop_target = current_is_a
+                    ? session->frame_b : session->frame_a;
+                gs_texture_t *mixed_background = mix_gpu_adjustment_layer(
+                    session, session->title, adjustment_group, layer_time,
+                    frame, adjusted_background, group_silhouette,
+                    backdrop_target, true);
+                if (mixed_background && mixed_background != frame) {
+                    frame = mixed_background;
+                    current_is_a = !current_is_a;
+                }
+            }
+
+            gs_texrender_t *next = current_is_a ? session->frame_b
+                                                : session->frame_a;
+            const double opacity = gpu_layer_local_opacity(layer, layer_time);
+            if (!composite_gpu_frame_layer(session, frame, foreground,
+                                           layer.blend_mode, opacity, next)) {
+                if (group_silhouette_target)
+                    gs_texrender_destroy(group_silhouette_target);
+                continue;
+            }
+            frame = gs_texrender_get_texture(next);
+            current_is_a = !current_is_a;
+            if (group_silhouette_target)
+                gs_texrender_destroy(group_silhouette_target);
+            continue;
+        }
         if (layer.type == LayerType::Adjustment) {
+            /* The editor canvas destination is a presentation background, not
+             * artwork input. AE-style opacity and blend modes may sample it,
+             * but adjustment effects must not blur, color-correct, distort or
+             * otherwise process the checkerboard/editor underlay. OBS source
+             * rendering keeps the full destination-aware adjustment behavior. */
+            gs_texture_t *coverage = render_gpu_adjustment_coverage(
+                session, session->title, layer, layer_time);
+            if (!coverage)
+                continue;
             gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
                 session, layer, layer_time, frame, width, height);
             if (adjusted && adjusted != frame) {
@@ -11772,7 +12894,7 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
                                                     : session->frame_a;
                 gs_texture_t *mixed = mix_gpu_adjustment_layer(
                     session, session->title, layer, layer_time,
-                    frame, adjusted, next);
+                    frame, adjusted, coverage, next);
                 if (mixed && mixed != frame) {
                     frame = mixed;
                     current_is_a = !current_is_a;
@@ -11786,11 +12908,85 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
                                         layer.effect_stack_respects_masks;
         if (!render_gpu_layer_to_target(session, session->title, layer,
                                         layer_time, session->layer_target,
-                                        !effects_after_mask))
+                                        !effects_after_mask, std::string(), 1.0))
             continue;
         gs_texture_t *foreground = gs_texrender_get_texture(session->layer_target);
         if (!foreground)
             continue;
+
+        bool has_backdrop_effect = false;
+        for (const LayerEffect &effect : layer.effects) {
+            if (effect.enabled && effect.affect_layers_behind) {
+                has_backdrop_effect = true;
+                break;
+            }
+        }
+        if (has_backdrop_effect) {
+            /* Build the bounded-adjustment mask from the untouched artwork,
+             * before any normal or backdrop effect can expand/change alpha.
+             * The artwork remains visible later in the regular foreground pass. */
+            gs_texture_t *silhouette = nullptr;
+            if (render_gpu_layer_to_target(session, session->title, layer,
+                                           layer_time,
+                                           session->adjustment_coverage_target,
+                                           false, std::string(), 1.0)) {
+                silhouette = gs_texrender_get_texture(
+                    session->adjustment_coverage_target);
+            }
+            if (silhouette && has_mask) {
+                const Layer *silhouette_mask_layer = find_layer_by_id(
+                    session->title, layer.mask_source_id);
+                const double silhouette_mask_time = silhouette_mask_layer
+                    ? gpu_layer_render_time(session->title,
+                                            *silhouette_mask_layer,
+                                            session->time)
+                    : session->time;
+                if (silhouette_mask_layer && layer_chain_visible(
+                        session->title, *silhouette_mask_layer,
+                        silhouette_mask_time)) {
+                    gs_texture_t *silhouette_mask = render_gpu_mask_graph_texture(
+                        session, session->title, *silhouette_mask_layer,
+                        session->time);
+                    if (silhouette_mask)
+                        silhouette = apply_gpu_mask(session, silhouette,
+                                                    silhouette_mask,
+                                                    layer.mask_mode);
+                    else if (!mask_mode_is_inverted(layer.mask_mode))
+                        silhouette = nullptr;
+                } else if (!mask_mode_is_inverted(layer.mask_mode)) {
+                    silhouette = nullptr;
+                }
+            }
+
+            if (silhouette) {
+                /* Evaluate backdrop effects independently. Besides preserving
+                 * stack order, this lets every effect own its mask inversion. */
+                for (const LayerEffect &backdrop_effect : layer.effects) {
+                    if (!eval_effect_enabled(backdrop_effect,
+                                             std::max(0.0, layer_time - layer.in_time)) ||
+                        !backdrop_effect.affect_layers_behind)
+                        continue;
+                    Layer adjustment_layer = layer;
+                    adjustment_layer.effects.clear();
+                    adjustment_layer.effects.push_back(backdrop_effect);
+                    gs_texture_t *adjusted_background = apply_gpu_layer_effect_stack(
+                        session, adjustment_layer, layer_time, frame,
+                        width, height, nullptr, true);
+                    if (!adjusted_background || adjusted_background == frame)
+                        continue;
+                    gs_texrender_t *backdrop_target = current_is_a
+                        ? session->frame_b : session->frame_a;
+                    gs_texture_t *mixed_background = mix_gpu_adjustment_layer(
+                        session, session->title, adjustment_layer, layer_time,
+                        frame, adjusted_background, silhouette,
+                        backdrop_target, true);
+                    if (mixed_background && mixed_background != frame) {
+                        frame = mixed_background;
+                        current_is_a = !current_is_a;
+                    }
+                }
+            }
+        }
 
         if (has_mask) {
             const Layer *mask_layer = find_layer_by_id(session->title,
@@ -11828,11 +13024,25 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
 
         gs_texrender_t *next = current_is_a ? session->frame_b
                                             : session->frame_a;
+        const double composite_opacity = std::clamp(
+            layer_chain_opacity(session->title, layer, layer_time), 0.0, 1.0);
         if (!composite_gpu_frame_layer(session, frame, foreground,
-                                       layer.blend_mode, next))
+                                       layer.blend_mode, composite_opacity, next))
             continue;
         frame = gs_texrender_get_texture(next);
         current_is_a = !current_is_a;
+    }
+
+    if (destination_composite) {
+        if (isolate_editor_background_from_effects) {
+            gs_texrender_t *next = current_is_a ? session->frame_b : session->frame_a;
+            if (composite_gpu_frame_layer(session, external_background, frame,
+                                          EffectBlendMode::Normal, 1.0, next))
+                frame = gs_texrender_get_texture(next);
+        }
+        prune_gpu_mask_texture_cache(session);
+        session->last_error = nullptr;
+        return frame;
     }
 
     gs_texture_t *published = publish_stable_gpu_frame(session, frame);
@@ -11845,6 +13055,116 @@ static gs_texture_t *render_gpu_session_locked(TitleGpuRenderSession *session)
     prune_gpu_mask_texture_cache(session);
     session->last_error = nullptr;
     return published;
+}
+
+static bool stage_gpu_texture_locked(TitleGpuRenderSession *session,
+                                     gs_texture_t *texture,
+                                     QImage &result)
+{
+    result = QImage();
+    if (!session || !texture || session->width == 0 || session->height == 0)
+        return false;
+    if (!session->stage || session->stage_width != session->width ||
+        session->stage_height != session->height) {
+        if (session->stage)
+            gs_stagesurface_destroy(session->stage);
+        session->stage = gs_stagesurface_create(session->width,
+                                                session->height,
+                                                GS_BGRA);
+        session->stage_width = session->stage ? session->width : 0;
+        session->stage_height = session->stage ? session->height : 0;
+    }
+    if (!session->stage)
+        return false;
+
+    gs_stage_texture(session->stage, texture);
+    uint8_t *mapped = nullptr;
+    uint32_t linesize = 0;
+    if (!gs_stagesurface_map(session->stage, &mapped, &linesize) ||
+        !mapped || linesize < session->width * 4)
+        return false;
+
+    QImage image(static_cast<int>(session->width),
+                 static_cast<int>(session->height),
+                 QImage::Format_ARGB32_Premultiplied);
+    if (!image.isNull()) {
+        for (uint32_t y = 0; y < session->height; ++y) {
+            std::memcpy(image.scanLine(static_cast<int>(y)),
+                        mapped + static_cast<size_t>(y) * linesize,
+                        static_cast<size_t>(session->width) * 4);
+        }
+    }
+    gs_stagesurface_unmap(session->stage);
+    if (image.isNull())
+        return false;
+    result = std::move(image);
+    return true;
+}
+
+static QImage make_ae_checkerboard(uint32_t width, uint32_t height)
+{
+    if (width == 0 || height == 0)
+        return QImage();
+    QImage image(static_cast<int>(width), static_cast<int>(height),
+                 QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull())
+        return image;
+    const int square = 24;
+    const QRgb dark = qRgba(58, 58, 58, 255);
+    const QRgb light = qRgba(82, 82, 82, 255);
+    for (int y = 0; y < image.height(); ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        const int tile_y = y / square;
+        for (int x = 0; x < image.width(); ++x)
+            line[x] = (((x / square) + tile_y) & 1) ? light : dark;
+    }
+    return image;
+}
+
+static QImage title_gpu_render_session_readback_over_checkerboard(
+    TitleGpuRenderSession *session)
+{
+    if (!session || session->destroying.load())
+        return QImage();
+
+    QImage result;
+    obs_enter_graphics();
+    std::unique_lock<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        !prepare_external_composite_dimensions_locked(session)) {
+        lock.unlock();
+        obs_leave_graphics();
+        return QImage();
+    }
+
+    /* Render the title artwork against transparent black. The checkerboard is
+     * editor chrome, not an adjustment-layer input: blur/distort/color effects
+     * must sample only actual title pixels. Passing a destination texture here
+     * previously made the checkerboard part of the GPU frame and produced
+     * incorrect adjustment blur semantics. */
+    gs_texture_t *texture = render_gpu_session_locked(
+        session, nullptr, true);
+    if (texture)
+        stage_gpu_texture_locked(session, texture, result);
+    lock.unlock();
+    obs_leave_graphics();
+
+    if (result.isNull())
+        return result;
+
+    /* Composite transparency chrome only after every artwork/effect pass. This
+     * keeps the checkerboard sharp while retaining effect-generated alpha such
+     * as blur tails, shadows and glows outside layer bounds. */
+    QImage background = make_ae_checkerboard(
+        static_cast<uint32_t>(result.width()),
+        static_cast<uint32_t>(result.height()));
+    if (background.isNull())
+        return result;
+    QPainter painter(&background);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    painter.drawImage(0, 0, result);
+    painter.end();
+    return background;
 }
 
 TitleGpuRenderSession *title_gpu_render_session_create()
@@ -11955,10 +13275,15 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
     destroy_target(session->layer_target);
     destroy_target(session->mask_target);
     destroy_target(session->masked_target);
+    destroy_target(session->adjustment_coverage_target);
     destroy_target(session->effect_a);
     destroy_target(session->effect_b);
     destroy_target(session->blur_a);
     destroy_target(session->blur_b);
+    destroy_target(session->external_background_local);
+    if (session->external_background_snapshot)
+        gs_texture_destroy(session->external_background_snapshot);
+    session->external_background_snapshot = nullptr;
     if (session->stage)
         gs_stagesurface_destroy(session->stage);
     for (auto &slot : session->readback_slots) {
@@ -12000,12 +13325,16 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         gs_effect_destroy(session->copy_effect);
     if (session->adjustment_mix_effect)
         gs_effect_destroy(session->adjustment_mix_effect);
+    if (session->adjustment_coverage_effect)
+        gs_effect_destroy(session->adjustment_coverage_effect);
     if (session->primitive_shape_effect)
         gs_effect_destroy(session->primitive_shape_effect);
     if (session->blend_effect)
         gs_effect_destroy(session->blend_effect);
     if (session->mask_effect)
         gs_effect_destroy(session->mask_effect);
+    if (session->external_background_effect)
+        gs_effect_destroy(session->external_background_effect);
     if (session->effect_registry)
         session->effect_registry->reset();
     lock.unlock();
@@ -12112,12 +13441,28 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         const auto &layer = session->title.layers[index];
         if (!layer)
             continue;
-        if (layer->type != LayerType::Adjustment)
-            needed_ids.insert(gpu_session_layer_id(*layer));
         if (layer->type != LayerType::Adjustment &&
-            layer->mask_mode != MaskMode::None &&
+            layer->type != LayerType::Group)
+            needed_ids.insert(gpu_session_layer_id(*layer));
+        if (layer->mask_mode != MaskMode::None &&
             !layer->mask_source_id.empty())
             needed_ids.insert(layer->mask_source_id);
+        if (layer->type == LayerType::Group) {
+            std::vector<std::string> group_ids{layer->id};
+            for (std::size_t cursor = 0; cursor < group_ids.size(); ++cursor) {
+                for (const auto &candidate : session->title.layers) {
+                    if (!candidate || candidate->parent_id != group_ids[cursor])
+                        continue;
+                    if (candidate->type == LayerType::Group)
+                        group_ids.push_back(candidate->id);
+                    else if (candidate->type != LayerType::Adjustment)
+                        needed_ids.insert(gpu_session_layer_id(*candidate));
+                    if (candidate->mask_mode != MaskMode::None &&
+                        !candidate->mask_source_id.empty())
+                        needed_ids.insert(candidate->mask_source_id);
+                }
+            }
+        }
     }
     bool mask_dependency_added = true;
     while (mask_dependency_added) {
@@ -12860,9 +14205,80 @@ static gs_texture_t *title_gpu_render_session_render_auxiliary_layer(
     if (!upload_gpu_layer_raster(session, found->second) ||
         !found->second.texture)
         return nullptr;
+    // A scene-mask layer's effects belong to the final masked scene, not to
+    // the alpha/luma matte itself. Build a geometry/track-matte-only mask here
+    // and apply the layer effect stack after the OBS scene has been clipped.
+    Layer matte_layer = *layer;
+    matte_layer.effects.clear();
     return render_gpu_mask_graph_texture(
-        session, session->title, *layer, title_time,
+        session, session->title, matte_layer, title_time,
         gpu_scene_mask_raster_id(layer_id));
+}
+
+static bool prepare_external_composite_dimensions_locked(
+    TitleGpuRenderSession *session)
+{
+    if (!session || !session->has_title)
+        return false;
+    const double render_scale = session->editor_draft
+        ? std::clamp(static_cast<double>(session->preview_quality_scale),
+                     0.25, 1.0)
+        : 1.0;
+    session->width = clamped_source_dimension(std::max(
+        1, static_cast<int>(std::ceil(session->title.width * render_scale))));
+    session->height = clamped_source_dimension(std::max(
+        1, static_cast<int>(std::ceil(session->title.height * render_scale))));
+    return ensure_gpu_session_objects(session, session->width,
+                                      session->height);
+}
+
+static bool present_gpu_session_texture_locked(
+    TitleGpuRenderSession *session, gs_texture_t *texture,
+    uint32_t output_width, uint32_t output_height,
+    bool replace_destination)
+{
+    if (!session || !texture)
+        return false;
+    gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+    gs_eparam_t *image = effect
+        ? gs_effect_get_param_by_name(effect, "image")
+        : nullptr;
+    if (!effect || !image)
+        return false;
+    gs_effect_set_texture(image, texture);
+    const uint64_t draw_serial = ++session->draw_serial;
+    if (TitlePreferences::cache_playback_logging_enabled()) {
+        BGL_LOG_INFO("CachePlayback", QStringLiteral(
+            "stage=gpu-draw title=%1 session=%2 drawSerial=%3 submittedSerial=%4 uploadedSerial=%5 publishedSerial=%6 texture=%7 output=%8x%9 dirty=%10 useSubmitted=%11 useGpuRam=%12 destinationAware=%13")
+            .arg(session->has_title
+                     ? QString::fromStdString(session->title.id)
+                     : QStringLiteral("<none>"))
+            .arg(reinterpret_cast<quintptr>(session), 0, 16)
+            .arg(draw_serial)
+            .arg(session->submitted_final_serial)
+            .arg(session->uploaded_final_serial)
+            .arg(session->published_final_serial)
+            .arg(reinterpret_cast<quintptr>(texture), 0, 16)
+            .arg(output_width).arg(output_height)
+            .arg(session->frame_dirty ? 1 : 0)
+            .arg(session->use_submitted_final ? 1 : 0)
+            .arg(session->use_gpu_cached_final ? 1 : 0)
+            .arg(replace_destination ? 1 : 0));
+    }
+    gs_blend_state_push();
+    if (replace_destination) {
+        /* The texture already contains the captured destination plus the
+         * complete title stack. Replace the destination rectangle rather than
+         * compositing that destination a second time. */
+        gs_enable_blending(false);
+    } else {
+        gs_enable_blending(true);
+        gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+    }
+    while (gs_effect_loop(effect, "Draw"))
+        gs_draw_sprite(texture, 0, output_width, output_height);
+    gs_blend_state_pop();
+    return true;
 }
 
 bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
@@ -12877,38 +14293,112 @@ bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
     gs_texture_t *texture = render_gpu_session_locked(session);
     if (!texture && gpu_session_has_published_frame_for_current_title(session))
         texture = session->final_texture;
-    if (!texture)
+    return present_gpu_session_texture_locked(
+        session, texture, output_width, output_height, false);
+}
+
+bool title_gpu_render_session_draw_over_background_rect(
+    TitleGpuRenderSession *session, gs_texture_t *background,
+    uint32_t background_width, uint32_t background_height,
+    float background_x, float background_y, float background_width_px,
+    float background_height_px, uint32_t output_width,
+    uint32_t output_height,
+    bool isolate_editor_background_from_effects)
+{
+    if (!session || !background || session->destroying.load())
         return false;
-    gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-    gs_eparam_t *image = effect ? gs_effect_get_param_by_name(effect, "image") : nullptr;
-    if (!effect || !image)
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        !prepare_external_composite_dimensions_locked(session))
         return false;
-    gs_effect_set_texture(image, texture);
-    const uint64_t draw_serial = ++session->draw_serial;
-    if (TitlePreferences::cache_playback_logging_enabled()) {
-        BGL_LOG_INFO("CachePlayback", QStringLiteral(
-            "stage=gpu-draw title=%1 session=%2 drawSerial=%3 submittedSerial=%4 uploadedSerial=%5 publishedSerial=%6 texture=%7 output=%8x%9 dirty=%10 useSubmitted=%11 useGpuRam=%12")
-            .arg(session->has_title
-                     ? QString::fromStdString(session->title.id)
-                     : QStringLiteral("<none>"))
-            .arg(reinterpret_cast<quintptr>(session), 0, 16)
-            .arg(draw_serial)
-            .arg(session->submitted_final_serial)
-            .arg(session->uploaded_final_serial)
-            .arg(session->published_final_serial)
-            .arg(reinterpret_cast<quintptr>(texture), 0, 16)
-            .arg(output_width).arg(output_height)
-            .arg(session->frame_dirty ? 1 : 0)
-            .arg(session->use_submitted_final ? 1 : 0)
-            .arg(session->use_gpu_cached_final ? 1 : 0));
+
+    gs_texture_t *local_background = nullptr;
+    {
+        ScopedGpuCompositorState state;
+        local_background = render_external_background_local_locked(
+            session, background, background_width, background_height,
+            ExternalBackgroundMapping::Rectangle, nullptr,
+            background_x, background_y, background_width_px,
+            background_height_px, output_width, output_height);
     }
-    gs_blend_state_push();
-    gs_enable_blending(true);
-    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-    while (gs_effect_loop(effect, "Draw"))
-        gs_draw_sprite(texture, 0, output_width, output_height);
-    gs_blend_state_pop();
-    return true;
+    gs_texture_t *texture = local_background
+        ? render_gpu_session_locked(
+              session, local_background,
+              isolate_editor_background_from_effects)
+        : nullptr;
+    if (!texture) {
+        /* Keep the source/editor visible on unsupported graphics backends.
+         * This fallback loses destination-dependent blending but never loses
+         * the title itself. */
+        texture = render_gpu_session_locked(session);
+        return present_gpu_session_texture_locked(
+            session, texture, output_width, output_height, false);
+    }
+    return present_gpu_session_texture_locked(
+        session, texture, output_width, output_height, true);
+}
+
+bool title_gpu_render_session_draw_over_current_target(
+    TitleGpuRenderSession *session, uint32_t output_width,
+    uint32_t output_height)
+{
+    if (!session || session->destroying.load())
+        return false;
+
+    gs_texture_t *current_target = gs_get_render_target();
+    if (!current_target)
+        return title_gpu_render_session_draw(session, output_width,
+                                             output_height);
+    const uint32_t background_width = gs_texture_get_width(current_target);
+    const uint32_t background_height = gs_texture_get_height(current_target);
+    const enum gs_color_format background_format =
+        gs_texture_get_color_format(current_target);
+    if (background_width == 0 || background_height == 0 ||
+        background_format == GS_UNKNOWN)
+        return title_gpu_render_session_draw(session, output_width,
+                                             output_height);
+
+    struct matrix4 local_to_background;
+    gs_matrix_get(&local_to_background);
+
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        !prepare_external_composite_dimensions_locked(session))
+        return false;
+    if (!ensure_external_background_snapshot(
+            session, background_width, background_height,
+            background_format)) {
+        gs_texture_t *fallback = render_gpu_session_locked(session);
+        return present_gpu_session_texture_locked(
+            session, fallback, output_width, output_height, false);
+    }
+
+    /* Never sample the render target while writing to it. The snapshot is the
+     * exact scene state after lower OBS items and before this BGL source. */
+    gs_copy_texture(session->external_background_snapshot, current_target);
+
+    gs_texture_t *local_background = nullptr;
+    {
+        ScopedGpuCompositorState state;
+        local_background = render_external_background_local_locked(
+            session, session->external_background_snapshot,
+            background_width, background_height,
+            ExternalBackgroundMapping::CurrentTransform,
+            &local_to_background, 0.0f, 0.0f,
+            static_cast<float>(background_width),
+            static_cast<float>(background_height),
+            output_width, output_height);
+    }
+    gs_texture_t *texture = local_background
+        ? render_gpu_session_locked(session, local_background)
+        : nullptr;
+    if (!texture) {
+        texture = render_gpu_session_locked(session);
+        return present_gpu_session_texture_locked(
+            session, texture, output_width, output_height, false);
+    }
+    return present_gpu_session_texture_locked(
+        session, texture, output_width, output_height, true);
 }
 
 std::string title_gpu_render_session_last_error(TitleGpuRenderSession *session)
@@ -13342,6 +14832,65 @@ static gs_effect_t *scene_mask_effect_for_data(TitleSourceData *data)
     return data->scene_mask_effect;
 }
 
+static bool draw_gpu_layer_range_over_current_target(
+    TitleGpuRenderSession *session, std::size_t first_layer,
+    std::size_t last_layer, uint32_t output_width, uint32_t output_height)
+{
+    if (!session || session->destroying.load())
+        return false;
+
+    gs_texture_t *current_target = gs_get_render_target();
+    if (!current_target)
+        return false;
+    const uint32_t background_width = gs_texture_get_width(current_target);
+    const uint32_t background_height = gs_texture_get_height(current_target);
+    const enum gs_color_format background_format =
+        gs_texture_get_color_format(current_target);
+    if (background_width == 0 || background_height == 0 ||
+        background_format == GS_UNKNOWN)
+        return false;
+
+    struct matrix4 local_to_background;
+    gs_matrix_get(&local_to_background);
+
+    std::lock_guard<std::mutex> lock(session->mutex);
+    if (session->destroying.load() ||
+        !prepare_external_composite_dimensions_locked(session))
+        return false;
+    if (!ensure_external_background_snapshot(
+            session, background_width, background_height,
+            background_format))
+        return false;
+
+    gs_copy_texture(session->external_background_snapshot, current_target);
+    gs_texture_t *local_background = nullptr;
+    {
+        ScopedGpuCompositorState state;
+        local_background = render_external_background_local_locked(
+            session, session->external_background_snapshot,
+            background_width, background_height,
+            ExternalBackgroundMapping::CurrentTransform,
+            &local_to_background, 0.0f, 0.0f,
+            static_cast<float>(background_width),
+            static_cast<float>(background_height),
+            output_width, output_height);
+    }
+    if (!local_background)
+        return false;
+
+    const std::size_t saved_first = session->first_layer;
+    const std::size_t saved_last = session->last_layer;
+    session->first_layer = std::min(first_layer, session->title.layers.size());
+    session->last_layer = std::max(
+        session->first_layer,
+        std::min(last_layer, session->title.layers.size()));
+    gs_texture_t *texture = render_gpu_session_locked(session, local_background);
+    session->first_layer = saved_first;
+    session->last_layer = saved_last;
+    return present_gpu_session_texture_locked(
+        session, texture, output_width, output_height, true);
+}
+
 static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, double title_time)
 {
     if (!data || data->scene_masks.empty() || data->active_scene_mask_scenes.empty())
@@ -13349,11 +14898,17 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
 
     if (!data->scene_mask_scene_texrender)
         data->scene_mask_scene_texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-    if (!data->scene_mask_scene_texrender || !scene_mask_effect_for_data(data))
+    if (!data->scene_mask_matted_texrender)
+        data->scene_mask_matted_texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+    if (!data->scene_mask_scene_texrender || !data->scene_mask_matted_texrender ||
+        !scene_mask_effect_for_data(data))
         return;
 
-    for (const Layer *layer : scene_mask_layers(title)) {
-        if (!layer || !layer_chain_visible(title, *layer, title_time))
+    for (std::size_t layer_index = 0; layer_index < title.layers.size(); ++layer_index) {
+        const auto &layer_ptr = title.layers[layer_index];
+        const Layer *layer = layer_ptr.get();
+        if (!layer || !layer->use_as_scene_mask ||
+            !layer_chain_visible(title, *layer, title_time))
             continue;
         const auto *cfg = scene_mask_config_for_layer(*data, layer->id);
         if (!cfg || cfg->scene_name.empty())
@@ -13419,18 +14974,77 @@ static void render_scene_masks_gpu(TitleSourceData *data, const Title &title, do
             gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
             gs_eparam_t *mask = gs_effect_get_param_by_name(effect, "mask");
             if (image && mask) {
+                gs_viewport_push();
+                gs_projection_push();
+                gs_texrender_reset(data->scene_mask_matted_texrender);
+                if (!gs_texrender_begin(data->scene_mask_matted_texrender, data->tex_w, data->tex_h)) {
+                    gs_projection_pop();
+                    gs_viewport_pop();
+                    continue;
+                }
+                gs_ortho(0.0f, (float)data->tex_w, 0.0f, (float)data->tex_h, -100.0f, 100.0f);
+                struct vec4 transparent;
+                vec4_zero(&transparent);
+                gs_clear(GS_CLEAR_COLOR, &transparent, 1.0f, 0);
+                gs_matrix_push();
+                gs_matrix_identity();
                 gs_effect_set_texture(image, scene_texture);
                 gs_effect_set_texture(mask, mask_texture);
-                gs_blend_state_push();
-                /* This pass overlays a masked scene after the title. Merely
-                 * selecting a blend function does not enable blending in OBS;
-                 * with blending disabled the transparent full-canvas quad can
-                 * overwrite the title output in Preview/Program. */
-                gs_enable_blending(true);
-                gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+                gs_enable_blending(false);
                 while (gs_effect_loop(effect, "Draw"))
                     gs_draw_sprite(scene_texture, 0, data->tex_w, data->tex_h);
+                gs_matrix_pop();
+                gs_texrender_end(data->scene_mask_matted_texrender);
+                gs_projection_pop();
+                gs_viewport_pop();
+
+                gs_texture_t *composited = gs_texrender_get_texture(data->scene_mask_matted_texrender);
+                const double layer_time = gpu_layer_render_time(title, *layer, title_time);
+                if (composited && !layer->effects.empty())
+                    composited = apply_gpu_layer_effect_stack(
+                        data->gpu_render_session, *layer, layer_time, composited,
+                        data->tex_w, data->tex_h);
+                if (!composited)
+                    continue;
+
+                gs_effect_t *present = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+                gs_eparam_t *present_image = present
+                    ? gs_effect_get_param_by_name(present, "image") : nullptr;
+                if (!present || !present_image)
+                    continue;
+                gs_effect_set_texture(present_image, composited);
+                gs_blend_state_push();
+                gs_enable_blending(true);
+                gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+                const float opacity = static_cast<float>(std::clamp(
+                    layer_chain_opacity(title, *layer, layer_time), 0.0, 1.0));
+                struct vec4 tint;
+                vec4_set(&tint, opacity, opacity, opacity, opacity);
+                gs_eparam_t *color = gs_effect_get_param_by_name(present, "color");
+                if (color) gs_effect_set_vec4(color, &tint);
+                gs_matrix_push();
+                gs_matrix_identity();
+                while (gs_effect_loop(present, "Draw"))
+                    gs_draw_sprite(composited, 0, data->tex_w, data->tex_h);
+                gs_matrix_pop();
                 gs_blend_state_pop();
+
+                /* Composite the ordinary layers between this scene mask and
+                 * the next scene mask. This keeps each scene at its real stack
+                 * position without drawing upper layers repeatedly. */
+                std::size_t next_scene_mask = title.layers.size();
+                for (std::size_t next = layer_index + 1; next < title.layers.size(); ++next) {
+                    if (title.layers[next] && title.layers[next]->use_as_scene_mask &&
+                        layer_chain_visible(title, *title.layers[next], title_time)) {
+                        next_scene_mask = next;
+                        break;
+                    }
+                }
+                if (layer_index + 1 < next_scene_mask) {
+                    draw_gpu_layer_range_over_current_target(
+                        data->gpu_render_session, layer_index + 1,
+                        next_scene_mask, data->tex_w, data->tex_h);
+                }
             }
         }
     }
@@ -13459,8 +15073,28 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
 
     const uint32_t width = clamped_source_dimension(title->width);
     const uint32_t height = clamped_source_dimension(title->height);
-    const bool rendered = title_gpu_render_session_draw(data->gpu_render_session,
-                                                        width, height);
+    bool rendered = false;
+    std::size_t first_scene_mask = title->layers.size();
+    for (std::size_t i = 0; i < title->layers.size(); ++i) {
+        if (title->layers[i] && title->layers[i]->use_as_scene_mask &&
+            layer_chain_visible(*title, *title->layers[i], data->playhead)) {
+            first_scene_mask = i;
+            break;
+        }
+    }
+    if (first_scene_mask < title->layers.size()) {
+        /* Render only the ordinary stack below the first scene mask. The scene
+         * masks and the ranges between them are then inserted sequentially by
+         * render_scene_masks_gpu(), preserving the real layer order. */
+        rendered = first_scene_mask == 0 || draw_gpu_layer_range_over_current_target(
+            data->gpu_render_session, 0, first_scene_mask, width, height);
+    } else {
+        rendered = title_requires_destination_compositing(*title)
+            ? title_gpu_render_session_draw_over_current_target(
+                  data->gpu_render_session, width, height)
+            : title_gpu_render_session_draw(data->gpu_render_session,
+                                            width, height);
+    }
     const std::string gpu_error = rendered
         ? std::string()
         : title_gpu_render_session_last_error(data->gpu_render_session);
@@ -13566,6 +15200,10 @@ static obs_properties_t *source_get_properties(void *priv)
         obs_property_list_add_string(p, t->name.c_str(), t->id.c_str());
     obs_property_set_modified_callback(p, source_title_property_modified);
 
+    obs_properties_add_bool(
+        props, PROP_CUE_FIRST_ROW_WHEN_ACTIVE,
+        bgl_tr_c("OBSTitles.CueFirstRowWhenActive"));
+
     add_scene_mask_properties_for_title(props, data ? data->title_id : std::string());
 
     return props;
@@ -13574,6 +15212,7 @@ static obs_properties_t *source_get_properties(void *priv)
 static void source_get_defaults(obs_data_t *settings)
 {
     obs_data_set_default_string(settings, PROP_TITLE_ID, "");
+    obs_data_set_default_bool(settings, PROP_CUE_FIRST_ROW_WHEN_ACTIVE, false);
 }
 
 /* ══════════════════════════════════════════════════════════════════

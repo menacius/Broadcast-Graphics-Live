@@ -1,13 +1,83 @@
 # Broadcast Graphics Live
 
-<img width="1919" height="1040" alt="Screenshot 2026-06-25 025251" src="https://github.com/user-attachments/assets/70126f07-1a3d-4d56-ae29-a680e7dd52d0" />
+<p align="center">
+  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
+</p>
 
 **Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.4-alpha`**
+**Current development version: `v0.8.5-alpha` · `Development Version 025`**
+
+
+## What is new in `v0.8.5-alpha`
+
+This release consolidates the Development Version 003–025 work on top of the updated `v0.8.4-alpha` documentation baseline. The main additions are:
+
+- **Extensible effects architecture:** introduces the Broadcast Graphics Live extension API/SDK, extension package discovery, stable effect identities, ABI migration and validation, native-library lifecycle cleanup, and a canonical catalog shared by built-in and external effects.
+- **Adjustment and Color Solid layers:** adds dedicated compositing layers with normal transforms, parenting, masks, track mattes, opacity, full effect stacks, bounded adjustment coverage, and destination-aware rendering.
+- **Unified editor/source compositing:** the editor and OBS source now share destination selection and backdrop-capture logic, including affect-behind effects, adjustment processing, masks, and scene-mask ordering.
+- **Group containers and nested hierarchy:** groups are persistent non-rendering containers with dynamic descendant bounds, nested-group support, hierarchy-safe copy/paste/duplicate/delete, collapse/expand behavior, and group-aware layer ordering.
+- **Group effects and backdrop processing:** effects applied to groups operate on the composited child result; affect-behind effects request the correct source backdrop, while shadow/glow clipping uses the untouched pre-effect silhouette.
+- **Improved group editing:** grouped children resize correctly through scaled or rotated parent transforms, remain independently editable, avoid snapping to their own parent, and expose group bounds without child-edit handles.
+- **Layer and timeline hierarchy UI:** group children are indented and hidden when collapsed, group strips use their own visual identity and child counts, and timeline/layer-list ordering follows the hierarchy.
+- **Layer colors:** layer-assigned colors now drive layer rows, timeline strips, bounding boxes, handles, and related editor chrome for faster visual identification.
+- **Unified canvas layer menu:** adds show/hide, lock, duplicate, clipboard actions, grouping, add/remove from group, flips, 90-degree rotation, and complete front/back ordering controls directly on the canvas.
+- **Scene-mask and adjustment fixes:** scene masks follow balanced OBS active/showing lifecycle rules, render in true layer order, and apply effects after the scene has been clipped by its matte.
+- **Expanded-effect bounds:** blur, outline, shadows, glow, glare and similar effects retain pixels outside original layer or group bounds instead of being cropped.
+- **Cue-first-row source option:** an OBS source can automatically cue and play the first live-text row when activated, while remaining compatible with cache readiness and playlists.
+- **Runtime and shutdown hardening:** improves cache identity, resource eviction, extension cleanup, scene-mask teardown, and protection against shutdown crashes or stale retained resources.
+- **New structural contract tests:** adds automated coverage for extension auditing, GPU masks, group containers, nested hierarchy/timeline behavior, grouped-child resizing, canvas actions, and layer-color visuals.
+
+### Development Version 016 — Grouped child resize and canvas layer menu
+
+Fixes runaway resizing for layers nested inside scaled or rotated groups by evaluating resize handles in the complete parent/world transform and converting canvas-space compensation back to parent-local coordinates. The canvas now exposes a unified layer context menu with show/hide, lock/unlock, duplicate, cut, copy, paste, delete, Group, Ungroup, Add to Group, Remove from Group, Flip Horizontal/Vertical, Rotate Left/Right 90°, Bring to Front, Bring Forward, Send Backward and Send to Back. Group descendants move together during layer-order operations while preserving their internal order.
+
+### Development Version 015 — Group containers ported to the Version 014 codebase
+
+Ports the complete grouping repair originally developed against Development Version 004 onto the newer Version 014 project without replacing its later changes. Groups are persisted non-rendering container layers, selecting Group creates and selects the container itself, bounds update dynamically from descendants, nested groups remain intact, and the Layers context menu provides Group, Ungroup, Add to Group and Remove from Group. Group rows support indentation and collapse/expand carets, while copy, duplicate, paste and delete preserve the complete hierarchy. Text, image and vector children remain independent renderable layers, preventing grouped text from disappearing.
+
+### Development Version 014 — Cue first row on source activation
+
+- Adds a per-source **Cue first row when active** option to the OBS source properties.
+- When enabled, source activation applies live-text row 1 immediately and starts the normal cue playback state machine, including cache readiness gating.
+- Reactivation restarts the first cue cleanly, clears stale uncue/persistence state, and keeps scene-mask activation synchronized with the newly cued row.
+- Playlist restart behavior remains compatible: an enabled forward playlist continues from the second row after the automatic first-row cue.
+
+### Development Version 013 — Full-composite adjustment blur and shutdown hardening
+
+- Adjustment blur now samples the complete lower-layer composite and preserves the effected alpha inside the adjustment coverage, so text and shapes crossing the adjustment boundary blur continuously without processing the editor checkerboard.
+- Color-only adjustment effects retain their normal alpha behavior, while blur/glow/shadow extents remain visible outside source geometry.
+- Frontend shutdown now marks title sources as tearing down before OBS destroys nested scene graphs. Scene-mask references avoid synchronous active/showing callbacks during final teardown, preventing the shutdown crash introduced by the ordered scene-mask compositor.
+
+### Development Version 012 — Transparent-artwork adjustment blur
+
+- The editor GPU preview now renders title artwork and adjustment effects against transparency, never against the transparency checkerboard.
+- Blur, distortion and color-processing effects sample the complete accumulated title composite below the Adjustment Layer.
+- The checkerboard is composited only after GPU readback, so it remains sharp while text, shapes, color layers and other artwork are blurred correctly.
+- Effect-generated alpha outside layer bounds, including blur tails, shadows and glows, remains visible over the checkerboard instead of being clipped.
+
+
+### Development Version 011 — AE-style adjustment preview and ordered scene-mask stack
+
+- Adjustment effects process only title artwork, never the editor checkerboard.
+- Effect-generated pixels such as shadows, glows, bloom and blur tails remain visible outside layer bounds.
+- Scene-mask layers retain their hatched editor control fill and show the configured OBS scene through the matte.
+- Multiple scene masks and ordinary title layers are composited once, in true layer order.
+
+
+### Development Version 011 — AE-style adjustment masks and ordered scene-mask compositing
+
+- Adjustment layers continue to process only the accumulated artwork below them, with their transformed bounds, opacity and track matte defining the influence region; the editor checkerboard remains outside the effect graph.
+- Scene-mask layers now remain visible as ordinary artwork in the editor, preserving their fill and effect stack instead of being replaced by a hatch preview.
+- OBS scenes assigned to scene masks are inserted at the scene-mask layer position. Layers above each scene mask are recomposited afterward, preserving timeline order for normal artwork, adjustments and multiple scene masks.
+- Scene-mask editor overlays are outline-only so they do not hide the rendered fill or effects.
+
+
+- Added the required forward declaration for `apply_gpu_mask()` before the adjustment coverage renderer uses it.
+- Fixes MSVC error C3861 in `title-source.cpp` without changing the adjustment coverage or masking behavior introduced in Development Version 008.
 
 > [!WARNING]
-> `v0.8.4-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
+> `v0.8.5-alpha` is an advanced development build, not a production-stable release. The main authoring, serialization, playback, live-cue, caching, vector-editing, and template workflows are implemented, but several planned features, UI refinement, compatibility testing, and systematic bug hunting remain before beta. File formats, UI behavior, and internal APIs may still change. Keep backups of important title libraries and templates.
 
 Broadcast Graphics Live is an independent third-party project and is not affiliated with or endorsed by the OBS Project.
 
@@ -17,7 +87,7 @@ This project is the result of **vibe coding**. **Antonios Dimopoulos** defines t
 
 That development model makes validation especially important. This alpha should be treated as experimental: code changes need diff review, structural and build checks, focused automated tests, and real OBS runtime testing before they can be considered reliable for production use.
 
-## What changed in `v0.8.4-alpha`
+## What changed in `v0.8.5-alpha`
 
 Compared with the current GitHub `main` snapshot, this development archive advances the unified GPU pipeline through the Phase 12D–15 work:
 
@@ -179,8 +249,6 @@ Effects can be applied by drag-and-drop onto a timeline layer strip, directly on
   - Show nothing
   - Show first frame
 
-<img width="1920" height="1044" alt="Screenshot 2026-06-25 025718" src="https://github.com/user-attachments/assets/9f409f1f-aafe-419f-a4a7-c735a80cac1d" />
-
 ### Live text and image cues
 
 - Expose text, ticker, and image layers to the OBS dock.
@@ -252,7 +320,7 @@ The current implementation uses one cached prefix rather than multiple independe
 
 ## Current status and limitations
 
-- The current release line is **`v0.8.4-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
+- The current release line is **`v0.8.5-alpha`**. The application is approaching feature completion, but it is not yet beta-quality or recommended as the only copy of production-critical graphics.
 - Remaining pre-beta work includes the final planned features, UI consistency and visual polish, broader workflow validation, performance verification, and focused bug hunting across editor, dock, cache, and OBS playback paths.
 - Supported Text and Clock layers use the Phase 12C/12D GPU text backend: immutable shaped glyph data feeds bounded R8 SDF atlas pages, GPU glyph quads, multiple per-range fills/gradients/strokes, globally correct Behind/Front stroke composition, persistent double-buffered layer textures, and shared editor caret/selection geometry.
 - The Phase 13 GPU mask graph handles alpha/luma variants, nested track-matte dependencies, scene masks, effect ordering, parent transforms, and bounded retained matte textures without CPU mask compositing.
@@ -549,6 +617,10 @@ Imported templates receive new title/layer identifiers so they can coexist with 
 
 ---
 
+## Extension architecture
+
+Broadcast Graphics Live includes a versioned extension SDK for third-party GPU effects and native plugins. Effects can be installed as portable manifest + shader packages, while advanced integrations can use the stable C ABI in `src/extensions/bgl-plugin-api.h`. Extension IDs and parameter payloads are preserved in project files even when an extension is unavailable. See [`docs/EXTENSION_SDK.md`](docs/EXTENSION_SDK.md) and the example package in `data/extensions/examples/custom-tint/`.
+
 ## Architecture
 
 ```text
@@ -706,3 +778,61 @@ This section is an attribution summary, not a replacement for the complete upstr
 Broadcast Graphics Live is built on the work of the OBS Project, The Qt Company and Qt contributors, the Cairo and GNOME/Pango communities, the HarfBuzz project, Niels Lohmann and contributors, Mattia Basaglia and contributors, Yann Collet and LZ4 contributors, and Fonticons, Inc.
 
 Their projects make native, cross-platform broadcast graphics inside OBS possible.
+
+
+## Unified built-in and third-party effect architecture
+
+Built-in effects now register in the same extension catalog as installed third-party effects. They use stable `bgl.builtin.*` IDs, catalog-driven Add Effect menus, registry-based shader resolution, and automatic migration of older enum-only project data. The legacy numeric type is retained only as an internal compatibility adapter while the stable extension ID is the persisted identity. See `docs/BUILTIN_EFFECTS_EXTENSION_MIGRATION.md`.
+
+
+## Lens Flares Studio extension and Extension API v2
+
+This build adds the installable **Lens Flares Studio** package under `data/extensions/lens-flares-studio`. It demonstrates compound effect graphs, editable presets, indexed texture assets and host-owned extension keyframes. Extension parameters and element properties can now declare themselves animatable, are serialized in project files, and are evaluated per frame before shader uniform binding. See `docs/EXTENSION_API_V2.md`.
+
+### Timeline Screen Blend Opacity Fix
+Screen and the other GPU layer blend modes now receive layer opacity as an explicit per-frame compositor parameter. Timeline opacity animation is therefore applied after the foreground render and before blend-mode composition, producing a visible and consistent 0–100% response for Screen layers.
+
+### Destination-aware AE-style layer compositing
+
+Screen, Multiply, Additive, Overlay, Color and adjustment layers are no longer evaluated only against the already-flattened BGL layer stack. When a title contains a destination-dependent layer, the editor crops the real checkerboard/underlay beneath the title and the OBS source snapshots the scene render target immediately before the BGL item is drawn. The complete title stack is then evaluated against that destination and written back as a single premultiplied result. This keeps the canvas and Preview/Program paths consistent, lets transparent pixels reveal the actual destination, and prevents the captured background from being composited twice. Destination-dependent titles bypass final-frame and prefix caches because those frames cannot preserve the external destination.
+
+
+## Build identity and effect animation
+
+Each delivered package receives a manually assigned **Development Version** (for example `003`). The same stable delivery identity is displayed in the title editor window, the dock header, the About dialog, plugin diagnostics, and the ZIP filename; rebuilding the same source does not change it. Effect parameters that support continuous animation expose timeline keyframe controls in the Effects panel, including built-in numeric/color controls and animatable extension parameters. Destination-dependent titles use the live OBS scene destination in Preview/Program and an AE-style transparency checkerboard in title screenshots and dock thumbnails.
+
+
+
+
+### Development Version 011 — Adjustment coverage and editor-safe compositing
+
+- Adjustment and Color Solid layers now keep their full transform controls and can be resized, moved, rotated, parented and masked like ordinary layers.
+- Adjustment layers are no longer excluded from track-matte source/target selection.
+- Scene-mask rendering now separates matte generation from scene effects: the OBS scene is clipped first, then the layer effect stack is applied to the resulting scene texture.
+- Shadows, glows and other expanding effects therefore composite as real scene-layer pixels instead of incorrectly modifying only the matte alpha.
+- Multiple scene-mask layers are processed sequentially in title layer order, so effects from higher scene masks render over lower scene masks.
+
+- Adjustment layers affect only their transformed bounds and any assigned track matte, rather than the entire frame.
+- In the editor, adjustments process only lower artwork layers; the transparency checkerboard is composited afterward and is never blurred, color-corrected or distorted.
+
+### Development Version 006 — OBS scene-mask lifecycle fix
+
+Configured OBS scenes used by layer masks now receive balanced `active` and `showing` lifecycle references while the Broadcast Graphics Live source is visible. Static titles without exposed live-text fields no longer require a nonexistent cue before their scene mask can render, while titles with exposed live-text rows retain cue-based activation and release on uncue. Scene-mask activation is also reconciled immediately when the source becomes shown in Studio Preview or Program.
+
+### Development Version 005 — Layer-mask GPU composition fix
+
+Layer masks and track mattes now render through transform-neutral full-canvas GPU passes in both the editor and OBS output. The mask application and retained-matte publication stages explicitly reset the graphics model matrix, preventing source/editor transforms or a previously rendered layer from moving the fullscreen mask quad outside the render target. Alpha, inverted-alpha, luma, inverted-luma, nested mattes, effects-before/after-mask, and cached matte publication continue to use the shared GPU mask graph.
+
+### Development Version 004 — Extension include-path build fix
+
+Corrects the extension catalog include contract after the cleanup refactor. `plugin-main.cpp` and `title-dock.cpp` now use the canonical `extensions/effect-extension-catalog.h` path, while `src/extensions` is also registered explicitly in the plugin target include directories. This prevents MSVC C1083 failures and keeps both qualified and local extension implementation includes valid.
+
+### Development Version 003 — Audit, cleanup and lifecycle hardening
+
+This delivery consolidates built-in effect metadata into one canonical registry, fixes stable-ID shader-cache collisions between built-ins and extensions, completes ABI v2/v3 state migration/validation handling, hardens extension package discovery, and explicitly releases native libraries and GPU-owned extension resources during shutdown. Image and texture caches now use bounded incremental LRU eviction, embedded assets use atomic writes, and import diagnostics resolve effects by their stable extension identity. The former delivery label has been replaced everywhere by **Development Version 003**. See [`docs/development-version-003-audit.md`](docs/development-version-003-audit.md) for the complete findings, fixes, validation and remaining runtime risks.
+
+## Development Version 025
+
+- Unified editor and OBS source destination-aware compositing selection.
+- Affect-behind effects on groups now trigger source backdrop capture.
+- Group shadow/glow hard-alpha clipping now uses the untouched pre-effect silhouette.

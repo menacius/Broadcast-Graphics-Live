@@ -78,6 +78,21 @@ void test_source_contract(const std::string &source)
     assert(source.find("render_gpu_scene_mask_base_raster") ==
            std::string::npos);
     assert(source.find("kMaximumMaskTextures") != std::string::npos);
+
+    const std::size_t apply_mask = source.find("static gs_texture_t *apply_gpu_mask");
+    const std::size_t copy_mask = source.find("static bool copy_full_canvas_gpu_texture");
+    assert(apply_mask != std::string::npos);
+    assert(copy_mask != std::string::npos);
+    const std::string apply_body = source.substr(apply_mask, copy_mask - apply_mask);
+    assert(apply_body.find("gs_matrix_push()") != std::string::npos);
+    assert(apply_body.find("gs_matrix_identity()") != std::string::npos);
+    assert(apply_body.find("gs_matrix_pop()") != std::string::npos);
+    const std::size_t copy_end = source.find("enum class ExternalBackgroundMapping", copy_mask);
+    assert(copy_end != std::string::npos);
+    const std::string copy_body = source.substr(copy_mask, copy_end - copy_mask);
+    assert(copy_body.find("gs_matrix_push()") != std::string::npos);
+    assert(copy_body.find("gs_matrix_identity()") != std::string::npos);
+    assert(copy_body.find("gs_matrix_pop()") != std::string::npos);
 }
 
 void test_editor_first_frame_contract(const std::string &source)

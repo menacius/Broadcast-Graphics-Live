@@ -13,6 +13,8 @@
 #include "title-logger.h"
 #include "title-preferences.h"
 #include "cache-manager.h"
+#include "build-info.h"
+#include "extensions/effect-extension-catalog.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <QByteArray>
@@ -131,8 +133,9 @@ static void add_docks_menu_entry(QMainWindow *main)
 bool obs_module_load(void)
 {
     TitleLogger::startSession();
-    blog(LOG_INFO, "[Broadcast Graphics Live] Loading plugin v%s", PLUGIN_VERSION);
-    BGL_LOG_INFO("Plugin", QStringLiteral("Loading plugin version %1").arg(QStringLiteral(PLUGIN_VERSION)));
+    blog(LOG_INFO, "[Broadcast Graphics Live] Loading plugin %s", BGL_BUILD_DISPLAY);
+    BGL_LOG_INFO("Plugin", QStringLiteral("Loading plugin %1").arg(QStringLiteral(BGL_BUILD_DISPLAY)));
+    BglEffectExtensionCatalog::instance().reload();
 
     /* 1. Initialise persistent title store */
     TitleDataStore::instance().load();
@@ -166,6 +169,7 @@ void obs_module_unload(void)
         CacheManager::instance().clearAll();
     }
     release_title_gpu_render_resources();
+    BglEffectExtensionCatalog::instance().shutdown();
     blog(LOG_INFO, "[Broadcast Graphics Live] Plugin unloaded.");
     BGL_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
     TitleLogger::endSession();
@@ -189,7 +193,7 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
             g_dock = nullptr;
         });
         g_dock->setObjectName("BroadcastGraphicsLiveDock");
-        g_dock->setWindowTitle(bgl_tr("OBSTitles.DockName"));
+        g_dock->setWindowTitle(bgl_tr("OBSTitles.DockName") + QStringLiteral(" — ") + QStringLiteral(BGL_BUILD_DISPLAY));
 
         obs_frontend_add_custom_qdock("broadcast-graphics-live-dock", g_dock);
         QTimer::singleShot(0, g_dock, [main]() { restore_obs_dock_layout(main); });
@@ -236,6 +240,7 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 
     if (event == OBS_FRONTEND_EVENT_EXIT) {
         BGL_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
+        title_source_begin_shutdown();
         /* Cache shutdown/rotation is performed once from obs_module_unload(),
          * after the prerender worker has stopped. Doing it here as well caused
          * duplicate clears while sources and the worker were still active. */

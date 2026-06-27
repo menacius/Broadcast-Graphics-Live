@@ -786,32 +786,15 @@ struct VisibleTimelineRow {
 static std::vector<VisibleTimelineRow> visible_timeline_rows(const std::shared_ptr<Title> &title,
                                                              int first_row, int last_row)
 {
-    std::vector<VisibleTimelineRow> rows;
-    if (!title || last_row < first_row) return rows;
-
-    int row = 0;
-    for (auto it = title->layers.rbegin(); it != title->layers.rend(); ++it) {
-        auto layer = *it;
-        if (row >= first_row && row <= last_row)
-            rows.push_back({row, {layer, TimelinePropertyRef{}, false}});
-        ++row;
-        if (row > last_row) break;
-
-        if (!layer || !layer->properties_expanded) continue;
-        std::set<std::string> seen;
-        for (auto prop : timeline_properties(*layer)) {
-            if (!prop.is_animated()) continue;
-            QString label = property_label(prop.name());
-            std::string key = label.toStdString();
-            if (!seen.insert(key).second) continue;
-            if (row >= first_row && row <= last_row)
-                rows.push_back({row, {layer, prop, true}});
-            ++row;
-            if (row > last_row) break;
-        }
-        if (row > last_row) break;
-    }
-    return rows;
+    std::vector<VisibleTimelineRow> visible;
+    if (!title || last_row < first_row) return visible;
+    const auto rows = timeline_rows(title);
+    const int begin = std::clamp(first_row, 0, static_cast<int>(rows.size()));
+    const int end = std::clamp(last_row + 1, begin, static_cast<int>(rows.size()));
+    visible.reserve(static_cast<size_t>(std::max(0, end - begin)));
+    for (int row = begin; row < end; ++row)
+        visible.push_back({row, rows[static_cast<size_t>(row)]});
+    return visible;
 }
 
 static QString timeline_blend_mode_short(EffectBlendMode mode)
@@ -1050,9 +1033,17 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                  * visually on top, like dedicated Premiere timeline items. */
                 p.setPen(layer->visible ? text : disabled_text);
                 const QString switches = title_ ? timeline_layer_switches_text(*title_, *layer) : QString();
+                QString display_name = QString::fromStdString(layer->name);
+                if (title_ && layer->type == LayerType::Group) {
+                    const int object_count = group_descendant_object_count(title_, layer->id);
+                    const QString count_text = object_count == 1
+                        ? bgl_tr("OBSTitles.GroupItemCount").arg(object_count)
+                        : bgl_tr("OBSTitles.GroupItemsCount").arg(object_count);
+                    display_name = QStringLiteral("%1  ·  %2").arg(display_name, count_text);
+                }
                 const QString layer_label = switches.isEmpty()
-                    ? QString::fromStdString(layer->name)
-                    : QStringLiteral("%1    [%2]").arg(QString::fromStdString(layer->name), switches);
+                    ? display_name
+                    : QStringLiteral("%1    [%2]").arg(display_name, switches);
                 p.drawText(std::max(strip_rect.left(), 0) + 6, y, std::max(1, strip_rect.width() - 12), rowh,
                            Qt::AlignVCenter, layer_label);
 

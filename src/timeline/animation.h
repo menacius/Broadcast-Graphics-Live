@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 /* ══════════════════════════════════════════════════════════════════
@@ -47,6 +48,14 @@ struct AnimatedProperty {
     double      static_value = 0.0;
     std::vector<Keyframe> keyframes;   /* sorted by time */
 
+    AnimatedProperty() = default;
+    AnimatedProperty(std::string property_name, double value,
+                     std::vector<Keyframe> keys = {})
+        : name(std::move(property_name)), static_value(value),
+          keyframes(std::move(keys))
+    {
+    }
+
     bool is_animated() const { return !keyframes.empty(); }
 
     /* Evaluate the property at time t (seconds). */
@@ -66,6 +75,14 @@ struct AnimatedVec2Property {
     std::string name;
     Vec2Value static_value;
     std::vector<VectorKeyframe> keyframes;   /* sorted by time */
+
+    AnimatedVec2Property() = default;
+    AnimatedVec2Property(std::string property_name, Vec2Value value,
+                         std::vector<VectorKeyframe> keys = {})
+        : name(std::move(property_name)), static_value(value),
+          keyframes(std::move(keys))
+    {
+    }
 
     bool is_animated() const { return !keyframes.empty(); }
 

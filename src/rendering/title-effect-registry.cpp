@@ -1,4 +1,5 @@
 #include "title-effect-registry.h"
+#include "extensions/effect-extension-catalog.h"
 
 #include "title-logger.h"
 
@@ -473,24 +474,24 @@ static const char *embedded_effect_name(LayerEffectType type)
 }
 
 const std::vector<TitleEffectDefinition> kEffectDefinitions = {
-    {LayerEffectType::BackgroundColor, "background-color", "Background Color", "effect-transitions/shaders/background-color/background-color.effect"},
-    {LayerEffectType::Outline, "outline", "Outline", "effect-transitions/shaders/outline/outline.effect"},
-    {LayerEffectType::DropShadow, "drop-shadow", "Drop Shadow", "effect-transitions/shaders/drop-shadow/drop-shadow.effect"},
-    {LayerEffectType::LongShadow, "long-shadow", "Long Shadow", "effect-transitions/shaders/long-shadow/long-shadow.effect"},
-    {LayerEffectType::BrightnessContrast, "brightness-contrast", "Brightness/Contrast", "effect-transitions/shaders/brightness-contrast/brightness-contrast.effect"},
-    {LayerEffectType::Saturation, "saturation", "Saturation", "effect-transitions/shaders/saturation/saturation.effect"},
-    {LayerEffectType::ColorOverlay, "color-overlay", "Color Overlay", "effect-transitions/shaders/color-overlay/color-overlay.effect"},
-    {LayerEffectType::Glow, "glow", "Glow", "effect-transitions/shaders/glow/glow.effect"},
-    {LayerEffectType::InnerGlow, "inner-glow", "Inner Glow", "effect-transitions/shaders/inner-glow/inner-glow.effect"},
-    {LayerEffectType::InnerShadow, "inner-shadow", "Inner Shadow", "effect-transitions/shaders/inner-shadow/inner-shadow.effect"},
-    {LayerEffectType::Blur, "blur", "Blur", "effect-transitions/shaders/blur/blur.effect"},
-    {LayerEffectType::MotionBlur, "motion-blur", "Motion Blur", "effect-transitions/shaders/motion-blur/motion-blur.effect"},
-    {LayerEffectType::Bloom, "bloom", "Bloom", "effect-transitions/shaders/bloom/bloom.effect"},
-    {LayerEffectType::Emboss, "emboss", "Emboss", "effect-transitions/shaders/emboss/emboss.effect"},
-    {LayerEffectType::LensFlare, "lens-flare", "Lens Flare", "effect-transitions/shaders/lens-flare/lens-flare.effect"},
-    {LayerEffectType::Vignette, "vignette", "Vignette", "effect-transitions/shaders/vignette/vignette.effect"},
-    {LayerEffectType::Noise, "noise", "Noise", "effect-transitions/shaders/noise/noise.effect"},
-    {LayerEffectType::RoughenEdges, "roughen-edges", "Roughen Edges", "effect-transitions/shaders/roughen-edges/roughen-edges.effect"},
+    {LayerEffectType::BackgroundColor, "bgl.builtin.background-color", "background-color", "Background Color", "Built-in/Appearance", "effect-transitions/shaders/background-color/background-color.effect", false},
+    {LayerEffectType::Outline, "bgl.builtin.outline", "outline", "Outline", "Built-in/Appearance", "effect-transitions/shaders/outline/outline.effect", false},
+    {LayerEffectType::DropShadow, "bgl.builtin.drop-shadow", "drop-shadow", "Drop Shadow", "Built-in/Shadows & Glows", "effect-transitions/shaders/drop-shadow/drop-shadow.effect", false},
+    {LayerEffectType::LongShadow, "bgl.builtin.long-shadow", "long-shadow", "Long Shadow", "Built-in/Shadows & Glows", "effect-transitions/shaders/long-shadow/long-shadow.effect", false},
+    {LayerEffectType::BrightnessContrast, "bgl.builtin.brightness-contrast", "brightness-contrast", "Brightness & Contrast", "Built-in/Color", "effect-transitions/shaders/brightness-contrast/brightness-contrast.effect", false},
+    {LayerEffectType::Saturation, "bgl.builtin.saturation", "saturation", "Saturation", "Built-in/Color", "effect-transitions/shaders/saturation/saturation.effect", false},
+    {LayerEffectType::ColorOverlay, "bgl.builtin.color-overlay", "color-overlay", "Color Overlay", "Built-in/Color", "effect-transitions/shaders/color-overlay/color-overlay.effect", false},
+    {LayerEffectType::Glow, "bgl.builtin.glow", "glow", "Glow", "Built-in/Shadows & Glows", "effect-transitions/shaders/glow/glow.effect", false},
+    {LayerEffectType::InnerGlow, "bgl.builtin.inner-glow", "inner-glow", "Inner Glow", "Built-in/Shadows & Glows", "effect-transitions/shaders/inner-glow/inner-glow.effect", false},
+    {LayerEffectType::InnerShadow, "bgl.builtin.inner-shadow", "inner-shadow", "Inner Shadow", "Built-in/Shadows & Glows", "effect-transitions/shaders/inner-shadow/inner-shadow.effect", false},
+    {LayerEffectType::Blur, "bgl.builtin.blur", "blur", "Blur", "Built-in/Blur", "effect-transitions/shaders/blur/blur.effect", false},
+    {LayerEffectType::MotionBlur, "bgl.builtin.motion-blur", "motion-blur", "Motion Blur", "Built-in/Blur", "effect-transitions/shaders/motion-blur/motion-blur.effect", false},
+    {LayerEffectType::Bloom, "bgl.builtin.bloom", "bloom", "Bloom", "Built-in/Shadows & Glows", "effect-transitions/shaders/bloom/bloom.effect", false},
+    {LayerEffectType::Emboss, "bgl.builtin.emboss", "emboss", "Emboss", "Built-in/Stylize", "effect-transitions/shaders/emboss/emboss.effect", false},
+    {LayerEffectType::LensFlare, "bgl.builtin.lens-flare", "lens-flare", "Lens Flare", "Built-in/Generate", "effect-transitions/shaders/lens-flare/lens-flare.effect", true},
+    {LayerEffectType::Vignette, "bgl.builtin.vignette", "vignette", "Vignette", "Built-in/Stylize", "effect-transitions/shaders/vignette/vignette.effect", true},
+    {LayerEffectType::Noise, "bgl.builtin.noise", "noise", "Noise", "Built-in/Generate", "effect-transitions/shaders/noise/noise.effect", true},
+    {LayerEffectType::RoughenEdges, "bgl.builtin.roughen-edges", "roughen-edges", "Roughen Edges", "Built-in/Stylize", "effect-transitions/shaders/roughen-edges/roughen-edges.effect", true},
 };
 
 } // namespace
@@ -512,18 +513,18 @@ void TitleEffectRegistry::reset()
 gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
 {
     last_error_ = nullptr;
-    auto existing = std::find_if(compiled_.begin(), compiled_.end(),
-                                 [type](const CompiledEffect &compiled) {
-                                     return compiled.type == type;
-                                 });
-    if (existing != compiled_.end())
-        return existing->effect;
-
     const TitleEffectDefinition *def = definition(type);
     if (!def) {
         last_error_ = "Unknown effect type.";
         return nullptr;
     }
+
+    auto existing = std::find_if(compiled_.begin(), compiled_.end(),
+                                 [def](const CompiledEffect &compiled) {
+                                     return compiled.stable_id == def->stable_id;
+                                 });
+    if (existing != compiled_.end())
+        return existing->effect;
 
     /* The procedural effects are embedded deliberately. Users often update
      * only the plugin DLL while an older data directory remains installed;
@@ -539,16 +540,16 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
             if (errors)
                 bfree(errors);
             BGL_LOG_INFO("Effects", QStringLiteral("Compiled embedded procedural effect %1")
-                                        .arg(QString::fromUtf8(def->id)));
-            compiled_.push_back({type, effect});
+                                        .arg(QString::fromUtf8(def->stable_id)));
+            compiled_.push_back({type, def->stable_id, effect});
             return effect;
         }
         BGL_LOG_WARNING("Effects", QStringLiteral("Embedded procedural effect %1 failed to compile: %2; trying installed asset")
-                                       .arg(QString::fromUtf8(def->id),
+                                       .arg(QString::fromUtf8(def->stable_id),
                                             QString::fromUtf8(errors ? errors : "unknown shader error")));
         blog(LOG_WARNING,
              "[Broadcast Graphics Live] Embedded effect '%s' failed to compile: %s; trying installed asset",
-             def->id, errors ? errors : "unknown shader error");
+             def->stable_id, errors ? errors : "unknown shader error");
         if (errors)
             bfree(errors);
     }
@@ -556,11 +557,11 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
     char *path = obs_module_file(def->relative_path);
     if (!path) {
         BGL_LOG_WARNING("Effects", QStringLiteral("Effect asset path could not be resolved for %1 (%2)")
-                                       .arg(QString::fromUtf8(def->id),
+                                       .arg(QString::fromUtf8(def->stable_id),
                                             QString::fromUtf8(def->relative_path)));
         blog(LOG_WARNING,
              "[Broadcast Graphics Live] Effect asset path could not be resolved for '%s' (%s)",
-             def->id, def->relative_path);
+             def->stable_id, def->relative_path);
         last_error_ = "Effect asset path could not be resolved.";
         return nullptr;
     }
@@ -569,12 +570,12 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
     gs_effect_t *effect = gs_effect_create_from_file(path, &errors);
     if (!effect) {
         BGL_LOG_WARNING("Effects", QStringLiteral("Failed to compile effect %1 from %2: %3")
-                                       .arg(QString::fromUtf8(def->id),
+                                       .arg(QString::fromUtf8(def->stable_id),
                                             QString::fromUtf8(path),
                                             QString::fromUtf8(errors ? errors : "unknown shader error")));
         blog(LOG_WARNING,
              "[Broadcast Graphics Live] Effect '%s' failed to compile from '%s': %s",
-             def->id, path, errors ? errors : "unknown shader error");
+             def->stable_id, path, errors ? errors : "unknown shader error");
         last_error_ = "Effect shader could not be compiled.";
         if (errors)
             bfree(errors);
@@ -585,10 +586,54 @@ gs_effect_t *TitleEffectRegistry::compile(LayerEffectType type)
     if (errors)
         bfree(errors);
     BGL_LOG_DEBUG("Effects", QStringLiteral("Compiled effect %1 from %2")
-                                 .arg(QString::fromUtf8(def->id), QString::fromUtf8(path)));
+                                 .arg(QString::fromUtf8(def->stable_id), QString::fromUtf8(path)));
     bfree(path);
 
-    compiled_.push_back({type, effect});
+    compiled_.push_back({type, def->stable_id, effect});
+    return effect;
+}
+
+
+gs_effect_t *TitleEffectRegistry::compile(const std::string &stable_id)
+{
+    if (stable_id.empty()) {
+        last_error_ = "Empty effect extension id.";
+        return nullptr;
+    }
+    LayerEffectType built_in_type{};
+    if (BglEffectExtensionCatalog::builtInTypeForId(QString::fromStdString(stable_id), &built_in_type))
+        return compile(built_in_type);
+    auto existing = std::find_if(compiled_.begin(), compiled_.end(),
+                                 [&](const CompiledEffect &compiled) {
+                                     return compiled.stable_id == stable_id;
+                                 });
+    if (existing != compiled_.end())
+        return existing->effect;
+
+    auto &catalog = BglEffectExtensionCatalog::instance();
+    if (catalog.effects().empty())
+        catalog.reload();
+    const auto *definition = catalog.find(QString::fromStdString(stable_id));
+    if (definition && definition->builtIn)
+        return compile(definition->builtInType);
+    if (!definition) {
+        last_error_ = "Effect extension is not installed.";
+        return nullptr;
+    }
+    const QByteArray path = definition->shaderPath.toUtf8();
+    char *errors = nullptr;
+    gs_effect_t *effect = gs_effect_create_from_file(path.constData(), &errors);
+    if (!effect) {
+        BGL_LOG_WARNING("Extensions", QStringLiteral("Failed to compile extension effect %1: %2")
+                                       .arg(definition->id, QString::fromUtf8(errors ? errors : "unknown shader error")));
+        if (errors) bfree(errors);
+        last_error_ = "Extension shader could not be compiled.";
+        return nullptr;
+    }
+    if (errors) bfree(errors);
+    compiled_.push_back({LayerEffectType::BackgroundColor, stable_id, effect});
+    BGL_LOG_INFO("Extensions", QStringLiteral("Loaded effect extension %1 from %2")
+                                 .arg(definition->id, definition->shaderPath));
     return effect;
 }
 

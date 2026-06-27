@@ -3,15 +3,19 @@
 #include "layer-effects.h"
 
 #include <vector>
+#include <string>
 
 struct gs_effect;
 typedef struct gs_effect gs_effect_t;
 
 struct TitleEffectDefinition {
     LayerEffectType type;
-    const char *id;
+    const char *stable_id;
+    const char *legacy_id;
     const char *display_name;
+    const char *category;
     const char *relative_path;
+    bool has_embedded_fallback = false;
 };
 
 class TitleEffectRegistry {
@@ -23,6 +27,7 @@ public:
     TitleEffectRegistry &operator=(const TitleEffectRegistry &) = delete;
 
     gs_effect_t *compile(LayerEffectType type);
+    gs_effect_t *compile(const std::string &stable_id);
     void reset();
     const char *last_error() const { return last_error_; }
 
@@ -32,6 +37,7 @@ public:
 private:
     struct CompiledEffect {
         LayerEffectType type;
+        std::string stable_id;
         gs_effect_t *effect = nullptr;
     };
 

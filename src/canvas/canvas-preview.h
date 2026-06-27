@@ -29,6 +29,7 @@
 #include <QColor>
 #include <QPixmap>
 #include <QImage>
+#include <QJsonArray>
 #include <QHash>
 #include <QElapsedTimer>
 #include <memory>
@@ -130,6 +131,7 @@ public:
     void begin_text_edit_for_layer(const std::string &layer_id);
     void apply_active_text_char_format(const std::string &layer_id, const RichTextCharFormat &format, uint32_t mask);
     QPointF view_center_canvas_point() const;
+    void set_extension_canvas_handles(const QJsonArray &handles);
 
     bool corner_controls_available() const;
     double corner_control_radius(bool *mixed = nullptr) const;
@@ -170,6 +172,21 @@ signals:
     void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
     void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
     void corner_context_changed();
+    void extension_canvas_handle_moved(const QString &path, const QPointF &normalized_position, bool final_change);
+    void duplicate_layers_requested();
+    void copy_layers_requested();
+    void cut_layers_requested();
+    void paste_layers_requested();
+    void delete_layers_requested();
+    void group_layers_requested();
+    void ungroup_layers_requested();
+    void add_layers_to_group_requested(const std::string &group_id);
+    void remove_layers_from_group_requested();
+    void flip_layers_requested(bool horizontal);
+    void rotate_layers_requested(double degrees);
+    void layer_order_requested(int action);
+    void set_layers_locked_requested(bool locked);
+    void set_layers_visible_requested(bool visible);
 
 protected:
     bool event(QEvent *ev) override;
@@ -229,7 +246,8 @@ private:
         PathOutHandle,
         PathMarquee,
         GuideX,
-        GuideY
+        GuideY,
+        ExtensionPoint
     };
     enum class CanvasTool { Selection, DirectSelection, Shape, Pen, Text, Image, ColorPicker, Gradient };
 
@@ -266,6 +284,7 @@ private:
     };
     struct SelectionOverlayGeometry {
         bool valid = false;
+        std::vector<SelectionOverlayLayerGeometry> group_contexts;
         std::vector<SelectionOverlayLayerGeometry> layers;
         QRectF multi_bounds_view;
         QPointF multi_handles[8];
@@ -552,6 +571,8 @@ private:
     SnapSettings snap_settings_;
     std::vector<SnapFeedback> snap_feedback_;
 
+    QJsonArray extension_canvas_handles_;
+    int active_extension_handle_ = -1;
     DragMode drag_mode_ = DragMode::None;
     bool drag_changed_ = false;
     bool alt_duplicate_pending_ = false;

@@ -13,6 +13,7 @@ enum class TimelineColorRole {
     TickerLayer,
     ObjectLayer,
     ImageLayer,
+    GroupLayer,
     Current,
     Pause,
     Loop

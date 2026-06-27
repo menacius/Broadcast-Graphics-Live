@@ -14,6 +14,8 @@
 #include "title-logger.h"
 #include "image-layer-utils.h"
 #include "title-effect-registry.h"
+#include "extensions/effect-extension-catalog.h"
+#include "build-info.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -167,7 +169,10 @@ static void complete_import_diagnostics(const Title &title, TitleImportDiagnosti
 {
     const QStringList available_families = QFontDatabase().families();
     QSet<QString> checked_fonts;
-    QSet<int> checked_effects;
+    QSet<QString> checked_effects;
+    auto &extension_catalog = BglEffectExtensionCatalog::instance();
+    if (extension_catalog.effects().empty())
+        extension_catalog.reload();
 
     auto inspect_font = [&](const std::string &font_family, const std::string &layer_name) {
         const QString family = QString::fromStdString(font_family).trimmed();
@@ -219,25 +224,46 @@ static void complete_import_diagnostics(const Title &title, TitleImportDiagnosti
         }
 
         for (const LayerEffect &effect : layer->effects) {
-            const int effect_type = static_cast<int>(effect.type);
-            if (checked_effects.contains(effect_type))
+            const QString stableId = effect.extension_id.empty()
+                ? BglEffectExtensionCatalog::builtInId(effect.type)
+                : QString::fromStdString(effect.extension_id);
+            const QString diagnosticKey = stableId.isEmpty()
+                ? QStringLiteral("legacy:%1").arg(static_cast<int>(effect.type))
+                : stableId;
+            if (checked_effects.contains(diagnosticKey))
                 continue;
-            checked_effects.insert(effect_type);
+            checked_effects.insert(diagnosticKey);
 
-            const TitleEffectDefinition *definition = TitleEffectRegistry::definition(effect.type);
+            const auto *extension = stableId.isEmpty()
+                ? nullptr : extension_catalog.find(stableId);
+            if (!extension || !extension->builtIn) {
+                if (!extension || extension->shaderPath.isEmpty() ||
+                    !QFileInfo(extension->shaderPath).isReadable()) {
+                    append_unique_diagnostic(
+                        diagnostics.missing_effects,
+                        QStringLiteral("%1: %2")
+                            .arg(QString::fromStdString(layer->name), stableId));
+                }
+                continue;
+            }
+
+            const TitleEffectDefinition *definition =
+                TitleEffectRegistry::definition(extension->builtInType);
             if (!definition) {
                 append_unique_diagnostic(
                     diagnostics.missing_effects,
                     QStringLiteral("%1: effect type %2")
                         .arg(QString::fromStdString(layer->name))
-                        .arg(effect_type));
+                        .arg(static_cast<int>(effect.type)));
                 continue;
             }
 
+            bool available = definition->has_embedded_fallback;
             char *resolved_path = obs_module_file(definition->relative_path);
-            const bool available = resolved_path && QFileInfo(QString::fromUtf8(resolved_path)).isFile();
-            if (resolved_path)
+            if (resolved_path) {
+                available = available || QFileInfo(QString::fromUtf8(resolved_path)).isFile();
                 bfree(resolved_path);
+            }
             if (!available) {
                 append_unique_diagnostic(
                     diagnostics.missing_effects,
@@ -3121,6 +3147,14 @@ void TitleDock::build_ui()
     set_bold_label(template_lbl_);
     template_header->addWidget(template_lbl_);
     template_header->addStretch();
+    auto *build_label = new QLabel(QStringLiteral(BGL_BUILD_DISPLAY), template_section);
+    build_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    build_label->setToolTip(QStringLiteral("Delivery identifier for this package"));
+    QFont build_font = build_label->font();
+    build_font.setPointSize(std::max(1, build_font.pointSize() - 1));
+    build_label->setFont(build_font);
+    build_label->setProperty("bglSecondaryText", true);
+    template_header->addWidget(build_label);
     template_layout->addLayout(template_header);
     template_layout->addWidget(template_toolbar);
 

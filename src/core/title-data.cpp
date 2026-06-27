@@ -3,6 +3,7 @@
  */
 
 #include "title-data.h"
+#include "extensions/effect-extension-catalog.h"
 #include "title-logger.h"
 #include "ticker-runtime.h"
 #include <obs-module.h>
@@ -418,14 +419,17 @@ static bool restore_embedded_image_asset(const json &j, std::string &image_path)
 
     const std::string path = embedded_assets_dir() + "/" + file_name;
     if (!file_exists(path)) {
-        std::ofstream f(path, std::ios::binary | std::ios::trunc);
-        if (!f.is_open())
+        QSaveFile file(QString::fromStdString(path));
+        file.setDirectWriteFallback(false);
+        if (!file.open(QIODevice::WriteOnly))
             return false;
-        f.write(data.data(), (std::streamsize)data.size());
-        if (!f.good()) {
-            std::remove(path.c_str());
+        const qint64 expected = static_cast<qint64>(data.size());
+        if (file.write(data.data(), expected) != expected) {
+            file.cancelWriting();
             return false;
         }
+        if (!file.commit())
+            return false;
     }
 
     image_path = path;
@@ -1265,6 +1269,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["visible"]  = l.visible;
     j["locked"]   = l.locked;
     j["properties_expanded"] = l.properties_expanded;
+    j["group_collapsed"] = l.group_collapsed;
     j["parent_id"] = l.parent_id;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
@@ -1273,7 +1278,14 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["effect_stack_respects_masks"] = l.effect_stack_respects_masks;
     json effects = json::array();
     for (const auto &effect : l.effects) {
+        const std::string stable_effect_id = effect.extension_id.empty()
+            ? BglEffectExtensionCatalog::builtInId(effect.type).toStdString()
+            : effect.extension_id;
         effects.push_back({{"type", (int)effect.type},
+                           {"extension_id", stable_effect_id},
+                           {"extension_parameters", effect.extension_parameters_json},
+                           {"extension_schema_version", effect.extension_schema_version},
+                           {"extension_keyframes", effect.extension_keyframes_json},
                            {"enabled", effect.enabled},
                            {"brightness", effect.brightness},
                            {"contrast", effect.contrast},
@@ -1290,6 +1302,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_blur_type", effect.effect_blur_type},
                            {"effect_samples", effect.effect_samples},
                            {"effect_centered", effect.effect_centered},
+                           {"effect_outside_hard_alpha", effect.effect_outside_hard_alpha},
+                           {"effect_outside_hard_alpha_invert", effect.effect_outside_hard_alpha_invert},
+                           {"affect_layers_behind", effect.affect_layers_behind},
+                           {"affect_layers_behind_invert", effect.affect_layers_behind_invert},
                            {"effect_profile", effect.effect_profile},
                            {"effect_animated", effect.effect_animated},
                            {"effect_monochrome", effect.effect_monochrome},
@@ -1338,6 +1354,9 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"effect_gradient_focal_x", effect.effect_gradient_focal_x},
                            {"effect_gradient_focal_y", effect.effect_gradient_focal_y},
                            {"enabled_prop", aprop_to_json(effect.enabled_prop)},
+                           {"brightness_prop", aprop_to_json(effect.brightness_prop)},
+                           {"contrast_prop", aprop_to_json(effect.contrast_prop)},
+                           {"saturation_prop", aprop_to_json(effect.saturation_prop)},
                            {"opacity_prop", aprop_to_json(effect.opacity_prop)},
                            {"size_prop", aprop_to_json(effect.size_prop)},
                            {"distance_prop", aprop_to_json(effect.distance_prop)},
@@ -1363,6 +1382,25 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
                            {"corner_radius_tr_prop", aprop_to_json(effect.corner_radius_tr_prop)},
                            {"corner_radius_br_prop", aprop_to_json(effect.corner_radius_br_prop)},
                            {"corner_radius_bl_prop", aprop_to_json(effect.corner_radius_bl_prop)},
+                           {"gradient_start_pos_prop", aprop_to_json(effect.gradient_start_pos_prop)},
+                           {"gradient_end_pos_prop", aprop_to_json(effect.gradient_end_pos_prop)},
+                           {"gradient_start_opacity_prop", aprop_to_json(effect.gradient_start_opacity_prop)},
+                           {"gradient_end_opacity_prop", aprop_to_json(effect.gradient_end_opacity_prop)},
+                           {"gradient_angle_prop", aprop_to_json(effect.gradient_angle_prop)},
+                           {"gradient_center_x_prop", aprop_to_json(effect.gradient_center_x_prop)},
+                           {"gradient_center_y_prop", aprop_to_json(effect.gradient_center_y_prop)},
+                           {"gradient_scale_prop", aprop_to_json(effect.gradient_scale_prop)},
+                           {"gradient_focal_x_prop", aprop_to_json(effect.gradient_focal_x_prop)},
+                           {"gradient_focal_y_prop", aprop_to_json(effect.gradient_focal_y_prop)},
+                           {"gradient_opacity_prop", aprop_to_json(effect.gradient_opacity_prop)},
+                           {"gradient_start_color_a", aprop_to_json(effect.gradient_start_color_a)},
+                           {"gradient_start_color_r", aprop_to_json(effect.gradient_start_color_r)},
+                           {"gradient_start_color_g", aprop_to_json(effect.gradient_start_color_g)},
+                           {"gradient_start_color_b", aprop_to_json(effect.gradient_start_color_b)},
+                           {"gradient_end_color_a", aprop_to_json(effect.gradient_end_color_a)},
+                           {"gradient_end_color_r", aprop_to_json(effect.gradient_end_color_r)},
+                           {"gradient_end_color_g", aprop_to_json(effect.gradient_end_color_g)},
+                           {"gradient_end_color_b", aprop_to_json(effect.gradient_end_color_b)},
                            {"color_a", aprop_to_json(effect.color_a)},
                            {"color_r", aprop_to_json(effect.color_r)},
                            {"color_g", aprop_to_json(effect.color_g)},
@@ -1666,7 +1704,7 @@ std::string layer_render_fingerprint(const Layer &layer)
     json j = layer_to_json(layer, false, false, nullptr, nullptr);
     static constexpr const char *kCompositorOnlyKeys[] = {
         "id", "name", "visible", "locked", "properties_expanded",
-        "parent_id", "mask_source_id", "mask_mode", "blend_mode",
+        "group_collapsed", "parent_id", "mask_source_id", "mask_mode", "blend_mode",
         "use_as_scene_mask", "effect_stack_respects_masks",
         "in_time", "out_time", "position", "scale", "scale_lock",
         "rotation", "opacity", "expose_text", "exposed_hide_if_empty",
@@ -1692,6 +1730,53 @@ std::string layer_render_fingerprint(const Layer &layer)
     return std::to_string(std::hash<std::string>{}(serialized));
 }
 
+static void migrate_and_validate_extension_state(
+    LayerEffect &effect, const std::string &layer_name,
+    TitleImportDiagnostics *diagnostics)
+{
+    if (effect.extension_id.empty())
+        return;
+    auto &catalog = BglEffectExtensionCatalog::instance();
+    if (catalog.effects().empty())
+        catalog.reload();
+    const auto *definition = catalog.find(QString::fromStdString(effect.extension_id));
+    if (!definition || definition->builtIn)
+        return;
+
+    const uint32_t stored_version = std::max<uint32_t>(1u, effect.extension_schema_version);
+    if (stored_version < definition->schemaVersion && definition->migrateState) {
+        const char *migrated = definition->migrateState(
+            effect.extension_id.c_str(), stored_version,
+            effect.extension_parameters_json.c_str());
+        if (migrated) {
+            const size_t length = std::char_traits<char>::length(migrated);
+            if (length <= 1024u * 1024u) {
+                const std::string candidate(migrated, length);
+                const json parsed = json::parse(candidate, nullptr, false);
+                if (parsed.is_object()) {
+                    effect.extension_parameters_json = candidate;
+                    effect.extension_schema_version = definition->schemaVersion;
+                }
+            }
+            if (definition->releaseString)
+                definition->releaseString(migrated);
+        }
+    }
+
+    if (definition->validateState) {
+        char error_buffer[1024] = {};
+        const int valid = definition->validateState(
+            effect.extension_id.c_str(), effect.extension_parameters_json.c_str(),
+            error_buffer, static_cast<uint32_t>(sizeof(error_buffer)));
+        if (!valid && diagnostics) {
+            const std::string detail = error_buffer[0] ? error_buffer : "invalid extension state";
+            append_unique_import_diagnostic(
+                diagnostics->missing_effects,
+                layer_name + ": " + effect.extension_id + " (" + detail + ")");
+        }
+    }
+}
+
 static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedded_assets = false,
                                                std::string *error = nullptr,
                                                TitleImportDiagnostics *diagnostics = nullptr)
@@ -1702,10 +1787,11 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
 
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
-    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::ColorSolid);
+    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Group);
     l->visible  = json_bool(j, "visible", true);
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
+    l->group_collapsed = json_bool(j, "group_collapsed", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedLuma);
@@ -1720,7 +1806,13 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const auto &effect_json = j["effects"][i];
             if (!effect_json.is_object()) continue;
             const int raw_effect_type = json_int(effect_json, "type", 0);
-            if (raw_effect_type < 0 || raw_effect_type > (int)LayerEffectType::RoughenEdges) {
+            const std::string loaded_extension_id = bounded_string(effect_json, "extension_id", "", 256);
+            LayerEffectType resolved_type = LayerEffectType::BackgroundColor;
+            const bool extension_is_builtin = BglEffectExtensionCatalog::builtInTypeForId(
+                QString::fromStdString(loaded_extension_id), &resolved_type);
+            const bool valid_legacy_type = raw_effect_type >= 0 &&
+                raw_effect_type <= (int)LayerEffectType::RoughenEdges;
+            if (!valid_legacy_type && loaded_extension_id.empty()) {
                 if (diagnostics) {
                     append_unique_import_diagnostic(
                         diagnostics->missing_effects,
@@ -1729,7 +1821,18 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
                 continue;
             }
             LayerEffect effect;
-            effect.type = (LayerEffectType)raw_effect_type;
+            effect.type = extension_is_builtin ? resolved_type
+                                               : (valid_legacy_type ? (LayerEffectType)raw_effect_type
+                                                                    : LayerEffectType::BackgroundColor);
+            effect.extension_id = loaded_extension_id.empty()
+                ? BglEffectExtensionCatalog::builtInId(effect.type).toStdString()
+                : (extension_is_builtin ? BglEffectExtensionCatalog::builtInId(resolved_type).toStdString()
+                                        : loaded_extension_id);
+            effect.extension_parameters_json = bounded_string(effect_json, "extension_parameters", "{}", 1048576);
+            effect.extension_schema_version = static_cast<uint32_t>(std::clamp(
+                json_int(effect_json, "extension_schema_version", 1), 1, 65535));
+            effect.extension_keyframes_json = bounded_string(effect_json, "extension_keyframes", "{}", 1048576);
+            migrate_and_validate_extension_state(effect, l->name, diagnostics);
             effect.enabled = json_bool(effect_json, "enabled", true);
             switch (effect.type) {
             case LayerEffectType::DropShadow:
@@ -1772,6 +1875,10 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.effect_blur_type = std::clamp(json_int(effect_json, "effect_blur_type", (int)ShadowBlurType::StackFast), 0, (int)ShadowBlurType::DualKawase);
             effect.effect_samples = std::clamp(json_int(effect_json, "effect_samples", 8), 2, 64);
             effect.effect_centered = json_bool(effect_json, "effect_centered", true);
+            effect.effect_outside_hard_alpha = json_bool(effect_json, "effect_outside_hard_alpha", false);
+            effect.effect_outside_hard_alpha_invert = json_bool(effect_json, "effect_outside_hard_alpha_invert", false);
+            effect.affect_layers_behind = json_bool(effect_json, "affect_layers_behind", false);
+            effect.affect_layers_behind_invert = json_bool(effect_json, "affect_layers_behind_invert", false);
             effect.effect_profile = std::clamp(json_int(effect_json, "effect_profile", 0), 0, 32);
             effect.effect_animated = json_bool(effect_json, "effect_animated", false);
             effect.effect_monochrome = json_bool(effect_json, "effect_monochrome", true);
@@ -1855,7 +1962,30 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             set_argb_channels(effect.color_a, effect.color_r, effect.color_g, effect.color_b, effect.effect_color);
             set_argb_channels(effect.stroke_color_a, effect.stroke_color_r, effect.stroke_color_g, effect.stroke_color_b, effect.effect_stroke_color);
             set_argb_channels(effect.secondary_color_a, effect.secondary_color_r, effect.secondary_color_g, effect.secondary_color_b, effect.effect_secondary_color);
+            effect.brightness_prop.static_value = effect.brightness;
+            effect.contrast_prop.static_value = effect.contrast;
+            effect.saturation_prop.static_value = effect.saturation;
+            effect.gradient_start_pos_prop.static_value = effect.effect_gradient_start_pos;
+            effect.gradient_end_pos_prop.static_value = effect.effect_gradient_end_pos;
+            effect.gradient_start_opacity_prop.static_value = effect.effect_gradient_start_opacity;
+            effect.gradient_end_opacity_prop.static_value = effect.effect_gradient_end_opacity;
+            effect.gradient_angle_prop.static_value = effect.effect_gradient_angle;
+            effect.gradient_center_x_prop.static_value = effect.effect_gradient_center_x;
+            effect.gradient_center_y_prop.static_value = effect.effect_gradient_center_y;
+            effect.gradient_scale_prop.static_value = effect.effect_gradient_scale;
+            effect.gradient_focal_x_prop.static_value = effect.effect_gradient_focal_x;
+            effect.gradient_focal_y_prop.static_value = effect.effect_gradient_focal_y;
+            effect.gradient_opacity_prop.static_value = effect.effect_gradient_opacity;
+            set_argb_channels(effect.gradient_start_color_a, effect.gradient_start_color_r,
+                              effect.gradient_start_color_g, effect.gradient_start_color_b,
+                              effect.effect_gradient_start_color);
+            set_argb_channels(effect.gradient_end_color_a, effect.gradient_end_color_r,
+                              effect.gradient_end_color_g, effect.gradient_end_color_b,
+                              effect.effect_gradient_end_color);
             if (effect_json.contains("enabled_prop")) effect.enabled_prop = aprop_from_json(effect_json["enabled_prop"], "effect_enabled");
+            if (effect_json.contains("brightness_prop")) effect.brightness_prop = aprop_from_json(effect_json["brightness_prop"], "effect_brightness");
+            if (effect_json.contains("contrast_prop")) effect.contrast_prop = aprop_from_json(effect_json["contrast_prop"], "effect_contrast");
+            if (effect_json.contains("saturation_prop")) effect.saturation_prop = aprop_from_json(effect_json["saturation_prop"], "effect_saturation");
             if (effect_json.contains("opacity_prop")) effect.opacity_prop = aprop_from_json(effect_json["opacity_prop"], "effect_opacity");
             if (effect_json.contains("size_prop")) effect.size_prop = aprop_from_json(effect_json["size_prop"], "effect_size");
             if (effect_json.contains("distance_prop")) effect.distance_prop = aprop_from_json(effect_json["distance_prop"], "effect_distance");
@@ -1881,6 +2011,25 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             if (effect_json.contains("corner_radius_tr_prop")) effect.corner_radius_tr_prop = aprop_from_json(effect_json["corner_radius_tr_prop"], "effect_corner_radius_tr");
             if (effect_json.contains("corner_radius_br_prop")) effect.corner_radius_br_prop = aprop_from_json(effect_json["corner_radius_br_prop"], "effect_corner_radius_br");
             if (effect_json.contains("corner_radius_bl_prop")) effect.corner_radius_bl_prop = aprop_from_json(effect_json["corner_radius_bl_prop"], "effect_corner_radius_bl");
+            if (effect_json.contains("gradient_start_pos_prop")) effect.gradient_start_pos_prop = aprop_from_json(effect_json["gradient_start_pos_prop"], "effect_gradient_start_pos");
+            if (effect_json.contains("gradient_end_pos_prop")) effect.gradient_end_pos_prop = aprop_from_json(effect_json["gradient_end_pos_prop"], "effect_gradient_end_pos");
+            if (effect_json.contains("gradient_start_opacity_prop")) effect.gradient_start_opacity_prop = aprop_from_json(effect_json["gradient_start_opacity_prop"], "effect_gradient_start_opacity");
+            if (effect_json.contains("gradient_end_opacity_prop")) effect.gradient_end_opacity_prop = aprop_from_json(effect_json["gradient_end_opacity_prop"], "effect_gradient_end_opacity");
+            if (effect_json.contains("gradient_angle_prop")) effect.gradient_angle_prop = aprop_from_json(effect_json["gradient_angle_prop"], "effect_gradient_angle");
+            if (effect_json.contains("gradient_center_x_prop")) effect.gradient_center_x_prop = aprop_from_json(effect_json["gradient_center_x_prop"], "effect_gradient_center_x");
+            if (effect_json.contains("gradient_center_y_prop")) effect.gradient_center_y_prop = aprop_from_json(effect_json["gradient_center_y_prop"], "effect_gradient_center_y");
+            if (effect_json.contains("gradient_scale_prop")) effect.gradient_scale_prop = aprop_from_json(effect_json["gradient_scale_prop"], "effect_gradient_scale");
+            if (effect_json.contains("gradient_focal_x_prop")) effect.gradient_focal_x_prop = aprop_from_json(effect_json["gradient_focal_x_prop"], "effect_gradient_focal_x");
+            if (effect_json.contains("gradient_focal_y_prop")) effect.gradient_focal_y_prop = aprop_from_json(effect_json["gradient_focal_y_prop"], "effect_gradient_focal_y");
+            if (effect_json.contains("gradient_opacity_prop")) effect.gradient_opacity_prop = aprop_from_json(effect_json["gradient_opacity_prop"], "effect_gradient_opacity");
+            if (effect_json.contains("gradient_start_color_a")) effect.gradient_start_color_a = aprop_from_json(effect_json["gradient_start_color_a"], "effect_gradient_start_color_a");
+            if (effect_json.contains("gradient_start_color_r")) effect.gradient_start_color_r = aprop_from_json(effect_json["gradient_start_color_r"], "effect_gradient_start_color_r");
+            if (effect_json.contains("gradient_start_color_g")) effect.gradient_start_color_g = aprop_from_json(effect_json["gradient_start_color_g"], "effect_gradient_start_color_g");
+            if (effect_json.contains("gradient_start_color_b")) effect.gradient_start_color_b = aprop_from_json(effect_json["gradient_start_color_b"], "effect_gradient_start_color_b");
+            if (effect_json.contains("gradient_end_color_a")) effect.gradient_end_color_a = aprop_from_json(effect_json["gradient_end_color_a"], "effect_gradient_end_color_a");
+            if (effect_json.contains("gradient_end_color_r")) effect.gradient_end_color_r = aprop_from_json(effect_json["gradient_end_color_r"], "effect_gradient_end_color_r");
+            if (effect_json.contains("gradient_end_color_g")) effect.gradient_end_color_g = aprop_from_json(effect_json["gradient_end_color_g"], "effect_gradient_end_color_g");
+            if (effect_json.contains("gradient_end_color_b")) effect.gradient_end_color_b = aprop_from_json(effect_json["gradient_end_color_b"], "effect_gradient_end_color_b");
             if (effect_json.contains("color_a")) effect.color_a = aprop_from_json(effect_json["color_a"], "effect_color_a");
             if (effect_json.contains("color_r")) effect.color_r = aprop_from_json(effect_json["color_r"], "effect_color_r");
             if (effect_json.contains("color_g")) effect.color_g = aprop_from_json(effect_json["color_g"], "effect_color_g");
@@ -2305,6 +2454,23 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             effect.enabled_prop.name = "effect_enabled";
             effect.opacity_prop = l->background_opacity_prop;
             effect.opacity_prop.name = "effect_opacity";
+            effect.gradient_start_pos_prop.static_value = effect.effect_gradient_start_pos;
+            effect.gradient_end_pos_prop.static_value = effect.effect_gradient_end_pos;
+            effect.gradient_start_opacity_prop.static_value = effect.effect_gradient_start_opacity;
+            effect.gradient_end_opacity_prop.static_value = effect.effect_gradient_end_opacity;
+            effect.gradient_opacity_prop.static_value = effect.effect_gradient_opacity;
+            effect.gradient_angle_prop.static_value = effect.effect_gradient_angle;
+            effect.gradient_center_x_prop.static_value = effect.effect_gradient_center_x;
+            effect.gradient_center_y_prop.static_value = effect.effect_gradient_center_y;
+            effect.gradient_scale_prop.static_value = effect.effect_gradient_scale;
+            effect.gradient_focal_x_prop.static_value = effect.effect_gradient_focal_x;
+            effect.gradient_focal_y_prop.static_value = effect.effect_gradient_focal_y;
+            set_argb_channels(effect.gradient_start_color_a, effect.gradient_start_color_r,
+                              effect.gradient_start_color_g, effect.gradient_start_color_b,
+                              effect.effect_gradient_start_color);
+            set_argb_channels(effect.gradient_end_color_a, effect.gradient_end_color_r,
+                              effect.gradient_end_color_g, effect.gradient_end_color_b,
+                              effect.effect_gradient_end_color);
             effect.stroke_width_prop = l->background_stroke_width_prop;
             effect.stroke_width_prop.name = "effect_stroke_width";
             effect.stroke_opacity_prop = l->background_stroke_opacity_prop;

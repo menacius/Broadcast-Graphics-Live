@@ -1,5 +1,6 @@
 uniform float4x4 ViewProj;
 uniform texture2d image;
+uniform texture2d hardMask;
 uniform texture2d shadowImage;
 uniform float2 texelSize;
 uniform float4 effectColor;
@@ -7,6 +8,8 @@ uniform float2 direction;
 uniform float shadowLength;
 uniform float falloff;
 uniform float opacity;
+uniform int outsideHardAlpha;
+uniform int outsideHardAlphaInvert;
 
 sampler_state textureSampler {
     Filter   = Linear;
@@ -58,7 +61,9 @@ float4 PSLongShadow(VertDataOut v_in) : TARGET
     float shadowAlpha = clamp(shadowImage.Sample(textureSampler, v_in.uv).a *
                               opacity * effectColor.a, 0.0, 1.0);
     float4 shadow = float4(effectColor.rgb * shadowAlpha, shadowAlpha);
-    float remaining = 1.0 - base.a;
+    float hardInside = step(0.5, hardMask.Sample(textureSampler, v_in.uv).a);
+    float hardRegion = outsideHardAlphaInvert != 0 ? hardInside : (1.0 - hardInside);
+    float remaining = outsideHardAlpha != 0 ? hardRegion : (1.0 - base.a);
     return float4(base.rgb + shadow.rgb * remaining,
                   base.a + shadow.a * remaining);
 }

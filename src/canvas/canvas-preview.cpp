@@ -27,6 +27,7 @@
 #include <QPaintEngine>
 
 #include <algorithm>
+#include <map>
 #include <mutex>
 #include <cmath>
 
@@ -100,10 +101,11 @@ bool layer_is_shape_sized(const Layer &layer)
     return layer.type == LayerType::Shape || layer.type == LayerType::SolidRect;
 }
 
-bool layer_has_fixed_canvas_geometry(const Layer &layer)
+bool layer_has_fixed_canvas_geometry(const Layer &)
 {
-    return layer.type == LayerType::Adjustment ||
-           layer.type == LayerType::ColorSolid;
+    // Adjustment and color layers start at canvas size, but remain ordinary
+    // transformable layers. Their initial geometry is a default, not a lock.
+    return false;
 }
 
 double shape_resize_metric_factor(double old_w, double old_h, double new_w, double new_h)
@@ -583,10 +585,23 @@ void CanvasPreview::gpu_display_draw(void *data, uint32_t cx, uint32_t cy)
         gs_matrix_identity();
         gs_matrix_translate3f(static_cast<float>(state.artwork_rect_px.x()),
                               static_cast<float>(state.artwork_rect_px.y()), 0.0f);
-        const bool artwork_drawn = title_gpu_render_session_draw(
-            canvas->gpu_render_session_,
-            static_cast<uint32_t>(state.artwork_rect_px.width()),
-            static_cast<uint32_t>(state.artwork_rect_px.height()));
+        const bool destination_composite = canvas->title_ &&
+            title_requires_destination_compositing(*canvas->title_);
+        const bool artwork_drawn = destination_composite && state.underlay
+            ? title_gpu_render_session_draw_over_background_rect(
+                  canvas->gpu_render_session_, state.underlay,
+                  state.underlay_w, state.underlay_h,
+                  static_cast<float>(state.artwork_rect_px.x()),
+                  static_cast<float>(state.artwork_rect_px.y()),
+                  static_cast<float>(state.artwork_rect_px.width()),
+                  static_cast<float>(state.artwork_rect_px.height()),
+                  static_cast<uint32_t>(state.artwork_rect_px.width()),
+                  static_cast<uint32_t>(state.artwork_rect_px.height()),
+                  false)
+            : title_gpu_render_session_draw(
+                  canvas->gpu_render_session_,
+                  static_cast<uint32_t>(state.artwork_rect_px.width()),
+                  static_cast<uint32_t>(state.artwork_rect_px.height()));
         const std::string gpu_error = artwork_drawn
             ? std::string()
             : title_gpu_render_session_last_error(canvas->gpu_render_session_);
@@ -1457,8 +1472,59 @@ std::vector<std::shared_ptr<Layer>> CanvasPreview::selected_layers() const
     return layers;
 }
 
+static const Layer *editor_find_layer_by_id(const std::shared_ptr<Title> &title,
+                                            const std::string &id);
+static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &title,
+                                               const Layer &layer, double playhead,
+                                               int depth = 0);
+static bool editor_layer_has_ancestor(const std::shared_ptr<Title> &title,
+                                      const Layer &layer,
+                                      const std::string &ancestor_id);
+
 QRectF CanvasPreview::layer_local_rect(const Layer &layer) const
 {
+    if (layer.type == LayerType::Group && title_) {
+        bool invertible = false;
+        const QTransform group_world =
+            editor_layer_world_transform(title_, layer, playhead_, 0);
+        const QTransform canvas_to_group = group_world.inverted(&invertible);
+        QRectF group_bounds;
+        bool have_bounds = false;
+        if (invertible) {
+            for (const auto &candidate : title_->layers) {
+                if (!candidate || candidate->type == LayerType::Group ||
+                    !candidate->visible ||
+                    playhead_ < candidate->in_time || playhead_ > candidate->out_time ||
+                    !editor_layer_has_ancestor(title_, *candidate, layer.id))
+                    continue;
+                const double child_time = playhead_ - candidate->in_time;
+                const double width = eval_box_width(*candidate, child_time);
+                const double height = eval_box_height(*candidate, child_time);
+                if (width <= 0.0 || height <= 0.0)
+                    continue;
+                const double origin_x = eval_origin_x(*candidate, child_time);
+                const double origin_y = eval_origin_y(*candidate, child_time);
+                const QRectF child_rect(-origin_x * width, -origin_y * height,
+                                        width, height);
+                const QTransform child_world =
+                    editor_layer_world_transform(title_, *candidate, playhead_, 0);
+                QPolygonF polygon;
+                polygon << canvas_to_group.map(child_world.map(child_rect.topLeft()))
+                        << canvas_to_group.map(child_world.map(child_rect.topRight()))
+                        << canvas_to_group.map(child_world.map(child_rect.bottomRight()))
+                        << canvas_to_group.map(child_world.map(child_rect.bottomLeft()));
+                const QRectF child_bounds = polygon.boundingRect();
+                if (!child_bounds.isValid() || child_bounds.isEmpty())
+                    continue;
+                group_bounds = have_bounds ? group_bounds.united(child_bounds) : child_bounds;
+                have_bounds = true;
+            }
+        }
+        if (have_bounds)
+            return group_bounds.normalized();
+        return QRectF(-16.0, -16.0, 32.0, 32.0);
+    }
+
     double lt = playhead_ - layer.in_time;
     double w = eval_box_width(layer, lt);
     double h = eval_box_height(layer, lt);
@@ -1524,7 +1590,7 @@ static const Layer *editor_find_layer_by_id(const std::shared_ptr<Title> &title,
 }
 
 static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &title,
-                                               const Layer &layer, double playhead, int depth = 0)
+                                               const Layer &layer, double playhead, int depth)
 {
     QTransform xf;
     if (depth > 64) return xf;
@@ -1549,6 +1615,20 @@ static QTransform editor_parent_world_transform(const std::shared_ptr<Title> &ti
     return QTransform();
 }
 
+static QPointF editor_canvas_delta_to_parent_local(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    const QPointF &canvas_delta)
+{
+    const QTransform parent_world =
+        editor_parent_world_transform(title, layer, playhead);
+    bool invertible = false;
+    const QTransform canvas_to_parent = parent_world.inverted(&invertible);
+    if (!invertible)
+        return canvas_delta;
+    return canvas_to_parent.map(canvas_delta) -
+           canvas_to_parent.map(QPointF(0.0, 0.0));
+}
+
 static bool editor_layer_has_ancestor(const std::shared_ptr<Title> &title,
                                       const Layer &layer,
                                       const std::string &ancestor_id)
@@ -1564,6 +1644,23 @@ static bool editor_layer_has_ancestor(const std::shared_ptr<Title> &title,
         parent_id = parent->parent_id;
     }
     return false;
+}
+
+static const Layer *editor_outermost_group_ancestor(
+    const std::shared_ptr<Title> &title, const Layer &layer)
+{
+    const Layer *result = nullptr;
+    std::string parent_id = layer.parent_id;
+    int guard = 0;
+    while (!parent_id.empty() && guard++ < 64) {
+        const Layer *parent = editor_find_layer_by_id(title, parent_id);
+        if (!parent)
+            break;
+        if (parent->type == LayerType::Group)
+            result = parent;
+        parent_id = parent->parent_id;
+    }
+    return result;
 }
 
 QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
@@ -2470,6 +2567,17 @@ bool CanvasPreview::layer_overlay_changes_with_playhead(const Layer &layer) cons
         layer.size.is_animated() || layer.origin_prop.is_animated())
         return true;
 
+    if (layer.type == LayerType::Group && title_) {
+        for (const auto &candidate : title_->layers) {
+            if (!candidate || !editor_layer_has_ancestor(title_, *candidate, layer.id))
+                continue;
+            if (candidate->position.is_animated() || candidate->scale.is_animated() ||
+                candidate->rotation.is_animated() || candidate->size.is_animated() ||
+                candidate->origin_prop.is_animated())
+                return true;
+        }
+    }
+
     std::string parent_id = layer.parent_id;
     int guard = 0;
     while (!parent_id.empty() && guard++ < 64) {
@@ -2529,18 +2637,13 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
     geometry.valid = true;
     geometry.layers.reserve(layers.size());
 
-    for (const auto &layer : layers) {
-        if (!layer)
-            continue;
-
-        const QRectF box = layer_local_rect(*layer);
+    auto make_geometry = [&](const Layer &layer, bool editing_text_layer) {
         SelectionOverlayLayerGeometry layer_geometry;
-        layer_geometry.layer = layer.get();
-        layer_geometry.editing_text_layer = !inline_text_layer_id_.empty() &&
-            inline_text_layer_id_ == layer->id && is_canvas_text_layer(*layer);
-
+        layer_geometry.layer = &layer;
+        layer_geometry.editing_text_layer = editing_text_layer;
+        const QRectF box = layer_local_rect(layer);
         auto layer_point_to_view = [&](const QPointF &pt) {
-            return canvas_to_view(layer_to_canvas(*layer, pt));
+            return canvas_to_view(layer_to_canvas(layer, pt));
         };
         const QPointF corners[] = {
             layer_point_to_view(box.topLeft()),
@@ -2560,7 +2663,33 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
         layer_geometry.handles[6] = corners[3];
         layer_geometry.handles[7] = layer_point_to_view(QPointF(box.left(), box.center().y()));
         layer_geometry.origin = layer_point_to_view(QPointF(0, 0));
-        geometry.layers.push_back(layer_geometry);
+        return layer_geometry;
+    };
+
+    std::set<std::string> selected_ids;
+    for (const auto &layer : layers) {
+        if (!layer)
+            continue;
+        selected_ids.insert(layer->id);
+        geometry.layers.push_back(make_geometry(
+            *layer, !inline_text_layer_id_.empty() &&
+                        inline_text_layer_id_ == layer->id &&
+                        is_canvas_text_layer(*layer)));
+    }
+
+    /* When drilling into a group, retain the immediate container outline as
+     * context but never expose its transform handles. This mirrors AE's group
+     * context while making it clear which child is currently editable. */
+    std::set<std::string> context_group_ids;
+    for (const auto &layer : layers) {
+        if (!layer || layer->parent_id.empty())
+            continue;
+        const auto parent = title_ ? title_->find_layer(layer->parent_id) : nullptr;
+        if (!parent || parent->type != LayerType::Group ||
+            selected_ids.find(parent->id) != selected_ids.end() ||
+            !context_group_ids.insert(parent->id).second)
+            continue;
+        geometry.group_contexts.push_back(make_geometry(*parent, false));
     }
 
     if (geometry.layers.size() > 1) {
@@ -4211,12 +4340,20 @@ void CanvasPreview::update_marquee(const QPointF &view_pt, Qt::KeyboardModifiers
         selected.insert(marquee_base_selection_.begin(), marquee_base_selection_.end());
 
     std::vector<std::string> hits;
+    std::set<std::string> hit_ids;
     for (const auto &layer : title_->layers) {
         if (!layer || !layer->visible || layer->locked) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
         QRectF bounds = layer_canvas_bounds(*layer);
-        if (intersects_or_touches(canvas_rect, bounds))
-            hits.push_back(layer->id);
+        if (!intersects_or_touches(canvas_rect, bounds))
+            continue;
+        std::string hit_id = layer->id;
+        if (layer->type != LayerType::Group) {
+            if (const Layer *group = editor_outermost_group_ancestor(title_, *layer))
+                hit_id = group->id;
+        }
+        if (hit_ids.insert(hit_id).second)
+            hits.push_back(hit_id);
     }
 
     if (modifiers & Qt::ControlModifier) {
@@ -4392,6 +4529,35 @@ void CanvasPreview::add_snap_feedback(bool x_axis, double value, const QString &
     snap_feedback_.push_back({x_axis, value, label});
 }
 
+static std::set<std::string> editor_snap_excluded_layer_ids(
+    const std::shared_ptr<Title> &title,
+    const std::vector<std::string> &selected_layer_ids,
+    const std::string &primary_layer_id)
+{
+    std::set<std::string> excluded(selected_layer_ids.begin(), selected_layer_ids.end());
+    if (!primary_layer_id.empty())
+        excluded.insert(primary_layer_id);
+    if (!title)
+        return excluded;
+
+    const std::vector<std::string> selected(excluded.begin(), excluded.end());
+    for (const auto &id : selected) {
+        auto layer = title->find_layer(id);
+        std::set<std::string> visited;
+        while (layer && !layer->parent_id.empty() &&
+               visited.insert(layer->parent_id).second) {
+            auto parent = title->find_layer(layer->parent_id);
+            if (!parent || parent->type != LayerType::Group)
+                break;
+            /* A child must never magnetically snap to the container whose
+             * transform already defines its local coordinate space. */
+            excluded.insert(parent->id);
+            layer = parent;
+        }
+    }
+    return excluded;
+}
+
 void CanvasPreview::collect_snap_targets(bool x_axis, std::vector<double> &targets, std::vector<QString> &labels) const
 {
     if (!title_) return;
@@ -4428,14 +4594,13 @@ void CanvasPreview::collect_snap_targets(bool x_axis, std::vector<double> &targe
 
     if (!snap_settings_.object_edges && !snap_settings_.object_centers) return;
 
-    std::set<std::string> selected_ids(selected_layer_ids_.begin(), selected_layer_ids_.end());
-    if (!sel_layer_id_.empty())
-        selected_ids.insert(sel_layer_id_);
+    const std::set<std::string> excluded_ids = editor_snap_excluded_layer_ids(
+        title_, selected_layer_ids_, sel_layer_id_);
 
     for (const auto &layer : title_->layers) {
         if (!layer || !layer->visible) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
-        if (selected_ids.find(layer->id) != selected_ids.end())
+        if (excluded_ids.find(layer->id) != excluded_ids.end())
             continue;
         QRectF bounds = layer_canvas_bounds(*layer);
         if (!bounds.isValid() || bounds.isEmpty()) continue;
@@ -4454,14 +4619,13 @@ void CanvasPreview::collect_spacing_targets(bool x_axis, std::vector<double> &ta
 
     struct Span { double start; double end; };
     std::vector<Span> spans;
-    std::set<std::string> selected_ids(selected_layer_ids_.begin(), selected_layer_ids_.end());
-    if (!sel_layer_id_.empty())
-        selected_ids.insert(sel_layer_id_);
+    const std::set<std::string> excluded_ids = editor_snap_excluded_layer_ids(
+        title_, selected_layer_ids_, sel_layer_id_);
 
     for (const auto &layer : title_->layers) {
         if (!layer || !layer->visible) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
-        if (selected_ids.find(layer->id) != selected_ids.end())
+        if (excluded_ids.find(layer->id) != excluded_ids.end())
             continue;
         QRectF bounds = layer_canvas_bounds(*layer);
         if (!bounds.isValid() || bounds.isEmpty()) continue;
@@ -4713,8 +4877,10 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 if (!layer || layer->locked || has_selected_parent(*layer)) continue;
                 double lt = std::clamp(playhead_ - layer->in_time, 0.0,
                                        std::max(0.0, layer->out_time - layer->in_time));
-                set_animated_x(layer->position, lt, state.x + delta.x());
-                set_animated_y(layer->position, lt, state.y + delta.y());
+                const QPointF local_delta = editor_canvas_delta_to_parent_local(
+                    title_, *layer, playhead_, delta);
+                set_animated_x(layer->position, lt, state.x + local_delta.x());
+                set_animated_y(layer->position, lt, state.y + local_delta.y());
             }
         } else {
             QRectF start = drag_start_selection_bounds_;
@@ -4767,7 +4933,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 double ry = (state.y - start.top()) / start.height();
                 set_animated_x(layer->position, lt, next.left() + rx * next.width());
                 set_animated_y(layer->position, lt, next.top() + ry * next.height());
-                const bool scale_text_object = drag_text_object_scaling_ && is_canvas_text_layer(*layer);
+                const bool scale_text_object = layer->type == LayerType::Group ||
+                    (drag_text_object_scaling_ && is_canvas_text_layer(*layer));
                 if (scale_text_object) {
                     set_animated_x(layer->scale, lt, state.scale_x * sx);
                     set_animated_y(layer->scale, lt, state.scale_y * sy);
@@ -4810,8 +4977,10 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                 delta.setX(0.0);
         }
         delta = snap_delta_for_bounds(drag_start_selection_bounds_, delta, true, true, allow_snap);
-        set_animated_x(layer->position, lt, drag_start_x_ + delta.x());
-        set_animated_y(layer->position, lt, drag_start_y_ + delta.y());
+        const QPointF local_delta = editor_canvas_delta_to_parent_local(
+            title_, *layer, playhead_, delta);
+        set_animated_x(layer->position, lt, drag_start_x_ + local_delta.x());
+        set_animated_y(layer->position, lt, drag_start_y_ + local_delta.y());
     } else if (drag_mode_ == DragMode::Origin) {
         clear_snap_feedback();
         double w = std::max(1.0f, drag_start_w_);
@@ -4829,14 +4998,16 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         bool resize_bottom = drag_mode_ == DragMode::ResizeSW || drag_mode_ == DragMode::ResizeSE || drag_mode_ == DragMode::ResizeS;
         if (allow_snap)
             snap_feedback_.clear();
-        const bool scale_text_object = drag_text_object_scaling_ && is_canvas_text_layer(*layer);
+        const bool scale_text_object = layer->type == LayerType::Group ||
+            (drag_text_object_scaling_ && is_canvas_text_layer(*layer));
         const LayerDragState *start_state = drag_layer_states_.empty() ? nullptr : &drag_layer_states_.front();
         auto non_zero_scale = [](double value) {
             if (std::abs(value) >= 0.0001) return value;
             return value < 0.0 ? -0.0001 : 0.0001;
         };
         auto start_canvas_to_layer = [&](const QPointF &canvas_pt) {
-            QTransform start_xf;
+            QTransform start_xf = editor_parent_world_transform(
+                title_, *layer, playhead_);
             start_xf.translate(start_state->x, start_state->y);
             start_xf.rotate(start_state->rotation);
             start_xf.scale(non_zero_scale(start_state->scale_x),
@@ -4891,7 +5062,8 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         }
 
         const QRectF resized_rect = editor_modifier_rect(anchor, local, resize_modifiers, aspect, fixed_w, fixed_h);
-        QTransform start_xf;
+        QTransform start_xf = editor_parent_world_transform(
+            title_, *layer, playhead_);
         if (start_state) {
             start_xf.translate(start_state->x, start_state->y);
             start_xf.rotate(start_state->rotation);
@@ -4945,15 +5117,18 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
             set_animated_x(layer->scale, lt, start_scale_x * sx);
             set_animated_y(layer->scale, lt, start_scale_y * sy);
             if (alt_resize && start_state) {
-                QTransform next_xf;
+                QTransform next_xf = editor_parent_world_transform(
+                    title_, *layer, playhead_);
                 next_xf.translate(start_state->x, start_state->y);
                 next_xf.rotate(start_state->rotation);
                 next_xf.scale(non_zero_scale(start_scale_x * sx),
                               non_zero_scale(start_scale_y * sy));
                 const QPointF current_center_canvas = next_xf.map(start_rect.center());
                 const QPointF shift = fixed_center_canvas - current_center_canvas;
-                set_animated_x(layer->position, lt, start_state->x + shift.x());
-                set_animated_y(layer->position, lt, start_state->y + shift.y());
+                const QPointF local_shift = editor_canvas_delta_to_parent_local(
+                    title_, *layer, playhead_, shift);
+                set_animated_x(layer->position, lt, start_state->x + local_shift.x());
+                set_animated_y(layer->position, lt, start_state->y + local_shift.y());
             }
         } else {
             layer->rect_width = (float)new_w;
@@ -4979,22 +5154,27 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
                                          new_w, new_h);
                 const QPointF local_shift = final_rect.center() - actual_rect.center();
                 const QPointF canvas_shift = start_xf.map(local_shift) - start_xf.map(QPointF(0.0, 0.0));
-                set_animated_x(layer->position, lt, start_state->x + canvas_shift.x());
-                set_animated_y(layer->position, lt, start_state->y + canvas_shift.y());
+                const QPointF parent_local_shift = editor_canvas_delta_to_parent_local(
+                    title_, *layer, playhead_, canvas_shift);
+                set_animated_x(layer->position, lt, start_state->x + parent_local_shift.x());
+                set_animated_y(layer->position, lt, start_state->y + parent_local_shift.y());
             }
             if (alt_resize && start_state) {
                 const QRectF actual_rect(-drag_start_origin_x_ * new_w,
                                          -drag_start_origin_y_ * new_h,
                                          new_w, new_h);
-                QTransform next_xf;
+                QTransform next_xf = editor_parent_world_transform(
+                    title_, *layer, playhead_);
                 next_xf.translate(start_state->x, start_state->y);
                 next_xf.rotate(start_state->rotation);
                 next_xf.scale(non_zero_scale(start_state->scale_x),
                               non_zero_scale(start_state->scale_y));
                 const QPointF current_center_canvas = next_xf.map(actual_rect.center());
                 const QPointF shift = fixed_center_canvas - current_center_canvas;
-                set_animated_x(layer->position, lt, start_state->x + shift.x());
-                set_animated_y(layer->position, lt, start_state->y + shift.y());
+                const QPointF local_shift = editor_canvas_delta_to_parent_local(
+                    title_, *layer, playhead_, shift);
+                set_animated_x(layer->position, lt, start_state->x + local_shift.x());
+                set_animated_y(layer->position, lt, start_state->y + local_shift.y());
             }
         }
     }
@@ -5043,6 +5223,8 @@ void CanvasPreview::render_to_frame()
         CacheManager &cache = CacheManager::instance();
         const CachePlaybackSettings playback = cache.playbackSettings();
         const TitleCacheability cacheability = cache.titleCacheability(title_);
+        const bool destination_composite =
+            title_requires_destination_compositing(*title_);
         const bool direct_interaction = drag_changed_ || adaptive_interaction_active_;
 
         /* The editor and OBS source must present the same cache payload. The
@@ -5052,7 +5234,8 @@ void CanvasPreview::render_to_frame()
          * adaptive draft scaling before submitting their sparse coordinates. */
         QImage cached;
         QString gpu_cache_token;
-        if (!direct_interaction && cache.cacheEnabled() &&
+        if (!destination_composite && !direct_interaction &&
+            cache.cacheEnabled() &&
             cacheability != TitleCacheability::NonCacheable) {
             const int cue_row = title_->current_cue_row;
             const bool has_active_cue = cue_row >= 0 &&
@@ -5154,16 +5337,19 @@ void CanvasPreview::render_to_frame()
             }
         }
 
-        if (direct_interaction || !cache.cacheEnabled() ||
+        if (destination_composite || direct_interaction ||
+            !cache.cacheEnabled() ||
             cacheability == TitleCacheability::NonCacheable) {
             prefetched_cache_frame_ = QImage();
             prefetched_cache_time_ = -1.0;
         }
 
         if (!submitted_cached_frame && !preserve_previous_cached_frame) {
-            const double adaptive_scale = adaptive_preview_scale();
-            const bool adaptive_draft = adaptive_rendering_enabled_ &&
-                adaptive_scale < 0.999;
+            const double adaptive_scale = destination_composite
+                ? 1.0
+                : adaptive_preview_scale();
+            const bool adaptive_draft = !destination_composite &&
+                adaptive_rendering_enabled_ && adaptive_scale < 0.999;
             title_gpu_render_session_set_preview_quality(gpu_render_session_,
                                                          adaptive_scale,
                                                          adaptive_draft);
@@ -5555,9 +5741,10 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setTransform(editor_layer_world_transform(title_, *layer, playhead_), true);
         p.setPen(border);
-        p.setBrush(layer->type == LayerType::Shape && layer->shape_type == ShapeType::Line
-                       ? Qt::NoBrush
-                       : scene_mask_hatch_brush());
+        /* Scene masks remain matte controls in the editor. Preserve the
+         * familiar hatched fill while the live OBS scene is visible through
+         * the matte in the rendered artwork below. */
+        p.setBrush(scene_mask_hatch_brush());
         p.drawPath(path);
         p.restore();
     }
@@ -5610,22 +5797,17 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
             return;
         const Layer &layer = *layer_geometry.layer;
         const bool editing_text_layer = layer_geometry.editing_text_layer;
-        QColor text_box_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::TextBoundingBox);
-        if (!handles && text_box_color.alpha() > 210)
-            text_box_color.setAlpha(210);
-        QColor selection_box_color = editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
-        if (!handles && selection_box_color.alpha() > 150)
-            selection_box_color.setAlpha(150);
-        const QColor outline_color = editing_text_layer ? text_box_color : selection_box_color;
-        QColor handle_stroke_color = editing_text_layer
-            ? editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::TextBoundingBox)
-            : editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+        QColor outline_color = layer_color(layer, 0);
+        if (!handles && outline_color.alpha() > 150)
+            outline_color.setAlpha(150);
+        QColor handle_stroke_color = layer_color(layer, 0);
         if (handle_stroke_color.alpha() < 180)
             handle_stroke_color.setAlpha(180);
 
         p.save();
         p.setBrush(Qt::NoBrush);
-        p.setPen(QPen(outline_color, editing_text_layer ? 2.0 : 1.5, Qt::DashLine));
+        const Qt::PenStyle outline_style = editing_text_layer ? Qt::SolidLine : Qt::DashLine;
+        p.setPen(QPen(outline_color, editing_text_layer ? 2.0 : 1.5, outline_style));
         p.drawPolygon(layer_geometry.outline);
         if (handles) {
             p.setPen(QPen(handle_stroke_color, 1.0));
@@ -5650,6 +5832,11 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
         p.restore();
     };
 
+    if (active_tool_ != CanvasTool::DirectSelection) {
+        for (const auto &group_geometry : selection_overlay.group_contexts)
+            draw_layer_box(group_geometry, false);
+    }
+
     if (selection_overlay.layers.size() == 1) {
         if (active_tool_ != CanvasTool::DirectSelection)
             draw_layer_box(selection_overlay.layers.front(), true);
@@ -5659,10 +5846,14 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
 
         if (selection_overlay.multi_bounds_view.isValid() && !selection_overlay.multi_bounds_view.isEmpty()) {
             const QRectF &view_bounds = selection_overlay.multi_bounds_view;
+            QColor aggregate_color = editor_canvas_helper_color(
+                TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox);
+            if (auto active_layer = selected_layer())
+                aggregate_color = layer_color(*active_layer, 0);
             p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.5, Qt::SolidLine));
+            p.setPen(QPen(aggregate_color, 1.5, Qt::SolidLine));
             p.drawRect(view_bounds);
-            p.setPen(QPen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::SelectionBoundingBox), 1.0));
+            p.setPen(QPen(aggregate_color, 1.0));
             p.setBrush(QColor(255, 255, 255));
             for (const QPointF &pt : selection_overlay.multi_handles)
                 p.drawRect(QRectF(pt.x() - CANVAS_CONTROL_SIZE_PX / 2.0,
@@ -5684,6 +5875,31 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
             if (layer && layer_supports_corner_radius_handles(*layer))
                 draw_corner_radius_handles(p, *layer);
         }
+    }
+    if (title_ && !extension_canvas_handles_.isEmpty()) {
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (const QJsonValue &value : extension_canvas_handles_) {
+            const QJsonObject handle = value.toObject();
+            const QJsonArray point = handle.value(QStringLiteral("value")).toArray();
+            if (point.size() < 2) continue;
+            const QPointF canvasPoint(point.at(0).toDouble() * title_->width,
+                                      point.at(1).toDouble() * title_->height);
+            const QPointF viewPoint = canvas_to_view(canvasPoint);
+            QColor color(handle.value(QStringLiteral("color")).toString(QStringLiteral("#ffb52e")));
+            if (!color.isValid()) color = QColor(255, 181, 46);
+            QPen pen(color, 2.0); pen.setCosmetic(true);
+            p.setPen(pen); p.setBrush(QColor(255, 255, 255, 235));
+            p.drawEllipse(viewPoint, 7.0, 7.0);
+            p.drawLine(viewPoint + QPointF(-12.0, 0.0), viewPoint + QPointF(12.0, 0.0));
+            p.drawLine(viewPoint + QPointF(0.0, -12.0), viewPoint + QPointF(0.0, 12.0));
+            const QString label = handle.value(QStringLiteral("label")).toString();
+            if (!label.isEmpty()) {
+                p.setPen(QPen(color, 1.0));
+                p.drawText(QRectF(viewPoint.x() + 14.0, viewPoint.y() - 10.0, 180.0, 22.0), label);
+            }
+        }
+        p.restore();
     }
     draw_pen_path_preview(p);
     draw_toolbar_preview(p);
@@ -5732,6 +5948,14 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
     draw_color_picker_tooltip(p);
     draw_canvas_border(p, QRectF(ox, oy, dw, dh));
     draw_rulers(p, QRectF(ox, oy, dw, dh), scale, origin);
+}
+
+void CanvasPreview::set_extension_canvas_handles(const QJsonArray &handles)
+{
+    extension_canvas_handles_ = handles;
+    active_extension_handle_ = -1;
+    invalidate_canvas_overlay_caches();
+    update();
 }
 
 void CanvasPreview::paintEvent(QPaintEvent *)
@@ -6481,8 +6705,13 @@ std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) 
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
         const QRectF local_rect = layer_local_rect(*layer);
         if (!local_rect.isValid() || local_rect.isEmpty()) continue;
-        if (local_rect.contains(canvas_to_layer(*layer, canvas)))
+        if (local_rect.contains(canvas_to_layer(*layer, canvas))) {
+            if (layer->type == LayerType::Group)
+                return layer;
+            if (const Layer *group = editor_outermost_group_ancestor(title_, *layer))
+                return title_->find_layer(group->id);
             return layer;
+        }
     }
     return nullptr;
 }
@@ -6544,7 +6773,10 @@ void CanvasPreview::draw_hover_layer_box(QPainter &p)
     p.save();
     p.setRenderHint(QPainter::Antialiasing, false);
     if (!hover_overlay.hovered_is_selected) {
-        QPen pen(editor_canvas_helper_color(TitlePreferences::CanvasHelperColorRole::HoverBoundingBox), 1.0, Qt::SolidLine);
+        QColor hover_color = layer_color(layer, 0);
+        if (hover_color.alpha() > 190)
+            hover_color.setAlpha(190);
+        QPen pen(hover_color, 1.0, Qt::SolidLine);
         pen.setCosmetic(true);
         p.setPen(pen);
         p.setBrush(Qt::NoBrush);
@@ -6612,11 +6844,55 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
         ev->accept();
         return;
     }
-    if (ev->button() == Qt::LeftButton) {
-        auto layer = text_layer_at_view_pos(ev->pos());
-        if (layer) {
-            emit layer_clicked(layer->id);
-            begin_text_edit(layer);
+    if (ev->button() == Qt::LeftButton && title_) {
+        const QPointF canvas = view_to_canvas(ev->pos());
+        std::shared_ptr<Layer> hit_child;
+        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+            const auto &layer = *it;
+            if (!layer || layer->type == LayerType::Group || !layer->visible || layer->locked)
+                continue;
+            if (playhead_ < layer->in_time || playhead_ > layer->out_time)
+                continue;
+            const QRectF local_rect = layer_local_rect(*layer);
+            if (local_rect.isValid() && !local_rect.isEmpty() &&
+                local_rect.contains(canvas_to_layer(*layer, canvas))) {
+                hit_child = layer;
+                break;
+            }
+        }
+
+        if (hit_child && editor_outermost_group_ancestor(title_, *hit_child)) {
+            /* Double-click drills into grouped artwork. Expand the ancestor
+             * chain so the selected child is visible in Layers/timeline, then
+             * enter inline editing immediately when that child is text. */
+            bool hierarchy_changed = false;
+            std::string parent_id = hit_child->parent_id;
+            std::set<std::string> visited;
+            while (!parent_id.empty() && visited.insert(parent_id).second) {
+                auto parent = title_->find_layer(parent_id);
+                if (!parent || parent->type != LayerType::Group)
+                    break;
+                if (parent->group_collapsed) {
+                    parent->group_collapsed = false;
+                    hierarchy_changed = true;
+                }
+                parent_id = parent->parent_id;
+            }
+            if (hierarchy_changed)
+                emit layer_structure_changed();
+            emit layer_clicked(hit_child->id);
+            if (hierarchy_changed)
+                emit layer_geometry_changed();
+            if (hit_child->type == LayerType::Text)
+                begin_text_edit(hit_child);
+            ev->accept();
+            return;
+        }
+
+        auto text_layer = text_layer_at_view_pos(ev->pos());
+        if (text_layer) {
+            emit layer_clicked(text_layer->id);
+            begin_text_edit(text_layer);
             ev->accept();
             return;
         }
@@ -6627,6 +6903,22 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
 void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 {
     if (!title_) return;
+
+    if (ev->button() == Qt::LeftButton && !extension_canvas_handles_.isEmpty()) {
+        for (int i = extension_canvas_handles_.size() - 1; i >= 0; --i) {
+            const QJsonArray point = extension_canvas_handles_.at(i).toObject().value(QStringLiteral("value")).toArray();
+            if (point.size() < 2) continue;
+            const QPointF viewPoint = canvas_to_view(QPointF(point.at(0).toDouble() * title_->width,
+                                                             point.at(1).toDouble() * title_->height));
+            if (QLineF(viewPoint, ev->pos()).length() <= 14.0) {
+                active_extension_handle_ = i;
+                drag_mode_ = DragMode::ExtensionPoint;
+                setCursor(Qt::SizeAllCursor);
+                ev->accept();
+                return;
+            }
+        }
+    }
 
     if (!inline_text_layer_id_.empty() && !inline_text_suspended_for_gradient_) {
         commit_text_edit(true);
@@ -6897,16 +7189,24 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
             if (playhead_ < l->in_time || playhead_ > l->out_time) continue;
             QPointF local = canvas_to_layer(*l, canvas);
             if (layer_local_rect(*l).contains(local)) {
+                std::shared_ptr<Layer> selection_target = l;
+                if (l->type != LayerType::Group) {
+                    if (const Layer *group = editor_outermost_group_ancestor(title_, *l))
+                        selection_target = title_->find_layer(group->id);
+                }
+                if (!selection_target)
+                    continue;
+                const std::string target_id = selection_target->id;
                 std::vector<std::string> next_ids;
                 if (ev->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))
                     next_ids = selected_layer_ids_;
-                auto existing = std::find(next_ids.begin(), next_ids.end(), l->id);
+                auto existing = std::find(next_ids.begin(), next_ids.end(), target_id);
                 if (ev->modifiers() & Qt::ControlModifier) {
-                    if (existing == next_ids.end()) next_ids.push_back(l->id);
+                    if (existing == next_ids.end()) next_ids.push_back(target_id);
                     else next_ids.erase(existing);
                 } else if (existing == next_ids.end()) {
                     if (!(ev->modifiers() & Qt::ShiftModifier)) next_ids.clear();
-                    next_ids.push_back(l->id);
+                    next_ids.push_back(target_id);
                 }
                 emit layers_selected(next_ids);
                 selected_layer_ids_ = next_ids;
@@ -6956,12 +7256,19 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         if (!selected || selected->locked) continue;
         double lt = std::clamp(playhead_ - selected->in_time, 0.0,
                                std::max(0.0, selected->out_time - selected->in_time));
+        const QRectF selected_local_bounds = layer_local_rect(*selected);
+        const float selected_width = selected->type == LayerType::Group
+            ? static_cast<float>(selected_local_bounds.width())
+            : static_cast<float>(eval_box_width(*selected, lt));
+        const float selected_height = selected->type == LayerType::Group
+            ? static_cast<float>(selected_local_bounds.height())
+            : static_cast<float>(eval_box_height(*selected, lt));
         drag_layer_states_.push_back({selected->id,
                                       {},
                                       selected->position.evaluate(lt).x,
                                       selected->position.evaluate(lt).y,
-                                      (float)eval_box_width(*selected, lt),
-                                      (float)eval_box_height(*selected, lt),
+                                      selected_width,
+                                      selected_height,
                                       selected->scale.evaluate(lt).x,
                                       selected->scale.evaluate(lt).y,
                                       selected->rotation.evaluate(lt),
@@ -7017,10 +7324,18 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                            std::max(0.0, layer->out_time - layer->in_time));
     drag_start_x_ = layer->position.evaluate(lt).x;
     drag_start_y_ = layer->position.evaluate(lt).y;
-    drag_start_w_ = (float)eval_box_width(*layer, lt);
-    drag_start_h_ = (float)eval_box_height(*layer, lt);
-    drag_start_origin_x_ = layer->origin_x;
-    drag_start_origin_y_ = layer->origin_y;
+    if (layer->type == LayerType::Group) {
+        const QRectF group_rect = layer_local_rect(*layer);
+        drag_start_w_ = static_cast<float>(std::max(1.0, group_rect.width()));
+        drag_start_h_ = static_cast<float>(std::max(1.0, group_rect.height()));
+        drag_start_origin_x_ = static_cast<float>(-group_rect.left() / drag_start_w_);
+        drag_start_origin_y_ = static_cast<float>(-group_rect.top() / drag_start_h_);
+    } else {
+        drag_start_w_ = (float)eval_box_width(*layer, lt);
+        drag_start_h_ = (float)eval_box_height(*layer, lt);
+        drag_start_origin_x_ = layer->origin_x;
+        drag_start_origin_y_ = layer->origin_y;
+    }
     if (drag_mode_ == DragMode::GradientStart || drag_mode_ == DragMode::GradientEnd ||
         drag_mode_ == DragMode::GradientCenter || drag_mode_ == DragMode::GradientRadius ||
         drag_mode_ == DragMode::GradientFocal) {
@@ -7060,6 +7375,24 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
 void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
 {
     update_hover_layer(ev->pos());
+
+    if (drag_mode_ == DragMode::ExtensionPoint && active_extension_handle_ >= 0 &&
+        active_extension_handle_ < extension_canvas_handles_.size() &&
+        (ev->buttons() & Qt::LeftButton) && title_) {
+        const QPointF canvasPoint = view_to_canvas(ev->pos());
+        const double canvasWidth = std::max(1.0, static_cast<double>(title_->width));
+        const double canvasHeight = std::max(1.0, static_cast<double>(title_->height));
+        const QPointF normalized(std::clamp(canvasPoint.x() / canvasWidth, 0.0, 1.0),
+                                 std::clamp(canvasPoint.y() / canvasHeight, 0.0, 1.0));
+        QJsonObject handle = extension_canvas_handles_.at(active_extension_handle_).toObject();
+        handle.insert(QStringLiteral("value"), QJsonArray{normalized.x(), normalized.y()});
+        extension_canvas_handles_.replace(active_extension_handle_, handle);
+        emit extension_canvas_handle_moved(handle.value(QStringLiteral("path")).toString(), normalized, false);
+        invalidate_canvas_overlay_caches();
+        update();
+        ev->accept();
+        return;
+    }
 
     if (panning_ && (ev->buttons() & Qt::MiddleButton)) {
         pan_offset_ = pan_start_offset_ + (QPointF(ev->pos()) - pan_start_view_);
@@ -7535,6 +7868,22 @@ void CanvasPreview::keyReleaseEvent(QKeyEvent *ev)
 
 void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
 {
+    if (ev->button() == Qt::LeftButton && drag_mode_ == DragMode::ExtensionPoint) {
+        if (active_extension_handle_ >= 0 && active_extension_handle_ < extension_canvas_handles_.size()) {
+            const QJsonObject handle = extension_canvas_handles_.at(active_extension_handle_).toObject();
+            const QJsonArray value = handle.value(QStringLiteral("value")).toArray();
+            if (value.size() >= 2)
+                emit extension_canvas_handle_moved(handle.value(QStringLiteral("path")).toString(),
+                                                   QPointF(value.at(0).toDouble(), value.at(1).toDouble()), true);
+        }
+        active_extension_handle_ = -1;
+        drag_mode_ = DragMode::None;
+        unsetCursor();
+        invalidate_canvas_overlay_caches();
+        update();
+        ev->accept();
+        return;
+    }
     if (ev->button() == Qt::MiddleButton && panning_) {
         panning_ = false;
         unsetCursor();
@@ -7793,25 +8142,247 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
 
     bool x_axis = true;
     const int guide_index = guide_hit_test(ev->pos(), x_axis, true);
-    if (guide_index < 0) {
+    if (guide_index >= 0) {
+        QMenu guide_menu(this);
+        QAction *delete_guide = guide_menu.addAction(bgl_tr("OBSTitles.DeleteGuide"));
+        delete_guide->setEnabled(!guides_locked_);
+        QAction *chosen = guide_menu.exec(ev->globalPos());
+        if (chosen == delete_guide && !guides_locked_) {
+            auto &guides = x_axis ? vertical_guides_ : horizontal_guides_;
+            if ((size_t)guide_index < guides.size()) {
+                guides.erase(guides.begin() + guide_index);
+                clear_snap_feedback();
+                save_ruler_guide_settings();
+                invalidate_canvas_overlay_caches();
+                update();
+            }
+        }
+        ev->accept();
+        return;
+    }
+
+    if (!title_) {
         QWidget::contextMenuEvent(ev);
         return;
     }
 
-    QMenu menu(this);
-    QAction *delete_guide = menu.addAction(bgl_tr("OBSTitles.DeleteGuide"));
-    delete_guide->setEnabled(!guides_locked_);
-    QAction *chosen = menu.exec(ev->globalPos());
-    if (chosen == delete_guide && !guides_locked_) {
-        auto &guides = x_axis ? vertical_guides_ : horizontal_guides_;
-        if ((size_t)guide_index < guides.size()) {
-            guides.erase(guides.begin() + guide_index);
-            clear_snap_feedback();
-            save_ruler_guide_settings();
+    const QPointF canvas_point = view_to_canvas(ev->pos());
+    bool clicked_current_selection = false;
+    for (const auto &selected : selected_layers()) {
+        if (!selected)
+            continue;
+        const QRectF local_rect = layer_local_rect(*selected);
+        if (local_rect.isValid() && !local_rect.isEmpty() &&
+            local_rect.contains(canvas_to_layer(*selected, canvas_point))) {
+            clicked_current_selection = true;
+            break;
+        }
+    }
+
+    if (!clicked_current_selection) {
+        std::shared_ptr<Layer> hit;
+        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+            const auto &candidate = *it;
+            if (!candidate || !candidate->visible ||
+                playhead_ < candidate->in_time || playhead_ > candidate->out_time)
+                continue;
+            const QRectF local_rect = layer_local_rect(*candidate);
+            if (!local_rect.isValid() || local_rect.isEmpty() ||
+                !local_rect.contains(canvas_to_layer(*candidate, canvas_point)))
+                continue;
+            hit = candidate;
+            if (candidate->type != LayerType::Group) {
+                if (const Layer *group = editor_outermost_group_ancestor(
+                        title_, *candidate))
+                    hit = title_->find_layer(group->id);
+            }
+            break;
+        }
+        if (hit) {
+            selected_layer_ids_ = {hit->id};
+            sel_layer_id_ = hit->id;
+            emit layers_selected(selected_layer_ids_);
             invalidate_canvas_overlay_caches();
             update();
         }
     }
+
+    std::vector<std::string> selection = selected_layer_ids_;
+    if (selection.empty() && !sel_layer_id_.empty())
+        selection.push_back(sel_layer_id_);
+    const bool has_selection = !selection.empty();
+
+    auto selected_layer_is_group = [this](const std::string &layer_id) {
+        auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+        return layer && layer->type == LayerType::Group;
+    };
+    auto parent_is_group = [this](const std::string &layer_id) {
+        auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+        auto parent = layer && !layer->parent_id.empty()
+            ? title_->find_layer(layer->parent_id) : nullptr;
+        return parent && parent->type == LayerType::Group;
+    };
+    auto would_cycle = [this](const std::string &child_id,
+                              const std::string &group_id) {
+        if (child_id.empty() || group_id.empty() || child_id == group_id)
+            return true;
+        const auto group = title_ ? title_->find_layer(group_id) : nullptr;
+        return group && editor_layer_has_ancestor(title_, *group, child_id);
+    };
+
+    bool all_locked = has_selection;
+    bool all_hidden = has_selection;
+    for (const auto &id : selection) {
+        const auto layer = title_->find_layer(id);
+        if (!layer)
+            continue;
+        all_locked = all_locked && layer->locked;
+        all_hidden = all_hidden && !layer->visible;
+    }
+
+    QMenu menu(this);
+    const QPalette pal = palette();
+    const QString menu_style = QStringLiteral(
+        "QMenu{color:%1;background:%2;border:1px solid %3;}"
+        "QMenu::item{padding:5px 22px;}"
+        "QMenu::item:selected{background:%4;color:%5;}"
+        "QMenu::item:disabled{color:%6;}")
+        .arg(pal.color(QPalette::Text).name(QColor::HexRgb),
+             pal.color(QPalette::Base).name(QColor::HexRgb),
+             pal.color(QPalette::Mid).name(QColor::HexRgb),
+             pal.color(QPalette::Highlight).name(QColor::HexRgb),
+             pal.color(QPalette::HighlightedText).name(QColor::HexRgb),
+             pal.color(QPalette::Disabled, QPalette::Text).name(QColor::HexRgb));
+    menu.setStyleSheet(menu_style);
+
+    QAction *show_hide = menu.addAction(all_hidden
+        ? bgl_tr("OBSTitles.ShowLayers")
+        : bgl_tr("OBSTitles.HideLayers"));
+    show_hide->setEnabled(has_selection);
+    QAction *lock_unlock = menu.addAction(all_locked
+        ? bgl_tr("OBSTitles.UnlockLayers")
+        : bgl_tr("OBSTitles.LockLayers"));
+    lock_unlock->setEnabled(has_selection);
+
+    menu.addSeparator();
+    QAction *duplicate = menu.addAction(bgl_tr("OBSTitles.CloneLayer"));
+    duplicate->setEnabled(has_selection);
+    QAction *cut = menu.addAction(bgl_tr("OBSTitles.CutLayer"));
+    cut->setEnabled(has_selection);
+    QAction *copy = menu.addAction(bgl_tr("OBSTitles.CopyLayer"));
+    copy->setEnabled(has_selection);
+    QAction *paste = menu.addAction(bgl_tr("OBSTitles.PasteLayer"));
+    QAction *del = menu.addAction(bgl_tr("OBSTitles.DeleteLayer"));
+    del->setEnabled(has_selection);
+
+    menu.addSeparator();
+    QAction *group_layers = menu.addAction(bgl_tr("OBSTitles.GroupLayers"));
+    group_layers->setEnabled(selection.size() >= 2);
+    QAction *ungroup_layers = menu.addAction(bgl_tr("OBSTitles.UngroupLayers"));
+    ungroup_layers->setEnabled(std::any_of(selection.begin(), selection.end(),
+                                           selected_layer_is_group));
+
+    QMenu *add_to_group = menu.addMenu(bgl_tr("OBSTitles.AddToGroup"));
+    add_to_group->setStyleSheet(menu_style);
+    std::map<QAction *, std::string> group_targets;
+    bool has_available_group = false;
+    for (const auto &candidate : title_->layers) {
+        if (!candidate || candidate->type != LayerType::Group || candidate->locked)
+            continue;
+        bool valid = false;
+        for (const auto &selected_id : selection) {
+            const auto selected_layer = title_->find_layer(selected_id);
+            if (!selected_layer || selected_layer->locked ||
+                selected_id == candidate->id ||
+                selected_layer->parent_id == candidate->id ||
+                would_cycle(selected_id, candidate->id))
+                continue;
+            valid = true;
+            break;
+        }
+        if (!valid)
+            continue;
+        QAction *target = add_to_group->addAction(
+            QString::fromStdString(candidate->name));
+        group_targets[target] = candidate->id;
+        has_available_group = true;
+    }
+    if (!has_available_group) {
+        QAction *none = add_to_group->addAction(
+            bgl_tr("OBSTitles.NoAvailableGroups"));
+        none->setEnabled(false);
+    }
+    QAction *remove_from_group = menu.addAction(
+        bgl_tr("OBSTitles.RemoveFromGroup"));
+    remove_from_group->setEnabled(std::any_of(selection.begin(), selection.end(),
+                                               parent_is_group));
+
+    menu.addSeparator();
+    QMenu *transform = menu.addMenu(bgl_tr("OBSTitles.Transform"));
+    transform->setStyleSheet(menu_style);
+    QAction *flip_horizontal = transform->addAction(
+        bgl_tr("OBSTitles.FlipHorizontal"));
+    QAction *flip_vertical = transform->addAction(
+        bgl_tr("OBSTitles.FlipVertical"));
+    transform->addSeparator();
+    QAction *rotate_left = transform->addAction(
+        bgl_tr("OBSTitles.RotateLeft90"));
+    QAction *rotate_right = transform->addAction(
+        bgl_tr("OBSTitles.RotateRight90"));
+    transform->setEnabled(has_selection);
+
+    QMenu *arrange = menu.addMenu(bgl_tr("OBSTitles.LayerOrder"));
+    arrange->setStyleSheet(menu_style);
+    QAction *bring_front = arrange->addAction(
+        bgl_tr("OBSTitles.BringToFront"));
+    QAction *bring_forward = arrange->addAction(
+        bgl_tr("OBSTitles.BringForward"));
+    QAction *send_backward = arrange->addAction(
+        bgl_tr("OBSTitles.SendBackward"));
+    QAction *send_back = arrange->addAction(
+        bgl_tr("OBSTitles.SendToBack"));
+    arrange->setEnabled(has_selection);
+
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (chosen == show_hide)
+        emit set_layers_visible_requested(all_hidden);
+    else if (chosen == lock_unlock)
+        emit set_layers_locked_requested(!all_locked);
+    else if (chosen == duplicate)
+        emit duplicate_layers_requested();
+    else if (chosen == cut)
+        emit cut_layers_requested();
+    else if (chosen == copy)
+        emit copy_layers_requested();
+    else if (chosen == paste)
+        emit paste_layers_requested();
+    else if (chosen == del)
+        emit delete_layers_requested();
+    else if (chosen == group_layers)
+        emit group_layers_requested();
+    else if (chosen == ungroup_layers)
+        emit ungroup_layers_requested();
+    else if (chosen == remove_from_group)
+        emit remove_layers_from_group_requested();
+    else if (chosen && group_targets.find(chosen) != group_targets.end())
+        emit add_layers_to_group_requested(group_targets.at(chosen));
+    else if (chosen == flip_horizontal)
+        emit flip_layers_requested(true);
+    else if (chosen == flip_vertical)
+        emit flip_layers_requested(false);
+    else if (chosen == rotate_left)
+        emit rotate_layers_requested(-90.0);
+    else if (chosen == rotate_right)
+        emit rotate_layers_requested(90.0);
+    else if (chosen == bring_front)
+        emit layer_order_requested(2);
+    else if (chosen == bring_forward)
+        emit layer_order_requested(1);
+    else if (chosen == send_backward)
+        emit layer_order_requested(-1);
+    else if (chosen == send_back)
+        emit layer_order_requested(-2);
+
     ev->accept();
 }
 

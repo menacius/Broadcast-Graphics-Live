@@ -18,6 +18,7 @@ struct CachedIntrinsicSize {
     QSize size;
     qint64 last_modified_msecs = 0;
     qint64 file_size = -1;
+    uint64_t last_used = 0;
 };
 
 bool is_svg_path(const QString &path)
@@ -136,6 +137,8 @@ QSize image_intrinsic_size_for_path(const std::string &path_value)
 
     static std::mutex cache_mutex;
     static std::unordered_map<std::string, CachedIntrinsicSize> cache;
+    static uint64_t cache_tick = 0;
+    constexpr std::size_t kMaxIntrinsicSizeCacheEntries = 256;
 
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
@@ -143,6 +146,7 @@ QSize image_intrinsic_size_for_path(const std::string &path_value)
         if (it != cache.end() &&
             it->second.last_modified_msecs == modified &&
             it->second.file_size == bytes) {
+            it->second.last_used = ++cache_tick;
             return it->second.size;
         }
     }
@@ -150,9 +154,20 @@ QSize image_intrinsic_size_for_path(const std::string &path_value)
     const QSize size = read_intrinsic_size(path);
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        if (cache.size() > 256)
-            cache.clear();
-        cache[key] = CachedIntrinsicSize{size, modified, bytes};
+        cache[key] = CachedIntrinsicSize{size, modified, bytes, ++cache_tick};
+        while (cache.size() > kMaxIntrinsicSizeCacheEntries) {
+            auto oldest = cache.end();
+            for (auto it = cache.begin(); it != cache.end(); ++it) {
+                if (it->first == key)
+                    continue;
+                if (oldest == cache.end() ||
+                    it->second.last_used < oldest->second.last_used)
+                    oldest = it;
+            }
+            if (oldest == cache.end())
+                break;
+            cache.erase(oldest);
+        }
     }
     return size;
 }

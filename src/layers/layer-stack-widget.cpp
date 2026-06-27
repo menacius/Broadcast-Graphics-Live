@@ -1,5 +1,124 @@
 #include "title-editor-internal.h"
 
+#include <functional>
+#include <map>
+#include <unordered_map>
+
+
+namespace {
+
+using LayerPtr = std::shared_ptr<Layer>;
+
+static bool valid_group_parent(const std::shared_ptr<Title> &title,
+                               const std::string &parent_id)
+{
+    if (!title || parent_id.empty()) return false;
+    const auto parent = title->find_layer(parent_id);
+    return parent && parent->type == LayerType::Group;
+}
+
+static std::string hierarchy_scope_id(const std::shared_ptr<Title> &title,
+                                      const Layer &layer)
+{
+    return valid_group_parent(title, layer.parent_id) ? layer.parent_id
+                                                       : std::string();
+}
+
+static void reorder_visible_siblings(std::vector<LayerPtr> &siblings,
+                                     const std::vector<std::string> &visual_top_to_bottom)
+{
+    if (siblings.empty() || visual_top_to_bottom.empty()) return;
+    std::map<std::string, LayerPtr> by_id;
+    for (const auto &layer : siblings)
+        if (layer) by_id[layer->id] = layer;
+
+    std::vector<LayerPtr> desired;
+    desired.reserve(visual_top_to_bottom.size());
+    for (auto it = visual_top_to_bottom.rbegin();
+         it != visual_top_to_bottom.rend(); ++it) {
+        const auto found = by_id.find(*it);
+        if (found != by_id.end()) desired.push_back(found->second);
+    }
+    if (desired.size() != siblings.size())
+        return; // Collapsed/legacy scopes are intentionally left untouched.
+    siblings = std::move(desired);
+}
+
+static std::vector<LayerPtr> canonical_group_model_order(
+    const std::shared_ptr<Title> &title,
+    const std::map<std::string, std::vector<std::string>> &visual_orders)
+{
+    std::vector<LayerPtr> result;
+    if (!title) return result;
+
+    std::map<std::string, std::vector<LayerPtr>> children;
+    std::vector<LayerPtr> roots;
+    for (const auto &layer : title->layers) {
+        if (!layer) continue;
+        const std::string scope = hierarchy_scope_id(title, *layer);
+        if (scope.empty()) roots.push_back(layer);
+        else children[scope].push_back(layer);
+    }
+
+    auto root_order = visual_orders.find(std::string());
+    if (root_order != visual_orders.end())
+        reorder_visible_siblings(roots, root_order->second);
+    for (auto &[parent_id, siblings] : children) {
+        const auto found = visual_orders.find(parent_id);
+        if (found != visual_orders.end())
+            reorder_visible_siblings(siblings, found->second);
+    }
+
+    std::set<std::string> emitted;
+    std::function<void(const LayerPtr &)> append_subtree;
+    append_subtree = [&](const LayerPtr &layer) {
+        if (!layer || !emitted.insert(layer->id).second) return;
+        const auto found = children.find(layer->id);
+        if (found != children.end()) {
+            for (const auto &child : found->second)
+                append_subtree(child);
+        }
+        result.push_back(layer);
+    };
+    for (const auto &root : roots)
+        append_subtree(root);
+    for (const auto &layer : title->layers)
+        append_subtree(layer);
+    return result;
+}
+
+static bool move_layer_within_hierarchy(const std::shared_ptr<Title> &title,
+                                        const std::string &layer_id,
+                                        int visual_direction)
+{
+    if (!title || layer_id.empty() || visual_direction == 0) return false;
+    const auto layer = title->find_layer(layer_id);
+    if (!layer) return false;
+
+    std::map<std::string, std::vector<std::string>> visual_orders;
+    for (const auto &row : visible_layer_hierarchy_rows(title)) {
+        if (!row.layer) continue;
+        visual_orders[hierarchy_scope_id(title, *row.layer)].push_back(row.layer->id);
+    }
+    auto &siblings = visual_orders[hierarchy_scope_id(title, *layer)];
+    const auto found = std::find(siblings.begin(), siblings.end(), layer_id);
+    if (found == siblings.end()) return false;
+    const int index = static_cast<int>(std::distance(siblings.begin(), found));
+    const int destination = index + (visual_direction > 0 ? -1 : 1);
+    if (destination < 0 || destination >= static_cast<int>(siblings.size()))
+        return false;
+    std::swap(siblings[static_cast<size_t>(index)],
+              siblings[static_cast<size_t>(destination)]);
+
+    auto reordered = canonical_group_model_order(title, visual_orders);
+    if (reordered.size() != title->layers.size() || reordered == title->layers)
+        return false;
+    title->layers = std::move(reordered);
+    return true;
+}
+
+} // namespace
+
 LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
 {
     const QPalette pal = qApp->palette();
@@ -210,17 +329,19 @@ void LayerStack::sync_order_from_list()
 {
     if (!title_) return;
 
-    std::vector<std::shared_ptr<Layer>> reordered;
-    reordered.reserve(title_->layers.size());
-    for (int i = list_->count() - 1; i >= 0; --i) {
+    std::map<std::string, std::vector<std::string>> visual_orders;
+    for (int i = 0; i < list_->count(); ++i) {
         auto *item = list_->item(i);
-        if (item->data(Qt::UserRole + 1).toString() == "property")
+        if (!item || item->data(Qt::UserRole + 1).toString() != "layer")
             continue;
-        std::string id = item->data(Qt::UserRole).toString().toStdString();
-        if (auto layer = title_->find_layer(id))
-            reordered.push_back(layer);
+        const std::string id = item->data(Qt::UserRole).toString().toStdString();
+        const auto layer = title_->find_layer(id);
+        if (!layer) continue;
+        visual_orders[hierarchy_scope_id(title_, *layer)].push_back(id);
     }
-    if (reordered.size() == title_->layers.size()) {
+
+    auto reordered = canonical_group_model_order(title_, visual_orders);
+    if (reordered.size() == title_->layers.size() && reordered != title_->layers) {
         title_->layers = std::move(reordered);
         emit layer_order_changed();
     }
@@ -272,9 +393,11 @@ void LayerStack::populate()
             track_matte_source_ids.insert(candidate->mask_source_id);
     }
 
-    int row = 0;
-    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it, ++row) {
-        auto &l = *it;
+    const auto display_layers = visible_layer_hierarchy_rows(title_);
+
+    for (int row = 0; row < static_cast<int>(display_layers.size()); ++row) {
+        auto l = display_layers[static_cast<size_t>(row)].layer;
+        const int hierarchy_depth = display_layers[static_cast<size_t>(row)].depth;
         auto *item = new QListWidgetItem();
         item->setData(Qt::UserRole, QString::fromStdString(l->id));
         item->setData(Qt::UserRole + 1, "layer");
@@ -287,7 +410,7 @@ void LayerStack::populate()
         row_widget->setStyleSheet(QStringLiteral("background:transparent;color:%1;")
                                       .arg(text.name(QColor::HexRgb)));
         auto *hl = new QHBoxLayout(row_widget);
-        hl->setContentsMargins(4, 0, 4, 0);
+        hl->setContentsMargins(4 + hierarchy_depth * 18, 0, 4, 0);
         hl->setSpacing(4);
         const bool is_mask_object = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
 
@@ -326,17 +449,25 @@ void LayerStack::populate()
         });
 
         QToolButton *expand = new QToolButton(row_widget);
+        const bool is_group = l->type == LayerType::Group;
+        const bool expanded = is_group ? !l->group_collapsed : l->properties_expanded;
         expand->setCheckable(true);
-        expand->setChecked(l->properties_expanded);
-        expand->setIcon(obs_icon(l->properties_expanded ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
-        expand->setToolTip(bgl_tr("OBSTitles.ShowKeyframedPropertiesTooltip"));
+        expand->setChecked(expanded);
+        expand->setIcon(obs_icon(expanded ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
+        expand->setToolTip(is_group
+            ? (expanded ? bgl_tr("OBSTitles.CollapseGroup") : bgl_tr("OBSTitles.ExpandGroup"))
+            : bgl_tr("OBSTitles.ShowKeyframedPropertiesTooltip"));
         expand->setFixedSize(16, 20);
         expand->setIconSize(QSize(12, 12));
         expand->setAutoRaise(true);
         expand->setStyleSheet(button_style);
-        connect(expand, &QToolButton::toggled, this, [this, expand, id = l->id](bool checked) {
+        connect(expand, &QToolButton::toggled, this,
+                [this, expand, id = l->id, is_group](bool checked) {
             expand->setIcon(obs_icon(checked ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
-            emit layer_expand_changed(id, checked);
+            if (is_group)
+                emit group_collapsed_changed(id, !checked);
+            else
+                emit layer_expand_changed(id, checked);
         });
         hl->addWidget(expand);
 
@@ -424,6 +555,7 @@ void LayerStack::populate()
         mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeColor"), (int)EffectBlendMode::Color);
         int mode_idx = mode->findData((int)l->blend_mode);
         mode->setCurrentIndex(mode_idx >= 0 ? mode_idx : 0);
+        mode->setEnabled(true);
         connect(mode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this, id = l->id, mode](int index) {
                     emit layer_blend_mode_changed(id, (EffectBlendMode)mode->itemData(index).toInt());
@@ -462,7 +594,7 @@ void LayerStack::populate()
         mask->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
         mask->addItem(obs_icon("timeline-mask.svg"), bgl_tr("OBSTitles.NoMask"), QVariant(QStringLiteral("|0")));
         for (const auto &candidate : title_->layers) {
-            if (candidate->id == l->id || candidate->type == LayerType::Adjustment) continue;
+            if (candidate->id == l->id) continue;
             mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " α"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Alpha)));
             mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -α"),
@@ -472,7 +604,10 @@ void LayerStack::populate()
             mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -Luma"),
                           QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedLuma)));
         }
-        mask->setEnabled(l->type != LayerType::Adjustment);
+        /* Alpha/luma mattes are valid for every layer type, including
+         * adjustment and group containers. The renderer resolves the selected
+         * source through the same GPU mask graph used by artwork layers. */
+        mask->setEnabled(true);
         QString mask_value = QString::fromStdString(l->mask_source_id + "|" + std::to_string((int)l->mask_mode));
         int mask_idx = mask->findData(mask_value);
         mask->setCurrentIndex(mask_idx >= 0 ? mask_idx : 0);
@@ -490,7 +625,7 @@ void LayerStack::populate()
             prev_id == item->data(Qt::UserRole).toString())
             list_->setCurrentItem(item);
 
-        if (!l->properties_expanded) continue;
+        if (l->type == LayerType::Group || !l->properties_expanded) continue;
 
         std::set<std::string> seen;
         for (auto prop : timeline_properties(*l)) {
@@ -636,12 +771,20 @@ void LayerStack::on_selection_changed()
         auto selected = selected_ids();
         if (selected.size() > 1)
             emit layers_selected(selected);
-        auto it = std::find_if(title_->layers.begin(), title_->layers.end(),
-                               [&](const auto &layer) { return layer && layer->id == id; });
-        if (it != title_->layers.end()) {
-            int idx = (int)std::distance(title_->layers.begin(), it);
-            can_move_down = idx > 0;
-            can_move_up = idx < (int)title_->layers.size() - 1;
+        if (auto layer = title_->find_layer(id)) {
+            std::vector<std::shared_ptr<Layer>> siblings;
+            const std::string scope = hierarchy_scope_id(title_, *layer);
+            for (const auto &candidate : title_->layers) {
+                if (candidate && hierarchy_scope_id(title_, *candidate) == scope)
+                    siblings.push_back(candidate);
+            }
+            const auto it = std::find_if(siblings.begin(), siblings.end(),
+                [&](const auto &candidate) { return candidate && candidate->id == id; });
+            if (it != siblings.end()) {
+                const int idx = static_cast<int>(std::distance(siblings.begin(), it));
+                can_move_down = idx > 0;
+                can_move_up = idx < static_cast<int>(siblings.size()) - 1;
+            }
         }
         if (selected.size() <= 1)
             emit layer_selected(id);
@@ -667,9 +810,7 @@ void LayerStack::on_move_up()
 {
     std::string id = selected_id();
     if (!title_ || id.empty()) return;
-    auto layer = title_->find_layer(id);
-    if (!layer) return;
-    title_->move_layer(id, +1);
+    if (!move_layer_within_hierarchy(title_, id, +1)) return;
     emit layer_order_changed();
     set_selected_layer(id);
 }
@@ -678,9 +819,7 @@ void LayerStack::on_move_down()
 {
     std::string id = selected_id();
     if (!title_ || id.empty()) return;
-    auto layer = title_->find_layer(id);
-    if (!layer) return;
-    title_->move_layer(id, -1);
+    if (!move_layer_within_hierarchy(title_, id, -1)) return;
     emit layer_order_changed();
     set_selected_layer(id);
 }
@@ -725,8 +864,71 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
     if (item && item->data(Qt::UserRole + 1).toString() == "layer" && !item->isSelected())
         list_->setCurrentItem(item);
 
+    const std::vector<std::string> selection = selected_ids();
+    auto selected_layer_is_group = [this](const std::string &layer_id) {
+        auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+        return layer && layer->type == LayerType::Group;
+    };
+    auto parent_is_group = [this](const std::string &layer_id) {
+        auto layer = title_ ? title_->find_layer(layer_id) : nullptr;
+        auto parent = layer && !layer->parent_id.empty() ? title_->find_layer(layer->parent_id) : nullptr;
+        return parent && parent->type == LayerType::Group;
+    };
+    auto would_cycle = [this](const std::string &child_id, const std::string &group_id) {
+        if (child_id.empty() || group_id.empty() || child_id == group_id)
+            return true;
+        std::string current = group_id;
+        int guard = 0;
+        while (!current.empty() && guard++ < 64) {
+            if (current == child_id)
+                return true;
+            auto layer = title_->find_layer(current);
+            if (!layer)
+                break;
+            current = layer->parent_id;
+        }
+        return false;
+    };
+
     QMenu menu(this);
     style_menu(&menu);
+    QAction *group_layers = menu.addAction(bgl_tr("OBSTitles.GroupLayers"));
+    group_layers->setEnabled(selection.size() >= 2);
+    QAction *ungroup_layers = menu.addAction(bgl_tr("OBSTitles.UngroupLayers"));
+    ungroup_layers->setEnabled(std::any_of(selection.begin(), selection.end(), selected_layer_is_group));
+
+    QMenu *add_to_group = menu.addMenu(bgl_tr("OBSTitles.AddToGroup"));
+    style_menu(add_to_group);
+    std::map<QAction *, std::string> group_targets;
+    bool has_available_group = false;
+    for (const auto &candidate : title_->layers) {
+        if (!candidate || candidate->type != LayerType::Group || candidate->locked)
+            continue;
+        bool valid = false;
+        for (const auto &selected_id : selection) {
+            const auto selected_layer = title_->find_layer(selected_id);
+            if (!selected_layer || selected_layer->locked ||
+                selected_id == candidate->id ||
+                selected_layer->parent_id == candidate->id ||
+                would_cycle(selected_id, candidate->id))
+                continue;
+            valid = true;
+            break;
+        }
+        if (!valid)
+            continue;
+        QAction *target = add_to_group->addAction(QString::fromStdString(candidate->name));
+        group_targets[target] = candidate->id;
+        has_available_group = true;
+    }
+    if (!has_available_group) {
+        QAction *none = add_to_group->addAction(bgl_tr("OBSTitles.NoAvailableGroups"));
+        none->setEnabled(false);
+    }
+    QAction *remove_from_group = menu.addAction(bgl_tr("OBSTitles.RemoveFromGroup"));
+    remove_from_group->setEnabled(std::any_of(selection.begin(), selection.end(), parent_is_group));
+
+    menu.addSeparator();
     QAction *clone = menu.addAction(bgl_tr("OBSTitles.CloneLayer"));
     QAction *copy = menu.addAction(bgl_tr("OBSTitles.CopyLayer"));
     QAction *paste = menu.addAction(bgl_tr("OBSTitles.PasteLayer"));
@@ -735,7 +937,12 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
     QAction *del = menu.addAction(bgl_tr("OBSTitles.DeleteLayer"));
 
     QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
-    if (chosen == clone) emit clone_layer_requested(id);
+    if (chosen == group_layers) emit group_layers_requested();
+    else if (chosen == ungroup_layers) emit ungroup_layers_requested();
+    else if (chosen == remove_from_group) emit remove_from_group_requested();
+    else if (chosen && group_targets.find(chosen) != group_targets.end())
+        emit add_to_group_requested(group_targets.at(chosen));
+    else if (chosen == clone) emit clone_layer_requested(id);
     else if (chosen == copy) emit copy_layer_requested(id);
     else if (chosen == paste) emit paste_layer_requested(id);
     else if (chosen == del) emit delete_layer_requested(id);

@@ -65,6 +65,11 @@ signals:
     void layer_visibility_changed(const std::string &layer_id, bool v);
     void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_expand_changed(const std::string &layer_id, bool expanded);
+    void group_collapsed_changed(const std::string &layer_id, bool collapsed);
+    void group_layers_requested();
+    void ungroup_layers_requested();
+    void add_to_group_requested(const std::string &group_id);
+    void remove_from_group_requested();
     void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
     void layer_mask_changed(const std::string &layer_id, const std::string &mask_source_id, MaskMode mask_mode);
     void layer_blend_mode_changed(const std::string &layer_id, EffectBlendMode blend_mode);

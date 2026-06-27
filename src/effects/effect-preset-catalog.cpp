@@ -1,4 +1,5 @@
 #include "effect-preset-catalog.h"
+#include "extensions/effect-extension-catalog.h"
 
 #include <obs-module.h>
 #include <util/bmem.h>
@@ -302,6 +303,9 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     }
 
     effect.enabled_prop.static_value = effect.enabled ? 1.0 : 0.0;
+    effect.brightness_prop.static_value = effect.brightness;
+    effect.contrast_prop.static_value = effect.contrast;
+    effect.saturation_prop.static_value = effect.saturation;
     effect.opacity_prop.static_value = effect.effect_opacity;
     effect.size_prop.static_value = effect.effect_size;
     effect.distance_prop.static_value = effect.effect_distance;
@@ -327,6 +331,25 @@ void apply_parameter_overrides(LayerEffect &effect, const QJsonObject &p)
     effect.center_y_prop.static_value = effect.effect_center_y;
     effect.complexity_prop.static_value = effect.effect_complexity;
     effect.evolution_prop.static_value = effect.effect_evolution;
+    effect.gradient_start_pos_prop.static_value = effect.effect_gradient_start_pos;
+    effect.gradient_end_pos_prop.static_value = effect.effect_gradient_end_pos;
+    effect.gradient_start_opacity_prop.static_value = effect.effect_gradient_start_opacity;
+    effect.gradient_end_opacity_prop.static_value = effect.effect_gradient_end_opacity;
+    effect.gradient_angle_prop.static_value = effect.effect_gradient_angle;
+    effect.gradient_center_x_prop.static_value = effect.effect_gradient_center_x;
+    effect.gradient_center_y_prop.static_value = effect.effect_gradient_center_y;
+    effect.gradient_scale_prop.static_value = effect.effect_gradient_scale;
+    effect.gradient_focal_x_prop.static_value = effect.effect_gradient_focal_x;
+    effect.gradient_focal_y_prop.static_value = effect.effect_gradient_focal_y;
+    effect.gradient_opacity_prop.static_value = effect.effect_gradient_opacity;
+    effect.gradient_start_color_a.static_value = (effect.effect_gradient_start_color >> 24) & 0xFF;
+    effect.gradient_start_color_r.static_value = (effect.effect_gradient_start_color >> 16) & 0xFF;
+    effect.gradient_start_color_g.static_value = (effect.effect_gradient_start_color >> 8) & 0xFF;
+    effect.gradient_start_color_b.static_value = effect.effect_gradient_start_color & 0xFF;
+    effect.gradient_end_color_a.static_value = (effect.effect_gradient_end_color >> 24) & 0xFF;
+    effect.gradient_end_color_r.static_value = (effect.effect_gradient_end_color >> 16) & 0xFF;
+    effect.gradient_end_color_g.static_value = (effect.effect_gradient_end_color >> 8) & 0xFF;
+    effect.gradient_end_color_b.static_value = effect.effect_gradient_end_color & 0xFF;
     set_color_channels(effect, effect.effect_color);
     set_stroke_color_channels(effect, effect.effect_stroke_color);
     set_secondary_color_channels(effect, effect.effect_secondary_color);
@@ -338,6 +361,7 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
 {
     LayerEffect effect;
     effect.type = type;
+    effect.extension_id = BglEffectExtensionCatalog::builtInId(type).toStdString();
     effect.enabled = true;
     effect.enabled_prop.static_value = 1.0;
 

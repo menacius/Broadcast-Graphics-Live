@@ -26,6 +26,7 @@ void release_title_gpu_render_resources();
  * a texture from the previous generation in the meantime. */
 void title_source_invalidate_all_presentations();
 void title_source_begin_scene_collection_transition();
+void title_source_begin_shutdown();
 void title_source_end_scene_collection_transition();
 
 struct TitleGpuRenderSession;
@@ -67,6 +68,21 @@ bool title_gpu_render_session_submit_cached_prefix(
     double time, std::size_t first_dynamic_layer, uint64_t model_revision);
 bool title_gpu_render_session_draw(TitleGpuRenderSession *session,
                                    uint32_t output_width, uint32_t output_height);
+/* Destination-aware presentation used by AE-style layer modes. The canvas
+ * variant samples a rectangle from an already available background texture;
+ * the OBS variant snapshots the current scene render target before the source
+ * is drawn. Both execute the layer stack against that real destination. */
+bool title_gpu_render_session_draw_over_background_rect(
+    TitleGpuRenderSession *session, gs_texture_t *background,
+    uint32_t background_width, uint32_t background_height,
+    float background_x, float background_y, float background_width_px,
+    float background_height_px, uint32_t output_width,
+    uint32_t output_height,
+    bool isolate_editor_background_from_effects = false);
+bool title_gpu_render_session_draw_over_current_target(
+    TitleGpuRenderSession *session, uint32_t output_width,
+    uint32_t output_height);
+bool title_requires_destination_compositing(const Title &title);
 std::string title_gpu_render_session_last_error(TitleGpuRenderSession *session);
 QImage title_gpu_render_session_readback(TitleGpuRenderSession *session);
 
@@ -123,5 +139,6 @@ QImage render_title_over_cached_frame(const Title &title, double t,
 /* Source settings keys */
 #define PROP_TITLE_ID      "title_id"
 #define PROP_AUTO_ADVANCE  "auto_advance"
+#define PROP_CUE_FIRST_ROW_WHEN_ACTIVE "cue_first_row_when_active"
 #define PROP_SCENE_MASKS_GROUP "scene_masks"
 #define PROP_SCENE_MASK_PREFIX "scene_mask_"

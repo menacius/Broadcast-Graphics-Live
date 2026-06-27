@@ -1358,11 +1358,14 @@ QString CacheManager::contentHash(const Title &title) const
         for (const auto &stop : stops) { add((quint32)stop.color); add(stop.position); add(stop.opacity); }
     };
     auto add_effect = [&](const LayerEffect &e) {
+        add(QString::fromStdString(e.extension_id));
+        add(QString::fromStdString(e.extension_parameters_json));
+        add(QString::fromStdString(e.extension_keyframes_json));
         add((int)e.type); add(e.enabled); add(e.brightness); add(e.contrast); add(e.saturation);
         add((quint32)e.tint_color); add(e.tint_amount); add((quint32)e.effect_color);
         add(e.effect_opacity); add(e.effect_size); add(e.effect_distance); add(e.effect_angle);
         add(e.effect_spread); add(e.effect_falloff); add(e.effect_blur_type); add(e.effect_samples);
-        add(e.effect_centered); add((int)e.blend_mode);
+        add(e.effect_centered); add(e.effect_outside_hard_alpha); add(e.effect_outside_hard_alpha_invert); add(e.affect_layers_behind); add(e.affect_layers_behind_invert); add((int)e.blend_mode);
         add(e.effect_profile); add(e.effect_animated); add(e.effect_monochrome);
         add(e.effect_invert); add(e.effect_seed); add(e.effect_amount);
         add(e.effect_scale); add(e.effect_softness); add(e.effect_roundness);
@@ -1380,8 +1383,10 @@ QString CacheManager::contentHash(const Title &title) const
         add(e.effect_gradient_start_opacity); add(e.effect_gradient_end_opacity); add(e.effect_gradient_opacity);
         add(e.effect_gradient_angle); add(e.effect_gradient_center_x); add(e.effect_gradient_center_y);
         add(e.effect_gradient_scale); add(e.effect_gradient_focal_x); add(e.effect_gradient_focal_y);
-        add_anim(e.enabled_prop); add_anim(e.opacity_prop); add_anim(e.size_prop); add_anim(e.distance_prop);
-        add_anim(e.angle_prop); add_anim(e.spread_prop); add_anim(e.falloff_prop);
+        add_anim(e.enabled_prop); add_anim(e.brightness_prop); add_anim(e.contrast_prop);
+        add_anim(e.saturation_prop); add_anim(e.opacity_prop); add_anim(e.size_prop);
+        add_anim(e.distance_prop); add_anim(e.angle_prop); add_anim(e.spread_prop);
+        add_anim(e.falloff_prop);
         add_anim(e.amount_prop); add_anim(e.scale_prop); add_anim(e.softness_prop);
         add_anim(e.roundness_prop); add_anim(e.speed_prop); add_anim(e.center_x_prop);
         add_anim(e.center_y_prop); add_anim(e.complexity_prop); add_anim(e.evolution_prop);
@@ -1389,6 +1394,16 @@ QString CacheManager::contentHash(const Title &title) const
         add_anim(e.stroke_opacity_prop); add_anim(e.padding_left_prop); add_anim(e.padding_right_prop);
         add_anim(e.padding_top_prop); add_anim(e.padding_bottom_prop); add_anim(e.corner_radius_tl_prop);
         add_anim(e.corner_radius_tr_prop); add_anim(e.corner_radius_br_prop); add_anim(e.corner_radius_bl_prop);
+        add_anim(e.gradient_start_pos_prop); add_anim(e.gradient_end_pos_prop);
+        add_anim(e.gradient_start_opacity_prop); add_anim(e.gradient_end_opacity_prop);
+        add_anim(e.gradient_angle_prop); add_anim(e.gradient_center_x_prop);
+        add_anim(e.gradient_center_y_prop); add_anim(e.gradient_scale_prop);
+        add_anim(e.gradient_focal_x_prop); add_anim(e.gradient_focal_y_prop);
+        add_anim(e.gradient_opacity_prop);
+        add_anim(e.gradient_start_color_a); add_anim(e.gradient_start_color_r);
+        add_anim(e.gradient_start_color_g); add_anim(e.gradient_start_color_b);
+        add_anim(e.gradient_end_color_a); add_anim(e.gradient_end_color_r);
+        add_anim(e.gradient_end_color_g); add_anim(e.gradient_end_color_b);
         add_anim(e.color_a); add_anim(e.color_r); add_anim(e.color_g); add_anim(e.color_b);
         add_anim(e.stroke_color_a); add_anim(e.stroke_color_r); add_anim(e.stroke_color_g); add_anim(e.stroke_color_b);
         add_anim(e.secondary_color_a); add_anim(e.secondary_color_r);
