@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "045")
+set(OBS_BGS_DEVELOPMENT_VERSION "057")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -930,6 +930,19 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp)
+
+  add_executable(parenting_matte_expansion_contract_test
+      tests/parenting_matte_expansion_contract_test.cpp)
+  add_test(NAME parenting_matte_expansion_contract_test
+      COMMAND parenting_matte_expansion_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
 
   add_executable(grouped_child_resize_canvas_menu_contract_test
       tests/grouped_child_resize_canvas_menu_contract_test.cpp)

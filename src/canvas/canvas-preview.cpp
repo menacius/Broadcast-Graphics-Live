@@ -1665,30 +1665,120 @@ static const Layer *editor_find_layer_by_id(const std::shared_ptr<Title> &title,
     return nullptr;
 }
 
-static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &title,
-                                               const Layer &layer, double playhead, int depth)
+static QTransform editor_layer_local_transform(const Layer &layer, double playhead)
 {
-    QTransform xf;
-    if (depth > 64) return xf;
-    if (!layer.parent_id.empty()) {
-        if (const Layer *parent = editor_find_layer_by_id(title, layer.parent_id))
-            xf = editor_layer_world_transform(title, *parent, playhead, depth + 1);
-    }
+    QTransform local;
     const double lt = std::max(0.0, playhead - layer.in_time);
-    xf.translate(layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
-    xf.rotate(layer.rotation.evaluate(lt));
-    xf.scale(layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
-    return xf;
+    local.translate(layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
+    local.rotate(layer.rotation.evaluate(lt));
+    local.scale(layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
+    return local;
+}
+
+static std::vector<std::string> editor_group_chain(
+    const std::shared_ptr<Title> &title, const std::string &group_parent_id)
+{
+    std::vector<std::string> chain;
+    std::string cursor = group_parent_id;
+    std::set<std::string> visited;
+    while (!cursor.empty() && visited.insert(cursor).second) {
+        const Layer *group = editor_find_layer_by_id(title, cursor);
+        if (!group || group->type != LayerType::Group)
+            break;
+        chain.push_back(cursor);
+        cursor = group->parent_id;
+    }
+    return chain;
+}
+
+static std::vector<std::string> editor_group_chain_for_layer(
+    const std::shared_ptr<Title> &title, const Layer &layer)
+{
+    std::vector<std::string> chain;
+    if (layer.type == LayerType::Group)
+        chain.push_back(layer.id);
+    const auto ancestors = editor_group_chain(title, layer.parent_id);
+    chain.insert(chain.end(), ancestors.begin(), ancestors.end());
+    return chain;
+}
+
+static std::string editor_common_group(
+    const std::shared_ptr<Title> &title, const std::string &child_group_parent_id,
+    const Layer &transform_parent)
+{
+    const auto child_groups = editor_group_chain(title, child_group_parent_id);
+    const auto parent_groups = editor_group_chain_for_layer(title, transform_parent);
+    const std::set<std::string> parent_set(parent_groups.begin(), parent_groups.end());
+    for (const auto &id : child_groups)
+        if (parent_set.find(id) != parent_set.end()) return id;
+    return {};
+}
+
+static QTransform editor_layer_world_transform_impl(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    std::set<std::string> &visiting);
+
+static QTransform editor_parent_world_transform_impl(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    std::set<std::string> &visiting)
+{
+    QTransform group_world;
+    if (!layer.parent_id.empty()) {
+        if (const Layer *group_parent = editor_find_layer_by_id(title, layer.parent_id);
+            group_parent && group_parent->type == LayerType::Group) {
+            group_world = editor_layer_world_transform_impl(
+                title, *group_parent, playhead, visiting);
+        }
+    }
+    if (layer.transform_parent_id.empty())
+        return group_world;
+    const Layer *transform_parent = editor_find_layer_by_id(title, layer.transform_parent_id);
+    if (!transform_parent)
+        return group_world;
+    const QTransform transform_world = editor_layer_world_transform_impl(
+        title, *transform_parent, playhead, visiting);
+    const std::string common_id = editor_common_group(title, layer.parent_id, *transform_parent);
+    if (common_id.empty())
+        return group_world * transform_world;
+    const Layer *common_group = editor_find_layer_by_id(title, common_id);
+    if (!common_group)
+        return group_world * transform_world;
+    std::set<std::string> common_visiting;
+    const QTransform common_world = editor_layer_world_transform_impl(
+        title, *common_group, playhead, common_visiting);
+    bool invertible = false;
+    const QTransform common_inverse = common_world.inverted(&invertible);
+    return invertible ? group_world * common_inverse * transform_world
+                      : group_world * transform_world;
+}
+
+static QTransform editor_layer_world_transform_impl(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    std::set<std::string> &visiting)
+{
+    if (!layer.id.empty() && !visiting.insert(layer.id).second)
+        return QTransform();
+    const QTransform parent_basis =
+        editor_parent_world_transform_impl(title, layer, playhead, visiting);
+    /* Preserve the original Group hierarchy order: local artwork transform is
+     * applied before the Group/transform-parent basis. */
+    const QTransform world = editor_layer_local_transform(layer, playhead) * parent_basis;
+    if (!layer.id.empty()) visiting.erase(layer.id);
+    return world;
+}
+
+static QTransform editor_layer_world_transform(const std::shared_ptr<Title> &title,
+                                               const Layer &layer, double playhead, int /*depth*/)
+{
+    std::set<std::string> visiting;
+    return editor_layer_world_transform_impl(title, layer, playhead, visiting);
 }
 
 static QTransform editor_parent_world_transform(const std::shared_ptr<Title> &title,
                                                 const Layer &layer, double playhead)
 {
-    if (!layer.parent_id.empty()) {
-        if (const Layer *parent = editor_find_layer_by_id(title, layer.parent_id))
-            return editor_layer_world_transform(title, *parent, playhead);
-    }
-    return QTransform();
+    std::set<std::string> visiting;
+    return editor_parent_world_transform_impl(title, layer, playhead, visiting);
 }
 
 static QPointF editor_canvas_delta_to_parent_local(
@@ -1737,6 +1827,28 @@ static const Layer *editor_outermost_group_ancestor(
         parent_id = parent->parent_id;
     }
     return result;
+}
+
+/* Canvas selection follows the visible hierarchy state.  A child remains the
+ * direct editing target only when every containing group is in the full
+ * children-visible state.  If one or more ancestors are collapsed (including
+ * the keyframes-only caret state), the outermost collapsed container owns the
+ * click so the complete group is selected and manipulated as one object. */
+static const Layer *editor_canvas_selection_target(
+    const std::shared_ptr<Title> &title, const Layer &layer)
+{
+    const Layer *target = &layer;
+    std::string parent_id = layer.parent_id;
+    int guard = 0;
+    while (!parent_id.empty() && guard++ < 64) {
+        const Layer *parent = editor_find_layer_by_id(title, parent_id);
+        if (!parent)
+            break;
+        if (parent->type == LayerType::Group && parent->group_collapsed)
+            target = parent;
+        parent_id = parent->parent_id;
+    }
+    return target;
 }
 
 QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const
@@ -2186,21 +2298,18 @@ void CanvasPreview::draw_direct_selection_path(QPainter &p, const Layer &layer)
 
 bool CanvasPreview::select_direct_object_at(const QPointF &view_pt)
 {
-    const QPointF canvas = view_to_canvas(view_pt);
-    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
-        const auto &candidate = *it;
-        if (!candidate || !candidate->visible || candidate->locked || !direct_selection_supported(*candidate))
-            continue;
-        if (playhead_ < candidate->in_time || playhead_ > candidate->out_time)
-            continue;
-        if (!layer_local_rect(*candidate).contains(canvas_to_layer(*candidate, canvas)))
-            continue;
-        emit layers_selected({candidate->id});
-        selected_layer_ids_ = {candidate->id};
-        sel_layer_id_ = candidate->id;
+    /* Direct Selection obeys the same hierarchy visibility contract as the
+     * regular cursor. A path inside a collapsed/keyframes-only group must not
+     * bypass its container; select the group instead and expose path points
+     * only after the group reaches the full children-visible state. */
+    if (auto target = layer_at_view_pos(view_pt)) {
+        emit layers_selected({target->id});
+        selected_layer_ids_ = {target->id};
+        sel_layer_id_ = target->id;
         clear_path_point_selection();
         clear_corner_selection();
-        ensure_direct_selection_path(candidate);
+        if (direct_selection_supported(*target))
+            ensure_direct_selection_path(target);
         invalidate_canvas_overlay_caches();
         notify_corner_context_changed();
         update();
@@ -2707,15 +2816,21 @@ bool CanvasPreview::layer_overlay_changes_with_playhead(const Layer &layer) cons
         }
     }
 
-    std::string parent_id = layer.parent_id;
-    int guard = 0;
-    while (!parent_id.empty() && guard++ < 64) {
+    std::vector<std::string> pending;
+    if (!layer.parent_id.empty()) pending.push_back(layer.parent_id);
+    if (!layer.transform_parent_id.empty()) pending.push_back(layer.transform_parent_id);
+    std::set<std::string> visited_parents;
+    while (!pending.empty()) {
+        const std::string parent_id = pending.back();
+        pending.pop_back();
+        if (parent_id.empty() || !visited_parents.insert(parent_id).second)
+            continue;
         const Layer *parent = editor_find_layer_by_id(title_, parent_id);
-        if (!parent)
-            break;
+        if (!parent) continue;
         if (parent->position.is_animated() || parent->scale.is_animated() || parent->rotation.is_animated())
             return true;
-        parent_id = parent->parent_id;
+        if (!parent->parent_id.empty()) pending.push_back(parent->parent_id);
+        if (!parent->transform_parent_id.empty()) pending.push_back(parent->transform_parent_id);
     }
 
     return false;
@@ -4508,11 +4623,12 @@ void CanvasPreview::update_marquee(const QPointF &view_pt, Qt::KeyboardModifiers
         QRectF bounds = layer_canvas_bounds(*layer);
         if (!intersects_or_touches(canvas_rect, bounds))
             continue;
-        std::string hit_id = layer->id;
-        if (layer->type != LayerType::Group) {
-            if (const Layer *group = editor_outermost_group_ancestor(title_, *layer))
-                hit_id = group->id;
-        }
+        if (layer->type == LayerType::Group && !layer->group_collapsed)
+            continue;
+        const Layer *target = editor_canvas_selection_target(title_, *layer);
+        if (!target || target->locked)
+            continue;
+        const std::string hit_id = target->id;
         if (hit_ids.insert(hit_id).second)
             hits.push_back(hit_id);
     }
@@ -4570,6 +4686,13 @@ bool CanvasPreview::duplicate_selected_layers_for_drag()
             clone->parent_id = parent_clone->second;
         } else if (!clone->parent_id.empty() && !title_->find_layer(clone->parent_id)) {
             clone->parent_id.clear();
+        }
+        auto transform_parent_clone = cloned_ids_by_original.find(clone->transform_parent_id);
+        if (transform_parent_clone != cloned_ids_by_original.end()) {
+            clone->transform_parent_id = transform_parent_clone->second;
+        } else if (!clone->transform_parent_id.empty() &&
+                   !title_->find_layer(clone->transform_parent_id)) {
+            clone->transform_parent_id.clear();
         }
         auto mask_clone = cloned_ids_by_original.find(clone->mask_source_id);
         if (mask_clone != cloned_ids_by_original.end()) {
@@ -4639,15 +4762,21 @@ bool CanvasPreview::nudge_selected_layers(double dx, double dy)
         return std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), id) != selected_layer_ids_.end();
     };
     auto has_selected_parent = [&](const Layer &layer) {
-        std::string parent_id = layer.parent_id;
-        int guard = 0;
-        while (!parent_id.empty() && guard++ < 64) {
+        std::vector<std::string> pending;
+        if (!layer.parent_id.empty()) pending.push_back(layer.parent_id);
+        if (!layer.transform_parent_id.empty()) pending.push_back(layer.transform_parent_id);
+        std::set<std::string> visited;
+        while (!pending.empty()) {
+            const std::string parent_id = pending.back();
+            pending.pop_back();
+            if (parent_id.empty() || !visited.insert(parent_id).second)
+                continue;
             if (selected_contains(parent_id))
                 return true;
             const Layer *parent = editor_find_layer_by_id(title_, parent_id);
-            if (!parent)
-                break;
-            parent_id = parent->parent_id;
+            if (!parent) continue;
+            if (!parent->parent_id.empty()) pending.push_back(parent->parent_id);
+            if (!parent->transform_parent_id.empty()) pending.push_back(parent->transform_parent_id);
         }
         return false;
     };
@@ -4714,6 +4843,46 @@ static std::set<std::string> editor_snap_excluded_layer_ids(
              * transform already defines its local coordinate space. */
             excluded.insert(parent->id);
             layer = parent;
+        }
+    }
+
+    auto world_transform_depends_on = [&](const Layer &candidate,
+                                          const std::string &ancestor_id) {
+        std::vector<std::string> pending;
+        if (!candidate.parent_id.empty())
+            pending.push_back(candidate.parent_id);
+        if (!candidate.transform_parent_id.empty())
+            pending.push_back(candidate.transform_parent_id);
+        std::set<std::string> visited;
+        while (!pending.empty()) {
+            const std::string dependency_id = pending.back();
+            pending.pop_back();
+            if (dependency_id.empty() || !visited.insert(dependency_id).second)
+                continue;
+            if (dependency_id == ancestor_id)
+                return true;
+            const auto dependency = title->find_layer(dependency_id);
+            if (!dependency)
+                continue;
+            if (!dependency->parent_id.empty())
+                pending.push_back(dependency->parent_id);
+            if (!dependency->transform_parent_id.empty())
+                pending.push_back(dependency->transform_parent_id);
+        }
+        return false;
+    };
+
+    for (const auto &selected_id : selected) {
+        const auto selected_layer = title->find_layer(selected_id);
+        if (!selected_layer) continue;
+        for (const auto &candidate : title->layers) {
+            if (!candidate || candidate->id == selected_id)
+                continue;
+            /* Moving a transform parent must not snap to any of its children,
+             * including descendants contained by a parented Group.
+             * Moving a Group must not snap to artwork contained by the Group. */
+            if (world_transform_depends_on(*candidate, selected_id))
+                excluded.insert(candidate->id);
         }
     }
     return excluded;
@@ -5022,15 +5191,21 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
         return std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), id) != selected_layer_ids_.end();
     };
     auto has_selected_parent = [&](const Layer &layer) {
-        std::string parent_id = layer.parent_id;
-        int guard = 0;
-        while (!parent_id.empty() && guard++ < 64) {
+        std::vector<std::string> pending;
+        if (!layer.parent_id.empty()) pending.push_back(layer.parent_id);
+        if (!layer.transform_parent_id.empty()) pending.push_back(layer.transform_parent_id);
+        std::set<std::string> visited;
+        while (!pending.empty()) {
+            const std::string parent_id = pending.back();
+            pending.pop_back();
+            if (parent_id.empty() || !visited.insert(parent_id).second)
+                continue;
             if (selected_contains(parent_id))
                 return true;
             const Layer *parent = editor_find_layer_by_id(title_, parent_id);
-            if (!parent)
-                break;
-            parent_id = parent->parent_id;
+            if (!parent) continue;
+            if (!parent->parent_id.empty()) pending.push_back(parent->parent_id);
+            if (!parent->transform_parent_id.empty()) pending.push_back(parent->transform_parent_id);
         }
         return false;
     };
@@ -6898,19 +7073,40 @@ std::shared_ptr<Layer> CanvasPreview::layer_at_view_pos(const QPointF &view_pt) 
 {
     if (!title_) return nullptr;
     const QPointF canvas = view_to_canvas(view_pt);
+
+    /* Artwork gets first chance while groups are fully expanded.  Otherwise a
+     * group's own container rectangle would sit above its children in model
+     * order and make the children impossible to select from the canvas. */
     for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
         const auto &layer = *it;
-        if (!layer || !layer->visible || layer->locked) continue;
+        if (!layer || layer->type == LayerType::Group || !layer->visible) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
         const QRectF local_rect = layer_local_rect(*layer);
-        if (!local_rect.isValid() || local_rect.isEmpty()) continue;
-        if (local_rect.contains(canvas_to_layer(*layer, canvas))) {
-            if (layer->type == LayerType::Group)
-                return layer;
-            if (const Layer *group = editor_outermost_group_ancestor(title_, *layer))
-                return title_->find_layer(group->id);
-            return layer;
-        }
+        if (!local_rect.isValid() || local_rect.isEmpty() ||
+            !local_rect.contains(canvas_to_layer(*layer, canvas)))
+            continue;
+        const Layer *target = editor_canvas_selection_target(title_, *layer);
+        if (!target || target->locked)
+            continue;
+        return title_->find_layer(target->id);
+    }
+
+    /* Empty space inside an expanded group can still select the group itself,
+     * while collapsed groups naturally remain the sole container target. */
+    for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+        const auto &layer = *it;
+        if (!layer || layer->type != LayerType::Group || !layer->visible ||
+            layer->locked)
+            continue;
+        if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
+        const QRectF local_rect = layer_local_rect(*layer);
+        if (!local_rect.isValid() || local_rect.isEmpty() ||
+            !local_rect.contains(canvas_to_layer(*layer, canvas)))
+            continue;
+        const Layer *target = editor_canvas_selection_target(title_, *layer);
+        if (!target || target->locked)
+            continue;
+        return title_->find_layer(target->id);
     }
     return nullptr;
 }
@@ -7076,8 +7272,9 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
                 auto parent = title_->find_layer(parent_id);
                 if (!parent || parent->type != LayerType::Group)
                     break;
-                if (parent->group_collapsed) {
+                if (parent->group_collapsed || !parent->properties_expanded) {
                     parent->group_collapsed = false;
+                    parent->properties_expanded = true;
                     hierarchy_changed = true;
                 }
                 parent_id = parent->parent_id;
@@ -7391,65 +7588,33 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
          * topmost selectable target first; only keep Move when that target is
          * already part of the current selection. */
         if (drag_mode_ == DragMode::Move) {
-            const QPointF canvas = view_to_canvas(ev->pos());
             std::string topmost_target_id;
-            for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
-                const auto &candidate = *it;
-                if (!candidate || !candidate->visible || candidate->locked)
-                    continue;
-                if (playhead_ < candidate->in_time || playhead_ > candidate->out_time)
-                    continue;
-                if (!layer_local_rect(*candidate).contains(canvas_to_layer(*candidate, canvas)))
-                    continue;
-
-                std::shared_ptr<Layer> selection_target = candidate;
-                if (candidate->type != LayerType::Group) {
-                    if (const Layer *group = editor_outermost_group_ancestor(title_, *candidate))
-                        selection_target = title_->find_layer(group->id);
-                }
-                if (selection_target)
-                    topmost_target_id = selection_target->id;
-                break;
-            }
+            if (auto selection_target = layer_at_view_pos(ev->pos()))
+                topmost_target_id = selection_target->id;
             if (!topmost_target_id.empty() &&
                 std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), topmost_target_id) == selected_layer_ids_.end())
                 drag_mode_ = DragMode::None;
         }
     }
     if (drag_mode_ == DragMode::None) {
-        QPointF canvas = view_to_canvas(ev->pos());
-        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
-            auto &l = *it;
-            if (!l || !l->visible || l->locked) continue;
-            if (playhead_ < l->in_time || playhead_ > l->out_time) continue;
-            QPointF local = canvas_to_layer(*l, canvas);
-            if (layer_local_rect(*l).contains(local)) {
-                std::shared_ptr<Layer> selection_target = l;
-                if (l->type != LayerType::Group) {
-                    if (const Layer *group = editor_outermost_group_ancestor(title_, *l))
-                        selection_target = title_->find_layer(group->id);
-                }
-                if (!selection_target)
-                    continue;
-                const std::string target_id = selection_target->id;
-                std::vector<std::string> next_ids;
-                if (ev->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))
-                    next_ids = selected_layer_ids_;
-                auto existing = std::find(next_ids.begin(), next_ids.end(), target_id);
-                if (ev->modifiers() & Qt::ControlModifier) {
-                    if (existing == next_ids.end()) next_ids.push_back(target_id);
-                    else next_ids.erase(existing);
-                } else if (existing == next_ids.end()) {
-                    if (!(ev->modifiers() & Qt::ShiftModifier)) next_ids.clear();
-                    next_ids.push_back(target_id);
-                }
-                emit layers_selected(next_ids);
-                selected_layer_ids_ = next_ids;
-                sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
-                invalidate_canvas_overlay_caches();
-                drag_mode_ = DragMode::Move;
-                break;
+        if (auto selection_target = layer_at_view_pos(ev->pos())) {
+            const std::string target_id = selection_target->id;
+            std::vector<std::string> next_ids;
+            if (ev->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))
+                next_ids = selected_layer_ids_;
+            auto existing = std::find(next_ids.begin(), next_ids.end(), target_id);
+            if (ev->modifiers() & Qt::ControlModifier) {
+                if (existing == next_ids.end()) next_ids.push_back(target_id);
+                else next_ids.erase(existing);
+            } else if (existing == next_ids.end()) {
+                if (!(ev->modifiers() & Qt::ShiftModifier)) next_ids.clear();
+                next_ids.push_back(target_id);
             }
+            emit layers_selected(next_ids);
+            selected_layer_ids_ = next_ids;
+            sel_layer_id_ = selected_layer_ids_.empty() ? std::string() : selected_layer_ids_.back();
+            invalidate_canvas_overlay_caches();
+            drag_mode_ = DragMode::Move;
         }
     }
 
@@ -8409,38 +8574,12 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
         return;
     }
 
-    const QPointF canvas_point = view_to_canvas(ev->pos());
-    bool clicked_current_selection = false;
-    for (const auto &selected : selected_layers()) {
-        if (!selected)
-            continue;
-        const QRectF local_rect = layer_local_rect(*selected);
-        if (local_rect.isValid() && !local_rect.isEmpty() &&
-            local_rect.contains(canvas_to_layer(*selected, canvas_point))) {
-            clicked_current_selection = true;
-            break;
-        }
-    }
+    std::shared_ptr<Layer> hit = layer_at_view_pos(ev->pos());
+    const bool clicked_current_selection = hit &&
+        std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), hit->id) !=
+            selected_layer_ids_.end();
 
     if (!clicked_current_selection) {
-        std::shared_ptr<Layer> hit;
-        for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
-            const auto &candidate = *it;
-            if (!candidate || !candidate->visible ||
-                playhead_ < candidate->in_time || playhead_ > candidate->out_time)
-                continue;
-            const QRectF local_rect = layer_local_rect(*candidate);
-            if (!local_rect.isValid() || local_rect.isEmpty() ||
-                !local_rect.contains(canvas_to_layer(*candidate, canvas_point)))
-                continue;
-            hit = candidate;
-            if (candidate->type != LayerType::Group) {
-                if (const Layer *group = editor_outermost_group_ancestor(
-                        title_, *candidate))
-                    hit = title_->find_layer(group->id);
-            }
-            break;
-        }
         if (hit) {
             selected_layer_ids_ = {hit->id};
             sel_layer_id_ = hit->id;

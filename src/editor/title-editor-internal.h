@@ -5399,7 +5399,9 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
         auto layer = hierarchy_row.layer;
         if (!layer) continue;
         rows.push_back({layer, TimelinePropertyRef{}, false});
-        if (layer->type == LayerType::Group || !layer->properties_expanded)
+        const bool show_properties = layer->properties_expanded ||
+            (layer->type == LayerType::Group && !layer->group_collapsed);
+        if (!show_properties)
             continue;
         std::set<std::string> seen;
         for (auto prop : timeline_properties(*layer)) {

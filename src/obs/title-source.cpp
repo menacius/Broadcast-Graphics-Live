@@ -1249,6 +1249,20 @@ static bool layer_is_track_matte_source(const Title &title, const Layer &layer)
     return false;
 }
 
+static bool layer_chain_active_as_matte(const Title &title, const Layer &layer,
+                                        double title_time, int depth = 0)
+{
+    if (depth > 64 ||
+        layer.matte_visibility_mode == MatteVisibilityMode::HiddenInactive ||
+        layer.live_cue_hidden_if_empty ||
+        title_time < layer.in_time || title_time > layer.out_time)
+        return false;
+    if (layer.parent_id.empty())
+        return true;
+    const Layer *parent = find_layer_by_id(title, layer.parent_id);
+    return parent ? layer_chain_visible(title, *parent, title_time, depth + 1) : true;
+}
+
 static bool layer_should_render_as_visible_content(const Title &title, const Layer &layer)
 {
     /*
@@ -1259,7 +1273,11 @@ static bool layer_should_render_as_visible_content(const Title &title, const Lay
     /* Scene-mask layers are matte controls, not ordinary visible artwork.
      * Their editor hatch is painted by CanvasPreview while the selected OBS
      * scene is composited through the auxiliary scene-mask pass. */
-    return !layer.use_as_scene_mask && !layer_is_track_matte_source(title, layer);
+    if (layer.use_as_scene_mask)
+        return false;
+    if (!layer_is_track_matte_source(title, layer))
+        return true;
+    return layer.matte_visibility_mode == MatteVisibilityMode::VisibleAndMatte;
 }
 
 bool title_requires_destination_compositing(const Title &title)
@@ -1282,23 +1300,18 @@ bool title_requires_destination_compositing(const Title &title)
     return false;
 }
 
+static QTransform layer_world_transform_qt(const Title &title, const Layer &layer,
+                                           double title_time, int depth = 0);
+
 static void apply_layer_world_transform(cairo_t *cr, const Title &title, const Layer &layer,
-                                        double title_time, int depth = 0)
+                                        double title_time, int /*depth*/ = 0)
 {
-    if (depth > 64)
-        return;
-    if (!layer.parent_id.empty()) {
-        if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
-            apply_layer_world_transform(cr, title, *parent, title_time, depth + 1);
-    }
-    const double lt = std::max(0.0, title_time - layer.in_time);
-    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, title_time);
-    cairo_translate(cr, layer.position.evaluate(lt).x + transition.translate_x,
-                    layer.position.evaluate(lt).y + transition.translate_y);
-    cairo_rotate(cr, layer.rotation.evaluate(lt) * kPi / 180.0);
-    cairo_scale(cr, layer.scale.evaluate(lt).x * transition.scale,
-                layer.scale.evaluate(lt).y * transition.scale);
+    const QTransform transform = layer_world_transform_qt(title, layer, title_time);
+    cairo_matrix_t matrix;
+    cairo_matrix_init(&matrix, transform.m11(), transform.m12(),
+                      transform.m21(), transform.m22(),
+                      transform.dx(), transform.dy());
+    cairo_transform(cr, &matrix);
 }
 
 static double layer_chain_opacity(const Title &title, const Layer &layer, double title_time, int depth = 0)
@@ -6795,6 +6808,7 @@ static QRect image_alpha_bounds(const QImage &image)
 static void neutralize_layer_transform_for_effect_cache(Layer &layer, double opacity, double anchor_x, double anchor_y)
 {
     layer.parent_id.clear();
+    layer.transform_parent_id.clear();
     layer.position.static_value.x = anchor_x;
     layer.position.static_value.y = anchor_y;
     layer.position.keyframes.clear();
@@ -7179,29 +7193,119 @@ static double source_frame_duration()
     return 1.0 / 60.0;
 }
 
-static QTransform layer_world_transform_qt(const Title &title, const Layer &layer,
-                                           double title_time, int depth = 0)
+static QTransform layer_local_transform_qt(const Layer &layer, double title_time)
 {
-    if (depth > 64)
-        return QTransform();
-
-    QTransform transform;
-    if (!layer.parent_id.empty()) {
-        if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
-            transform = layer_world_transform_qt(title, *parent, title_time, depth + 1);
-    }
-
+    QTransform local;
     const double local_time = std::max(0.0, title_time - layer.in_time);
     const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
         layer.transitions, layer.in_time, layer.out_time, title_time);
     const auto position = layer.position.evaluate(local_time);
     const auto scale = layer.scale.evaluate(local_time);
-    transform.translate(position.x + transition.translate_x,
-                        position.y + transition.translate_y);
-    transform.rotate(layer.rotation.evaluate(local_time));
-    transform.scale(scale.x * transition.scale,
-                    scale.y * transition.scale);
-    return transform;
+    local.translate(position.x + transition.translate_x,
+                    position.y + transition.translate_y);
+    local.rotate(layer.rotation.evaluate(local_time));
+    local.scale(scale.x * transition.scale, scale.y * transition.scale);
+    return local;
+}
+
+static std::vector<std::string> layer_group_chain(
+    const Title &title, const std::string &group_parent_id)
+{
+    std::vector<std::string> chain;
+    std::string cursor = group_parent_id;
+    std::unordered_set<std::string> visited;
+    while (!cursor.empty() && visited.insert(cursor).second) {
+        const Layer *group = find_layer_by_id(title, cursor);
+        if (!group || group->type != LayerType::Group)
+            break;
+        chain.push_back(cursor);
+        cursor = group->parent_id;
+    }
+    return chain;
+}
+
+static std::vector<std::string> layer_group_chain_for_layer(
+    const Title &title, const Layer &layer)
+{
+    std::vector<std::string> chain;
+    if (layer.type == LayerType::Group)
+        chain.push_back(layer.id);
+    const auto ancestors = layer_group_chain(title, layer.parent_id);
+    chain.insert(chain.end(), ancestors.begin(), ancestors.end());
+    return chain;
+}
+
+static std::string layer_common_group(const Title &title,
+                                      const std::string &child_group_parent_id,
+                                      const Layer &transform_parent)
+{
+    const auto child_groups = layer_group_chain(title, child_group_parent_id);
+    const auto parent_groups = layer_group_chain_for_layer(title, transform_parent);
+    const std::unordered_set<std::string> parent_set(parent_groups.begin(), parent_groups.end());
+    for (const auto &id : child_groups)
+        if (parent_set.find(id) != parent_set.end()) return id;
+    return {};
+}
+
+static QTransform layer_world_transform_qt_impl(
+    const Title &title, const Layer &layer, double title_time,
+    std::unordered_set<std::string> &visiting);
+
+static QTransform layer_parent_basis_qt(
+    const Title &title, const Layer &layer, double title_time,
+    std::unordered_set<std::string> &visiting)
+{
+    QTransform group_world;
+    if (!layer.parent_id.empty()) {
+        if (const Layer *group_parent = find_layer_by_id(title, layer.parent_id);
+            group_parent && group_parent->type == LayerType::Group) {
+            group_world = layer_world_transform_qt_impl(
+                title, *group_parent, title_time, visiting);
+        }
+    }
+    if (layer.transform_parent_id.empty())
+        return group_world;
+    const Layer *transform_parent = find_layer_by_id(title, layer.transform_parent_id);
+    if (!transform_parent)
+        return group_world;
+    const QTransform transform_world = layer_world_transform_qt_impl(
+        title, *transform_parent, title_time, visiting);
+    const std::string common_id = layer_common_group(
+        title, layer.parent_id, *transform_parent);
+    if (common_id.empty())
+        return group_world * transform_world;
+    const Layer *common_group = find_layer_by_id(title, common_id);
+    if (!common_group)
+        return group_world * transform_world;
+    std::unordered_set<std::string> common_visiting;
+    const QTransform common_world = layer_world_transform_qt_impl(
+        title, *common_group, title_time, common_visiting);
+    bool invertible = false;
+    const QTransform common_inverse = common_world.inverted(&invertible);
+    return invertible ? group_world * common_inverse * transform_world
+                      : group_world * transform_world;
+}
+
+static QTransform layer_world_transform_qt_impl(
+    const Title &title, const Layer &layer, double title_time,
+    std::unordered_set<std::string> &visiting)
+{
+    if (!layer.id.empty() && !visiting.insert(layer.id).second)
+        return QTransform();
+    const QTransform parent_basis =
+        layer_parent_basis_qt(title, layer, title_time, visiting);
+    /* Match editor/canvas and the pre-existing Group transform order exactly:
+     * local layer transform first, then Group/transform-parent basis. */
+    const QTransform world = layer_local_transform_qt(layer, title_time) * parent_basis;
+    if (!layer.id.empty()) visiting.erase(layer.id);
+    return world;
+}
+
+static QTransform layer_world_transform_qt(const Title &title, const Layer &layer,
+                                           double title_time, int /*depth*/)
+{
+    std::unordered_set<std::string> visiting;
+    return layer_world_transform_qt_impl(title, layer, title_time, visiting);
 }
 
 static double layer_shutter_travel_pixels(const Title &title, const Layer &layer,
@@ -8996,22 +9100,30 @@ static void source_video_tick(void *priv, float seconds)
 
 
 static void apply_layer_world_transform_gs(const Title &title, const Layer &layer,
-                                           double title_time, int depth = 0)
+                                           double title_time, int /*depth*/ = 0)
 {
-    if (depth > 64)
-        return;
-    if (!layer.parent_id.empty()) {
-        if (const Layer *parent = find_layer_by_id(title, layer.parent_id))
-            apply_layer_world_transform_gs(title, *parent, title_time, depth + 1);
-    }
-    const double lt = std::max(0.0, title_time - layer.in_time);
-    const LayerTransitionVisualState transition = evaluate_layer_general_transitions(
-        layer.transitions, layer.in_time, layer.out_time, title_time);
-    gs_matrix_translate3f((float)(layer.position.evaluate(lt).x + transition.translate_x),
-                          (float)(layer.position.evaluate(lt).y + transition.translate_y), 0.0f);
-    gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, (float)(layer.rotation.evaluate(lt) * kPi / 180.0));
-    gs_matrix_scale3f((float)(layer.scale.evaluate(lt).x * transition.scale),
-                      (float)(layer.scale.evaluate(lt).y * transition.scale), 1.0f);
+    const QTransform transform = layer_world_transform_qt(title, layer, title_time);
+
+    /* OBS stores affine basis vectors in matrix4::x/y and translation in
+     * matrix4::t.  Apply the complete QTransform in one multiplication rather
+     * than decomposing it into translate/rotate/scale: nested non-uniform
+     * parent transforms can legitimately produce shear, which a decomposition
+     * would silently discard. */
+    struct matrix4 affine;
+    matrix4_identity(&affine);
+    vec4_set(&affine.x,
+             static_cast<float>(transform.m11()),
+             static_cast<float>(transform.m12()),
+             0.0f, 0.0f);
+    vec4_set(&affine.y,
+             static_cast<float>(transform.m21()),
+             static_cast<float>(transform.m22()),
+             0.0f, 0.0f);
+    vec4_set(&affine.t,
+             static_cast<float>(transform.dx()),
+             static_cast<float>(transform.dy()),
+             0.0f, 1.0f);
+    gs_matrix_mul(&affine);
 }
 
 
@@ -11349,7 +11461,7 @@ static gs_texture_t *render_gpu_adjustment_coverage(
         const Layer *mask_layer = find_layer_by_id(title, layer.mask_source_id);
         const double mask_time = mask_layer
             ? gpu_layer_render_time(title, *mask_layer, title_time) : title_time;
-        if (mask_layer && layer_chain_visible(title, *mask_layer, mask_time)) {
+        if (mask_layer && layer_chain_active_as_matte(title, *mask_layer, mask_time)) {
             gs_texture_t *mask = render_gpu_mask_graph_texture(
                 session, title, *mask_layer, title_time, std::string());
             if (mask)
@@ -11367,7 +11479,7 @@ static gs_texture_t *mix_gpu_adjustment_layer(
     TitleGpuRenderSession *session, const Title &title, const Layer &layer,
     double title_time, gs_texture_t *original, gs_texture_t *effected,
     gs_texture_t *coverage, gs_texrender_t *target,
-    bool bounded_backdrop = false)
+    bool bounded_backdrop = false, double opacity_override = -1.0)
 {
     if (!session || !original || !effected || !coverage || !target)
         return original;
@@ -11392,10 +11504,12 @@ static gs_texture_t *mix_gpu_adjustment_layer(
     /* A bounded backdrop effect is a replacement of the pixels behind the
      * artwork, not another semi-transparent copy of them.  Layer opacity and
      * blend mode belong exclusively to the later artwork composite. */
+    const double resolved_opacity = opacity_override >= 0.0
+        ? opacity_override
+        : layer_chain_opacity(title, layer, title_time);
     const float amount = bounded_backdrop
         ? 1.0f
-        : static_cast<float>(std::clamp(
-              layer_chain_opacity(title, layer, title_time), 0.0, 1.0));
+        : static_cast<float>(std::clamp(resolved_opacity, 0.0, 1.0));
     set_effect_float_param(effect, "amount", amount);
     set_effect_int_param(effect, "blendMode", static_cast<int>(
         bounded_backdrop ? EffectBlendMode::Normal : layer.blend_mode));
@@ -12348,19 +12462,78 @@ static gs_texture_t *render_gpu_group_graph_texture(
             !layer_should_render_as_visible_content(title, child))
             continue;
 
+        const bool has_mask = child.mask_mode != MaskMode::None &&
+                              !child.mask_source_id.empty();
+        const bool effects_after_mask = has_mask &&
+                                        child.effect_stack_respects_masks;
+        const double child_local_time = std::max(0.0, child_time - child.in_time);
+        const bool has_backdrop_effect = std::any_of(
+            child.effects.begin(), child.effects.end(),
+            [child_local_time](const LayerEffect &effect) {
+                return eval_effect_enabled(effect, child_local_time) &&
+                       effect.affect_layers_behind;
+            });
+
         gs_texture_t *foreground = nullptr;
+        gs_texrender_t *child_silhouette_target = nullptr;
+        gs_texture_t *child_silhouette = nullptr;
+
+        auto retain_child_silhouette = [&](gs_texture_t *texture) {
+            if (!texture || child_silhouette_target)
+                return;
+            child_silhouette_target = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+            if (child_silhouette_target &&
+                copy_full_canvas_gpu_texture(session, texture,
+                                             child_silhouette_target))
+                child_silhouette = gs_texrender_get_texture(
+                    child_silhouette_target);
+        };
+
+        auto apply_child_mask = [&](gs_texture_t *texture) -> gs_texture_t * {
+            if (!texture || !has_mask)
+                return texture;
+            const Layer *mask_layer = find_layer_by_id(title,
+                                                       child.mask_source_id);
+            const double mask_time = mask_layer
+                ? gpu_layer_render_time(title, *mask_layer, title_time)
+                : title_time;
+            if (mask_layer &&
+                layer_chain_active_as_matte(title, *mask_layer, mask_time)) {
+                gs_texture_t *mask_texture = render_gpu_mask_graph_texture(
+                    session, title, *mask_layer, title_time,
+                    gpu_session_layer_id(*mask_layer), visiting);
+                if (mask_texture)
+                    return apply_gpu_mask(session, texture, mask_texture,
+                                          child.mask_mode);
+                if (!mask_mode_is_inverted(child.mask_mode))
+                    return nullptr;
+            } else if (!mask_mode_is_inverted(child.mask_mode)) {
+                return nullptr;
+            }
+            return texture;
+        };
+
         if (child.type == LayerType::Group) {
+            if (has_backdrop_effect) {
+                Layer silhouette_group = child;
+                silhouette_group.effects.clear();
+                retain_child_silhouette(render_gpu_group_graph_texture(
+                    session, title, silhouette_group, title_time, visiting));
+            }
             foreground = render_gpu_group_graph_texture(
                 session, title, child, title_time, visiting);
         } else if (child.type == LayerType::Adjustment) {
             gs_texture_t *coverage = render_gpu_adjustment_coverage(
                 session, title, child, child_time);
             gs_texture_t *adjusted = apply_gpu_layer_effect_stack(
-                session, child, child_time, frame, session->width, session->height);
+                session, child, child_time, frame, session->width,
+                session->height);
             gs_texrender_t *next = current_ping ? pong : ping;
             gs_texture_t *mixed = coverage && adjusted
-                ? mix_gpu_adjustment_layer(session, title, child, child_time,
-                                           frame, adjusted, coverage, next)
+                ? mix_gpu_adjustment_layer(
+                      session, title, child, child_time, frame, adjusted,
+                      coverage, next, false,
+                      gpu_layer_local_opacity(child, child_time))
                 : nullptr;
             if (mixed && mixed != frame) {
                 frame = mixed;
@@ -12368,42 +12541,83 @@ static gs_texture_t *render_gpu_group_graph_texture(
             }
             continue;
         } else {
-            const bool has_mask = child.mask_mode != MaskMode::None &&
-                                  !child.mask_source_id.empty();
-            const bool effects_after_mask = has_mask &&
-                                            child.effect_stack_respects_masks;
-            if (!render_gpu_layer_to_target(session, title, child, child_time,
-                                            session->layer_target,
-                                            !effects_after_mask,
-                                            std::string(), 1.0))
-                continue;
-            foreground = gs_texrender_get_texture(session->layer_target);
-            if (has_mask) {
-                const Layer *mask_layer = find_layer_by_id(title,
-                                                           child.mask_source_id);
-                const double mask_time = mask_layer
-                    ? gpu_layer_render_time(title, *mask_layer, title_time)
-                    : title_time;
-                if (mask_layer && layer_chain_visible(title, *mask_layer, mask_time)) {
-                    gs_texture_t *mask_texture = render_gpu_mask_graph_texture(
-                        session, title, *mask_layer, title_time,
-                        gpu_session_layer_id(*mask_layer), visiting);
-                    if (mask_texture)
-                        foreground = apply_gpu_mask(session, foreground,
-                                                    mask_texture, child.mask_mode);
-                    else if (!mask_mode_is_inverted(child.mask_mode))
-                        foreground = nullptr;
-                } else if (!mask_mode_is_inverted(child.mask_mode)) {
-                    foreground = nullptr;
-                }
+            if (has_backdrop_effect &&
+                render_gpu_layer_to_target(
+                    session, title, child, child_time,
+                    session->adjustment_coverage_target, false,
+                    std::string(), 1.0)) {
+                retain_child_silhouette(apply_child_mask(
+                    gs_texrender_get_texture(
+                        session->adjustment_coverage_target)));
             }
+
+            /* A group owns the child opacity boundary.  Render the child's
+             * complete effect stack at full alpha, then apply its local opacity
+             * exactly once during sibling compositing.  Baking chain opacity
+             * here and multiplying it again below made shadows/glows and other
+             * child effects fade or disappear after grouping. */
+            if (!render_gpu_layer_to_target(
+                    session, title, child, child_time,
+                    session->layer_target, !effects_after_mask,
+                    std::string(), 1.0)) {
+                if (child_silhouette_target)
+                    gs_texrender_destroy(child_silhouette_target);
+                continue;
+            }
+            foreground = gs_texrender_get_texture(session->layer_target);
+        }
+
+        if (!foreground) {
+            if (child_silhouette_target)
+                gs_texrender_destroy(child_silhouette_target);
+            continue;
+        }
+
+        /* Normal layer masks/effects are handled here. Recursive group renders
+         * already apply their own mask and mask-respecting stack order. */
+        if (child.type != LayerType::Group) {
+            foreground = apply_child_mask(foreground);
             if (foreground && effects_after_mask)
                 foreground = apply_gpu_layer_effect_stack(
                     session, child, child_time, foreground,
                     session->width, session->height);
         }
-        if (!foreground)
+        if (!foreground) {
+            if (child_silhouette_target)
+                gs_texrender_destroy(child_silhouette_target);
             continue;
+        }
+
+        /* Affect-behind effects on a child operate on the already-composited
+         * lower siblings inside this group, bounded by the untouched child
+         * silhouette.  They must not escape to the title root or be silently
+         * skipped merely because the layer is grouped. */
+        if (has_backdrop_effect && child_silhouette) {
+            for (const LayerEffect &backdrop_effect : child.effects) {
+                if (!eval_effect_enabled(backdrop_effect, child_local_time) ||
+                    !backdrop_effect.affect_layers_behind)
+                    continue;
+                Layer adjustment_child = child;
+                adjustment_child.effects.clear();
+                adjustment_child.effects.push_back(backdrop_effect);
+                gs_texture_t *adjusted_background =
+                    apply_gpu_layer_effect_stack(
+                        session, adjustment_child, child_time, frame,
+                        session->width, session->height, nullptr, true);
+                if (!adjusted_background || adjusted_background == frame)
+                    continue;
+                gs_texrender_t *backdrop_target = current_ping ? pong : ping;
+                gs_texture_t *mixed_background = mix_gpu_adjustment_layer(
+                    session, title, adjustment_child, child_time, frame,
+                    adjusted_background, child_silhouette, backdrop_target,
+                    true);
+                if (mixed_background && mixed_background != frame) {
+                    frame = mixed_background;
+                    current_ping = !current_ping;
+                }
+            }
+        }
+
         gs_texrender_t *next = current_ping ? pong : ping;
         if (composite_gpu_frame_layer(session, frame, foreground,
                                       child.blend_mode,
@@ -12412,6 +12626,8 @@ static gs_texture_t *render_gpu_group_graph_texture(
             frame = gs_texrender_get_texture(next);
             current_ping = !current_ping;
         }
+        if (child_silhouette_target)
+            gs_texrender_destroy(child_silhouette_target);
     }
 
     const double group_time = gpu_layer_render_time(title, group, title_time);
@@ -12425,7 +12641,7 @@ static gs_texture_t *render_gpu_group_graph_texture(
         const Layer *mask_layer = find_layer_by_id(title, group.mask_source_id);
         const double mask_time = mask_layer
             ? gpu_layer_render_time(title, *mask_layer, title_time) : title_time;
-        if (mask_layer && layer_chain_visible(title, *mask_layer, mask_time)) {
+        if (mask_layer && layer_chain_active_as_matte(title, *mask_layer, mask_time)) {
             gs_texture_t *mask_texture = render_gpu_mask_graph_texture(
                 session, title, *mask_layer, title_time,
                 gpu_session_layer_id(*mask_layer), visiting);
@@ -13263,7 +13479,7 @@ static gs_texture_t *render_gpu_session_locked(
                                             *silhouette_mask_layer,
                                             session->time)
                     : session->time;
-                if (silhouette_mask_layer && layer_chain_visible(
+                if (silhouette_mask_layer && layer_chain_active_as_matte(
                         session->title, *silhouette_mask_layer,
                         silhouette_mask_time)) {
                     gs_texture_t *silhouette_mask = render_gpu_mask_graph_texture(
@@ -13318,7 +13534,7 @@ static gs_texture_t *render_gpu_session_locked(
                                         session->time)
                 : session->time;
             if (mask_layer &&
-                layer_chain_visible(session->title, *mask_layer, mask_time)) {
+                layer_chain_active_as_matte(session->title, *mask_layer, mask_time)) {
                 gs_texture_t *mask_texture = render_gpu_mask_graph_texture(
                     session, session->title, *mask_layer, session->time);
                 if (mask_texture) {
@@ -13722,6 +13938,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
                     snapshot_layer.scale = source_layer.scale;
                     snapshot_layer.rotation = source_layer.rotation;
                     snapshot_layer.parent_id = source_layer.parent_id;
+                    snapshot_layer.transform_parent_id = source_layer.transform_parent_id;
                     /* During direct resize, present the old raster through a
                      * temporary GPU local-space scale. The settled edit will
                      * replace it with an exact new raster after mouse release. */

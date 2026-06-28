@@ -63,9 +63,10 @@ signals:
     void layer_selected(const std::string &layer_id);
     void layers_selected(const std::vector<std::string> &layer_ids);
     void layer_visibility_changed(const std::string &layer_id, bool v);
+    void layer_matte_visibility_changed(const std::string &layer_id, MatteVisibilityMode mode);
     void layer_lock_changed(const std::string &layer_id, bool locked);
     void layer_expand_changed(const std::string &layer_id, bool expanded);
-    void group_collapsed_changed(const std::string &layer_id, bool collapsed);
+    void group_expansion_state_changed(const std::string &layer_id, int state);
     void group_layers_requested();
     void ungroup_layers_requested();
     void add_to_group_requested(const std::string &group_id);
@@ -73,6 +74,7 @@ signals:
     void layer_parent_changed(const std::string &layer_id, const std::string &parent_id);
     void layer_mask_changed(const std::string &layer_id, const std::string &mask_source_id, MaskMode mask_mode);
     void layer_blend_mode_changed(const std::string &layer_id, EffectBlendMode blend_mode);
+    void layer_effects_enabled_changed(const std::string &layer_id, bool enabled);
     void layer_name_changed(const std::string &layer_id, const std::string &name);
     void layer_order_changed();
     void add_layer_requested(LayerType type);

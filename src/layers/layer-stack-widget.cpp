@@ -174,14 +174,16 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     add_header("#", 24);
     add_header("T", 18);
     add_header("", 24); // FX indicator column
-    add_header("Matte", 44, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header("", 44); // Track-matte status columns (icons only)
     QLabel *name = new QLabel(bgl_tr("OBSTitles.LayerNameHeader"), columns);
     name->setStyleSheet(QStringLiteral("color:%1;font-size:10px;font-weight:bold;")
                             .arg(disabled_text.name(QColor::HexRgb)));
     ch->addWidget(name, 1);
     add_header(bgl_tr("OBSTitles.ModeHeader"), 110, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(bgl_tr("OBSTitles.ParentHeader"), 174, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(bgl_tr("OBSTitles.MaskHeader"), 178, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.ParentHeader"), 150, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.MaskHeader"), 130, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header_icon("matte-alpha.svg", 20, bgl_tr("OBSTitles.MatteAlphaLumaHeaderTooltip"));
+    add_header_icon("matte-normal.svg", 20, bgl_tr("OBSTitles.MatteNormalInvertedHeaderTooltip"));
     vl->addWidget(columns);
 
     list_ = new QListWidget(this);
@@ -410,7 +412,7 @@ void LayerStack::populate()
         row_widget->setStyleSheet(QStringLiteral("background:transparent;color:%1;")
                                       .arg(text.name(QColor::HexRgb)));
         auto *hl = new QHBoxLayout(row_widget);
-        hl->setContentsMargins(4 + hierarchy_depth * 18, 0, 4, 0);
+        hl->setContentsMargins(4, 0, 4, 0);
         hl->setSpacing(4);
         const bool is_mask_object = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
 
@@ -432,17 +434,52 @@ void LayerStack::populate()
             return btn;
         };
 
-        QToolButton *vis = make_toggle(is_mask_object ? "layer-mask-object.svg" : "layer-visible.svg",
-                                       is_mask_object ? "layer-mask-object.svg" : "layer-hidden.svg",
-                                       l->visible,
-                                       is_mask_object
-                                           ? bgl_tr("OBSTitles.LayerMaskObjectTooltip")
-                                           : bgl_tr("OBSTitles.LayerVisibilityTooltip"));
+        QToolButton *vis = nullptr;
+        if (is_mask_object) {
+            vis = new QToolButton(row_widget);
+            vis->setCheckable(false);
+            vis->setFixedSize(20, 20);
+            vis->setIconSize(QSize(14, 14));
+            vis->setAutoRaise(true);
+            vis->setStyleSheet(button_style);
+            auto update_matte_visibility_button = [vis](MatteVisibilityMode mode) {
+                switch (mode) {
+                case MatteVisibilityMode::HiddenInactive:
+                    vis->setIcon(obs_icon("layer-hidden.svg"));
+                    vis->setToolTip(bgl_tr("OBSTitles.MatteHiddenInactiveTooltip"));
+                    break;
+                case MatteVisibilityMode::VisibleAndMatte:
+                    vis->setIcon(obs_icon("layer-visible-mask.svg"));
+                    vis->setToolTip(bgl_tr("OBSTitles.MatteVisibleActiveTooltip"));
+                    break;
+                case MatteVisibilityMode::MatteOnly:
+                default:
+                    vis->setIcon(obs_icon("layer-mask-object.svg"));
+                    vis->setToolTip(bgl_tr("OBSTitles.MatteOnlyTooltip"));
+                    break;
+                }
+            };
+            update_matte_visibility_button(l->matte_visibility_mode);
+            connect(vis, &QToolButton::clicked, this,
+                    [this, id = l->id, item, vis, mode = l->matte_visibility_mode,
+                     update_matte_visibility_button]() mutable {
+                list_->setCurrentItem(item);
+                const int next = (static_cast<int>(mode) + 1) % 3;
+                mode = static_cast<MatteVisibilityMode>(next);
+                update_matte_visibility_button(mode);
+                emit layer_matte_visibility_changed(id, mode);
+            });
+            hl->addWidget(vis);
+        } else {
+            vis = make_toggle("layer-visible.svg", "layer-hidden.svg", l->visible,
+                              bgl_tr("OBSTitles.LayerVisibilityTooltip"));
+            connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
+                list_->setCurrentItem(item);
+                emit layer_visibility_changed(id, checked);
+            });
+        }
+
         QToolButton *lock = make_toggle("layer-lock.svg", "layer-unlock.svg", l->locked, bgl_tr("OBSTitles.LockLayerTooltip"));
-        connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
-            list_->setCurrentItem(item);
-            emit layer_visibility_changed(id, checked);
-        });
         connect(lock, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
             list_->setCurrentItem(item);
             emit layer_lock_changed(id, checked);
@@ -450,25 +487,40 @@ void LayerStack::populate()
 
         QToolButton *expand = new QToolButton(row_widget);
         const bool is_group = l->type == LayerType::Group;
-        const bool expanded = is_group ? !l->group_collapsed : l->properties_expanded;
-        expand->setCheckable(true);
+        const int group_state = !is_group ? -1
+            : (!l->group_collapsed ? 2 : (l->properties_expanded ? 1 : 0));
+        const bool expanded = !is_group && l->properties_expanded;
+        expand->setCheckable(!is_group);
         expand->setChecked(expanded);
-        expand->setIcon(obs_icon(expanded ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
-        expand->setToolTip(is_group
-            ? (expanded ? bgl_tr("OBSTitles.CollapseGroup") : bgl_tr("OBSTitles.ExpandGroup"))
-            : bgl_tr("OBSTitles.ShowKeyframedPropertiesTooltip"));
+        if (is_group) {
+            expand->setIcon(obs_icon(group_state == 0 ? "keyframes-expand.svg"
+                                                     : group_state == 1 ? "keyframe-active.svg"
+                                                                        : "keyframes-collapse.svg"));
+            expand->setToolTip(group_state == 0
+                ? bgl_tr("OBSTitles.GroupExpansionClosedTooltip")
+                : group_state == 1
+                    ? bgl_tr("OBSTitles.GroupExpansionKeyframesTooltip")
+                    : bgl_tr("OBSTitles.GroupExpansionChildrenTooltip"));
+        } else {
+            expand->setIcon(obs_icon(expanded ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
+            expand->setToolTip(bgl_tr("OBSTitles.ShowKeyframedPropertiesTooltip"));
+        }
         expand->setFixedSize(16, 20);
         expand->setIconSize(QSize(12, 12));
         expand->setAutoRaise(true);
         expand->setStyleSheet(button_style);
-        connect(expand, &QToolButton::toggled, this,
-                [this, expand, id = l->id, is_group](bool checked) {
-            expand->setIcon(obs_icon(checked ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
-            if (is_group)
-                emit group_collapsed_changed(id, !checked);
-            else
+        if (is_group) {
+            connect(expand, &QToolButton::clicked, this,
+                    [this, id = l->id, group_state]() {
+                emit group_expansion_state_changed(id, (group_state + 1) % 3);
+            });
+        } else {
+            connect(expand, &QToolButton::toggled, this,
+                    [this, expand, id = l->id](bool checked) {
+                expand->setIcon(obs_icon(checked ? "keyframes-expand.svg" : "keyframes-collapse.svg"));
                 emit layer_expand_changed(id, checked);
-        });
+            });
+        }
         hl->addWidget(expand);
 
         QLabel *idx = new QLabel(QString::number(row + 1), row_widget);
@@ -487,20 +539,40 @@ void LayerStack::populate()
                                      pal.color(QPalette::HighlightedText).name(QColor::HexRgb)));
         hl->addWidget(type);
 
+        const bool has_effect_stack = !l->effects.empty();
         const bool has_enabled_effect_stack = std::any_of(l->effects.begin(), l->effects.end(),
             [](const LayerEffect &effect) { return effect.enabled; });
-        QLabel *fx_indicator = new QLabel(has_enabled_effect_stack ? bgl_tr("OBSTitles.FX") : QString(), row_widget);
+        QToolButton *fx_indicator = new QToolButton(row_widget);
+        fx_indicator->setText(has_effect_stack ? bgl_tr("OBSTitles.FX") : QString());
+        fx_indicator->setCheckable(has_effect_stack);
+        fx_indicator->setChecked(has_enabled_effect_stack);
         fx_indicator->setFixedSize(24, 18);
-        fx_indicator->setAlignment(Qt::AlignCenter);
-        fx_indicator->setToolTip(has_enabled_effect_stack
-            ? bgl_tr("OBSTitles.LayerEffectStackTooltip")
+        fx_indicator->setToolTip(has_effect_stack
+            ? (has_enabled_effect_stack
+                ? bgl_tr("OBSTitles.DisableLayerEffectsTooltip")
+                : bgl_tr("OBSTitles.EnableLayerEffectsTooltip"))
             : QString());
-        fx_indicator->setStyleSheet(has_enabled_effect_stack
-            ? QStringLiteral("QLabel{background:%1;border:1px solid %2;border-radius:2px;color:%3;font-size:9px;font-weight:bold;}")
-                  .arg(highlight.name(QColor::HexRgb),
-                       border.name(QColor::HexRgb),
+        fx_indicator->setCursor(has_effect_stack ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        fx_indicator->setStyleSheet(has_effect_stack
+            ? QStringLiteral(
+                  "QToolButton{background:transparent;border:1px solid %1;border-radius:2px;color:%2;font-size:9px;font-weight:bold;}"
+                  "QToolButton:checked{background:%3;color:%4;}"
+                  "QToolButton:hover{border-color:%3;}")
+                  .arg(border.name(QColor::HexRgb),
+                       disabled_text.name(QColor::HexRgb),
+                       highlight.name(QColor::HexRgb),
                        pal.color(QPalette::HighlightedText).name(QColor::HexRgb))
-            : QStringLiteral("QLabel{background:transparent;border:none;}"));
+            : QStringLiteral("QToolButton{background:transparent;border:none;}"));
+        if (has_effect_stack) {
+            connect(fx_indicator, &QToolButton::toggled, this,
+                    [this, id = l->id, item, fx_indicator](bool enabled) {
+                        list_->setCurrentItem(item);
+                        fx_indicator->setToolTip(enabled
+                            ? bgl_tr("OBSTitles.DisableLayerEffectsTooltip")
+                            : bgl_tr("OBSTitles.EnableLayerEffectsTooltip"));
+                        emit layer_effects_enabled_changed(id, enabled);
+                    });
+        }
         hl->addWidget(fx_indicator);
 
         auto add_matte_indicator = [&](const char *icon, const QString &tip, bool active) {
@@ -525,7 +597,16 @@ void LayerStack::populate()
                             bgl_tr("OBSTitles.MaskedLayerTooltip"),
                             uses_track_matte);
 
-        QLineEdit *name = new QLineEdit(QString::fromStdString(l->name), row_widget);
+        // Keep every layer-list column aligned with the header. Hierarchy indentation
+        // belongs only to the flexible Name column; applying it to the row margins
+        // shifts every preceding/following control for child layers.
+        QWidget *name_cell = new QWidget(row_widget);
+        name_cell->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        auto *name_layout = new QHBoxLayout(name_cell);
+        name_layout->setContentsMargins(hierarchy_depth * 18, 0, 0, 0);
+        name_layout->setSpacing(0);
+
+        QLineEdit *name = new QLineEdit(QString::fromStdString(l->name), name_cell);
         name->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         name->setFrame(false);
         name->setReadOnly(l->locked);
@@ -541,7 +622,8 @@ void LayerStack::populate()
         connect(name, &QLineEdit::editingFinished, this, [this, id = l->id, name]() {
             emit layer_name_changed(id, name->text().trimmed().toStdString());
         });
-        hl->addWidget(name, 1);
+        name_layout->addWidget(name, 1);
+        hl->addWidget(name_cell, 1);
 
         QComboBox *mode = new QComboBox(row_widget);
         mode->setFixedWidth(110);
@@ -562,25 +644,21 @@ void LayerStack::populate()
                 });
         hl->addWidget(mode);
 
-        QToolButton *pick_whip = new QToolButton(row_widget);
-        pick_whip->setIcon(obs_icon("timeline-pick-whip.svg"));
-        pick_whip->setToolTip(bgl_tr("OBSTitles.ParentPickWhipTooltip"));
-        pick_whip->setFixedSize(20, 20);
-        pick_whip->setIconSize(QSize(14, 14));
-        pick_whip->setAutoRaise(true);
-        pick_whip->setStyleSheet(button_style);
-        hl->addWidget(pick_whip);
-
         QComboBox *parent = new QComboBox(row_widget);
         parent->setFixedWidth(150);
         parent->setStyleSheet(combo_style);
         parent->setToolTip(bgl_tr("OBSTitles.ParentLayerTooltip"));
         parent->addItem(bgl_tr("OBSTitles.None"), "");
-        for (const auto &candidate : title_->layers) {
-            if (candidate->id == l->id) continue;
-            parent->addItem(QString::fromStdString(candidate->name), QString::fromStdString(candidate->id));
+        for (int candidate_row = 0; candidate_row < static_cast<int>(title_->layers.size()); ++candidate_row) {
+            const auto &candidate = title_->layers[static_cast<size_t>(candidate_row)];
+            if (!candidate || candidate->id == l->id) continue;
+            const int layer_number = static_cast<int>(title_->layers.size()) - candidate_row;
+            const QString label = QStringLiteral("%1. %2")
+                                      .arg(layer_number)
+                                      .arg(QString::fromStdString(candidate->name));
+            parent->addItem(label, QString::fromStdString(candidate->id));
         }
-        int parent_idx = parent->findData(QString::fromStdString(l->parent_id));
+        int parent_idx = parent->findData(QString::fromStdString(l->transform_parent_id));
         parent->setCurrentIndex(parent_idx >= 0 ? parent_idx : 0);
         connect(parent, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                 [this, id = l->id, parent](int index) {
@@ -588,37 +666,105 @@ void LayerStack::populate()
                 });
         hl->addWidget(parent);
 
-        QComboBox *mask = new QComboBox(row_widget);
-        mask->setFixedWidth(178);
-        mask->setStyleSheet(combo_style);
-        mask->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
-        mask->addItem(obs_icon("timeline-mask.svg"), bgl_tr("OBSTitles.NoMask"), QVariant(QStringLiteral("|0")));
-        for (const auto &candidate : title_->layers) {
-            if (candidate->id == l->id) continue;
-            mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " α"),
-                          QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Alpha)));
-            mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -α"),
-                          QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedAlpha)));
-            mask->addItem(obs_icon("timeline-mask.svg"), QString::fromStdString(candidate->name + " Luma"),
-                          QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::Luma)));
-            mask->addItem(obs_icon("timeline-mask-inverted.svg"), QString::fromStdString(candidate->name + " -Luma"),
-                          QString::fromStdString(candidate->id + "|" + std::to_string((int)MaskMode::InvertedLuma)));
+        QComboBox *matte = new QComboBox(row_widget);
+        matte->setFixedWidth(130);
+        matte->setStyleSheet(combo_style);
+        matte->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
+        matte->addItem(bgl_tr("OBSTitles.NoMask"), QString());
+        for (int candidate_row = 0; candidate_row < static_cast<int>(title_->layers.size()); ++candidate_row) {
+            const auto &candidate = title_->layers[static_cast<size_t>(candidate_row)];
+            if (!candidate || candidate->id == l->id) continue;
+            const int layer_number = static_cast<int>(title_->layers.size()) - candidate_row;
+            const QString label = QStringLiteral("%1. %2")
+                                      .arg(layer_number)
+                                      .arg(QString::fromStdString(candidate->name));
+            matte->addItem(label, QString::fromStdString(candidate->id));
         }
-        /* Alpha/luma mattes are valid for every layer type, including
-         * adjustment and group containers. The renderer resolves the selected
-         * source through the same GPU mask graph used by artwork layers. */
-        mask->setEnabled(true);
-        QString mask_value = QString::fromStdString(l->mask_source_id + "|" + std::to_string((int)l->mask_mode));
-        int mask_idx = mask->findData(mask_value);
-        mask->setCurrentIndex(mask_idx >= 0 ? mask_idx : 0);
-        connect(mask, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-                [this, id = l->id, mask](int index) {
-                    const QStringList parts = mask->itemData(index).toString().split('|');
-                    const std::string source_id = parts.value(0).toStdString();
-                    const MaskMode mode = (MaskMode)parts.value(1).toInt();
-                    emit layer_mask_changed(id, source_id, mode);
+
+        const int matte_idx = matte->findData(QString::fromStdString(l->mask_source_id));
+        matte->setCurrentIndex(matte_idx >= 0 ? matte_idx : 0);
+        hl->addWidget(matte);
+
+        const bool has_matte = !l->mask_source_id.empty() && l->mask_mode != MaskMode::None;
+        const bool uses_luma = l->mask_mode == MaskMode::Luma || l->mask_mode == MaskMode::InvertedLuma;
+        const bool is_inverted = l->mask_mode == MaskMode::InvertedAlpha || l->mask_mode == MaskMode::InvertedLuma;
+
+        QToolButton *matte_type = new QToolButton(row_widget);
+        matte_type->setCheckable(true);
+        matte_type->setChecked(uses_luma);
+        if (has_matte) {
+            matte_type->setIcon(obs_icon(uses_luma ? "matte-luma.svg" : "matte-alpha.svg"));
+            matte_type->setToolTip(uses_luma ? bgl_tr("OBSTitles.MatteLuma") : bgl_tr("OBSTitles.MatteAlpha"));
+        } else {
+            matte_type->setIcon(QIcon());
+            matte_type->setToolTip(QString());
+        }
+        matte_type->setFixedSize(20, 20);
+        matte_type->setIconSize(QSize(14, 14));
+        matte_type->setAutoRaise(true);
+        matte_type->setStyleSheet(button_style);
+        matte_type->setEnabled(has_matte);
+        hl->addWidget(matte_type);
+
+        QToolButton *matte_invert = new QToolButton(row_widget);
+        matte_invert->setCheckable(true);
+        matte_invert->setChecked(is_inverted);
+        if (has_matte) {
+            matte_invert->setIcon(obs_icon(is_inverted ? "matte-inverted.svg" : "matte-normal.svg"));
+            matte_invert->setToolTip(is_inverted ? bgl_tr("OBSTitles.MatteInverted") : bgl_tr("OBSTitles.MatteNormal"));
+        } else {
+            matte_invert->setIcon(QIcon());
+            matte_invert->setToolTip(QString());
+        }
+        matte_invert->setFixedSize(20, 20);
+        matte_invert->setIconSize(QSize(14, 14));
+        matte_invert->setAutoRaise(true);
+        matte_invert->setStyleSheet(button_style);
+        matte_invert->setEnabled(has_matte);
+        hl->addWidget(matte_invert);
+
+        auto selected_matte_mode = [matte_type, matte_invert]() {
+            if (matte_type->isChecked())
+                return matte_invert->isChecked() ? MaskMode::InvertedLuma : MaskMode::Luma;
+            return matte_invert->isChecked() ? MaskMode::InvertedAlpha : MaskMode::Alpha;
+        };
+
+        connect(matte, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                [this, id = l->id, matte, matte_type, matte_invert, selected_matte_mode](int index) {
+                    const std::string source_id = matte->itemData(index).toString().toStdString();
+                    const bool enabled = !source_id.empty();
+                    matte_type->setEnabled(enabled);
+                    matte_invert->setEnabled(enabled);
+                    if (enabled) {
+                        const bool luma = matte_type->isChecked();
+                        const bool inverted = matte_invert->isChecked();
+                        matte_type->setIcon(obs_icon(luma ? "matte-luma.svg" : "matte-alpha.svg"));
+                        matte_type->setToolTip(luma ? bgl_tr("OBSTitles.MatteLuma") : bgl_tr("OBSTitles.MatteAlpha"));
+                        matte_invert->setIcon(obs_icon(inverted ? "matte-inverted.svg" : "matte-normal.svg"));
+                        matte_invert->setToolTip(inverted ? bgl_tr("OBSTitles.MatteInverted") : bgl_tr("OBSTitles.MatteNormal"));
+                    } else {
+                        matte_type->setIcon(QIcon());
+                        matte_type->setToolTip(QString());
+                        matte_invert->setIcon(QIcon());
+                        matte_invert->setToolTip(QString());
+                    }
+                    emit layer_mask_changed(id, source_id,
+                                            enabled ? selected_matte_mode() : MaskMode::None);
                 });
-        hl->addWidget(mask);
+        connect(matte_type, &QToolButton::toggled, this,
+                [this, id = l->id, matte, matte_type, selected_matte_mode](bool luma) {
+                    matte_type->setIcon(obs_icon(luma ? "matte-luma.svg" : "matte-alpha.svg"));
+                    matte_type->setToolTip(luma ? bgl_tr("OBSTitles.MatteLuma") : bgl_tr("OBSTitles.MatteAlpha"));
+                    const std::string source_id = matte->currentData().toString().toStdString();
+                    if (!source_id.empty()) emit layer_mask_changed(id, source_id, selected_matte_mode());
+                });
+        connect(matte_invert, &QToolButton::toggled, this,
+                [this, id = l->id, matte, matte_invert, selected_matte_mode](bool inverted) {
+                    matte_invert->setIcon(obs_icon(inverted ? "matte-inverted.svg" : "matte-normal.svg"));
+                    matte_invert->setToolTip(inverted ? bgl_tr("OBSTitles.MatteInverted") : bgl_tr("OBSTitles.MatteNormal"));
+                    const std::string source_id = matte->currentData().toString().toStdString();
+                    if (!source_id.empty()) emit layer_mask_changed(id, source_id, selected_matte_mode());
+                });
 
         list_->setItemWidget(item, row_widget);
         if ((prev_id.isEmpty() && list_->currentItem() == nullptr) ||

@@ -487,6 +487,9 @@ static void ensure_unique_title_id(const std::shared_ptr<Title> &title,
             continue;
         if (!layer->parent_id.empty() && layer_ids.find(layer->parent_id) == layer_ids.end())
             layer->parent_id.clear();
+        if (!layer->transform_parent_id.empty() &&
+            layer_ids.find(layer->transform_parent_id) == layer_ids.end())
+            layer->transform_parent_id.clear();
         if (!layer->mask_source_id.empty() && layer_ids.find(layer->mask_source_id) == layer_ids.end()) {
             layer->mask_source_id.clear();
             layer->mask_mode = MaskMode::None;
@@ -577,6 +580,7 @@ void Title::remove_layer(const std::string &lid)
     for (auto &layer : layers) {
         if (!layer) continue;
         if (layer->parent_id == lid) layer->parent_id.clear();
+        if (layer->transform_parent_id == lid) layer->transform_parent_id.clear();
         if (layer->mask_source_id == lid) {
             layer->mask_source_id.clear();
             layer->mask_mode = MaskMode::None;
@@ -1271,8 +1275,10 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["properties_expanded"] = l.properties_expanded;
     j["group_collapsed"] = l.group_collapsed;
     j["parent_id"] = l.parent_id;
+    j["transform_parent_id"] = l.transform_parent_id;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
+    j["matte_visibility_mode"] = (int)l.matte_visibility_mode;
     j["blend_mode"] = (int)l.blend_mode;
     j["use_as_scene_mask"] = l.use_as_scene_mask;
     j["effect_stack_respects_masks"] = l.effect_stack_respects_masks;
@@ -1716,7 +1722,8 @@ std::string layer_render_fingerprint(const Layer &layer)
     json j = layer_to_json(layer, false, false, nullptr, nullptr);
     static constexpr const char *kCompositorOnlyKeys[] = {
         "id", "name", "visible", "locked", "properties_expanded",
-        "group_collapsed", "parent_id", "mask_source_id", "mask_mode", "blend_mode",
+        "group_collapsed", "parent_id", "transform_parent_id", "mask_source_id", "mask_mode",
+        "matte_visibility_mode", "blend_mode",
         "use_as_scene_mask", "effect_stack_respects_masks",
         "in_time", "out_time", "position", "scale", "scale_lock",
         "rotation", "opacity", "expose_text", "exposed_hide_if_empty",
@@ -1805,8 +1812,21 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->properties_expanded = json_bool(j, "properties_expanded", false);
     l->group_collapsed = json_bool(j, "group_collapsed", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
+    l->transform_parent_id = bounded_string(j, "transform_parent_id", "", kMaxNameLength);
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
     l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedLuma);
+    if (j.contains("matte_visibility_mode")) {
+        l->matte_visibility_mode = (MatteVisibilityMode)std::clamp(
+            json_int(j, "matte_visibility_mode", (int)MatteVisibilityMode::MatteOnly),
+            (int)MatteVisibilityMode::HiddenInactive,
+            (int)MatteVisibilityMode::VisibleAndMatte);
+    } else {
+        /* Legacy files used visible=false for an inactive matte and
+         * visible=true for an active matte that was hidden from composition. */
+        l->matte_visibility_mode = l->visible
+            ? MatteVisibilityMode::MatteOnly
+            : MatteVisibilityMode::HiddenInactive;
+    }
     if (l->mask_source_id.empty()) l->mask_mode = MaskMode::None;
     l->blend_mode = (EffectBlendMode)std::clamp(json_int(j, "blend_mode", (int)EffectBlendMode::Normal), 0, (int)EffectBlendMode::Color);
     l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false);
@@ -2823,6 +2843,34 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
                 return t;
         }
     }
+    /* Development builds before 056 stored both group membership and ordinary
+     * transform parenting in parent_id. Preserve real Group containers exactly,
+     * but migrate a non-Group target to the independent parenting relation. */
+    for (auto &layer : t->layers) {
+        if (!layer || layer->parent_id.empty())
+            continue;
+        const auto legacy_parent = t->find_layer(layer->parent_id);
+        if (legacy_parent && legacy_parent->type != LayerType::Group) {
+            if (layer->transform_parent_id.empty())
+                layer->transform_parent_id = layer->parent_id;
+            layer->parent_id.clear();
+        }
+    }
+
+    /* Matte mode controls the legacy visible flag only while the layer is
+     * actually referenced as a matte. Normal hidden layers must keep their own
+     * visibility when a Version 056 file is reloaded. */
+    std::unordered_set<std::string> matte_source_ids;
+    for (const auto &layer : t->layers) {
+        if (layer && layer->mask_mode != MaskMode::None &&
+            !layer->mask_source_id.empty())
+            matte_source_ids.insert(layer->mask_source_id);
+    }
+    for (auto &layer : t->layers) {
+        if (layer && matte_source_ids.find(layer->id) != matte_source_ids.end())
+            layer->visible = layer->matte_visibility_mode !=
+                             MatteVisibilityMode::HiddenInactive;
+    }
     if (jt.contains("live_text_rows") && jt["live_text_rows"].is_array()) {
         const size_t row_count = std::min(jt["live_text_rows"].size(), kMaxLiveTextRows);
         for (size_t r = 0; r < row_count; ++r) {
@@ -2894,6 +2942,11 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
                 layer->parent_id = it->second;
             else if (!layer->parent_id.empty())
                 layer->parent_id.clear();
+            auto transform_parent_it = layer_id_map.find(layer->transform_parent_id);
+            if (transform_parent_it != layer_id_map.end())
+                layer->transform_parent_id = transform_parent_it->second;
+            else if (!layer->transform_parent_id.empty())
+                layer->transform_parent_id.clear();
             auto mask_it = layer_id_map.find(layer->mask_source_id);
             if (mask_it != layer_id_map.end())
                 layer->mask_source_id = mask_it->second;

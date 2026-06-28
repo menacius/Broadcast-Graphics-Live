@@ -822,9 +822,9 @@ static QString timeline_layer_switches_text(const Title &title, const Layer &lay
                  layer.mask_mode == MaskMode::Luma ? bgl_tr("OBSTitles.TrackMatteLuma") :
                  layer.mask_mode == MaskMode::InvertedLuma ? bgl_tr("OBSTitles.TrackMatteInvLuma") :
                  bgl_tr("OBSTitles.TrackMatteAlpha"));
-    if (!layer.parent_id.empty()) {
+    if (!layer.transform_parent_id.empty()) {
         QString parent_name = bgl_tr("OBSTitles.Parent");
-        if (auto parent = title.find_layer(layer.parent_id))
+        if (auto parent = title.find_layer(layer.transform_parent_id))
             parent_name = QString::fromStdString(parent->name);
         tags << bgl_tr("OBSTitles.ParentNamed").arg(parent_name);
     }

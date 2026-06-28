@@ -51,6 +51,16 @@ enum class MaskMode {
     InvertedLuma,
 };
 
+/* Visibility contract for a layer while it is referenced as a track matte.
+ * HiddenInactive preserves the old disabled state, MatteOnly preserves the
+ * old active-but-not-composited state, and VisibleAndMatte is the new state
+ * that composites the artwork while it remains active as a matte. */
+enum class MatteVisibilityMode {
+    HiddenInactive = 0,
+    MatteOnly = 1,
+    VisibleAndMatte = 2,
+};
+
 enum class ImageScaleFilter {
     Disable,
     Bilinear,
@@ -110,9 +120,14 @@ struct Layer {
     /* Group rows can collapse their descendants in the layer/timeline UI.
      * This is presentation state only; it never affects rendering. */
     bool        group_collapsed = false;
+    /* Container hierarchy. Only Group layers may be referenced here. */
     std::string parent_id;
+    /* Independent transform parenting. This never changes group membership,
+     * layer ordering, or the Layers/Timeline hierarchy. */
+    std::string transform_parent_id;
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;
+    MatteVisibilityMode matte_visibility_mode = MatteVisibilityMode::MatteOnly;
     EffectBlendMode blend_mode = EffectBlendMode::Normal; /* AE-style layer mode */
     bool        use_as_scene_mask = false;
     bool        effect_stack_respects_masks = false; /* When true, stackable effects are applied after the layer track matte/mask. */

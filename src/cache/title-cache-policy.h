@@ -59,8 +59,11 @@ inline TitleDynamicLayerAnalysis analyze_title_dynamic_layers(const Title &title
             if (!layer || dynamic[i])
                 continue;
 
-            const auto parent = index_by_id.find(layer->parent_id);
-            const bool dynamic_parent = parent != index_by_id.end() && dynamic[parent->second];
+            const auto group_parent = index_by_id.find(layer->parent_id);
+            const auto transform_parent = index_by_id.find(layer->transform_parent_id);
+            const bool dynamic_parent =
+                (group_parent != index_by_id.end() && dynamic[group_parent->second]) ||
+                (transform_parent != index_by_id.end() && dynamic[transform_parent->second]);
 
             const auto mask = index_by_id.find(layer->mask_source_id);
             const bool dynamic_mask = layer->mask_mode != MaskMode::None &&

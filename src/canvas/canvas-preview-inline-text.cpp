@@ -4,6 +4,24 @@
 #include <algorithm>
 #include <cmath>
 
+
+static bool inline_text_group_chain_is_expanded(const std::shared_ptr<Title> &title,
+                                                const Layer &layer)
+{
+    if (!title) return true;
+    std::string parent_id = layer.parent_id;
+    int guard = 0;
+    while (!parent_id.empty() && guard++ < 64) {
+        auto parent = title->find_layer(parent_id);
+        if (!parent || parent->type != LayerType::Group)
+            break;
+        if (parent->group_collapsed)
+            return false;
+        parent_id = parent->parent_id;
+    }
+    return true;
+}
+
 std::shared_ptr<Layer> CanvasPreview::text_layer_at_view_pos(const QPointF &view_pt) const
 {
     if (!title_) return nullptr;
@@ -11,7 +29,8 @@ std::shared_ptr<Layer> CanvasPreview::text_layer_at_view_pos(const QPointF &view
     for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
         const auto &layer = *it;
         if (!layer || !is_canvas_text_layer(*layer) || layer->type == LayerType::Clock) continue;
-        if (!layer->visible || layer->locked) continue;
+        if (!layer->visible || layer->locked ||
+            !inline_text_group_chain_is_expanded(title_, *layer)) continue;
         if (playhead_ < layer->in_time || playhead_ > layer->out_time) continue;
         if (layer_local_rect(*layer).contains(canvas_to_layer(*layer, canvas)))
             return layer;

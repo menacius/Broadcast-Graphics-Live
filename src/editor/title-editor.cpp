@@ -214,22 +214,127 @@ const Layer *editor_layer_by_id_for_parenting(const std::shared_ptr<Title> &titl
     return nullptr;
 }
 
+static QTransform editor_layer_local_transform_for_parenting(const Layer &layer,
+                                                             double playhead)
+{
+    QTransform local;
+    const double lt = std::max(0.0, playhead - layer.in_time);
+    local.translate(layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
+    local.rotate(layer.rotation.evaluate(lt));
+    local.scale(layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
+    return local;
+}
+
+static std::vector<std::string> editor_group_chain_for_parenting(
+    const std::shared_ptr<Title> &title, const std::string &group_parent_id)
+{
+    std::vector<std::string> chain;
+    std::string cursor = group_parent_id;
+    std::set<std::string> visited;
+    while (!cursor.empty() && visited.insert(cursor).second) {
+        const Layer *group = editor_layer_by_id_for_parenting(title, cursor);
+        if (!group || group->type != LayerType::Group)
+            break;
+        chain.push_back(cursor);
+        cursor = group->parent_id;
+    }
+    return chain;
+}
+
+static std::vector<std::string> editor_group_chain_for_layer_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer)
+{
+    std::vector<std::string> chain;
+    if (layer.type == LayerType::Group)
+        chain.push_back(layer.id);
+    const auto ancestors = editor_group_chain_for_parenting(title, layer.parent_id);
+    chain.insert(chain.end(), ancestors.begin(), ancestors.end());
+    return chain;
+}
+
+static std::string editor_common_group_for_parenting(
+    const std::shared_ptr<Title> &title, const std::string &child_group_parent_id,
+    const Layer &transform_parent)
+{
+    const auto child_groups = editor_group_chain_for_parenting(title, child_group_parent_id);
+    const auto parent_groups = editor_group_chain_for_layer_parenting(title, transform_parent);
+    const std::set<std::string> parent_set(parent_groups.begin(), parent_groups.end());
+    for (const auto &group_id : child_groups) {
+        if (parent_set.find(group_id) != parent_set.end())
+            return group_id;
+    }
+    return {};
+}
+
+static QTransform editor_layer_world_transform_for_parenting_impl(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    std::set<std::string> &visiting);
+
+static QTransform editor_parent_basis_for_parenting(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    const std::string &group_parent_id, const std::string &transform_parent_id,
+    std::set<std::string> &visiting)
+{
+    QTransform group_world;
+    if (!group_parent_id.empty()) {
+        if (const Layer *group_parent = editor_layer_by_id_for_parenting(title, group_parent_id);
+            group_parent && group_parent->type == LayerType::Group) {
+            group_world = editor_layer_world_transform_for_parenting_impl(
+                title, *group_parent, playhead, visiting);
+        }
+    }
+
+    if (transform_parent_id.empty())
+        return group_world;
+    const Layer *transform_parent = editor_layer_by_id_for_parenting(title, transform_parent_id);
+    if (!transform_parent)
+        return group_world;
+
+    const QTransform transform_world = editor_layer_world_transform_for_parenting_impl(
+        title, *transform_parent, playhead, visiting);
+    const std::string common_group_id = editor_common_group_for_parenting(
+        title, group_parent_id, *transform_parent);
+    if (common_group_id.empty())
+        return group_world * transform_world;
+
+    const Layer *common_group = editor_layer_by_id_for_parenting(title, common_group_id);
+    if (!common_group)
+        return group_world * transform_world;
+    std::set<std::string> common_visiting;
+    const QTransform common_world = editor_layer_world_transform_for_parenting_impl(
+        title, *common_group, playhead, common_visiting);
+    bool invertible = false;
+    const QTransform common_inverse = common_world.inverted(&invertible);
+    return invertible ? group_world * common_inverse * transform_world
+                      : group_world * transform_world;
+}
+
+static QTransform editor_layer_world_transform_for_parenting_impl(
+    const std::shared_ptr<Title> &title, const Layer &layer, double playhead,
+    std::set<std::string> &visiting)
+{
+    if (!layer.id.empty() && !visiting.insert(layer.id).second)
+        return QTransform();
+    const QTransform parent_basis = editor_parent_basis_for_parenting(
+        title, layer, playhead, layer.parent_id, layer.transform_parent_id, visiting);
+    /* QTransform products are applied in written order. Keep the established
+     * Group contract: layer-local transform first, then the container/parent
+     * basis. This is algebraically identical to the previous recursive
+     * translate/rotate/scale implementation for Group-only layers. */
+    const QTransform world =
+        editor_layer_local_transform_for_parenting(layer, playhead) * parent_basis;
+    if (!layer.id.empty())
+        visiting.erase(layer.id);
+    return world;
+}
+
 QTransform editor_layer_world_transform_for_parenting(const std::shared_ptr<Title> &title,
                                                       const Layer &layer,
                                                       double playhead,
-                                                      int depth = 0)
+                                                      int /*depth*/ = 0)
 {
-    QTransform xf;
-    if (depth > 64) return xf;
-    if (!layer.parent_id.empty()) {
-        if (const Layer *parent = editor_layer_by_id_for_parenting(title, layer.parent_id))
-            xf = editor_layer_world_transform_for_parenting(title, *parent, playhead, depth + 1);
-    }
-    const double lt = std::max(0.0, playhead - layer.in_time);
-    xf.translate(layer.position.evaluate(lt).x, layer.position.evaluate(lt).y);
-    xf.rotate(layer.rotation.evaluate(lt));
-    xf.scale(layer.scale.evaluate(lt).x, layer.scale.evaluate(lt).y);
-    return xf;
+    std::set<std::string> visiting;
+    return editor_layer_world_transform_for_parenting_impl(title, layer, playhead, visiting);
 }
 
 bool editor_paths_geometrically_equal(const QPainterPath &a, const QPainterPath &b)
@@ -374,17 +479,21 @@ bool editor_parenting_would_cycle(const std::shared_ptr<Title> &title,
                                   const std::string &layer_id,
                                   const std::string &parent_id)
 {
-    std::string cursor = parent_id;
-    int guard = 0;
-    while (!cursor.empty() && guard++ < 64) {
-        if (cursor == layer_id) return true;
-        const Layer *parent = editor_layer_by_id_for_parenting(title, cursor);
-        if (!parent) break;
-        cursor = parent->parent_id;
-    }
-    return false;
+    if (!title || layer_id.empty() || parent_id.empty())
+        return false;
+    std::set<std::string> visited;
+    std::function<bool(const std::string &)> depends_on_layer;
+    depends_on_layer = [&](const std::string &candidate_id) {
+        if (candidate_id.empty()) return false;
+        if (candidate_id == layer_id) return true;
+        if (!visited.insert(candidate_id).second) return false;
+        const Layer *candidate = editor_layer_by_id_for_parenting(title, candidate_id);
+        if (!candidate) return false;
+        return depends_on_layer(candidate->transform_parent_id) ||
+               depends_on_layer(candidate->parent_id);
+    };
+    return depends_on_layer(parent_id);
 }
-
 
 bool editor_layer_has_ancestor_for_grouping(const std::shared_ptr<Title> &title,
                                             const Layer &layer,
@@ -465,19 +574,16 @@ void editor_offset_position_track(AnimatedVec2Property &position,
 void editor_set_local_transform_from_world(const std::shared_ptr<Title> &title,
                                            Layer &layer,
                                            const QTransform &world,
-                                           const std::string &new_parent_id,
+                                           const std::string &new_group_parent_id,
+                                           const std::string &new_transform_parent_id,
                                            double playhead)
 {
-    QTransform parent_world;
-    if (!new_parent_id.empty()) {
-        if (const Layer *parent = editor_layer_by_id_for_parenting(title,
-                                                                  new_parent_id))
-            parent_world = editor_layer_world_transform_for_parenting(
-                title, *parent, playhead);
-    }
+    std::set<std::string> visiting;
+    const QTransform parent_world = editor_parent_basis_for_parenting(
+        title, layer, playhead, new_group_parent_id, new_transform_parent_id, visiting);
     bool invertible = false;
     const QTransform parent_inverse = parent_world.inverted(&invertible);
-    const QTransform local = invertible ? parent_inverse * world : world;
+    const QTransform local = invertible ? world * parent_inverse : world;
 
     const double scale_x = std::hypot(local.m11(), local.m12());
     const double determinant = local.determinant();
@@ -492,7 +598,8 @@ void editor_set_local_transform_from_world(const std::shared_ptr<Title> &title,
         playhead - layer.in_time, 0.0,
         std::max(0.0, layer.out_time - layer.in_time));
 
-    layer.parent_id = new_parent_id;
+    layer.parent_id = new_group_parent_id;
+    layer.transform_parent_id = new_transform_parent_id;
     set_animated_x(layer.position, local_time, local.dx());
     set_animated_y(layer.position, local_time, local.dy());
     set_animated_x(layer.scale, local_time, scale_x);
@@ -3583,12 +3690,14 @@ void TitleEditor::build_ui()
                 }
             });
 
-    connect(layers_, &LayerStack::group_collapsed_changed,
-            this, [this](const std::string &lid, bool collapsed) {
+    connect(layers_, &LayerStack::group_expansion_state_changed,
+            this, [this](const std::string &lid, int state) {
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid);
                     layer && layer->type == LayerType::Group) {
-                    layer->group_collapsed = collapsed;
+                    state = std::clamp(state, 0, 2);
+                    layer->properties_expanded = state >= 1;
+                    layer->group_collapsed = state < 2;
                     sel_layer_id_ = lid;
                     layers_->refresh();
                     layers_->set_selected_layer(lid);
@@ -3620,9 +3729,21 @@ void TitleEditor::build_ui()
                                                      next_parent_id))
                         next_parent_id.clear();
                     editor_set_local_transform_from_world(title_, *layer, world,
+                                                          layer->parent_id,
                                                           next_parent_id,
                                                           playhead_);
                     layers_->refresh();
+                    force_next_title_visual_update();
+                    on_title_modified();
+                }
+            });
+
+    connect(layers_, &LayerStack::layer_matte_visibility_changed,
+            this, [this](const std::string &lid, MatteVisibilityMode mode) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    layer->matte_visibility_mode = mode;
+                    layer->visible = mode != MatteVisibilityMode::HiddenInactive;
                     force_next_title_visual_update();
                     on_title_modified();
                 }
@@ -3632,9 +3753,35 @@ void TitleEditor::build_ui()
             this, [this](const std::string &lid, const std::string &mask_source_id, MaskMode mask_mode) {
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
+                    bool source_was_already_matte =
+                        !mask_source_id.empty() &&
+                        layer->mask_source_id == mask_source_id &&
+                        layer->mask_mode != MaskMode::None;
+                    if (!source_was_already_matte && !mask_source_id.empty()) {
+                        for (const auto &candidate : title_->layers) {
+                            if (!candidate || candidate->id == lid)
+                                continue;
+                            if (candidate->mask_source_id == mask_source_id &&
+                                candidate->mask_mode != MaskMode::None) {
+                                source_was_already_matte = true;
+                                break;
+                            }
+                        }
+                    }
+
                     layer->mask_source_id = mask_source_id;
                     layer->mask_mode = mask_source_id.empty() ? MaskMode::None : mask_mode;
+                    if (!mask_source_id.empty() && !source_was_already_matte) {
+                        if (auto source = title_->find_layer(mask_source_id)) {
+                            /* Preserve the original two-state visibility when a
+                             * normal layer becomes a matte for the first time. */
+                            source->matte_visibility_mode = source->visible
+                                ? MatteVisibilityMode::MatteOnly
+                                : MatteVisibilityMode::HiddenInactive;
+                        }
+                    }
                     layers_->refresh();
+                    force_next_title_visual_update();
                     on_title_modified();
                 }
             });
@@ -3644,6 +3791,25 @@ void TitleEditor::build_ui()
                 if (!title_) return;
                 if (auto layer = title_->find_layer(lid)) {
                     layer->blend_mode = blend_mode;
+                    on_title_modified();
+                }
+            });
+
+    connect(layers_, &LayerStack::layer_effects_enabled_changed,
+            this, [this](const std::string &lid, bool enabled) {
+                if (!title_) return;
+                if (auto layer = title_->find_layer(lid)) {
+                    const double local_time = std::clamp(playhead_ - layer->in_time,
+                                                         0.0,
+                                                         std::max(0.0, layer->out_time - layer->in_time));
+                    for (auto &effect : layer->effects) {
+                        effect.enabled = enabled;
+                        set_animated_value(effect.enabled_prop, local_time,
+                                           enabled ? 1.0 : 0.0);
+                    }
+                    if (effects_panel_ && sel_layer_id_ == lid)
+                        effects_panel_->set_layer(layer, playhead_);
+                    force_next_title_visual_update();
                     on_title_modified();
                 }
             });
@@ -5471,6 +5637,9 @@ std::shared_ptr<Layer> TitleEditor::clone_layer_for_insert(const Layer &layer, b
     clone->name = unique_layer_name(clone->name);
     if (!clone->parent_id.empty() && (!title_ || !title_->find_layer(clone->parent_id)))
         clone->parent_id.clear();
+    if (!clone->transform_parent_id.empty() &&
+        (!title_ || !title_->find_layer(clone->transform_parent_id)))
+        clone->transform_parent_id.clear();
     if (!clone->mask_source_id.empty() && (!title_ || !title_->find_layer(clone->mask_source_id))) {
         clone->mask_source_id.clear();
         clone->mask_mode = MaskMode::None;
@@ -5676,6 +5845,7 @@ void TitleEditor::apply_boolean_shape_operation(BooleanShapeOperation operation)
     if (!result.isEmpty()) {
         const bool source_dependencies_survive =
             selected_ids.find(style_source->parent_id) == selected_ids.end() &&
+            selected_ids.find(style_source->transform_parent_id) == selected_ids.end() &&
             selected_ids.find(style_source->mask_source_id) == selected_ids.end();
         const bool preserve_source_geometry = source_dependencies_survive &&
             editor_paths_geometrically_equal(result, canvas_paths[style_source_index]);
@@ -5713,6 +5883,7 @@ void TitleEditor::apply_boolean_shape_operation(BooleanShapeOperation operation)
             result_layer->path_points = std::move(points);
             result_layer->path_closed = true;
             result_layer->parent_id.clear();
+            result_layer->transform_parent_id.clear();
             result_layer->mask_source_id.clear();
             result_layer->mask_mode = MaskMode::None;
             result_layer->position = AnimatedVec2Property{
@@ -5790,6 +5961,8 @@ void TitleEditor::apply_boolean_shape_operation(BooleanShapeOperation operation)
             continue;
         if (selected_ids.find(layer->parent_id) != selected_ids.end())
             layer->parent_id = result_layer ? result_layer->id : std::string();
+        if (selected_ids.find(layer->transform_parent_id) != selected_ids.end())
+            layer->transform_parent_id = result_layer ? result_layer->id : std::string();
         if (selected_ids.find(layer->mask_source_id) != selected_ids.end()) {
             layer->mask_source_id = result_layer ? result_layer->id : std::string();
             if (!result_layer)
@@ -5841,6 +6014,14 @@ std::vector<std::shared_ptr<Layer>> TitleEditor::clone_layers_for_insert(const s
             clone->parent_id = parent_clone->second;
         } else if (!clone->parent_id.empty() && (!title_ || !title_->find_layer(clone->parent_id))) {
             clone->parent_id.clear();
+        }
+
+        auto transform_parent_clone = cloned_ids_by_original.find(clone->transform_parent_id);
+        if (transform_parent_clone != cloned_ids_by_original.end()) {
+            clone->transform_parent_id = transform_parent_clone->second;
+        } else if (!clone->transform_parent_id.empty() &&
+                   (!title_ || !title_->find_layer(clone->transform_parent_id))) {
+            clone->transform_parent_id.clear();
         }
 
         auto mask_clone = cloned_ids_by_original.find(clone->mask_source_id);
@@ -6015,6 +6196,10 @@ void TitleEditor::group_selected_layers()
     group->id = TitleDataStore::make_uuid();
     group->name = unique_layer_name(editor_text_std("OBSTitles.Group"));
     group->type = LayerType::Group;
+    /* A newly-created group starts closed.  The user can advance the caret to
+     * group-keyframes-only or to the full child-editing state explicitly. */
+    group->group_collapsed = true;
+    group->properties_expanded = false;
     group->parent_id = common_parent;
     group->in_time = 0.0;
     group->out_time = title_->duration;
@@ -6049,7 +6234,7 @@ void TitleEditor::group_selected_layers()
     for (const auto &layer : roots) {
         if (!layer)
             continue;
-        if (layer->parent_id == common_parent) {
+        if (layer->parent_id == common_parent && layer->transform_parent_id.empty()) {
             /* The new group is a pure translation inside the same parent.
              * Offset the complete position track, not just the current frame,
              * so grouping never changes animated artwork. */
@@ -6061,7 +6246,8 @@ void TitleEditor::group_selected_layers()
             const QTransform world = editor_layer_world_transform_for_parenting(
                 title_, *layer, playhead_);
             editor_set_local_transform_from_world(title_, *layer, world,
-                                                  group->id, playhead_);
+                                                  group->id, layer->transform_parent_id,
+                                                  playhead_);
         }
     }
 
@@ -6093,21 +6279,59 @@ void TitleEditor::ungroup_selected_layers()
     std::vector<std::string> next_selection;
     std::set<std::string> removed_group_ids;
     for (const auto &group : groups) {
+        if (group)
+            removed_group_ids.insert(group->id);
+    }
+
+    std::map<std::string, QTransform> detached_transform_worlds;
+    for (const auto &layer : title_->layers) {
+        if (!layer || removed_group_ids.find(layer->id) != removed_group_ids.end())
+            continue;
+        if (removed_group_ids.find(layer->transform_parent_id) != removed_group_ids.end()) {
+            detached_transform_worlds.emplace(
+                layer->id, editor_layer_world_transform_for_parenting(
+                    title_, *layer, playhead_));
+        }
+    }
+
+    std::set<std::string> reparented_children;
+    for (const auto &group : groups) {
         if (!group)
             continue;
-        removed_group_ids.insert(group->id);
         std::vector<std::shared_ptr<Layer>> children;
         for (const auto &candidate : title_->layers) {
             if (candidate && candidate->parent_id == group->id)
                 children.push_back(candidate);
         }
         for (const auto &child : children) {
-            const QTransform world = editor_layer_world_transform_for_parenting(
-                title_, *child, playhead_);
+            const auto detached = detached_transform_worlds.find(child->id);
+            const QTransform world = detached != detached_transform_worlds.end()
+                ? detached->second
+                : editor_layer_world_transform_for_parenting(title_, *child, playhead_);
+            const std::string transform_parent_id =
+                removed_group_ids.find(child->transform_parent_id) == removed_group_ids.end()
+                    ? child->transform_parent_id : std::string();
             editor_set_local_transform_from_world(title_, *child, world,
-                                                  group->parent_id, playhead_);
+                                                  group->parent_id,
+                                                  transform_parent_id,
+                                                  playhead_);
+            reparented_children.insert(child->id);
             next_selection.push_back(child->id);
         }
+    }
+
+    for (const auto &[layer_id, world] : detached_transform_worlds) {
+        if (reparented_children.find(layer_id) != reparented_children.end())
+            continue;
+        auto layer = title_->find_layer(layer_id);
+        if (!layer)
+            continue;
+        const std::string group_parent_id =
+            removed_group_ids.find(layer->parent_id) == removed_group_ids.end()
+                ? layer->parent_id : std::string();
+        editor_set_local_transform_from_world(title_, *layer, world,
+                                              group_parent_id, std::string(),
+                                              playhead_);
     }
 
     title_->layers.erase(std::remove_if(title_->layers.begin(),
@@ -6120,6 +6344,9 @@ void TitleEditor::ungroup_selected_layers()
     for (auto &layer : title_->layers) {
         if (!layer)
             continue;
+        if (removed_group_ids.find(layer->transform_parent_id) !=
+            removed_group_ids.end())
+            layer->transform_parent_id.clear();
         if (removed_group_ids.find(layer->mask_source_id) !=
             removed_group_ids.end()) {
             layer->mask_source_id.clear();
@@ -6160,13 +6387,15 @@ void TitleEditor::add_selected_layers_to_group(const std::string &group_id)
         const QTransform world = editor_layer_world_transform_for_parenting(
             title_, *layer, playhead_);
         editor_set_local_transform_from_world(title_, *layer, world,
-                                              group_id, playhead_);
+                                              group_id, layer->transform_parent_id,
+                                              playhead_);
         changed = true;
     }
     if (!changed)
         return;
 
-    group->group_collapsed = false;
+    /* Adding artwork to an existing group must not silently change its
+     * presentation/editing state. */
     sel_layer_id_ = group_id;
     layers_->refresh();
     layers_->set_selected_layer(group_id);
@@ -6194,7 +6423,8 @@ void TitleEditor::remove_selected_layers_from_group()
         const QTransform world = editor_layer_world_transform_for_parenting(
             title_, *layer, playhead_);
         editor_set_local_transform_from_world(title_, *layer, world,
-                                              parent->parent_id, playhead_);
+                                              parent->parent_id, layer->transform_parent_id,
+                                              playhead_);
         changed = true;
     }
     if (!changed)
@@ -6340,6 +6570,16 @@ void TitleEditor::delete_selected_layer()
     const auto ids = editor_selection_with_group_descendants(title_, requested_ids);
 
     std::set<std::string> removed_ids(ids.begin(), ids.end());
+    std::vector<std::pair<std::shared_ptr<Layer>, QTransform>> detached_transform_children;
+    for (const auto &layer : title_->layers) {
+        if (!layer || removed_ids.find(layer->id) != removed_ids.end())
+            continue;
+        if (removed_ids.find(layer->transform_parent_id) != removed_ids.end()) {
+            detached_transform_children.push_back({
+                layer, editor_layer_world_transform_for_parenting(title_, *layer, playhead_)});
+        }
+    }
+
     int first_removed_index = (int)title_->layers.size();
     std::vector<std::shared_ptr<Layer>> remaining;
     remaining.reserve(title_->layers.size());
@@ -6354,16 +6594,28 @@ void TitleEditor::delete_selected_layer()
 
     if (remaining.size() == title_->layers.size()) return;
 
-    for (auto &layer : remaining) {
+    title_->layers = std::move(remaining);
+    for (const auto &[layer, world] : detached_transform_children) {
+        if (!layer)
+            continue;
+        const std::string group_parent_id =
+            removed_ids.find(layer->parent_id) == removed_ids.end()
+                ? layer->parent_id : std::string();
+        editor_set_local_transform_from_world(title_, *layer, world,
+                                              group_parent_id, std::string(),
+                                              playhead_);
+    }
+    for (auto &layer : title_->layers) {
         if (!layer) continue;
-        if (removed_ids.find(layer->parent_id) != removed_ids.end()) layer->parent_id.clear();
+        if (removed_ids.find(layer->parent_id) != removed_ids.end())
+            layer->parent_id.clear();
+        if (removed_ids.find(layer->transform_parent_id) != removed_ids.end())
+            layer->transform_parent_id.clear();
         if (removed_ids.find(layer->mask_source_id) != removed_ids.end()) {
             layer->mask_source_id.clear();
             layer->mask_mode = MaskMode::None;
         }
     }
-
-    title_->layers = std::move(remaining);
     sel_layer_id_.clear();
     layers_->refresh();
 

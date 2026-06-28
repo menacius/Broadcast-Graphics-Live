@@ -566,10 +566,11 @@ static QString aggregate_live_cue_cache_tooltip(const LiveCueAggregateCacheStatu
 }
 
 static QIcon title_list_combined_status_icon(bool has_exposed_text, bool has_scene_mask,
-                                             const LiveCueAggregateCacheStatus &cache_status)
+                                             const LiveCueAggregateCacheStatus &cache_status,
+                                             bool show_cache)
 {
     constexpr int gap = 3;
-    const int width = kTitleListIconExtent * 2 + gap;
+    const int width = show_cache ? kTitleListIconExtent * 2 + gap : kTitleListIconExtent;
     QPixmap pixmap(width, kTitleListIconExtent);
     pixmap.fill(Qt::transparent);
 
@@ -578,7 +579,8 @@ static QIcon title_list_combined_status_icon(bool has_exposed_text, bool has_sce
     const QPixmap cache_pixmap = obs_icon(live_cue_cache_icon_name(cache_status.state, cache_status.progress_percent),
                                           live_cue_cache_color(cache_status.state)).pixmap(kTitleListIconExtent, kTitleListIconExtent);
     painter.drawPixmap(0, 0, type_pixmap);
-    painter.drawPixmap(kTitleListIconExtent + gap, 0, cache_pixmap);
+    if (show_cache)
+        painter.drawPixmap(kTitleListIconExtent + gap, 0, cache_pixmap);
     painter.end();
     return QIcon(pixmap);
 }
@@ -1747,7 +1749,7 @@ static QString elide_to_two_lines(const QString &text, const QFontMetrics &fm, i
 
 static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, bool has_scene_mask,
                                   const LiveCueAggregateCacheStatus &cache_status,
-                                  bool playlist_active)
+                                  bool playlist_active, bool show_cache)
 {
     const QSize thumb_size(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight);
     QPixmap composed(thumb_size);
@@ -1777,7 +1779,7 @@ static QIcon title_icon_view_icon(const Title &title, bool has_exposed_text, boo
     const QPixmap cache_pixmap = obs_icon(live_cue_cache_icon_name(cache_status.state, cache_status.progress_percent),
                                           live_cue_cache_color(cache_status.state)).pixmap(QSize(18, 18));
     QRect cache_badge_rect(thumb_size.width() - 29, 5, 24, 24);
-    if (!cache_pixmap.isNull())
+    if (show_cache && !cache_pixmap.isNull())
         painter.drawPixmap(cache_badge_rect.center() - QPoint(cache_pixmap.width() / 2, cache_pixmap.height() / 2), cache_pixmap);
     if (playlist_active)
         paint_playlist_badge(painter, QRect(thumb_size.width() - 29, thumb_size.height() - 29, 24, 24));
@@ -3118,14 +3120,15 @@ void TitleDock::update_title_list_cache_icon(const QString &title_id)
         if (!item || item->data(Qt::UserRole).toString() != title_id)
             continue;
         if (template_icon_view_) {
-            item->setIcon(title_icon_view_icon(*title, has_exposed_text, has_scene_mask, cache_status, title->playlist_active));
+            item->setIcon(title_icon_view_icon(*title, has_exposed_text, has_scene_mask, cache_status, title->playlist_active, CacheManager::instance().cacheEnabled()));
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
         } else {
-            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status));
+            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status, CacheManager::instance().cacheEnabled()));
         }
         item->setData(kTitleListThumbnailRole, title_preview_pixmap(*title, QSize(96, 54)));
         item->setData(kTitleShowStatusIconRole, true);
         item->setData(kTitlePlaylistActiveRole, title->playlist_active);
+        item->setData(kTitleCuedRole, title->current_cue_row >= 0 || title->pending_cue_row >= 0);
         item->setToolTip(QStringLiteral("%1\n%2")
                              .arg(bgl_tr("OBSTitles.LayerCountTooltipFormat").arg(title->layers.size()).arg(title->duration),
                                   aggregate_live_cue_cache_tooltip(cache_status)));
@@ -3202,10 +3205,12 @@ void TitleDock::adjust_live_text_table_columns(bool fill_to_viewport)
 
     if (text_table_->columnCount() <= 3) {
         resize_to_contents(kStaticCueColumn);
-        resize_to_contents(kStaticCacheColumn);
+        if (!text_table_->isColumnHidden(kStaticCacheColumn))
+            resize_to_contents(kStaticCacheColumn);
         header->setSectionResizeMode(kStaticTitleColumn, QHeaderView::Interactive);
         const int viewport_width = text_table_->viewport() ? text_table_->viewport()->width() : text_table_->width();
-        const int remaining = viewport_width - header->sectionSize(kStaticCueColumn) - header->sectionSize(kStaticCacheColumn);
+        const int cache_width = text_table_->isColumnHidden(kStaticCacheColumn) ? 0 : header->sectionSize(kStaticCacheColumn);
+        const int remaining = viewport_width - header->sectionSize(kStaticCueColumn) - cache_width;
         if (remaining > 0)
             header->resizeSection(kStaticTitleColumn, remaining);
         return;
@@ -3213,7 +3218,8 @@ void TitleDock::adjust_live_text_table_columns(bool fill_to_viewport)
 
     resize_to_contents(kLiveCueColumn);
     resize_to_contents(kLiveSelectColumn);
-    resize_to_contents(cache_col);
+    if (cache_col >= 0 && !text_table_->isColumnHidden(cache_col))
+        resize_to_contents(cache_col);
 
     if (first_text_col >= 0) {
         for (int col = first_text_col; col <= last_text_col; ++col)
@@ -3461,6 +3467,27 @@ void TitleDock::build_ui()
     list_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     list_->setMinimumHeight(120);
     list_->setItemDelegate(new TitleIconViewDelegate(list_));
+    list_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(list_, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        auto *clicked = list_->itemAt(pos);
+        if (clicked && !clicked->isSelected()) {
+            list_->clearSelection();
+            clicked->setSelected(true);
+            list_->setCurrentItem(clicked);
+        }
+        if (!list_->currentItem())
+            return;
+        QMenu menu(list_);
+        menu.addAction(obs_icon("edit.svg"), bgl_tr("OBSTitles.Edit"), this, &TitleDock::on_edit);
+        menu.addAction(obs_icon("add-to-scene.svg"), bgl_tr("OBSTitles.AddToScene"), this, &TitleDock::on_add_to_scene);
+        menu.addSeparator();
+        menu.addAction(obs_icon("duplicate.svg"), bgl_tr("OBSTitles.Duplicate"), this, &TitleDock::on_duplicate);
+        menu.addAction(obs_icon("rename.svg"), bgl_tr("OBSTitles.EditDetails"), this, &TitleDock::on_rename);
+        menu.addAction(obs_icon("export.svg"), bgl_tr("OBSTitles.Export"), this, &TitleDock::on_export);
+        menu.addSeparator();
+        menu.addAction(obs_icon("delete.svg"), bgl_tr("OBSTitles.Delete"), this, &TitleDock::on_delete);
+        menu.exec(list_->viewport()->mapToGlobal(pos));
+    });
     template_layout->addWidget(list_, 1);
 
     auto *live_section = new QWidget(sections_);
@@ -3542,6 +3569,58 @@ void TitleDock::build_ui()
     live_layout->addLayout(live_header);
 
     text_table_ = new LiveTextCueTable(live_section);
+    text_table_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(text_table_, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        if (!text_table_)
+            return;
+        const QModelIndex index = text_table_->indexAt(pos);
+        if (index.isValid() && !text_table_->selectionModel()->isRowSelected(index.row(), QModelIndex()))
+            text_table_->selectRow(index.row());
+        auto title = TitleDataStore::instance().get_title(selected_id());
+        if (!title)
+            return;
+        QMenu menu(text_table_);
+        if (index.isValid()) {
+            const int row = index.row();
+            menu.addAction(obs_icon("cue.svg"), bgl_tr("OBSTitles.PlayCue"), this,
+                           [this, row]() { cue_live_text_row(row, true); });
+            menu.addSeparator();
+        }
+        menu.addAction(obs_icon("add.svg"), bgl_tr("OBSTitles.AddRow"), this, &TitleDock::on_add_live_text_row);
+        QAction *delete_rows = menu.addAction(obs_icon("delete.svg"), bgl_tr("OBSTitles.Delete"), this,
+                                               &TitleDock::on_delete_live_text_rows);
+        delete_rows->setEnabled(!selected_live_text_rows().empty());
+        menu.addSeparator();
+        QAction *clear_all = menu.addAction(bgl_tr("OBSTitles.ClearAllLiveTextCues"));
+        clear_all->setEnabled(!title->live_text_rows.empty());
+        connect(clear_all, &QAction::triggered, this, [this, title]() {
+            const auto answer = QMessageBox::question(
+                this, bgl_tr("OBSTitles.ClearAllLiveTextCues"),
+                bgl_tr("OBSTitles.ClearAllLiveTextCuesConfirm"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (answer != QMessageBox::Yes)
+                return;
+            bool changed = false;
+            updating_exposed_text_ = true;
+            for (auto &row : title->live_text_rows) {
+                for (auto &value : row) {
+                    if (!value.empty()) {
+                        value.clear();
+                        changed = true;
+                    }
+                }
+            }
+            if (changed) {
+                TitleDataStore::instance().save();
+                TitleDataStore::instance().touch_runtime_change();
+                CacheManager::instance().refreshLiveCueStructureAsync(title);
+                seen_store_revision_ = TitleDataStore::instance().revision();
+            }
+            updating_exposed_text_ = false;
+            populate_exposed_text();
+        });
+        menu.exec(text_table_->viewport()->mapToGlobal(pos));
+    });
     if (auto *cue_table = dynamic_cast<LiveTextCueTable *>(text_table_))
         cue_table->layout_requested = [this]() { adjust_live_text_table_columns(); };
     auto *live_text_header = new LiveTextCueHeader(text_table_);
@@ -3896,11 +3975,11 @@ void TitleDock::populate_list()
         const bool has_scene_mask = title_has_scene_mask(t);
         const LiveCueAggregateCacheStatus cache_status = aggregate_live_cue_cache_status(t);
         if (template_icon_view_) {
-            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask, cache_status, t->playlist_active));
+            item->setIcon(title_icon_view_icon(*t, has_exposed_text, has_scene_mask, cache_status, t->playlist_active, CacheManager::instance().cacheEnabled()));
             item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
             item->setTextAlignment(Qt::AlignHCenter);
         } else {
-            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status));
+            item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status, CacheManager::instance().cacheEnabled()));
             item->setSizeHint(QSize());
             item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         }
@@ -4866,6 +4945,7 @@ void TitleDock::populate_exposed_text()
                                                << QString()
                                                << QString()
                                                << bgl_tr("OBSTitles.Title"));
+        text_table_->setColumnHidden(kStaticCacheColumn, !CacheManager::instance().cacheEnabled());
         text_table_->horizontalHeader()->setSectionsMovable(false);
         text_table_->horizontalHeader()->setSectionResizeMode(kStaticCueColumn, QHeaderView::ResizeToContents);
         text_table_->horizontalHeader()->setSectionResizeMode(kStaticTitleColumn, QHeaderView::Stretch);
@@ -4913,6 +4993,7 @@ void TitleDock::populate_exposed_text()
     for (const auto &layer : exposed)
         headers << live_text_layer_header(layer);
     text_table_->setHorizontalHeaderLabels(headers);
+    text_table_->setColumnHidden(kLiveCacheColumn, !CacheManager::instance().cacheEnabled());
     for (int col = 0; col < (int)exposed.size(); ++col) {
         if (auto *item = text_table_->horizontalHeaderItem(col + kLiveFirstValueColumn))
             item->setToolTip(live_text_layer_header(exposed[col]));
@@ -6268,7 +6349,11 @@ void TitleDock::on_add_to_scene()
     auto t = TitleDataStore::instance().get_title(id);
     if (!t) return;
 
-    obs_source_t *scene_source = obs_frontend_get_current_scene();
+    obs_source_t *scene_source = nullptr;
+    if (obs_frontend_preview_program_mode_active())
+        scene_source = obs_frontend_get_current_preview_scene();
+    if (!scene_source)
+        scene_source = obs_frontend_get_current_scene();
     if (!scene_source) {
         QMessageBox::warning(this, bgl_tr("OBSTitles.NoScene"),
                              bgl_tr("OBSTitles.NoActiveScene"));

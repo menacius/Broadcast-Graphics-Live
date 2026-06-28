@@ -47,23 +47,33 @@ int main(int argc, char **argv)
     ok &= require(editor, "void TitleEditor::ungroup_selected_layers()", "ungroup command");
     ok &= require(editor, "add_selected_layers_to_group", "add-to-group command");
     ok &= require(editor, "editor_top_level_selected_layers", "nested selection roots");
+    ok &= require(editor, "group->group_collapsed = true", "new groups start collapsed");
     ok &= require(editor, "layers_->set_selected_layer(group->id)", "new group remains selected");
     ok &= require(editor, "editor_selection_with_group_descendants", "group copy/delete integrity");
 
     ok &= require(layers, "visible_layer_hierarchy_rows", "hierarchical layer rows");
-    ok &= require(layers, "group_collapsed_changed", "group caret behavior");
+    ok &= require(layers, "group_expansion_state_changed", "three-state group caret behavior");
     ok &= require(layers, "add_to_group_requested", "add-to-group UI");
     ok &= require(layers, "remove_from_group_requested", "remove-from-group UI");
 
     ok &= require(canvas, "layer.type == LayerType::Group", "dynamic group canvas bounds");
-    ok &= require(canvas, "editor_outermost_group_ancestor", "canvas selects group container");
+    ok &= require(canvas, "editor_outermost_group_ancestor", "canvas group drill-down helper");
+    ok &= require(canvas, "editor_canvas_selection_target", "canvas selection follows group expansion state");
+    ok &= require(canvas, "Direct Selection obeys the same hierarchy visibility contract",
+                  "direct-selection cannot bypass a collapsed group");
+    ok &= require(canvas, "layer->type == LayerType::Group && !layer->group_collapsed",
+                  "marquee exposes children only for fully expanded groups");
     ok &= require(canvas, "editor_layer_has_ancestor(title_, *candidate, layer.id)",
                   "group bounds follow descendants");
 
     ok &= require(source, "if (layer.type == LayerType::Group)",
                   "group has no empty compositor raster");
-    ok &= require(source, "children remain independent GPU layers and text never",
-                  "text child renderer contract");
+    ok &= require(source, "Children are composited through their group surface",
+                  "group child compositor contract");
+    ok &= require(source, "A group owns the child opacity boundary",
+                  "child effects render before single local-opacity composite");
+    ok &= require(source, "Affect-behind effects on a child operate",
+                  "grouped child backdrop effects remain active");
 
     return ok ? 0 : 1;
 }

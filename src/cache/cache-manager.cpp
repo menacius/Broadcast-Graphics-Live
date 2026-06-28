@@ -1496,8 +1496,10 @@ QString CacheManager::contentHash(const Title &title) const
         add((int)layer->type);
         add(layer->visible);
         add(QString::fromStdString(layer->parent_id));
+        add(QString::fromStdString(layer->transform_parent_id));
         add(QString::fromStdString(layer->mask_source_id));
         add((int)layer->mask_mode);
+        add((int)layer->matte_visibility_mode);
         add((int)layer->blend_mode);
         add(layer->use_as_scene_mask);
         add(layer->effect_stack_respects_masks);
@@ -2979,6 +2981,7 @@ static bool title_requires_full_gpu_cache_frame(const Title &title)
         if (layer->type == LayerType::Adjustment ||
             layer->type == LayerType::ColorSolid ||
             !layer->parent_id.empty() ||
+            !layer->transform_parent_id.empty() ||
             layer->mask_mode != MaskMode::None ||
             layer->use_as_scene_mask)
             return true;
