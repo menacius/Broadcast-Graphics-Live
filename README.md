@@ -6,7 +6,15 @@
 
 **Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.5-alpha` · `Development Version 043`**
+**Current development version: `v0.8.5-alpha` · `Development Version 045`**
+
+### Development Version 045 — Adaptive timeline ruler scaling
+
+Reworks the timeline ruler around zoom-aware, frame-aligned major and minor intervals so tick marks remain visually separated at every zoom level. Label spacing is derived from the active font metrics and visible duration, overlapping labels are suppressed defensively, and low zoom levels no longer attempt to draw every frame. The ruler now scales from precise frame detail to clean multi-second intervals without producing stacked numbers or dense vertical-line bands.
+
+### Development Version 044 — Reliable editor keyboard routing
+
+Restores dependable **Space to Play/Pause** behavior across the editor, including when the GPU/QWindow-backed canvas or timeline owns focus. The editor now claims transport, tool, history, clipboard, delete, duplicate, grouping, ruler, guide, and snapping commands during Qt's `ShortcutOverride` phase without executing them prematurely, then dispatches each command exactly once on the real key press. The shortcut audit also adds consistent direct routing for Group/Ungroup, preserves native typing and local undo/redo inside text-entry controls, recognizes plain-text editors correctly, and prevents modified Space combinations from toggling playback accidentally.
 
 ### Development Version 043 — Free Transform, deterministic tickers, and a rebuilt Template Library
 

@@ -75,7 +75,7 @@ int main(int argc, char **argv)
     require(title_editor, "register_editor_shortcut");
     require(title_editor, "addAction(action);");
     require(title_editor, "focus_in_editor");
-    require(title_editor, "child_window_active");
+    require(title_editor, "modal_child_active");
     require(title_editor, "editor_is_active");
     require(title_editor, "key_event->matches(QKeySequence::Save)");
     require(title_editor, "key_event->matches(QKeySequence::Copy)");
@@ -83,6 +83,13 @@ int main(int argc, char **argv)
     require(title_editor, "act_snap_enabled_->toggle();");
     require(title_editor, "key_event->key() == Qt::Key_Y");
     require(title_editor, "ev->key() == Qt::Key_Y");
+    require(title_editor, "key_event->key() == Qt::Key_Space");
+    require(title_editor, "QEvent::ShortcutOverride");
+    require(title_editor, "plain_tool_key");
+    require(title_editor, "QApplication::mouseButtons() == Qt::NoButton");
+    require(title_editor, "group_selected_layers();");
+    require(title_editor, "ungroup_selected_layers();");
+    require(title_editor, "qobject_cast<QPlainTextEdit *>(widget)");
     forbid(title_editor, "event->type() == QEvent::KeyPress && isActiveWindow()");
 
     require(cache_manager, "gpu-renderer-v31-lens-flare-dx11-keyword-fix");

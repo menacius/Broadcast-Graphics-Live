@@ -8,6 +8,10 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QDragLeaveEvent>
+#include <QFontMetrics>
+
+#include <cmath>
+#include <limits>
 
 TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
 {
@@ -873,9 +877,48 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     double dur = title_ ? title_->duration : 10.0;
     double fps = obs_frame_rate();
     double frame_step = obs_frame_duration();
-    int first_frame = std::max(0, (int)std::floor((scroll_x_ + dirty.left()) / pixels_per_sec_ / frame_step) - 1);
-    int last_frame = (int)std::ceil((scroll_x_ + dirty.right()) / pixels_per_sec_ / frame_step) + 1;
-    int label_every = std::max(1, (int)std::ceil(55.0 / (pixels_per_sec_ * frame_step)));
+    const double pixels_per_frame = std::max(0.000001, pixels_per_sec_ * frame_step);
+
+    /* Build a density-safe ruler scale.  Drawing every frame at every zoom
+     * level makes both tick marks and labels collapse into an unreadable band.
+     * Select a "nice" frame-aligned major interval that leaves enough room for
+     * the widest visible label, then derive a minor interval that is never
+     * closer than a few device pixels. */
+    const QFontMetrics ruler_fm(p.font());
+    const int max_visible_seconds = std::max(0, (int)std::ceil(dur));
+    const int widest_label = std::max(ruler_fm.horizontalAdvance(QStringLiteral("+00f")),
+                                      ruler_fm.horizontalAdvance(QStringLiteral("%1s").arg(max_visible_seconds)));
+    const double target_major_px = std::max(56.0, (double)widest_label + 14.0);
+    const double target_major_frames = target_major_px / pixels_per_frame;
+
+    auto nice_frame_interval = [](double minimum_frames) {
+        if (minimum_frames <= 1.0)
+            return 1;
+        const double exponent = std::floor(std::log10(minimum_frames));
+        const double magnitude = std::pow(10.0, exponent);
+        const double normalized = minimum_frames / magnitude;
+        double nice = 10.0;
+        if (normalized <= 1.0) nice = 1.0;
+        else if (normalized <= 2.0) nice = 2.0;
+        else if (normalized <= 5.0) nice = 5.0;
+        return std::max(1, (int)std::ceil(nice * magnitude));
+    };
+
+    const int major_frames = nice_frame_interval(target_major_frames);
+    int minor_frames = major_frames;
+    for (int divisor : {10, 5, 2}) {
+        const int candidate = std::max(1, major_frames / divisor);
+        if (major_frames % divisor == 0 && candidate * pixels_per_frame >= 5.0) {
+            minor_frames = candidate;
+            break;
+        }
+    }
+
+    const int first_visible_frame = std::max(0, (int)std::floor((scroll_x_ + dirty.left()) /
+                                                                  pixels_per_sec_ / frame_step) - minor_frames);
+    const int last_visible_frame = (int)std::ceil((scroll_x_ + dirty.right()) /
+                                                   pixels_per_sec_ / frame_step) + minor_frames;
+    const int first_tick_frame = (first_visible_frame / minor_frames) * minor_frames;
 
     auto draw_header = [&]() {
         const QRect header_dirty = dirty.intersected(QRect(0, 0, W, rh));
@@ -892,24 +935,35 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
         p.setPen(border);
         p.drawLine(0, rh - 1, W, rh - 1);
 
-        for (int frame = first_frame; frame <= last_frame; ++frame) {
-            double t = frame * frame_step;
-            if (t > dur + frame_step) break;
-            int x = time_to_x(t);
-            if (x < dirty.left() - 64 || x > dirty.right() + 64) continue;
-            bool is_second = (frame % std::max(1, (int)std::round(fps)) == 0);
-            bool label = (frame % label_every == 0) || is_second;
-            p.setPen(is_second ? tick_major : tick_minor);
-            p.drawLine(x, rh - (is_second ? 9 : label ? 6 : 3), x, rh);
-            if (label) {
-                p.setPen(label_text);
-                int seconds = frame / std::max(1, (int)std::round(fps));
-                int frame_in_second = frame % std::max(1, (int)std::round(fps));
-                QString text = is_second
-                    ? QString("%1s").arg(seconds)
-                    : QString("+%1f").arg(frame_in_second, 2, 10, QChar('0'));
-                p.drawText(x + 2, rh - 2, text);
-            }
+        int last_label_right = std::numeric_limits<int>::min();
+        const int rounded_fps = std::max(1, (int)std::round(fps));
+        for (int frame = first_tick_frame; frame <= last_visible_frame; frame += minor_frames) {
+            const double t = frame * frame_step;
+            if (t > dur + frame_step)
+                break;
+            const int x = time_to_x(t);
+            if (x < dirty.left() - widest_label || x > dirty.right() + widest_label)
+                continue;
+
+            const bool is_major = (frame % major_frames) == 0;
+            p.setPen(is_major ? tick_major : tick_minor);
+            p.drawLine(x, rh - (is_major ? 10 : 4), x, rh);
+            if (!is_major)
+                continue;
+
+            const int seconds = frame / rounded_fps;
+            const int frame_in_second = frame % rounded_fps;
+            const QString ruler_text = frame_in_second == 0
+                ? QStringLiteral("%1s").arg(seconds)
+                : QStringLiteral("%1s+%2f").arg(seconds).arg(frame_in_second, 2, 10, QChar('0'));
+            const int label_width = ruler_fm.horizontalAdvance(ruler_text);
+            const int label_left = x + 3;
+            if (label_left <= last_label_right + 6)
+                continue;
+
+            p.setPen(label_text);
+            p.drawText(label_left, rh - 3, ruler_text);
+            last_label_right = label_left + label_width;
         }
 
         if (title_) {
@@ -938,7 +992,10 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             if (cache_disabled) {
                 p.fillRect(QRect(0, cache_y, W, cache_h), state_color(FrameCacheState::Disabled, false));
             } else {
-                for (int frame = first_frame; frame <= last_frame; ++frame) {
+                const int total_frames = std::max(0, (int)std::ceil(dur / frame_step));
+                const int cache_first_frame = std::clamp(first_visible_frame, 0, total_frames);
+                const int cache_last_frame = std::clamp(last_visible_frame, cache_first_frame, total_frames);
+                for (int frame = cache_first_frame; frame <= cache_last_frame; ++frame) {
                     const FrameCacheState state = CacheManager::instance().displayStateForFrame(title_, frame);
                     if (state == FrameCacheState::NotCached) continue;
                     const bool static_frame = (state == FrameCacheState::CachedRam || state == FrameCacheState::CachedDisk) &&

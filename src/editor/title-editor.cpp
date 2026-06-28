@@ -23,6 +23,7 @@
 #include <QList>
 #include <QDir>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QComboBox>
 #include <QSet>
 #include <QDirIterator>
@@ -6810,6 +6811,7 @@ static bool editor_focus_accepts_text(QWidget *widget)
 {
     return qobject_cast<QLineEdit *>(widget) ||
            qobject_cast<QTextEdit *>(widget) ||
+           qobject_cast<QPlainTextEdit *>(widget) ||
            qobject_cast<QAbstractSpinBox *>(widget) ||
            qobject_cast<QComboBox *>(widget);
 }
@@ -7559,11 +7561,29 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
             shortcut_modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
 
         if (shortcut_override && in_editor && !editing_value) {
+            /* Claim every editor command during ShortcutOverride, but never
+             * execute it here. QWindow-backed canvas/viewport controls can
+             * otherwise consume Space or tool keys before the real KeyPress
+             * reaches this filter. Executing commands during ShortcutOverride
+             * is also incorrect and can cause duplicate/uneven activation. */
+            const bool plain_tool_key =
+                tool_modifiers == Qt::NoModifier &&
+                (key_event->key() == Qt::Key_V ||
+                 key_event->key() == Qt::Key_A ||
+                 key_event->key() == Qt::Key_E ||
+                 key_event->key() == Qt::Key_P ||
+                 key_event->key() == Qt::Key_M ||
+                 key_event->key() == Qt::Key_L ||
+                 key_event->key() == Qt::Key_T ||
+                 key_event->key() == Qt::Key_I ||
+                 key_event->key() == Qt::Key_G);
             const bool editor_command =
                 key_event->matches(QKeySequence::Undo) ||
                 key_event->matches(QKeySequence::Redo) ||
                 (key_event->key() == Qt::Key_Z &&
                  shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) ||
+                (key_event->key() == Qt::Key_Y &&
+                 shortcut_modifiers == Qt::ControlModifier) ||
                 key_event->matches(QKeySequence::New) ||
                 key_event->matches(QKeySequence::Save) ||
                 key_event->matches(QKeySequence::Copy) ||
@@ -7571,7 +7591,21 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
                 key_event->matches(QKeySequence::Paste) ||
                 key_event->key() == Qt::Key_Delete ||
                 key_event->key() == Qt::Key_Backspace ||
-                (key_event->key() == Qt::Key_D && shortcut_modifiers == Qt::ControlModifier);
+                (key_event->key() == Qt::Key_D &&
+                 shortcut_modifiers == Qt::ControlModifier) ||
+                (key_event->key() == Qt::Key_G &&
+                 (shortcut_modifiers == Qt::ControlModifier ||
+                  shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier))) ||
+                (key_event->key() == Qt::Key_R &&
+                 shortcut_modifiers == Qt::ControlModifier) ||
+                (key_event->key() == Qt::Key_QuoteLeft &&
+                 shortcut_modifiers == Qt::ControlModifier) ||
+                (key_event->key() == Qt::Key_Semicolon &&
+                 shortcut_modifiers == Qt::ControlModifier) ||
+                (key_event->key() == Qt::Key_Space &&
+                 shortcut_modifiers == Qt::NoModifier &&
+                 QApplication::mouseButtons() == Qt::NoButton) ||
+                plain_tool_key;
             if (editor_command) {
                 key_event->accept();
                 return true;
@@ -7660,6 +7694,18 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
                 key_event->accept();
                 return true;
             }
+            if (key_event->key() == Qt::Key_G &&
+                shortcut_modifiers == Qt::ControlModifier) {
+                group_selected_layers();
+                key_event->accept();
+                return true;
+            }
+            if (key_event->key() == Qt::Key_G &&
+                shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) {
+                ungroup_selected_layers();
+                key_event->accept();
+                return true;
+            }
             if (key_event->key() == Qt::Key_R &&
                 shortcut_modifiers == Qt::ControlModifier &&
                 act_rulers_visible_) {
@@ -7727,7 +7773,9 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
             }
         }
 
-        if (in_editor && key_event->key() == Qt::Key_Space && !key_event->isAutoRepeat()) {
+        if (in_editor && key_event->key() == Qt::Key_Space &&
+            shortcut_modifiers == Qt::NoModifier && !key_event->isAutoRepeat() &&
+            QApplication::mouseButtons() == Qt::NoButton) {
             if (!editing_value) {
                 play_pause();
                 key_event->accept();
@@ -7844,7 +7892,8 @@ void TitleEditor::keyPressEvent(QKeyEvent *ev)
         ev->accept();
         return;
     }
-    if (ev->key() == Qt::Key_Space && !ev->isAutoRepeat()) {
+    if (ev->key() == Qt::Key_Space && shortcut_modifiers == Qt::NoModifier &&
+        !ev->isAutoRepeat() && QApplication::mouseButtons() == Qt::NoButton) {
         if (!editor_focus_accepts_text(focusWidget())) {
             play_pause();
             ev->accept();
