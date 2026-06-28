@@ -33,7 +33,7 @@ int normalized_mode(const Layer &layer)
 {
     return std::clamp(layer.ticker_playback_mode,
                       static_cast<int>(TickerPlaybackMode::AlwaysPlay),
-                      static_cast<int>(TickerPlaybackMode::PausedUntilHotkey));
+                      static_cast<int>(TickerPlaybackMode::CustomPlayback));
 }
 
 bool adaptive_paused(const std::string &title_id)
@@ -49,6 +49,7 @@ bool mode_paused(const RuntimeState &state)
         return !state.cue_gate_released;
     case TickerPlaybackMode::PausedUntilHotkey:
         return !state.hotkey_gate_released;
+    case TickerPlaybackMode::CustomPlayback:
     case TickerPlaybackMode::AlwaysPlay:
     default:
         return false;
@@ -114,10 +115,9 @@ RuntimeState &state_for(const std::string &title_id, const Layer &layer,
     const bool title_changed = has_title_context && !first_use &&
                                !state.title_id.empty() && state.title_id != title_id;
 
-    if (has_title_context) {
+    const bool was_title_cued = state.last_title_cued;
+    if (has_title_context)
         state.title_id = title_id;
-        state.last_title_cued = title_cued;
-    }
 
     if (first_use || title_changed)
         initialize_mode(state, mode, now, true);
@@ -125,6 +125,9 @@ RuntimeState &state_for(const std::string &title_id, const Layer &layer,
         accumulate_until(state, now);
         initialize_mode(state, mode, now, true);
     }
+
+    if (has_title_context)
+        state.last_title_cued = title_cued;
 
     if (state.playback_mode ==
             static_cast<int>(TickerPlaybackMode::PausedUntilCued) &&

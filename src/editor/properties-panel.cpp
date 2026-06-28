@@ -1060,10 +1060,23 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                                        static_cast<int>(TickerPlaybackMode::PausedUntilCued));
     cmb_ticker_playback_mode_->addItem(bgl_tr("OBSTitles.TickerPausedUntilHotkey"),
                                        static_cast<int>(TickerPlaybackMode::PausedUntilHotkey));
+    cmb_ticker_playback_mode_->addItem(bgl_tr("OBSTitles.TickerCustomPlayback"),
+                                       static_cast<int>(TickerPlaybackMode::CustomPlayback));
     cmb_ticker_playback_mode_->setFixedHeight(22);
     cmb_ticker_playback_mode_->setStyleSheet(control_style);
     ticker_playback_layout->addWidget(btn_ticker_pause_);
     ticker_playback_layout->addWidget(cmb_ticker_playback_mode_, 1);
+
+    row_ticker_completion_ = new QWidget(inner);
+    auto *ticker_completion_layout = new QHBoxLayout(row_ticker_completion_);
+    ticker_completion_layout->setContentsMargins(0, 0, 0, 0);
+    ticker_completion_layout->setSpacing(4);
+    spn_ticker_completion_ = mk_dspin(0.0, 100.0, 1.0);
+    spn_ticker_completion_->setSuffix(" %");
+    spn_ticker_completion_->setDecimals(1);
+    btn_kf_ticker_completion_ = mk_kf_button(bgl_tr("OBSTitles.ToggleTickerCompletionKeyframe"));
+    ticker_completion_layout->addWidget(spn_ticker_completion_, 1);
+    ticker_completion_layout->addWidget(btn_kf_ticker_completion_);
 
     cmb_ticker_style_ = new QComboBox(inner);
     cmb_ticker_style_->addItem(bgl_tr("OBSTitles.TickerHorizontal"), 0);
@@ -1085,6 +1098,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     add_form_row(dynamic_form, bgl_tr("OBSTitles.MinFitScaleLabel"), spn_text_fit_min_scale_);
     add_form_row(dynamic_form, "", lbl_text_fit_scale_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerPlaybackLabel"), row_ticker_playback_);
+    add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerCompletionLabel"), row_ticker_completion_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerStyleLabel"), cmb_ticker_style_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerSpeedLabel"), spn_ticker_speed_);
     add_form_row(dynamic_form, bgl_tr("OBSTitles.TickerLineHoldLabel"), spn_ticker_line_hold_);
@@ -1968,6 +1982,7 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     install_prop_delete_all(btn_kf_paragraph_indent_right_, &Layer::paragraph_indent_right_prop);
     install_prop_delete_all(btn_kf_paragraph_indent_first_line_, &Layer::paragraph_indent_first_line_prop);
     install_prop_delete_all(btn_kf_font_size_, &Layer::font_size_prop);
+    install_prop_delete_all(btn_kf_ticker_completion_, &Layer::ticker_completion_prop);
     install_prop_delete_all(btn_kf_char_scale_x_, &Layer::char_scale_x_prop);
     install_prop_delete_all(btn_kf_char_scale_y_, &Layer::char_scale_y_prop);
     install_prop_delete_all(btn_kf_char_tracking_, &Layer::char_tracking_prop);
@@ -2327,6 +2342,22 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
                 emit_change();
                 load_values();
             });
+    connect(spn_ticker_completion_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, can_edit, local_time, emit_change](double v) {
+                if (!can_edit() || !layer_ || layer_->type != LayerType::Ticker) return;
+                layer_->ticker_completion = v;
+                if (layer_->ticker_completion_prop.is_animated())
+                    set_animated_value(layer_->ticker_completion_prop, local_time(), v);
+                else
+                    layer_->ticker_completion_prop.static_value = v;
+                emit_change();
+            });
+    connect(btn_kf_ticker_completion_, &QPushButton::clicked, this, [this, can_edit, local_time, emit_change]() {
+        if (!can_edit() || !layer_ || layer_->type != LayerType::Ticker) return;
+        toggle_keyframe(layer_->ticker_completion_prop, local_time(), spn_ticker_completion_->value());
+        load_values();
+        emit_change();
+    });
     connect(cmb_ticker_style_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, can_edit, emit_change](int idx) {
                 if (can_edit()) { layer_->ticker_style = cmb_ticker_style_->itemData(idx).toInt(); emit_change(); load_values(); }
@@ -5585,6 +5616,11 @@ void PropertiesPanel::load_values()
             if (auto *label = dynamic_form->labelForField(row_ticker_playback_))
                 label->setVisible(is_ticker);
         }
+        if (row_ticker_completion_) {
+            const bool show_completion = is_ticker && layer_->ticker_playback_mode == static_cast<int>(TickerPlaybackMode::CustomPlayback);
+            row_ticker_completion_->setVisible(show_completion);
+            if (auto *label = dynamic_form->labelForField(row_ticker_completion_)) label->setVisible(show_completion);
+        }
         if (cmb_ticker_style_) {
             cmb_ticker_style_->setVisible(is_ticker);
             if (auto *label = dynamic_form->labelForField(cmb_ticker_style_)) label->setVisible(is_ticker);
@@ -5981,11 +6017,37 @@ void PropertiesPanel::load_values()
     const QString panel_text = is_clock
         ? QString::fromStdString(layer_->clock_format)
         : QString::fromStdString((rich_text_document_ensure_canonical(*layer_), layer_->rich_text.plain_text));
-    txt_content_->setPlainText(panel_text);
+    /* Property refreshes are triggered after every live text mutation. Avoid
+     * replacing an already-identical QTextDocument: setPlainText() resets the
+     * cursor/selection to position zero, which made typing in Text, Ticker and
+     * Clock layers jump to the beginning after every character. When an
+     * external change really did alter the value, preserve the user's logical
+     * selection as far as the new text permits. */
+    if (txt_content_->toPlainText() != panel_text) {
+        const QTextCursor previous_cursor = txt_content_->textCursor();
+        const int previous_anchor = previous_cursor.anchor();
+        const int previous_position = previous_cursor.position();
+        QSignalBlocker blocker(txt_content_);
+        txt_content_->setPlainText(panel_text);
+        QTextCursor restored = txt_content_->textCursor();
+        const int text_length = panel_text.size();
+        restored.setPosition(std::clamp(previous_anchor, 0, text_length));
+        restored.setPosition(std::clamp(previous_position, 0, text_length),
+                             QTextCursor::KeepAnchor);
+        txt_content_->setTextCursor(restored);
+    }
     if (cmb_ticker_playback_mode_) {
         const int playback_idx = cmb_ticker_playback_mode_->findData(layer_->ticker_playback_mode);
         cmb_ticker_playback_mode_->setCurrentIndex(playback_idx >= 0 ? playback_idx : 0);
     }
+    if (btn_ticker_pause_)
+        btn_ticker_pause_->setVisible(layer_->ticker_playback_mode != static_cast<int>(TickerPlaybackMode::CustomPlayback));
+    if (spn_ticker_completion_) {
+        const double completion = layer_->ticker_completion_prop.is_animated()
+            ? layer_->ticker_completion_prop.evaluate(lt) : layer_->ticker_completion;
+        spn_ticker_completion_->setValue(std::clamp(completion, 0.0, 100.0));
+    }
+    set_prop_kf_icon(btn_kf_ticker_completion_, layer_->ticker_completion_prop);
     update_ticker_runtime_button();
     int ticker_style_idx = cmb_ticker_style_->findData(layer_->ticker_style);
     cmb_ticker_style_->setCurrentIndex(ticker_style_idx >= 0 ? ticker_style_idx : 0);

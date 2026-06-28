@@ -105,6 +105,7 @@ public:
 
     void activate_selection_tool();
     void activate_direct_selection_tool();
+    void activate_free_transform_tool(int mode = 0);
     void activate_shape_tool(ShapeType shape_type);
     void activate_pen_tool();
     void activate_text_tool(LayerType type = LayerType::Text);
@@ -115,6 +116,7 @@ public:
 signals:
     void selection_tool_requested();
     void direct_selection_tool_requested();
+    void free_transform_tool_requested(int mode);
     void shape_tool_requested(ShapeType shape_type);
     void pen_tool_requested();
     void text_tool_requested(LayerType type);
@@ -130,6 +132,7 @@ private:
     void rebuild_text_menu();
     QToolButton *selection_button_ = nullptr;
     QToolButton *direct_selection_button_ = nullptr;
+    QToolButton *free_transform_button_ = nullptr;
     QToolButton *shape_button_ = nullptr;
     QToolButton *pen_button_ = nullptr;
     QToolButton *text_button_ = nullptr;
@@ -138,6 +141,8 @@ private:
     QToolButton *gradient_button_ = nullptr;
     QActionGroup *tool_group_ = nullptr;
     QMenu *shape_menu_ = nullptr;
+    QMenu *free_transform_menu_ = nullptr;
+    int free_transform_mode_ = 0;
     QMenu *text_menu_ = nullptr;
     ForegroundBackgroundSwatch *foreground_background_swatch_ = nullptr;
     ShapeType selected_shape_ = ShapeType::Rectangle;

@@ -259,6 +259,8 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
                                          bgl_tr("OBSTitles.SelectionToolTooltip") + QStringLiteral(" (V)"));
     direct_selection_button_ = make_tool_button(bgl_tr("OBSTitles.DirectSelectionTool"), direct_selection_tool_icon(),
                                                 bgl_tr("OBSTitles.DirectSelectionToolTooltip") + QStringLiteral(" (A)"));
+    free_transform_button_ = make_tool_button(bgl_tr("OBSTitles.FreeTransformTool"), cursor_tool_icon(),
+                                              bgl_tr("OBSTitles.FreeTransformToolTooltip") + QStringLiteral(" (E)"));
     shape_button_ = make_tool_button(bgl_tr("OBSTitles.ShapeTool"), shape_tool_icon(selected_shape_),
                                      bgl_tr("OBSTitles.ShapeToolTooltip") + QStringLiteral(" (M)"));
     pen_button_ = make_tool_button(bgl_tr("OBSTitles.PenTool"), pen_tool_icon(),
@@ -277,6 +279,8 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     selection_action->setChecked(true);
     auto *direct_selection_action = new QAction(direct_selection_tool_icon(), bgl_tr("OBSTitles.DirectSelectionTool"), this);
     direct_selection_action->setCheckable(true);
+    auto *free_transform_action = new QAction(cursor_tool_icon(), bgl_tr("OBSTitles.FreeTransformTool"), this);
+    free_transform_action->setCheckable(true);
     auto *shape_action = new QAction(shape_tool_icon(selected_shape_), bgl_tr("OBSTitles.ShapeTool"), this);
     shape_action->setCheckable(true);
     auto *pen_action = new QAction(pen_tool_icon(), bgl_tr("OBSTitles.PenTool"), this);
@@ -291,6 +295,7 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     gradient_action->setCheckable(true);
     tool_group_->addAction(selection_action);
     tool_group_->addAction(direct_selection_action);
+    tool_group_->addAction(free_transform_action);
     tool_group_->addAction(shape_action);
     tool_group_->addAction(pen_action);
     tool_group_->addAction(text_action);
@@ -299,6 +304,7 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     tool_group_->addAction(gradient_action);
     selection_button_->setDefaultAction(selection_action);
     direct_selection_button_->setDefaultAction(direct_selection_action);
+    free_transform_button_->setDefaultAction(free_transform_action);
     shape_button_->setDefaultAction(shape_action);
     pen_button_->setDefaultAction(pen_action);
     text_button_->setDefaultAction(text_action);
@@ -306,6 +312,22 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     color_picker_button_->setDefaultAction(color_picker_action);
     gradient_button_->setDefaultAction(gradient_action);
 
+    free_transform_menu_ = new QMenu(free_transform_button_);
+    free_transform_button_->setMenu(free_transform_menu_);
+    const QStringList transform_modes = {
+        bgl_tr("OBSTitles.FreeTransformMode"),
+        bgl_tr("OBSTitles.PerspectiveDistortMode"),
+        bgl_tr("OBSTitles.FreeDistortMode")
+    };
+    for (int mode = 0; mode < transform_modes.size(); ++mode) {
+        QAction *mode_action = free_transform_menu_->addAction(transform_modes[mode]);
+        connect(mode_action, &QAction::triggered, this, [this, mode]() {
+            free_transform_mode_ = mode;
+            if (free_transform_button_ && free_transform_button_->defaultAction())
+                free_transform_button_->defaultAction()->setChecked(true);
+            emit free_transform_tool_requested(mode);
+        });
+    }
     shape_menu_ = new QMenu(shape_button_);
     shape_button_->setMenu(shape_menu_);
     rebuild_shape_menu();
@@ -318,6 +340,9 @@ ToolsSidebar::ToolsSidebar(QWidget *parent) : QWidget(parent)
     });
     connect(direct_selection_action, &QAction::triggered, this, [this]() {
         emit direct_selection_tool_requested();
+    });
+    connect(free_transform_action, &QAction::triggered, this, [this]() {
+        emit free_transform_tool_requested(free_transform_mode_);
     });
     connect(shape_action, &QAction::triggered, this, [this]() {
         emit shape_tool_requested(selected_shape_);
@@ -438,6 +463,13 @@ void ToolsSidebar::activate_direct_selection_tool()
 {
     if (direct_selection_button_ && direct_selection_button_->defaultAction())
         direct_selection_button_->defaultAction()->trigger();
+}
+
+void ToolsSidebar::activate_free_transform_tool(int mode)
+{
+    free_transform_mode_ = std::clamp(mode, 0, 2);
+    if (free_transform_button_ && free_transform_button_->defaultAction())
+        free_transform_button_->defaultAction()->trigger();
 }
 
 void ToolsSidebar::activate_shape_tool(ShapeType shape_type)

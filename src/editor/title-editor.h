@@ -227,7 +227,7 @@ private:
     void load_new_layer_defaults();
     void save_new_layer_defaults() const;
     void open_default_sidebar_color_popup(bool foreground);
-    enum class EditorTool { Selection, DirectSelection, Shape, Pen, Text, Image, ColorPicker, Gradient };
+    enum class EditorTool { Selection, DirectSelection, FreeTransform, Shape, Pen, Text, Image, ColorPicker, Gradient };
     void activate_editor_tool(EditorTool tool);
     void handle_gradient_editor_tool_request(bool active);
     void load_editor_layout();
@@ -320,6 +320,10 @@ private:
     QWidget         *dynamic_toolbar_widget_ = nullptr;
     QAction         *dynamic_toolbar_action_ = nullptr;
     QAction         *dynamic_toolbar_separator_ = nullptr;
+    QWidget         *transform_toolbar_widget_ = nullptr;
+    QComboBox       *transform_toolbar_mode_ = nullptr;
+    QToolButton     *transform_toolbar_keyframe_ = nullptr;
+    QToolButton     *transform_toolbar_reset_ = nullptr;
     QWidget         *boolean_toolbar_widget_ = nullptr;
     QToolButton     *boolean_union_button_ = nullptr;
     QToolButton     *boolean_subtract_button_ = nullptr;

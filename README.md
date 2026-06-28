@@ -6,7 +6,11 @@
 
 **Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, template workflows, and native OBS source playback—without relying on browser sources or separate titling software.
 
-**Current development version: `v0.8.5-alpha` · `Development Version 025`**
+**Current development version: `v0.8.5-alpha` · `Development Version 043`**
+
+### Development Version 043 — Free Transform, deterministic tickers, and a rebuilt Template Library
+
+Development Versions 026–043 expand the editor with animatable projective Free Transform controls, higher-quality adaptive texture warping, deterministic ticker playback through a keyframeable **Completion** property, and a shared paragraph-layout pipeline for Vertical Smooth tickers. The Template Library now includes two metadata-driven collections with twelve ready-to-use broadcast and podcast graphics, generated previews, dynamic Category/Subcategory/Collection views, and the same list/icon presentation used by the main Dock. This delivery also restores editor shortcuts over the GPU canvas, optimizes transformed ticker rendering, unifies automatic and manual cue completion with **When cue ends**, improves Dock thumbnail sizing and selection cursors, and restores immediate layer-ordered hover feedback on the canvas.
 
 
 ## What is new in `v0.8.5-alpha`
@@ -831,8 +835,87 @@ Corrects the extension catalog include contract after the cleanup refactor. `plu
 
 This delivery consolidates built-in effect metadata into one canonical registry, fixes stable-ID shader-cache collisions between built-ins and extensions, completes ABI v2/v3 state migration/validation handling, hardens extension package discovery, and explicitly releases native libraries and GPU-owned extension resources during shutdown. Image and texture caches now use bounded incremental LRU eviction, embedded assets use atomic writes, and import diagnostics resolve effects by their stable extension identity. The former delivery label has been replaced everywhere by **Development Version 003**. See [`docs/development-version-003-audit.md`](docs/development-version-003-audit.md) for the complete findings, fixes, validation and remaining runtime risks.
 
+
+## Development Versions 026–043
+
+### Development Version 043 — Cue completion, Dock polish, and canvas feedback
+
+- Automatic title completion now follows the same uncue path as a manual toggle-off and respects the configured **When cue ends** behavior.
+- Dock list-view thumbnails are reduced to two thirds of their previous size for a denser title list.
+- The Selection Tool keeps the arrow cursor while hovering a selected layer and uses the closed-hand cursor only while moving it.
+- Non-selected layers once again display an immediate hover bounding box. Hit testing follows the topmost visible, unlocked, in-range layer order used by selection, and hover changes invalidate the cached GPU overlay correctly.
+
+### Development Version 041 — Windows shortcut-routing build fix
+
+- Fixed the MSVC build failure in `TitleEditor::eventFilter()` caused by redeclaring `watched_widget` in the same scope.
+- Preserved the GPU-canvas shortcut routing introduced in Development Version 039.
+
+### Development Version 039 — Unified title presentation and GPU-canvas shortcuts
+
+- Unified the Dock and Template Library through the same delegate, thumbnail rendering, card geometry, row sizing, text alignment, selection painting, and list/icon view behavior.
+- Restored Undo, Redo, Copy, Cut, Paste, Delete, Duplicate, New, and Save while focus is on the QWindow-backed GPU canvas.
+- Text-entry controls retain their native editing shortcuts and are excluded from editor-level command routing.
+
+### Development Versions 035–038 — Metadata-driven canned Template Library
+
+- Replaced the previous canned templates with two curated collections containing twelve graphics in total.
+- **Big News Studio** includes a breaking-news lower third, headline strap, reporter ID, live location, quote card, and full-screen bulletin.
+- **Casual Podcast** includes host and guest lower thirds, episode opener, topic card, social handle, and break screen.
+- Added Category, Subcategory, and Collection metadata with dynamic tree views, reusable dropdown values, and **Add New…** entry support.
+- Added generated screenshots to every built-in template and automatic regeneration of previously installed built-ins when the bundled template version changes.
+- Fixed invisible canned-template text by initializing the canonical rich-text document after applying content and style defaults.
+- The Template Library title area now mirrors the Dock's **Titles and Graphics** presentation and supports list/icon switching.
+
+### Development Version 034 — Transformed ticker performance
+
+- Cached Free Transform tessellation per GPU layer and rebuilds it only when the evaluated quad, raster bounds, origin, or scale changes.
+- Cached Vertical Smooth ticker paragraph shaping independently from playback position.
+- Releases cached transform vertex buffers safely when layers retire or GPU sessions are destroyed.
+
+### Development Version 033 — Full paragraph formatting for Vertical Smooth ticker
+
+- Routes Vertical Smooth ticker text through the regular paragraph-layout pipeline.
+- Supports Justify Last Left/Center/Right and Justify All during scrolling.
+- Preserves explicit line breaks and empty paragraphs.
+- Applies paragraph spacing, indents, leading, wrapping, and hyphenation consistently in the editor and OBS output.
+
+### Development Version 032 — Rich-text editing and justification fixes
+
+- Text, Ticker, and Clock property editors now preserve the cursor and selection during live refresh instead of moving the caret to the beginning.
+- Corrected final-line semantics for all paragraph justification modes in wrapped rich text.
+- Keeps the corrected paragraph layout shared between the editor preview and OBS renderer.
+
+### Development Version 031 — Custom ticker playback
+
+- Removed **Restart when appears** and added **Custom playback**.
+- Added a keyframeable **Completion** property from 0% to 100% that directly controls horizontal, Vertical Smooth, and Vertical Line ticker progress.
+- Custom-playback tickers are deterministic and can be prerendered/cached; clocks and runtime-driven ticker modes remain dynamic.
+- Vertical Smooth ticker respects the layer overflow mode: **Wrap** lays paragraphs out to the ticker width, while Clip/Fit retain non-wrapping behavior.
+- Updated serialization, model metadata, cache policy, properties UI, and localization.
+
+### Development Version 029 — Projective Free Transform rendering
+
+- Replaced bilinear corner-offset interpolation with projective square-to-quad mapping.
+- Added adaptive mesh tessellation from 24 to 96 divisions according to source texture resolution.
+- Removes visible mesh kinks and curved/noisy glyph deformation under strong perspective distortion.
+- Uses the same rendering path for text, image, shape, group, and effect-composited textures, with editor/OBS parity.
+
+### Development Versions 027–028 — Free Transform MSVC build corrections
+
+- Corrected helper declaration order and scope for `editor_quad_value()` and `editor_set_quad_value()`.
+- Removed ambiguous overload/build errors without changing project data or transform behavior.
+
+### Development Version 026 — Animatable Free Transform tool
+
+- Added Free Distort and Perspective Distort modes with transformed-quad hit testing.
+- Keeps scale and rotation handles usable after distortion.
+- Supports snapping, Ctrl snap bypass, Shift axis constraints, Alt symmetric edits, and the existing undo/redo transaction flow.
+- Exposes transform mode, keyframe toggle, and reset controls in the dynamic editor toolbar.
+- Stores all four distortion corners as animatable vector properties with backward-compatible serialization and identical evaluation in the canvas and OBS GPU renderer.
+
 ## Development Version 025
 
 - Unified editor and OBS source destination-aware compositing selection.
 - Affect-behind effects on groups now trigger source backdrop capture.
 - Group shadow/glow hard-alpha clipping now uses the untouched pre-effect silhouette.
+

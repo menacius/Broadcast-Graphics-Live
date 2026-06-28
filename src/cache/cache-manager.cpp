@@ -1509,6 +1509,10 @@ QString CacheManager::contentHash(const Title &title) const
         add_anim_vec2(layer->position);
         add_anim_vec2(layer->scale);
         add_anim(layer->rotation);
+        add(layer->transform_quad_tl_x); add(layer->transform_quad_tl_y);
+        add(layer->transform_quad_tr_x); add(layer->transform_quad_tr_y);
+        add(layer->transform_quad_br_x); add(layer->transform_quad_br_y);
+        add(layer->transform_quad_bl_x); add(layer->transform_quad_bl_y);
         add_anim(layer->opacity);
         add_anim_vec2(layer->size);
         add_anim_vec2(layer->image_size);
@@ -1519,6 +1523,8 @@ QString CacheManager::contentHash(const Title &title) const
         add(QString::fromStdString(layer->clock_format));
         add(layer->ticker_style); add(layer->ticker_speed); add(layer->ticker_line_hold); add(layer->ticker_direction);
         add(layer->ticker_playback_mode);
+        add(layer->ticker_completion);
+        add_anim(layer->ticker_completion_prop);
         add(QString::fromStdString(layer->font_family)); add(QString::fromStdString(layer->font_style));
         add(layer->font_size); add_anim(layer->font_size_prop);
         add(layer->font_bold); add(layer->font_italic); add(layer->font_kerning);
@@ -1725,6 +1731,10 @@ QString CacheManager::evaluatedVisualStateHash(const Title &title, double time,
          * property is animated. Hash the resolved active flag, not raw time. */
         add(layer->visible && time >= layer->in_time && time <= layer->out_time);
         add_vec(layer->position); add_vec(layer->scale); add_anim(layer->rotation);
+        add(layer->transform_quad_tl_x); add(layer->transform_quad_tl_y);
+        add(layer->transform_quad_tr_x); add(layer->transform_quad_tr_y);
+        add(layer->transform_quad_br_x); add(layer->transform_quad_br_y);
+        add(layer->transform_quad_bl_x); add(layer->transform_quad_bl_y);
         add_anim(layer->opacity); add_vec(layer->size); add_vec(layer->image_size); add_vec(layer->origin_prop);
         add_anim(layer->font_size_prop); add_anim(layer->char_tracking_prop);
         add_anim(layer->char_scale_x_prop); add_anim(layer->char_scale_y_prop);
@@ -1827,6 +1837,10 @@ QString CacheManager::adaptiveVisualStateHash(const Title &title, double time,
         add_vec(layer->position, 0.25);
         add_vec(layer->scale, 0.0005);
         add_anim(layer->rotation, 0.05);
+        add(quant(layer->transform_quad_tl_x, 0.0005)); add(quant(layer->transform_quad_tl_y, 0.0005));
+        add(quant(layer->transform_quad_tr_x, 0.0005)); add(quant(layer->transform_quad_tr_y, 0.0005));
+        add(quant(layer->transform_quad_br_x, 0.0005)); add(quant(layer->transform_quad_br_y, 0.0005));
+        add(quant(layer->transform_quad_bl_x, 0.0005)); add(quant(layer->transform_quad_bl_y, 0.0005));
         add_anim(layer->opacity, 0.002);
         add_vec(layer->size, 0.25);
         add_vec(layer->image_size, 0.25);

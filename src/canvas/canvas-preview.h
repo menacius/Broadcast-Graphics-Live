@@ -121,6 +121,12 @@ public:
     QString adaptive_quality_label() const;
     void set_selection_tool_active();
     void set_direct_selection_tool_active();
+    void set_free_transform_tool_active(int mode);
+    int free_transform_mode() const { return free_transform_mode_; }
+    bool free_transform_controls_available() const;
+    bool free_transform_keyframed() const;
+    void toggle_free_transform_keyframe();
+    void reset_free_transform();
     void set_shape_tool_active(ShapeType shape_type);
     void set_pen_tool_active();
     void set_text_tool_active(LayerType type);
@@ -247,9 +253,13 @@ private:
         PathMarquee,
         GuideX,
         GuideY,
-        ExtensionPoint
+        ExtensionPoint,
+        TransformCornerTL,
+        TransformCornerTR,
+        TransformCornerBR,
+        TransformCornerBL
     };
-    enum class CanvasTool { Selection, DirectSelection, Shape, Pen, Text, Image, ColorPicker, Gradient };
+    enum class CanvasTool { Selection, DirectSelection, FreeTransform, Shape, Pen, Text, Image, ColorPicker, Gradient };
 
     struct PathHit {
         DragMode mode = DragMode::None;
@@ -340,6 +350,7 @@ private:
     QPointF canvas_to_view(const QPointF &canvas_pt) const;
     QPointF canvas_to_layer(const Layer &layer, const QPointF &canvas_pt) const;
     QPointF layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const;
+    QPointF transformed_layer_point(const Layer &layer, const QPointF &layer_pt) const;
     DragMode hit_test_selected(const QPointF &view_pt) const;
     bool active_draw_tool_can_manipulate_selected() const;
     void set_cursor_for_drag_mode(DragMode mode, bool dragging);
@@ -508,6 +519,7 @@ private:
     int checkerboard_tile_pattern_ = -1;
     CanvasTool active_tool_ = CanvasTool::Selection;
     ShapeType active_shape_type_ = ShapeType::Rectangle;
+    int free_transform_mode_ = 0; // 0=free transform, 1=perspective, 2=free distort
     LayerType active_text_layer_type_ = LayerType::Text;
     std::vector<BezierPathPoint> pen_path_points_; /* canvas-space while drawing */
     std::vector<BezierPathPoint> pen_redo_points_; /* local history for an unfinished path */
@@ -655,6 +667,7 @@ private:
         float shape_roundness = 0.0f;
         float shape_inner_roundness = 0.0f;
         std::vector<double> path_corner_radii;
+        float quad[8] = {0,0,0,0,0,0,0,0};
     };
     std::vector<LayerDragState> drag_layer_states_;
     std::vector<LayerDragState> drag_child_layer_states_;

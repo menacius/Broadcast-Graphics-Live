@@ -111,6 +111,9 @@ struct TitleTemplateExportMetadata {
     std::string description;
     std::string creator;
     std::string creation_date;
+    std::string category;
+    std::string subcategory;
+    std::string collection;
     std::string screenshot_png_base64;
 };
 

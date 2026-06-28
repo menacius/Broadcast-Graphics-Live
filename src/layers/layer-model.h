@@ -132,6 +132,26 @@ struct Layer {
     AnimatedProperty rotation{ "rotation", 0.0 };
     AnimatedProperty opacity { "opacity",  1.0 };
 
+    /* Illustrator-style Free Transform quad offsets, normalized to the local
+     * layer box. Zero values preserve the ordinary affine transform. The four
+     * corners are ordered TL, TR, BR, BL. */
+    float transform_quad_tl_x = 0.0f;
+    float transform_quad_tl_y = 0.0f;
+    float transform_quad_tr_x = 0.0f;
+    float transform_quad_tr_y = 0.0f;
+    float transform_quad_br_x = 0.0f;
+    float transform_quad_br_y = 0.0f;
+    float transform_quad_bl_x = 0.0f;
+    float transform_quad_bl_y = 0.0f;
+
+    /* Animatable counterparts used by the Free Transform tool. Legacy float
+     * fields remain as a compatibility mirror for older project files and
+     * extension code. */
+    AnimatedVec2Property transform_quad_tl { "transform_quad_tl", {0.0, 0.0} };
+    AnimatedVec2Property transform_quad_tr { "transform_quad_tr", {0.0, 0.0} };
+    AnimatedVec2Property transform_quad_br { "transform_quad_br", {0.0, 0.0} };
+    AnimatedVec2Property transform_quad_bl { "transform_quad_bl", {0.0, 0.0} };
+
     /* ----- Text-specific ----- */
     std::string text_content  = "Title";
     RichTextDocument rich_text; /* Structured source-of-truth rich text document. */
@@ -183,8 +203,10 @@ struct Layer {
     double      ticker_speed = 120.0;
     double      ticker_line_hold = 2.0;
     int         ticker_direction = 1;
-    /* 0=always play, 1=paused until title is cued, 2=paused until hotkey/UI resume. */
+    /* 0=always play, 1=paused until title is cued, 2=paused until hotkey/UI resume, 3=custom completion control. */
     int         ticker_playback_mode = 0;
+    double      ticker_completion = 0.0; /* 0..100 percent */
+    AnimatedProperty ticker_completion_prop { "ticker_completion", 0.0 };
 
     uint32_t    text_color    = 0xFFFFFFFF;  /* ARGB */
 

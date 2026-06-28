@@ -7,7 +7,7 @@
 // Manually assigned delivery identifier. Increment this once per delivered
 // package, never per local compile.
 #ifndef BGL_DEVELOPMENT_VERSION
-#define BGL_DEVELOPMENT_VERSION "018"
+#define BGL_DEVELOPMENT_VERSION "043"
 #endif
 #define BGL_DEVELOPMENT_DISPLAY "Development Version " BGL_DEVELOPMENT_VERSION
 #define BGL_BUILD_DISPLAY "v" PLUGIN_VERSION " · " BGL_DEVELOPMENT_DISPLAY

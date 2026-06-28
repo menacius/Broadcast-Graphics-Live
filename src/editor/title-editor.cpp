@@ -22,6 +22,10 @@
 #include <QJsonObject>
 #include <QList>
 #include <QDir>
+#include <QLineEdit>
+#include <QComboBox>
+#include <QSet>
+#include <QDirIterator>
 #include <QDateTime>
 #include <QStatusBar>
 
@@ -928,6 +932,9 @@ void TitleEditor::activate_editor_tool(EditorTool tool)
         case EditorTool::DirectSelection:
             tools_sidebar_->activate_direct_selection_tool();
             return;
+        case EditorTool::FreeTransform:
+            tools_sidebar_->activate_free_transform_tool();
+            return;
         case EditorTool::Shape:
             tools_sidebar_->activate_shape_tool(tools_sidebar_->selected_shape());
             return;
@@ -957,6 +964,9 @@ void TitleEditor::activate_editor_tool(EditorTool tool)
         break;
     case EditorTool::DirectSelection:
         canvas_->set_direct_selection_tool_active();
+        break;
+    case EditorTool::FreeTransform:
+        canvas_->set_free_transform_tool_active(0);
         break;
     case EditorTool::Shape:
         canvas_->set_shape_tool_active(ShapeType::Rectangle);
@@ -2686,10 +2696,12 @@ void TitleEditor::build_ui()
         if (!action)
             return;
         action->setShortcuts(shortcuts);
-        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        action->setShortcutContext(Qt::WindowShortcut);
         /* The menu bar is embedded in the editor layout instead of being the
          * QMainWindow's native menu bar. Associate every shortcut action with
-         * the editor itself so Qt does not limit it to an open QMenu. */
+         * the editor itself so Qt does not limit it to an open QMenu.
+         * WindowShortcut is required because the GPU canvas is QWindow-backed
+         * and therefore is not always a QWidget child of the editor. */
         addAction(action);
     };
     auto *file_menu = menu_bar->addMenu(bgl_tr("OBSTitles.FileMenu"));
@@ -3945,6 +3957,10 @@ void TitleEditor::build_ui()
             current_editor_tool_ = EditorTool::DirectSelection;
             if (canvas_) canvas_->set_direct_selection_tool_active();
         });
+        connect(tools_sidebar_, &ToolsSidebar::free_transform_tool_requested, this, [this](int mode) {
+            current_editor_tool_ = EditorTool::FreeTransform;
+            if (canvas_) canvas_->set_free_transform_tool_active(mode);
+        });
         connect(tools_sidebar_, &ToolsSidebar::shape_tool_requested, this, [this](ShapeType shape_type) {
             current_editor_tool_ = EditorTool::Shape;
             if (tools_sidebar_) tools_sidebar_->set_selected_shape(shape_type);
@@ -4584,6 +4600,30 @@ void TitleEditor::build_toolbar()
     dynamic_toolbar_layout->setContentsMargins(2, 0, 2, 0);
     dynamic_toolbar_layout->setSpacing(2);
 
+    transform_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
+    transform_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto *transform_toolbar_layout = new QHBoxLayout(transform_toolbar_widget_);
+    transform_toolbar_layout->setContentsMargins(2, 0, 2, 0);
+    transform_toolbar_layout->setSpacing(3);
+    transform_toolbar_mode_ = new QComboBox(transform_toolbar_widget_);
+    transform_toolbar_mode_->addItems({bgl_tr("OBSTitles.FreeTransformMode"),
+                                       bgl_tr("OBSTitles.PerspectiveDistortMode"),
+                                       bgl_tr("OBSTitles.FreeDistortMode")});
+    transform_toolbar_mode_->setToolTip(bgl_tr("OBSTitles.FreeTransformToolTooltip"));
+    transform_toolbar_keyframe_ = new QToolButton(transform_toolbar_widget_);
+    transform_toolbar_keyframe_->setIcon(obs_icon("keyframe-outline.svg"));
+    transform_toolbar_keyframe_->setCheckable(true);
+    transform_toolbar_keyframe_->setAutoRaise(true);
+    transform_toolbar_keyframe_->setToolTip(QStringLiteral("Toggle Free Transform keyframe"));
+    transform_toolbar_reset_ = new QToolButton(transform_toolbar_widget_);
+    transform_toolbar_reset_->setIcon(obs_icon("undo.svg"));
+    transform_toolbar_reset_->setAutoRaise(true);
+    transform_toolbar_reset_->setToolTip(QStringLiteral("Reset Free Transform"));
+    transform_toolbar_layout->addWidget(transform_toolbar_mode_);
+    transform_toolbar_layout->addWidget(transform_toolbar_keyframe_);
+    transform_toolbar_layout->addWidget(transform_toolbar_reset_);
+    dynamic_toolbar_layout->addWidget(transform_toolbar_widget_);
+
     boolean_toolbar_widget_ = new QWidget(dynamic_toolbar_widget_);
     boolean_toolbar_widget_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     auto *boolean_toolbar_layout = new QHBoxLayout(boolean_toolbar_widget_);
@@ -4688,6 +4728,7 @@ void TitleEditor::build_toolbar()
     dynamic_toolbar_action_ = toolbar_->addWidget(dynamic_toolbar_widget_);
     dynamic_toolbar_action_->setPriority(QAction::HighPriority);
     dynamic_toolbar_action_->setVisible(false);
+    transform_toolbar_widget_->setVisible(false);
     boolean_toolbar_widget_->setVisible(false);
     point_toolbar_widget_->setVisible(false);
     corner_toolbar_widget_->setVisible(false);
@@ -4701,6 +4742,20 @@ void TitleEditor::build_toolbar()
     auto *toolbar_spacer = new QWidget(toolbar_);
     toolbar_spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar_->addWidget(toolbar_spacer);
+
+    connect(transform_toolbar_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int mode) {
+                if (updating_corner_toolbar_ || !canvas_) return;
+                canvas_->set_free_transform_tool_active(mode);
+                current_editor_tool_ = EditorTool::FreeTransform;
+                update_corner_toolbar();
+            });
+    connect(transform_toolbar_keyframe_, &QToolButton::clicked, this, [this]() {
+        if (!updating_corner_toolbar_ && canvas_) canvas_->toggle_free_transform_keyframe();
+    });
+    connect(transform_toolbar_reset_, &QToolButton::clicked, this, [this]() {
+        if (!updating_corner_toolbar_ && canvas_) canvas_->reset_free_transform();
+    });
 
     connect(boolean_union_button_, &QToolButton::clicked, this, [this]() {
         apply_boolean_shape_operation(BooleanShapeOperation::Union);
@@ -4781,6 +4836,7 @@ void TitleEditor::update_corner_toolbar()
         return;
     QScopedValueRollback<bool> guard(updating_corner_toolbar_, true);
 
+    const bool transform_available = canvas_->free_transform_controls_available();
     const bool boolean_available = boolean_shape_selection_available();
     bool boolean_enabled = boolean_available;
     if (boolean_enabled && title_) {
@@ -4795,8 +4851,13 @@ void TitleEditor::update_corner_toolbar()
     }
     const bool point_available = canvas_->point_controls_available();
     const bool corner_available = canvas_->corner_controls_available();
-    const bool context_available = boolean_available || point_available || corner_available;
+    const bool context_available = transform_available || boolean_available || point_available || corner_available;
 
+    if (transform_toolbar_widget_) transform_toolbar_widget_->setVisible(transform_available);
+    if (transform_available) {
+        if (transform_toolbar_mode_) transform_toolbar_mode_->setCurrentIndex(canvas_->free_transform_mode());
+        if (transform_toolbar_keyframe_) transform_toolbar_keyframe_->setChecked(canvas_->free_transform_keyframed());
+    }
     if (boolean_toolbar_widget_)
         boolean_toolbar_widget_->setVisible(boolean_available);
     if (boolean_union_button_) boolean_union_button_->setEnabled(boolean_enabled);
@@ -4946,6 +5007,50 @@ static bool prompt_editor_template_library_category(QWidget *parent, QString &ca
     return dialog.exec() == QDialog::Accepted;
 }
 
+static QStringList editor_template_metadata_values(const QString &field)
+{
+    QSet<QString> values;
+    QDirIterator it(editor_template_library_root_path(), QStringList() << QStringLiteral("*.obgt"),
+                    QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QFile file(it.next());
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isObject()) continue;
+        const QJsonObject root = doc.object();
+        const QJsonObject metadata = root.value(QStringLiteral("metadata")).toObject();
+        QString value = metadata.value(field).toString().trimmed();
+        if (value.isEmpty()) value = root.value(field).toString().trimmed();
+        if (!value.isEmpty()) values.insert(value);
+    }
+    QStringList result = values.values();
+    result.sort(Qt::CaseInsensitive);
+    return result;
+}
+
+static QComboBox *make_editor_template_metadata_combo(QWidget *parent, const QString &field,
+                                                       const QString &current_value)
+{
+    auto *combo = new QComboBox(parent);
+    combo->setEditable(true);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->addItem(bgl_tr("OBSTitles.TemplateMetadataAddNew"));
+    combo->insertSeparator(1);
+    combo->addItems(editor_template_metadata_values(field));
+    const QString current = current_value.trimmed();
+    if (!current.isEmpty() && combo->findText(current, Qt::MatchFixedString) < 0)
+        combo->addItem(current);
+    combo->setEditText(current);
+    QObject::connect(combo, QOverload<int>::of(&QComboBox::activated), combo, [combo](int index) {
+        if (index != 0) return;
+        combo->setCurrentIndex(-1);
+        combo->setEditText(QString());
+        combo->setFocus(Qt::OtherFocusReason);
+        if (combo->lineEdit()) combo->lineEdit()->selectAll();
+    });
+    return combo;
+}
+
 static bool prompt_editor_template_metadata(QWidget *parent, const Title &title,
                                            TitleTemplateExportMetadata &metadata,
                                            const QString &window_title = bgl_tr("OBSTitles.ExportTemplateDetails"))
@@ -4996,11 +5101,17 @@ static bool prompt_editor_template_metadata(QWidget *parent, const Title &title,
     description_edit->setMinimumHeight(96);
     auto *creator_edit = new QLineEdit(QString::fromStdString(metadata.creator), &dialog);
     auto *date_edit = new QLineEdit(QString::fromStdString(metadata.creation_date), &dialog);
+    auto *category_edit = make_editor_template_metadata_combo(&dialog, QStringLiteral("category"), QString::fromStdString(metadata.category));
+    auto *subcategory_edit = make_editor_template_metadata_combo(&dialog, QStringLiteral("subcategory"), QString::fromStdString(metadata.subcategory));
+    auto *collection_edit = make_editor_template_metadata_combo(&dialog, QStringLiteral("collection"), QString::fromStdString(metadata.collection));
 
     form->addRow(bgl_tr("OBSTitles.TemplateExportTitleLabel"), title_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateExportDescriptionLabel"), description_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateExportCreatorLabel"), creator_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateCreationDateLabel"), date_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateCategoryLabel"), category_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateSubcategoryLabel"), subcategory_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateCollectionLabel"), collection_edit);
     layout->addLayout(form);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -5022,6 +5133,9 @@ static bool prompt_editor_template_metadata(QWidget *parent, const Title &title,
     metadata.description = description_edit->toPlainText().trimmed().toStdString();
     metadata.creator = creator_edit->text().trimmed().toStdString();
     metadata.creation_date = date_edit->text().trimmed().toStdString();
+    metadata.category = category_edit->currentText().trimmed().toStdString();
+    metadata.subcategory = subcategory_edit->currentText().trimmed().toStdString();
+    metadata.collection = collection_edit->currentText().trimmed().toStdString();
     return true;
 }
 
@@ -5235,12 +5349,17 @@ void TitleEditor::export_title_template(bool save_in_library)
 
     QString path;
     if (save_in_library) {
-        QString category;
-        if (!prompt_editor_template_library_category(this, category))
-            return;
-        QDir root(editor_template_library_root_path());
-        root.mkpath(category);
-        path = root.filePath(QStringLiteral("%1/%2.obgt").arg(category, safe_name));
+        QStringList hierarchy;
+        const QString category = editor_sanitized_template_category_path(QString::fromStdString(metadata.category));
+        const QString subcategory = editor_sanitized_template_category_path(QString::fromStdString(metadata.subcategory));
+        const QString collection = editor_sanitized_template_category_path(QString::fromStdString(metadata.collection));
+        if (!category.isEmpty()) hierarchy << category;
+        if (!subcategory.isEmpty()) hierarchy << subcategory;
+        if (!collection.isEmpty()) hierarchy << collection;
+        QString library_path = editor_template_library_root_path();
+        if (!hierarchy.isEmpty()) library_path = QDir(library_path).filePath(hierarchy.join('/'));
+        QDir().mkpath(library_path);
+        path = QDir(library_path).filePath(safe_name + QStringLiteral(".obgt"));
     } else {
         path = QFileDialog::getSaveFileName(this, bgl_tr("OBSTitles.ExportTitleTemplate"),
                                             QDir(editor_template_library_root_path()).filePath(safe_name + QStringLiteral(".obgt")),
@@ -7416,16 +7535,19 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
     QWidget *active_window = QApplication::activeWindow();
     const bool focus_in_editor = focused_widget &&
         (focused_widget == this || isAncestorOf(focused_widget));
-    const bool child_window_active = active_window && active_window != this &&
-        active_window->isWindow();
+    const bool modal_child_active = active_window && active_window != this &&
+        active_window->isWindow() && active_window->windowModality() != Qt::NonModal;
     /* A QWindow-backed canvas can own the key event without becoming a QWidget
-     * descendant. QApplication still reports this editor as the active window,
-     * so use the active top-level editor as the fallback routing boundary. Do
-     * not steal shortcuts from modal/tool child windows. */
-    const bool editor_is_active = !child_window_active &&
-        (focus_in_editor || active_window == this);
-    if (event->type() == QEvent::KeyPress && editor_is_active) {
+     * descendant. Route commands whenever the focused/watched object belongs to
+     * this editor, or this editor is the active top-level window. Only modal
+     * child windows keep their own shortcut scope. */
+    const bool watched_in_editor = watched_widget &&
+        (watched_widget == this || isAncestorOf(watched_widget));
+    const bool editor_is_active = !modal_child_active &&
+        (focus_in_editor || watched_in_editor || active_window == this);
+    if ((event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) && editor_is_active) {
         auto *key_event = static_cast<QKeyEvent *>(event);
+        const bool shortcut_override = event->type() == QEvent::ShortcutOverride;
         auto *widget = qobject_cast<QWidget *>(watched);
         const bool in_editor = editor_is_active ||
             (widget && (widget == this || isAncestorOf(widget)));
@@ -7435,6 +7557,26 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
                                       Qt::AltModifier | Qt::MetaModifier);
         const Qt::KeyboardModifiers tool_modifiers =
             shortcut_modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+
+        if (shortcut_override && in_editor && !editing_value) {
+            const bool editor_command =
+                key_event->matches(QKeySequence::Undo) ||
+                key_event->matches(QKeySequence::Redo) ||
+                (key_event->key() == Qt::Key_Z &&
+                 shortcut_modifiers == (Qt::ControlModifier | Qt::ShiftModifier)) ||
+                key_event->matches(QKeySequence::New) ||
+                key_event->matches(QKeySequence::Save) ||
+                key_event->matches(QKeySequence::Copy) ||
+                key_event->matches(QKeySequence::Cut) ||
+                key_event->matches(QKeySequence::Paste) ||
+                key_event->key() == Qt::Key_Delete ||
+                key_event->key() == Qt::Key_Backspace ||
+                (key_event->key() == Qt::Key_D && shortcut_modifiers == Qt::ControlModifier);
+            if (editor_command) {
+                key_event->accept();
+                return true;
+            }
+        }
 
         // Route history shortcuts before the focused canvas/viewport can consume
         // them. Text-entry widgets retain their own native document undo/redo.
@@ -7550,6 +7692,10 @@ bool TitleEditor::eventFilter(QObject *watched, QEvent *event)
                 return true;
             case Qt::Key_A:
                 tools_sidebar_->activate_direct_selection_tool();
+                key_event->accept();
+                return true;
+            case Qt::Key_E:
+                tools_sidebar_->activate_free_transform_tool();
                 key_event->accept();
                 return true;
             case Qt::Key_P:

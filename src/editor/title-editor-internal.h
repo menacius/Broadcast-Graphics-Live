@@ -1775,6 +1775,70 @@ static void tag_qtext_manual_char_masks(QTextDocument *doc,
     }
 }
 
+static RichTextParagraphFormat editor_paragraph_format_for_block(
+    const RichTextDocument &model, const QString &plain_text, const QTextBlock &block)
+{
+    RichTextParagraphFormat effective = model.default_paragraph_format;
+    const size_t start = rich_byte_offset_from_qtext_position(plain_text, block.position());
+    for (const auto &rich_block : model.blocks) {
+        if (rich_block.start != start)
+            continue;
+        rich_text_merge_paragraph_format(effective, rich_block.format, rich_block.mask);
+        break;
+    }
+    return effective;
+}
+
+static void apply_editor_last_line_justification(QTextDocument &doc,
+                                                 const RichTextDocument &model)
+{
+    const QString plain_text = doc.toPlainText();
+    (void)doc.size();
+    bool relayout_needed = false;
+
+    for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+        QTextLayout *layout = block.layout();
+        if (!layout || layout->lineCount() <= 0)
+            continue;
+        const RichTextParagraphFormat format =
+            editor_paragraph_format_for_block(model, plain_text, block);
+        if (format.align_h != 6)
+            continue;
+        const QTextLine last = layout->lineAt(layout->lineCount() - 1);
+        const QString line_text = block.text().mid(last.textStart(), last.textLength());
+        const int spaces = line_text.count(QLatin1Char(' '));
+        const double available = last.width();
+        const double natural = last.naturalTextWidth();
+        if (spaces <= 0 || available <= natural + 0.01)
+            continue;
+        QTextCursor cursor(&doc);
+        const int start = block.position() + last.textStart();
+        cursor.setPosition(start);
+        cursor.setPosition(start + last.textLength(), QTextCursor::KeepAnchor);
+        QTextCharFormat spacing;
+        spacing.setFontWordSpacing((available - natural) / static_cast<double>(spaces));
+        cursor.mergeCharFormat(spacing);
+        relayout_needed = true;
+    }
+    if (relayout_needed)
+        (void)doc.size();
+
+    for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+        QTextLayout *layout = block.layout();
+        if (!layout || layout->lineCount() <= 0)
+            continue;
+        const RichTextParagraphFormat format =
+            editor_paragraph_format_for_block(model, plain_text, block);
+        if (format.align_h != 4 && format.align_h != 5)
+            continue;
+        QTextLine last = layout->lineAt(layout->lineCount() - 1);
+        QPointF position = last.position();
+        const double spare = std::max(0.0, last.width() - last.naturalTextWidth());
+        position.setX(format.align_h == 4 ? spare * 0.5 : spare);
+        last.setPosition(position);
+    }
+}
+
 static void populate_qtext_document_from_rich_text(QTextDocument *doc, const RichTextDocument &source_model, double visual_scale)
 {
     if (!doc) return;
@@ -1812,6 +1876,7 @@ static void populate_qtext_document_from_rich_text(QTextDocument *doc, const Ric
     apply_rich_text_paragraph_blocks_to_qtext_document(doc, model,
                                                         model.default_paragraph_format,
                                                         visual_scale);
+    apply_editor_last_line_justification(*doc, model);
 }
 
 static void populate_qtext_document_from_plain_layer_text(QTextDocument *doc, const std::string &text,
@@ -3535,30 +3600,62 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
 }
 
 
-static QStringList ticker_lines(const QString &text)
+static QStringList ticker_lines(const QString &text, const QFont &font,
+                                double available_width, bool wrap)
 {
     QString normalized = text;
     normalized.replace('\r', '\n');
-    QStringList raw_lines = normalized.split('\n');
+    const QStringList paragraphs = normalized.split('\n');
     QStringList lines;
-    for (const QString &line : raw_lines) {
-        if (!line.trimmed().isEmpty())
-            lines << line;
+
+    for (const QString &paragraph : paragraphs) {
+        if (!wrap || available_width <= 1.0) {
+            if (!paragraph.trimmed().isEmpty())
+                lines << paragraph;
+            continue;
+        }
+
+        QTextLayout layout(paragraph, font);
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);
+        layout.beginLayout();
+        while (true) {
+            QTextLine line = layout.createLine();
+            if (!line.isValid())
+                break;
+            line.setLineWidth(std::max(1.0, available_width));
+            const QString wrapped = paragraph.mid(line.textStart(), line.textLength());
+            if (!wrapped.trimmed().isEmpty())
+                lines << wrapped;
+        }
+        layout.endLayout();
     }
-    if (lines.isEmpty()) lines << QString();
+
+    if (lines.isEmpty())
+        lines << QString();
     return lines;
 }
 
 static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
                                      Qt::Alignment alignment, const QString &text,
-                                     const Layer &layer, const std::string &title_id)
+                                     const Layer &layer, const std::string &title_id, double local_time)
 {
+    struct TickerLayoutCache { QString key; QPainterPath path; QRectF bounds; };
+    static thread_local TickerLayoutCache layout_cache;
     QPainterPath path;
     QFontMetricsF metrics(font);
     const double speed = std::max(1.0, layer.ticker_speed);
     const TickerRuntimeSnapshot ticker_state =
         bgs::ticker_runtime::sample(title_id, layer, false);
     const double now = ticker_state.time_seconds;
+    const bool custom_playback = layer.ticker_playback_mode ==
+        static_cast<int>(TickerPlaybackMode::CustomPlayback);
+    const double completion = std::clamp(
+        layer.ticker_completion_prop.is_animated()
+            ? layer.ticker_completion_prop.evaluate(local_time)
+            : layer.ticker_completion,
+        0.0, 100.0) / 100.0;
 
     if (layer.ticker_style == 0) {
         QString single = text;
@@ -3567,7 +3664,7 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
         QRectF bounds = metrics.boundingRect(single);
         const double text_w = std::max(1.0, bounds.width());
         const double travel = rect.width() + text_w;
-        const double progress = std::fmod(now * speed, travel);
+        const double progress = custom_playback ? completion * travel : std::fmod(now * speed, travel);
         const double x = layer.ticker_direction == 0
             ? rect.left() - text_w + progress
             : rect.right() - progress;
@@ -3578,12 +3675,14 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
         return path;
     }
 
-    const QStringList lines = ticker_lines(text);
+    const QStringList lines = ticker_lines(
+        text, font, rect.width(),
+        layer.ticker_style == 2 && layer.text_overflow_mode == 0);
     const int line_count = std::max(1, static_cast<int>(lines.size()));
     const double line_h = std::max(1.0, metrics.lineSpacing() + std::clamp((double)layer.text_leading, -200.0, 500.0));
     if (layer.ticker_style == 1) {
         const double hold = std::max(0.1, layer.ticker_line_hold);
-        int idx = (int)std::floor(now / hold) % line_count;
+        int idx = custom_playback ? std::min(line_count - 1, (int)std::floor(completion * line_count)) : (int)std::floor(now / hold) % line_count;
         if (layer.ticker_direction == 0) idx = line_count - 1 - idx;
         QString line = lines.at(idx);
         double line_w = metrics.horizontalAdvance(line);
@@ -3596,21 +3695,57 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
         return path;
     }
 
-    const double content_h = line_count * line_h;
+    // Vertical Smooth uses the same paragraph layout engine as regular text.
+    // This preserves explicit new lines/empty paragraphs, wrap mode, paragraph
+    // indents and spacing, leading, and all justify-last/justify-all modes.
+    Layer paragraph_layer = layer;
+    paragraph_layer.align_v = 0; // ticker motion owns the vertical placement
+    const double layout_height = std::max(
+        rect.height(),
+        (static_cast<double>(line_count) + 4.0) *
+            (line_h + std::abs(eval_paragraph_space_before(layer, local_time)) +
+             std::abs(eval_paragraph_space_after(layer, local_time)) + 1.0));
+    const QRectF layout_rect(rect.left(), 0.0, rect.width(), layout_height);
+    /* Ticker motion must not rebuild paragraph shaping every frame. Cache the
+     * immutable layout and animate only its placement. Evaluated paragraph
+     * values are part of the key, so animated typography still invalidates the
+     * cache exactly when its visual result changes. */
+    const QString layout_key = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14")
+        .arg(text)
+        .arg(font.toString())
+        .arg(rect.width(), 0, 'f', 3)
+        .arg(layout_height, 0, 'f', 3)
+        .arg(layer.align_h)
+        .arg(layer.text_overflow_mode)
+        .arg(eval_paragraph_space_before(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_space_after(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_indent_left(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_indent_right(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_indent_first_line(layer, local_time), 0, 'f', 3)
+        .arg((double)layer.text_leading, 0, 'f', 3)
+        .arg(eval_char_tracking(layer, local_time), 0, 'f', 3)
+        .arg(eval_char_scale_x(layer, local_time), 0, 'f', 3);
+    if (layout_cache.key != layout_key) {
+        layout_cache.path = text_overflow_path(
+            font, layout_rect, Qt::AlignLeft | Qt::AlignTop,
+            text, paragraph_layer, local_time);
+        layout_cache.bounds = layout_cache.path.boundingRect();
+        if (layout_cache.bounds.isEmpty())
+            layout_cache.bounds = QRectF(rect.left(), 0.0, rect.width(), line_h);
+        layout_cache.key = layout_key;
+    }
+    const QPainterPath &paragraph_path = layout_cache.path;
+    const QRectF paragraph_bounds = layout_cache.bounds;
+
+    const double content_h = std::max(1.0, paragraph_bounds.bottom());
     const double travel = rect.height() + content_h;
-    const double progress = std::fmod(now * speed, travel);
-    double y = layer.ticker_direction == 0
+    const double progress = custom_playback ? completion * travel : std::fmod(now * speed, travel);
+    const double target_top = layer.ticker_direction == 0
         ? rect.top() - content_h + progress
         : rect.bottom() - progress;
-    for (const QString &line : lines) {
-        double line_w = metrics.horizontalAdvance(line);
-        double x = rect.left();
-        if (alignment & Qt::AlignHCenter) x = rect.left() + (rect.width() - line_w) / 2.0;
-        else if (alignment & Qt::AlignRight) x = rect.right() - line_w;
-        path.addText(QPointF(x, y + metrics.ascent()), font, line);
-        y += line_h;
-    }
-    return path;
+    QTransform ticker_transform;
+    ticker_transform.translate(0.0, target_top);
+    return ticker_transform.map(paragraph_path);
 }
 
 static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRectF &local_rect,
@@ -3634,7 +3769,7 @@ static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRect
             text = QString::fromStdString(layer.rich_text.plain_text);
 
         QPainterPath text_path = layer.type == LayerType::Ticker
-            ? ticker_text_path(font, text_rect, align, text, layer, title_id)
+            ? ticker_text_path(font, text_rect, align, text, layer, title_id, local_time)
             : text_overflow_path(font, text_rect, align, text, layer, local_time);
         text_path = apply_vertical_character_scale(text_path, text_rect, align, layer, local_time);
         if (std::abs(eval_baseline_shift(layer, local_time)) > 0.0001)
@@ -4866,6 +5001,7 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
         {nullptr, &layer.origin_prop},
         {&layer.paragraph_indent_left_prop, nullptr}, {&layer.paragraph_indent_right_prop, nullptr},
         {&layer.paragraph_indent_first_line_prop, nullptr},
+        {&layer.ticker_completion_prop, nullptr},
         {&layer.font_size_prop, nullptr}, {&layer.char_scale_x_prop, nullptr}, {&layer.char_scale_y_prop, nullptr},
         {&layer.char_tracking_prop, nullptr}, {&layer.baseline_shift_prop, nullptr},
         {&layer.paragraph_space_before_prop, nullptr}, {&layer.paragraph_space_after_prop, nullptr},

@@ -2792,33 +2792,63 @@ static QPainterPath text_overflow_path(const QFont &font, const QRectF &rect,
 }
 
 
-static QStringList ticker_lines(const QString &text)
+static QStringList ticker_lines(const QString &text, const QFont &font,
+                                double available_width, bool wrap)
 {
     QString normalized = text;
     normalized.replace('\r', '\n');
-    QStringList raw_lines = normalized.split('\n');
+    const QStringList paragraphs = normalized.split('\n');
     QStringList lines;
-    for (const QString &line : raw_lines) {
-        if (!line.trimmed().isEmpty())
-            lines << line;
+
+    for (const QString &paragraph : paragraphs) {
+        if (!wrap || available_width <= 1.0) {
+            if (!paragraph.trimmed().isEmpty())
+                lines << paragraph;
+            continue;
+        }
+
+        QTextLayout layout(paragraph, font);
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);
+        layout.beginLayout();
+        while (true) {
+            QTextLine line = layout.createLine();
+            if (!line.isValid())
+                break;
+            line.setLineWidth(std::max(1.0, available_width));
+            const QString wrapped = paragraph.mid(line.textStart(), line.textLength());
+            if (!wrapped.trimmed().isEmpty())
+                lines << wrapped;
+        }
+        layout.endLayout();
     }
-    if (lines.isEmpty()) lines << QString();
+
+    if (lines.isEmpty())
+        lines << QString();
     return lines;
 }
 
 static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
                                      Qt::Alignment alignment, const QString &text,
                                      const Layer &layer, const std::string &title_id,
-                                     bool title_cued)
+                                     bool title_cued, double local_time)
 {
-    struct TickerCache { QString key; QPainterPath path; QRectF bounds; };
-    static TickerCache cache;
+    struct TickerLayoutCache { QString key; QPainterPath path; QRectF bounds; };
+    static thread_local TickerLayoutCache layout_cache;
     QPainterPath path;
     QFontMetricsF metrics(font);
     const double speed = std::max(1.0, layer.ticker_speed);
     const TickerRuntimeSnapshot ticker_state =
         bgs::ticker_runtime::sample(title_id, layer, title_cued);
     const double now = ticker_state.time_seconds;
+    const bool custom_playback = layer.ticker_playback_mode ==
+        static_cast<int>(TickerPlaybackMode::CustomPlayback);
+    const double completion = std::clamp(
+        layer.ticker_completion_prop.is_animated()
+            ? layer.ticker_completion_prop.evaluate(local_time)
+            : layer.ticker_completion,
+        0.0, 100.0) / 100.0;
 
     if (layer.ticker_style == 0) {
         QString single = text;
@@ -2827,7 +2857,7 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
         QRectF bounds = metrics.boundingRect(single);
         const double text_w = std::max(1.0, bounds.width());
         const double travel = rect.width() + text_w;
-        const double progress = std::fmod(now * speed, travel);
+        const double progress = custom_playback ? completion * travel : std::fmod(now * speed, travel);
         const double x = layer.ticker_direction == 0
             ? rect.left() - text_w + progress
             : rect.right() - progress;
@@ -2838,12 +2868,14 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
         return path;
     }
 
-    const QStringList lines = ticker_lines(text);
+    const QStringList lines = ticker_lines(
+        text, font, rect.width(),
+        layer.ticker_style == 2 && layer.text_overflow_mode == 0);
     const int line_count = std::max(1, static_cast<int>(lines.size()));
     const double line_h = std::max(1.0, metrics.lineSpacing() + std::clamp((double)layer.text_leading, -200.0, 500.0));
     if (layer.ticker_style == 1) {
         const double hold = std::max(0.1, layer.ticker_line_hold);
-        int idx = (int)std::floor(now / hold) % line_count;
+        int idx = custom_playback ? std::min(line_count - 1, (int)std::floor(completion * line_count)) : (int)std::floor(now / hold) % line_count;
         if (layer.ticker_direction == 0) idx = line_count - 1 - idx;
         QString line = lines.at(idx);
         double line_w = metrics.horizontalAdvance(line);
@@ -2856,21 +2888,57 @@ static QPainterPath ticker_text_path(const QFont &font, const QRectF &rect,
         return path;
     }
 
-    const double content_h = line_count * line_h;
+    // Vertical Smooth uses the same paragraph layout engine as regular text.
+    // This preserves explicit new lines/empty paragraphs, wrap mode, paragraph
+    // indents and spacing, leading, and all justify-last/justify-all modes.
+    Layer paragraph_layer = layer;
+    paragraph_layer.align_v = 0; // ticker motion owns the vertical placement
+    const double layout_height = std::max(
+        rect.height(),
+        (static_cast<double>(line_count) + 4.0) *
+            (line_h + std::abs(eval_paragraph_space_before(layer, local_time)) +
+             std::abs(eval_paragraph_space_after(layer, local_time)) + 1.0));
+    const QRectF layout_rect(rect.left(), 0.0, rect.width(), layout_height);
+    /* Ticker motion must not rebuild paragraph shaping every frame. Cache the
+     * immutable layout and animate only its placement. Evaluated paragraph
+     * values are part of the key, so animated typography still invalidates the
+     * cache exactly when its visual result changes. */
+    const QString layout_key = QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14")
+        .arg(text)
+        .arg(font.toString())
+        .arg(rect.width(), 0, 'f', 3)
+        .arg(layout_height, 0, 'f', 3)
+        .arg(layer.align_h)
+        .arg(layer.text_overflow_mode)
+        .arg(eval_paragraph_space_before(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_space_after(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_indent_left(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_indent_right(layer, local_time), 0, 'f', 3)
+        .arg(eval_paragraph_indent_first_line(layer, local_time), 0, 'f', 3)
+        .arg((double)layer.text_leading, 0, 'f', 3)
+        .arg(eval_char_tracking(layer, local_time), 0, 'f', 3)
+        .arg(eval_char_scale_x(layer, local_time), 0, 'f', 3);
+    if (layout_cache.key != layout_key) {
+        layout_cache.path = text_overflow_path(
+            font, layout_rect, Qt::AlignLeft | Qt::AlignTop,
+            text, paragraph_layer, local_time);
+        layout_cache.bounds = layout_cache.path.boundingRect();
+        if (layout_cache.bounds.isEmpty())
+            layout_cache.bounds = QRectF(rect.left(), 0.0, rect.width(), line_h);
+        layout_cache.key = layout_key;
+    }
+    const QPainterPath &paragraph_path = layout_cache.path;
+    const QRectF paragraph_bounds = layout_cache.bounds;
+
+    const double content_h = std::max(1.0, paragraph_bounds.bottom());
     const double travel = rect.height() + content_h;
-    const double progress = std::fmod(now * speed, travel);
-    double y = layer.ticker_direction == 0
+    const double progress = custom_playback ? completion * travel : std::fmod(now * speed, travel);
+    const double target_top = layer.ticker_direction == 0
         ? rect.top() - content_h + progress
         : rect.bottom() - progress;
-    for (const QString &line : lines) {
-        double line_w = metrics.horizontalAdvance(line);
-        double x = rect.left();
-        if (alignment & Qt::AlignHCenter) x = rect.left() + (rect.width() - line_w) / 2.0;
-        else if (alignment & Qt::AlignRight) x = rect.right() - line_w;
-        path.addText(QPointF(x, y + metrics.ascent()), font, line);
-        y += line_h;
-    }
-    return path;
+    QTransform ticker_transform;
+    ticker_transform.translate(0.0, target_top);
+    return ticker_transform.map(paragraph_path);
 }
 
 static QColor color_from_argb(uint32_t argb)
@@ -3314,6 +3382,78 @@ static double max_rich_text_stroke_width(const Layer &layer, double t)
     return maximum;
 }
 
+static RichTextParagraphFormat source_paragraph_format_for_block(
+    const RichTextDocument &model, const QString &plain_text, const QTextBlock &block)
+{
+    RichTextParagraphFormat effective = model.default_paragraph_format;
+    const size_t start = static_cast<size_t>(plain_text.left(block.position()).toUtf8().size());
+    for (const auto &rich_block : model.blocks) {
+        if (rich_block.start != start)
+            continue;
+        rich_text_merge_paragraph_format(effective, rich_block.format, rich_block.mask);
+        break;
+    }
+    return effective;
+}
+
+/* Qt's AlignJustify always leaves the final visual line left aligned and has
+ * no native equivalents for "justify with last line centered/right" or
+ * "justify all". Preserve Qt shaping/wrapping for the preceding lines, then
+ * apply the missing final-line semantics directly to the laid-out block. */
+static void apply_rich_text_last_line_justification(QTextDocument &doc,
+                                                    const RichTextDocument &model)
+{
+    const QString plain_text = doc.toPlainText();
+    (void)doc.size(); // force QTextDocument/QTextLayout line creation
+
+    bool relayout_needed = false;
+    for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+        QTextLayout *layout = block.layout();
+        if (!layout || layout->lineCount() <= 0)
+            continue;
+        const RichTextParagraphFormat format =
+            source_paragraph_format_for_block(model, plain_text, block);
+        if (format.align_h != 6)
+            continue;
+
+        const QTextLine last = layout->lineAt(layout->lineCount() - 1);
+        const QString line_text = block.text().mid(last.textStart(), last.textLength());
+        const int spaces = line_text.count(QLatin1Char(' '));
+        const double available = last.width();
+        const double natural = last.naturalTextWidth();
+        if (spaces <= 0 || available <= natural + 0.01)
+            continue;
+
+        QTextCursor cursor(&doc);
+        const int start = block.position() + last.textStart();
+        cursor.setPosition(start);
+        cursor.setPosition(start + last.textLength(), QTextCursor::KeepAnchor);
+        QTextCharFormat spacing;
+        spacing.setFontWordSpacing((available - natural) / static_cast<double>(spaces));
+        cursor.mergeCharFormat(spacing);
+        relayout_needed = true;
+    }
+
+    if (relayout_needed)
+        (void)doc.size();
+
+    for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+        QTextLayout *layout = block.layout();
+        if (!layout || layout->lineCount() <= 0)
+            continue;
+        const RichTextParagraphFormat format =
+            source_paragraph_format_for_block(model, plain_text, block);
+        if (format.align_h != 4 && format.align_h != 5)
+            continue;
+
+        QTextLine last = layout->lineAt(layout->lineCount() - 1);
+        QPointF position = last.position();
+        const double spare = std::max(0.0, last.width() - last.naturalTextWidth());
+        position.setX(format.align_h == 4 ? spare * 0.5 : spare);
+        last.setPosition(position);
+    }
+}
+
 static void apply_rich_text_ranges(QTextDocument &doc, const Layer &layer, const QFont &font,
                                    const QRectF &text_rect, double t)
 {
@@ -3431,6 +3571,7 @@ static std::unique_ptr<QTextDocument> rich_text_document_for_layer(const Layer &
     doc->setPlainText(QString::fromStdString(render_model.plain_text));
     apply_rich_text_ranges(*doc, layer, font,
                            QRectF(0.0, 0.0, text_rect.width(), text_rect.height()), t);
+    apply_rich_text_last_line_justification(*doc, render_model);
 
     hide_rich_text_outside_range(*doc, visible_range);
     apply_rich_text_vertical_distribute(*doc, layer, text_rect);
@@ -4997,7 +5138,7 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     if (!has_rich_text) {
         text_path = layer.type == LayerType::Ticker
             ? ticker_text_path(font, text_rect, align, text, layer, title.id,
-                               title.current_cue_row >= 0 || title.pending_cue_row >= 0)
+                               title.current_cue_row >= 0 || title.pending_cue_row >= 0, t)
             : text_overflow_path(font, text_rect, align, text, layer, t);
         text_path = apply_vertical_character_scale(text_path, text_rect, align, layer, t);
         if (std::abs(eval_baseline_shift(layer, t)) > 0.0001)
@@ -8567,28 +8708,22 @@ static void source_video_tick(void *priv, float seconds)
                 data->playhead = title->duration;
                 data->playing  = false;
                 if (title->current_cue_row >= 0 || title->pending_cue_row >= 0 || data->active_cue_row >= 0) {
+                    /* Automatic completion is an uncue just like a manual
+                     * toggle-off.  Always clear the runtime cue identity, then
+                     * keep/hide the source according to When cue ends. */
+                    title->current_cue_row = -1;
+                    title->pending_cue_row = -1;
+                    title->cue_persistence_transition = false;
+                    title->cue_persistent_text_columns.clear();
+                    data->active_cue_row = -1;
                     if (title->cue_end_behavior == 1) {
-                        title->current_cue_row = -1;
-                        title->pending_cue_row = -1;
-                        title->cue_persistence_transition = false;
-                        title->cue_persistent_text_columns.clear();
-                        data->active_cue_row = -1;
                         set_source_output_visible(data, false,
                                                   "play-once-show-nothing");
                     } else if (title->cue_end_behavior == 2) {
-                        title->current_cue_row = -1;
-                        title->pending_cue_row = -1;
-                        title->cue_persistence_transition = false;
-                        title->cue_persistent_text_columns.clear();
-                        data->active_cue_row = -1;
                         data->playhead = 0.0;
                         set_source_output_visible(data, true,
                                                   "play-once-show-first-frame");
                     } else {
-                        title->pending_cue_row = -1;
-                        title->cue_persistence_transition = false;
-                        title->cue_persistent_text_columns.clear();
-                        data->active_cue_row = title->current_cue_row;
                         set_source_output_visible(data, true,
                                                   "play-once-hold-last-frame");
                     }
@@ -9460,6 +9595,11 @@ struct TitleGpuRenderSession {
         gs_texrender_t *primitive_targets[2] = {nullptr, nullptr};
         int primitive_active_target = -1;
         gs_texrender_t *effect_cache = nullptr;
+        /* Free-transform geometry is immutable for ordinary ticker playback.
+         * Keep it GPU-resident and rebuild only when the quad, raster bounds or
+         * evaluated transform actually changes. */
+        gs_vertbuffer_t *transform_grid = nullptr;
+        std::string transform_grid_key;
         uint32_t width = 0;
         uint32_t height = 0;
     };
@@ -10475,6 +10615,10 @@ static bool upload_gpu_layer_raster(TitleGpuRenderSession *session,
             gs_texrender_destroy(entry.effect_cache);
         entry.effect_cache = nullptr;
         entry.effect_cache_key.clear();
+        if (entry.transform_grid)
+            gs_vertexbuffer_destroy(entry.transform_grid);
+        entry.transform_grid = nullptr;
+        entry.transform_grid_key.clear();
         entry.width = entry.height = 0;
         entry.pending_upload = false;
         return false;
@@ -11274,7 +11418,139 @@ static gs_texture_t *mix_gpu_adjustment_layer(
     return result ? result : original;
 }
 
+static Vec2Value render_quad_value(const AnimatedVec2Property &prop, float x, float y, double local_time)
+{
+    if (prop.is_animated() || prop.static_value.x != 0.0 || prop.static_value.y != 0.0)
+        return prop.evaluate(local_time);
+    return {x, y};
+}
+
+static bool layer_has_free_transform_quad(const Layer &layer, double local_time)
+{
+    const Vec2Value values[] = {
+        render_quad_value(layer.transform_quad_tl, layer.transform_quad_tl_x, layer.transform_quad_tl_y, local_time),
+        render_quad_value(layer.transform_quad_tr, layer.transform_quad_tr_x, layer.transform_quad_tr_y, local_time),
+        render_quad_value(layer.transform_quad_br, layer.transform_quad_br_x, layer.transform_quad_br_y, local_time),
+        render_quad_value(layer.transform_quad_bl, layer.transform_quad_bl_x, layer.transform_quad_bl_y, local_time)};
+    for (const auto &value : values)
+        if (std::abs(value.x) > 0.00001 || std::abs(value.y) > 0.00001) return true;
+    return false;
+}
+
+static gs_vertbuffer_t *create_free_transform_grid(
+    const Layer &layer, uint32_t texture_width, uint32_t texture_height,
+    double logical_width, double logical_height, const QPointF &origin,
+    double base_box_width, double base_box_height, double raster_sx,
+    double raster_sy, double origin_x, double origin_y, double local_time)
+{
+    /* A coarse fixed grid makes glyph edges visibly kink at cell boundaries,
+     * especially when a text layer is compressed into a strong perspective
+     * trapezoid.  Use an adaptive grid so each cell covers roughly 20-24
+     * source pixels, while keeping the mesh bounded for realtime playback. */
+    const int divisions = std::clamp(
+        static_cast<int>(std::ceil(std::max(texture_width, texture_height) / 22.0)),
+        24, 96);
+    const int quads = divisions * divisions;
+    gs_vb_data *data = gs_vbdata_create();
+    if (!data) return nullptr;
+    data->num = static_cast<size_t>(quads * 6);
+    data->points = static_cast<vec3 *>(bzalloc(sizeof(vec3) * data->num));
+    data->num_tex = 1;
+    data->tvarray = static_cast<gs_tvertarray *>(bzalloc(sizeof(gs_tvertarray)));
+    if (!data->points || !data->tvarray) { gs_vbdata_destroy(data); return nullptr; }
+    data->tvarray[0].width = 2;
+    data->tvarray[0].array = bzalloc(sizeof(vec2) * data->num);
+    if (!data->tvarray[0].array) { gs_vbdata_destroy(data); return nullptr; }
+    auto *uvs = static_cast<vec2 *>(data->tvarray[0].array);
+
+    const Vec2Value qtl = render_quad_value(
+        layer.transform_quad_tl, layer.transform_quad_tl_x,
+        layer.transform_quad_tl_y, local_time);
+    const Vec2Value qtr = render_quad_value(
+        layer.transform_quad_tr, layer.transform_quad_tr_x,
+        layer.transform_quad_tr_y, local_time);
+    const Vec2Value qbr = render_quad_value(
+        layer.transform_quad_br, layer.transform_quad_br_x,
+        layer.transform_quad_br_y, local_time);
+    const Vec2Value qbl = render_quad_value(
+        layer.transform_quad_bl, layer.transform_quad_bl_x,
+        layer.transform_quad_bl_y, local_time);
+
+    /* Map the unit square to the distorted layer quad with one projective
+     * transform.  Bilinear corner-offset interpolation bends horizontal text
+     * rows and makes neighboring mesh cells disagree visually.  A homography
+     * preserves straight lines, which is the expected behavior for perspective
+     * and free-distort transforms. */
+    const double x0 = qtl.x;
+    const double y0 = qtl.y;
+    const double x1 = 1.0 + qtr.x;
+    const double y1 = qtr.y;
+    const double x2 = 1.0 + qbr.x;
+    const double y2 = 1.0 + qbr.y;
+    const double x3 = qbl.x;
+    const double y3 = 1.0 + qbl.y;
+
+    const double dx1 = x1 - x2;
+    const double dx2 = x3 - x2;
+    const double dy1 = y1 - y2;
+    const double dy2 = y3 - y2;
+    const double sxq = x0 - x1 + x2 - x3;
+    const double syq = y0 - y1 + y2 - y3;
+    const double det = dx1 * dy2 - dx2 * dy1;
+
+    double g = 0.0;
+    double h = 0.0;
+    if (std::abs(det) > 1.0e-10) {
+        g = (sxq * dy2 - dx2 * syq) / det;
+        h = (dx1 * syq - sxq * dy1) / det;
+    }
+    const double a = x1 - x0 + g * x1;
+    const double b = x3 - x0 + h * x3;
+    const double c = x0;
+    const double d = y1 - y0 + g * y1;
+    const double e = y3 - y0 + h * y3;
+    const double f = y0;
+
+    size_t out = 0;
+    auto vertex = [&](double u, double v) {
+        const double logical_x = origin.x() + u * logical_width;
+        const double logical_y = origin.y() + v * logical_height;
+        const double nx = (logical_x + origin_x * base_box_width) /
+            std::max(0.0001, base_box_width);
+        const double ny = (logical_y + origin_y * base_box_height) /
+            std::max(0.0001, base_box_height);
+
+        double denom = g * nx + h * ny + 1.0;
+        if (std::abs(denom) < 1.0e-8)
+            denom = std::copysign(1.0e-8, denom == 0.0 ? 1.0 : denom);
+        const double warped_x = (a * nx + b * ny + c) / denom;
+        const double warped_y = (d * nx + e * ny + f) / denom;
+        const double dx = (warped_x - nx) * base_box_width /
+            std::max(0.000001, raster_sx);
+        const double dy = (warped_y - ny) * base_box_height /
+            std::max(0.000001, raster_sy);
+
+        vec3_set(&data->points[out],
+                 static_cast<float>(u * texture_width + dx),
+                 static_cast<float>(v * texture_height + dy), 0.0f);
+        vec2_set(&uvs[out], static_cast<float>(u), static_cast<float>(v));
+        ++out;
+    };
+    for (int y = 0; y < divisions; ++y) {
+        for (int x = 0; x < divisions; ++x) {
+            const double u0 = static_cast<double>(x) / divisions;
+            const double v0 = static_cast<double>(y) / divisions;
+            const double u1 = static_cast<double>(x + 1) / divisions;
+            const double v1 = static_cast<double>(y + 1) / divisions;
+            vertex(u0,v0); vertex(u1,v0); vertex(u1,v1);
+            vertex(u0,v0); vertex(u1,v1); vertex(u0,v1);
+        }
+    }
+    return gs_vertexbuffer_create(data, 0);
+}
+
 static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
+                                   TitleGpuRenderSession::LayerRaster *raster_entry,
                                    const Title &title,
                                    const Layer &layer,
                                    gs_texture_t *texture,
@@ -11356,8 +11632,54 @@ static bool draw_gpu_layer_texture(TitleGpuRenderSession *session,
     gs_matrix_translate3f(
         static_cast<float>(origin.x() / std::max(0.000001, raster_sx)),
         static_cast<float>(origin.y() / std::max(0.000001, raster_sy)), 0.0f);
-    while (gs_effect_loop(session->copy_effect, "Draw"))
-        gs_draw_sprite(texture, 0, texture_width, texture_height);
+    gs_vertbuffer_t *transform_grid = nullptr;
+    if (layer_has_free_transform_quad(layer, local_time)) {
+        const Vec2Value qtl = render_quad_value(layer.transform_quad_tl, layer.transform_quad_tl_x, layer.transform_quad_tl_y, local_time);
+        const Vec2Value qtr = render_quad_value(layer.transform_quad_tr, layer.transform_quad_tr_x, layer.transform_quad_tr_y, local_time);
+        const Vec2Value qbr = render_quad_value(layer.transform_quad_br, layer.transform_quad_br_x, layer.transform_quad_br_y, local_time);
+        const Vec2Value qbl = render_quad_value(layer.transform_quad_bl, layer.transform_quad_bl_x, layer.transform_quad_bl_y, local_time);
+        auto q = [](double v) { return std::llround(v * 1000000.0); };
+        std::ostringstream key_stream;
+        key_stream << texture_width << 'x' << texture_height << '|'
+                   << q(logical_width) << '|' << q(logical_height) << '|'
+                   << q(origin.x()) << '|' << q(origin.y()) << '|'
+                   << q(base_box_width) << '|' << q(base_box_height) << '|'
+                   << q(raster_sx) << '|' << q(raster_sy) << '|'
+                   << q(eval_origin_x(layer, local_time)) << '|'
+                   << q(eval_origin_y(layer, local_time)) << '|'
+                   << q(qtl.x) << '|' << q(qtl.y) << '|'
+                   << q(qtr.x) << '|' << q(qtr.y) << '|'
+                   << q(qbr.x) << '|' << q(qbr.y) << '|'
+                   << q(qbl.x) << '|' << q(qbl.y);
+        const std::string grid_key = key_stream.str();
+        if (raster_entry) {
+            if (!raster_entry->transform_grid || raster_entry->transform_grid_key != grid_key) {
+                if (raster_entry->transform_grid)
+                    gs_vertexbuffer_destroy(raster_entry->transform_grid);
+                raster_entry->transform_grid = create_free_transform_grid(
+                    layer, texture_width, texture_height, logical_width, logical_height,
+                    origin, base_box_width, base_box_height, raster_sx, raster_sy,
+                    eval_origin_x(layer, local_time), eval_origin_y(layer, local_time), local_time);
+                raster_entry->transform_grid_key = raster_entry->transform_grid ? grid_key : std::string();
+            }
+            transform_grid = raster_entry->transform_grid;
+        } else {
+            transform_grid = create_free_transform_grid(
+                layer, texture_width, texture_height, logical_width, logical_height,
+                origin, base_box_width, base_box_height, raster_sx, raster_sy,
+                eval_origin_x(layer, local_time), eval_origin_y(layer, local_time), local_time);
+        }
+    }
+    while (gs_effect_loop(session->copy_effect, "Draw")) {
+        if (transform_grid) {
+            gs_load_vertexbuffer(transform_grid);
+            gs_draw(GS_TRIS, 0, 0);
+            gs_load_vertexbuffer(nullptr);
+        } else {
+            gs_draw_sprite(texture, 0, texture_width, texture_height);
+        }
+    }
+    if (transform_grid && !raster_entry) gs_vertexbuffer_destroy(transform_grid);
     gs_matrix_pop();
     return true;
 }
@@ -11481,14 +11803,14 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
         gs_enable_blending(true);
         gs_blend_function(GS_BLEND_ONE, GS_BLEND_ONE);
         if (travel < 0.01) {
-            draw_gpu_layer_texture(session, title, layer, local_texture, entry.origin,
+            draw_gpu_layer_texture(session, &entry, title, layer, local_texture, entry.origin,
                                    entry.width, entry.height,
                                    entry.logical_width, entry.logical_height,
                                    entry.image_clip_rect, entry.base_box_width, entry.base_box_height,
                                    title_time, static_cast<float>(current_opacity));
         } else {
             if (mix < 1.0)
-                draw_gpu_layer_texture(session, title, layer, local_texture,
+                draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
                                        entry.origin, entry.width, entry.height,
                                        entry.logical_width, entry.logical_height,
                                        entry.image_clip_rect, entry.base_box_width, entry.base_box_height,
@@ -11512,7 +11834,7 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
             const float sample_weight = static_cast<float>(
                 current_opacity * mix / static_cast<double>(samples));
             for (double sample_time : visible_samples) {
-                draw_gpu_layer_texture(session, title, layer, local_texture,
+                draw_gpu_layer_texture(session, &entry, title, layer, local_texture,
                                        entry.origin, entry.width,
                                        entry.height, entry.logical_width,
                                        entry.logical_height, entry.image_clip_rect,
@@ -11523,7 +11845,7 @@ static bool render_gpu_layer_to_target(TitleGpuRenderSession *session,
     } else if (current_opacity > 0.0) {
         gs_enable_blending(true);
         gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-        draw_gpu_layer_texture(session, title, layer, local_texture, entry.origin,
+        draw_gpu_layer_texture(session, &entry, title, layer, local_texture, entry.origin,
                                entry.width, entry.height, entry.logical_width,
                                entry.logical_height, entry.image_clip_rect,
                                entry.base_box_width, entry.base_box_height, title_time,
@@ -13260,6 +13582,10 @@ void title_gpu_render_session_destroy(TitleGpuRenderSession *session)
         }
         if (pair.second.effect_cache)
             gs_texrender_destroy(pair.second.effect_cache);
+        if (pair.second.transform_grid)
+            gs_vertexbuffer_destroy(pair.second.transform_grid);
+        pair.second.transform_grid = nullptr;
+        pair.second.transform_grid_key.clear();
     }
     if (session->text_renderer)
         session->text_renderer->reset();
@@ -13697,6 +14023,8 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
             it->second.key.clear();
             ++it;
         } else {
+            if (it->second.transform_grid)
+                gs_vertexbuffer_destroy(it->second.transform_grid);
             it = session->layers.erase(it);
         }
         raster_changed = true;
@@ -14133,6 +14461,8 @@ static void title_gpu_render_session_prepare_auxiliary_layers(
             it->second.key.clear();
             ++it;
         } else {
+            if (it->second.transform_grid)
+                gs_vertexbuffer_destroy(it->second.transform_grid);
             it = session->layers.erase(it);
         }
     }

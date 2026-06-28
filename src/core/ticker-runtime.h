@@ -8,6 +8,7 @@ enum class TickerPlaybackMode : int {
     AlwaysPlay = 0,
     PausedUntilCued = 1,
     PausedUntilHotkey = 2,
+    CustomPlayback = 3,
 };
 
 struct TickerRuntimeSnapshot {

@@ -47,6 +47,15 @@
 #include <Windows.h>
 #endif
 
+// Free Transform helpers are used before their definitions later in this
+// translation unit. Declare them in the same global scope as their definitions
+// to avoid creating duplicate anonymous-namespace overload candidates.
+static Vec2Value editor_quad_value(const Layer &layer, const AnimatedVec2Property &prop,
+                                   float legacy_x, float legacy_y, double playhead);
+static void editor_set_quad_value(Layer &layer, AnimatedVec2Property &prop,
+                                  float &legacy_x, float &legacy_y, double playhead,
+                                  const Vec2Value &value);
+
 namespace {
 constexpr int kCanvasRulerThickness = 24;
 constexpr double kCanvasGuideHitTolerancePx = 5.0;
@@ -1324,6 +1333,73 @@ void CanvasPreview::set_direct_selection_tool_active()
     update();
 }
 
+void CanvasPreview::set_free_transform_tool_active(int mode)
+{
+    if (pen_path_active_) finish_pen_path(false);
+    commit_text_edit(true);
+    active_tool_ = CanvasTool::FreeTransform;
+    free_transform_mode_ = std::clamp(mode, 0, 2);
+    drawing_shape_ = false;
+    color_picker_tooltip_visible_ = false;
+    clear_path_point_selection();
+    clear_corner_selection();
+    invalidate_canvas_overlay_caches();
+    setCursor(Qt::ArrowCursor);
+    update();
+}
+
+bool CanvasPreview::free_transform_controls_available() const
+{
+    const auto layers = selected_layers();
+    return active_tool_ == CanvasTool::FreeTransform && layers.size() == 1 && layers.front() && !layers.front()->locked;
+}
+
+bool CanvasPreview::free_transform_keyframed() const
+{
+    const auto layer = selected_layer();
+    return layer && (layer->transform_quad_tl.is_animated() || layer->transform_quad_tr.is_animated() ||
+                     layer->transform_quad_br.is_animated() || layer->transform_quad_bl.is_animated());
+}
+
+void CanvasPreview::toggle_free_transform_keyframe()
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked) return;
+    const double lt = std::clamp(playhead_ - layer->in_time, 0.0, std::max(0.0, layer->out_time - layer->in_time));
+    AnimatedVec2Property *props[] = {&layer->transform_quad_tl, &layer->transform_quad_tr, &layer->transform_quad_br, &layer->transform_quad_bl};
+    const float legacy[8] = {layer->transform_quad_tl_x, layer->transform_quad_tl_y, layer->transform_quad_tr_x, layer->transform_quad_tr_y,
+                             layer->transform_quad_br_x, layer->transform_quad_br_y, layer->transform_quad_bl_x, layer->transform_quad_bl_y};
+    const bool remove = free_transform_keyframed();
+    for (int i = 0; i < 4; ++i) {
+        auto &prop = *props[i];
+        auto it = std::find_if(prop.keyframes.begin(), prop.keyframes.end(), [lt](const VectorKeyframe &k) { return std::abs(k.time - lt) < 1e-6; });
+        if (remove && it != prop.keyframes.end()) prop.keyframes.erase(it);
+        else if (!remove) {
+            const Vec2Value value = editor_quad_value(*layer, prop, legacy[i*2], legacy[i*2+1], playhead_);
+            prop.keyframes.push_back({lt, value});
+            std::sort(prop.keyframes.begin(), prop.keyframes.end(), [](const VectorKeyframe &a, const VectorKeyframe &b){ return a.time < b.time; });
+        }
+    }
+    dirty_ = gpu_model_dirty_ = true;
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    refresh_preview();
+}
+
+void CanvasPreview::reset_free_transform()
+{
+    auto layer = selected_layer();
+    if (!layer || layer->locked) return;
+    editor_set_quad_value(*layer, layer->transform_quad_tl, layer->transform_quad_tl_x, layer->transform_quad_tl_y, playhead_, {0.0,0.0});
+    editor_set_quad_value(*layer, layer->transform_quad_tr, layer->transform_quad_tr_x, layer->transform_quad_tr_y, playhead_, {0.0,0.0});
+    editor_set_quad_value(*layer, layer->transform_quad_br, layer->transform_quad_br_x, layer->transform_quad_br_y, playhead_, {0.0,0.0});
+    editor_set_quad_value(*layer, layer->transform_quad_bl, layer->transform_quad_bl_x, layer->transform_quad_bl_y, playhead_, {0.0,0.0});
+    dirty_ = gpu_model_dirty_ = true;
+    emit layer_geometry_changed();
+    notify_corner_context_changed();
+    refresh_preview();
+}
+
 void CanvasPreview::set_shape_tool_active(ShapeType shape_type)
 {
     if (pen_path_active_) finish_pen_path(false);
@@ -1671,6 +1747,59 @@ QPointF CanvasPreview::canvas_to_layer(const Layer &layer, const QPointF &canvas
 QPointF CanvasPreview::layer_to_canvas(const Layer &layer, const QPointF &layer_pt) const
 {
     return editor_layer_world_transform(title_, layer, playhead_).map(layer_pt);
+}
+
+static Vec2Value editor_quad_value(const Layer &layer, const AnimatedVec2Property &prop,
+                                   float legacy_x, float legacy_y, double playhead)
+{
+    const double lt = std::clamp(playhead - layer.in_time, 0.0,
+                                 std::max(0.0, layer.out_time - layer.in_time));
+    if (prop.is_animated() || prop.static_value.x != 0.0 || prop.static_value.y != 0.0)
+        return prop.evaluate(lt);
+    return {legacy_x, legacy_y};
+}
+
+static void editor_set_quad_value(Layer &layer, AnimatedVec2Property &prop,
+                                  float &legacy_x, float &legacy_y, double playhead,
+                                  const Vec2Value &value)
+{
+    const double lt = std::clamp(playhead - layer.in_time, 0.0,
+                                 std::max(0.0, layer.out_time - layer.in_time));
+    legacy_x = static_cast<float>(value.x);
+    legacy_y = static_cast<float>(value.y);
+    if (prop.is_animated()) {
+        auto it = std::find_if(prop.keyframes.begin(), prop.keyframes.end(),
+            [lt](const VectorKeyframe &key) { return std::abs(key.time - lt) < 1e-6; });
+        if (it != prop.keyframes.end())
+            it->value = value;
+        else {
+            prop.keyframes.push_back({lt, value});
+            std::sort(prop.keyframes.begin(), prop.keyframes.end(),
+                      [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
+        }
+    } else {
+        prop.static_value = value;
+    }
+}
+
+QPointF CanvasPreview::transformed_layer_point(const Layer &layer, const QPointF &layer_pt) const
+{
+    const QRectF r = layer_local_rect(layer);
+    if (!r.isValid() || r.width() == 0.0 || r.height() == 0.0)
+        return layer_to_canvas(layer, layer_pt);
+    const double u = (layer_pt.x() - r.left()) / r.width();
+    const double v = (layer_pt.y() - r.top()) / r.height();
+    const Vec2Value qtl = editor_quad_value(layer, layer.transform_quad_tl, layer.transform_quad_tl_x, layer.transform_quad_tl_y, playhead_);
+    const Vec2Value qtr = editor_quad_value(layer, layer.transform_quad_tr, layer.transform_quad_tr_x, layer.transform_quad_tr_y, playhead_);
+    const Vec2Value qbr = editor_quad_value(layer, layer.transform_quad_br, layer.transform_quad_br_x, layer.transform_quad_br_y, playhead_);
+    const Vec2Value qbl = editor_quad_value(layer, layer.transform_quad_bl, layer.transform_quad_bl_x, layer.transform_quad_bl_y, playhead_);
+    const QPointF tl = r.topLeft() + QPointF(qtl.x * r.width(), qtl.y * r.height());
+    const QPointF tr = r.topRight() + QPointF(qtr.x * r.width(), qtr.y * r.height());
+    const QPointF br = r.bottomRight() + QPointF(qbr.x * r.width(), qbr.y * r.height());
+    const QPointF bl = r.bottomLeft() + QPointF(qbl.x * r.width(), qbl.y * r.height());
+    const QPointF top = tl * (1.0 - u) + tr * u;
+    const QPointF bottom = bl * (1.0 - u) + br * u;
+    return layer_to_canvas(layer, top * (1.0 - v) + bottom * v);
 }
 
 
@@ -2643,7 +2772,7 @@ const CanvasPreview::SelectionOverlayGeometry &CanvasPreview::selection_overlay_
         layer_geometry.editing_text_layer = editing_text_layer;
         const QRectF box = layer_local_rect(layer);
         auto layer_point_to_view = [&](const QPointF &pt) {
-            return canvas_to_view(layer_to_canvas(layer, pt));
+            return canvas_to_view(transformed_layer_point(layer, pt));
         };
         const QPointF corners[] = {
             layer_point_to_view(box.topLeft()),
@@ -2735,7 +2864,7 @@ const CanvasPreview::HoverOverlayGeometry &CanvasPreview::hover_overlay_geometry
             const QRectF box = layer_local_rect(layer);
             if (box.isValid() && !box.isEmpty()) {
                 auto layer_point_to_view = [&](const QPointF &pt) {
-                    return canvas_to_view(layer_to_canvas(layer, pt));
+                    return canvas_to_view(transformed_layer_point(layer, pt));
                 };
                 geometry.layer = &layer;
                 geometry.hovered_is_selected =
@@ -4214,6 +4343,38 @@ CanvasPreview::DragMode CanvasPreview::hit_test_selected(const QPointF &view_pt)
     auto layer = layers.front();
     if (!layer || layer->locked) return DragMode::None;
 
+    if (active_tool_ == CanvasTool::FreeTransform) {
+        const QRectF box = layer_local_rect(*layer);
+        const QPointF local_points[8] = {
+            box.topLeft(), QPointF(box.center().x(), box.top()), box.topRight(),
+            QPointF(box.right(), box.center().y()), box.bottomRight(),
+            QPointF(box.center().x(), box.bottom()), box.bottomLeft(),
+            QPointF(box.left(), box.center().y())
+        };
+        QPointF points[8];
+        for (int i = 0; i < 8; ++i) points[i] = canvas_to_view(transformed_layer_point(*layer, local_points[i]));
+        const DragMode resize_modes[8] = {DragMode::ResizeNW, DragMode::ResizeN, DragMode::ResizeNE, DragMode::ResizeE,
+                                          DragMode::ResizeSE, DragMode::ResizeS, DragMode::ResizeSW, DragMode::ResizeW};
+        if (free_transform_mode_ > 0) {
+            const int corner_indices[4] = {0,2,4,6};
+            for (int i = 0; i < 4; ++i)
+                if (QLineF(view_pt, points[corner_indices[i]]).length() <= CANVAS_CONTROL_HIT_RADIUS_PX * 1.5)
+                    return static_cast<DragMode>(static_cast<int>(DragMode::TransformCornerTL) + i);
+        } else {
+            for (int i = 0; i < 8; ++i)
+                if (QLineF(view_pt, points[i]).length() <= CANVAS_CONTROL_HIT_RADIUS_PX * 1.5) return resize_modes[i];
+        }
+        QPolygonF quad; quad << points[0] << points[2] << points[4] << points[6];
+        if (free_transform_mode_ == 0) {
+            for (int idx : {0,2,4,6}) {
+                if (QLineF(view_pt, points[idx]).length() <= CANVAS_ROTATE_HIT_RADIUS_PX &&
+                    !quad.containsPoint(view_pt, Qt::OddEvenFill)) return DragMode::Rotate;
+            }
+        }
+        if (quad.containsPoint(view_pt, Qt::OddEvenFill)) return DragMode::Move;
+        return DragMode::None;
+    }
+
     DragMode gradient_hit = hit_test_gradient_handles(*layer, view_pt);
     if (gradient_hit != DragMode::None)
         return gradient_hit;
@@ -4782,6 +4943,44 @@ void CanvasPreview::apply_drag(const QPointF &view_pt, Qt::KeyboardModifiers mod
 
     auto layers = selected_layers();
     if (layers.empty() || drag_mode_ == DragMode::None) return;
+
+    const int transform_corner = static_cast<int>(drag_mode_) - static_cast<int>(DragMode::TransformCornerTL);
+    if (transform_corner >= 0 && transform_corner < 4 && layers.size() == 1) {
+        auto layer = layers.front();
+        if (!layer || layer->locked || drag_layer_states_.empty()) return;
+        const auto &state = drag_layer_states_.front();
+        const QRectF box = layer_local_rect(*layer);
+        if (box.width() <= 0.0 || box.height() <= 0.0) return;
+        QPointF target_canvas = view_to_canvas(view_pt);
+        const bool allow_snap = !modifiers.testFlag(Qt::ControlModifier);
+        target_canvas = snap_canvas_point(target_canvas, true, true, allow_snap);
+        QPointF local_delta = canvas_to_layer(*layer, target_canvas) - canvas_to_layer(*layer, drag_start_canvas_);
+        if (modifiers.testFlag(Qt::ShiftModifier)) {
+            if (std::abs(local_delta.x()) >= std::abs(local_delta.y())) local_delta.setY(0.0);
+            else local_delta.setX(0.0);
+        }
+        float q[8]; for (int i = 0; i < 8; ++i) q[i] = state.quad[i];
+        const float dx = static_cast<float>(local_delta.x() / box.width());
+        const float dy = static_cast<float>(local_delta.y() / box.height());
+        q[transform_corner * 2] += dx; q[transform_corner * 2 + 1] += dy;
+        if (free_transform_mode_ == 1) {
+            const int mate = transform_corner ^ 3;
+            q[mate * 2] -= dx; q[mate * 2 + 1] += dy;
+        }
+        if (modifiers.testFlag(Qt::AltModifier)) {
+            const int opposite = transform_corner ^ 2;
+            q[opposite * 2] -= dx; q[opposite * 2 + 1] -= dy;
+        }
+        editor_set_quad_value(*layer, layer->transform_quad_tl, layer->transform_quad_tl_x, layer->transform_quad_tl_y, playhead_, {q[0],q[1]});
+        editor_set_quad_value(*layer, layer->transform_quad_tr, layer->transform_quad_tr_x, layer->transform_quad_tr_y, playhead_, {q[2],q[3]});
+        editor_set_quad_value(*layer, layer->transform_quad_br, layer->transform_quad_br_x, layer->transform_quad_br_y, playhead_, {q[4],q[5]});
+        editor_set_quad_value(*layer, layer->transform_quad_bl, layer->transform_quad_bl_x, layer->transform_quad_bl_y, playhead_, {q[6],q[7]});
+        drag_changed_ = true; dirty_ = true; gpu_model_dirty_ = true;
+        invalidate_canvas_overlay_caches();
+        emit layer_geometry_changed();
+        refresh_preview();
+        return;
+    }
 
     begin_adaptive_interaction();
     drag_current_view_ = view_pt;
@@ -6744,6 +6943,11 @@ void CanvasPreview::update_hover_layer(const QPointF &view_pt)
     if (hover_changed) {
         hovered_layer_id_ = next_hover;
         invalidate_hover_overlay_cache();
+        /* Hover chrome is part of the cached GPU overlay. Merely scheduling a
+         * QWidget repaint can reuse the previous overlay texture, which makes
+         * the hover box appear stuck or disappear entirely. Rebuild the overlay
+         * whenever the topmost hovered layer changes. */
+        gpu_overlay_dirty_ = true;
         update();
     }
 
@@ -7179,8 +7383,39 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         return;
     }
 
-    if (!begin_draw_tool_layer_manipulation)
+    if (!begin_draw_tool_layer_manipulation) {
         drag_mode_ = hit_test_selected(ev->pos());
+
+        /* Transform handles always keep priority, but a selected layer body must
+         * not hide a visually higher layer under the pointer. Resolve the
+         * topmost selectable target first; only keep Move when that target is
+         * already part of the current selection. */
+        if (drag_mode_ == DragMode::Move) {
+            const QPointF canvas = view_to_canvas(ev->pos());
+            std::string topmost_target_id;
+            for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
+                const auto &candidate = *it;
+                if (!candidate || !candidate->visible || candidate->locked)
+                    continue;
+                if (playhead_ < candidate->in_time || playhead_ > candidate->out_time)
+                    continue;
+                if (!layer_local_rect(*candidate).contains(canvas_to_layer(*candidate, canvas)))
+                    continue;
+
+                std::shared_ptr<Layer> selection_target = candidate;
+                if (candidate->type != LayerType::Group) {
+                    if (const Layer *group = editor_outermost_group_ancestor(title_, *candidate))
+                        selection_target = title_->find_layer(group->id);
+                }
+                if (selection_target)
+                    topmost_target_id = selection_target->id;
+                break;
+            }
+            if (!topmost_target_id.empty() &&
+                std::find(selected_layer_ids_.begin(), selected_layer_ids_.end(), topmost_target_id) == selected_layer_ids_.end())
+                drag_mode_ = DragMode::None;
+        }
+    }
     if (drag_mode_ == DragMode::None) {
         QPointF canvas = view_to_canvas(ev->pos());
         for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
@@ -7280,6 +7515,13 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
                                       selected->shape_roundness,
                                       selected->shape_inner_roundness,
                                       capture_path_corner_radii(*selected)});
+        auto &saved = drag_layer_states_.back();
+        const Vec2Value qtl = editor_quad_value(*selected, selected->transform_quad_tl, selected->transform_quad_tl_x, selected->transform_quad_tl_y, playhead_);
+        const Vec2Value qtr = editor_quad_value(*selected, selected->transform_quad_tr, selected->transform_quad_tr_x, selected->transform_quad_tr_y, playhead_);
+        const Vec2Value qbr = editor_quad_value(*selected, selected->transform_quad_br, selected->transform_quad_br_x, selected->transform_quad_br_y, playhead_);
+        const Vec2Value qbl = editor_quad_value(*selected, selected->transform_quad_bl, selected->transform_quad_bl_x, selected->transform_quad_bl_y, playhead_);
+        saved.quad[0] = qtl.x; saved.quad[1] = qtl.y; saved.quad[2] = qtr.x; saved.quad[3] = qtr.y;
+        saved.quad[4] = qbr.x; saved.quad[5] = qbr.y; saved.quad[6] = qbl.x; saved.quad[7] = qbl.y;
     }
 
     auto selected_contains = [&](const std::string &id) {
@@ -7566,7 +7808,7 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     }
 
     DragMode mode = hit_test_selected(ev->pos());
-    if (mode == DragMode::Move) setCursor(Qt::OpenHandCursor);
+    if (mode == DragMode::Move) setCursor(Qt::ArrowCursor);
     else if (mode == DragMode::Origin) setCursor(Qt::CrossCursor);
     else if (mode == DragMode::Rotate) setCursor(canvas_rotation_cursor());
     else if (mode == DragMode::GradientCenter || mode == DragMode::GradientFocal) setCursor(Qt::CrossCursor);
@@ -7733,6 +7975,7 @@ void CanvasPreview::leaveEvent(QEvent *ev)
         mouse_inside_canvas_ = false;
         hovered_layer_id_.clear();
         invalidate_hover_overlay_cache();
+        gpu_overlay_dirty_ = true;
         needs_update = true;
     }
     if (snap_cursor_visible_ || final_snap_cursor_visible_) {

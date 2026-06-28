@@ -29,6 +29,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDrag>
@@ -115,6 +116,10 @@ using bgs::live_text::live_cue_layer_value;
 using bgs::live_text::normalize_live_text_rows;
 
 constexpr int TemplateCategoryNameRole = Qt::UserRole + 1;
+constexpr int TemplateFilterCategoryRole = Qt::UserRole + 20;
+constexpr int TemplateFilterSubcategoryRole = Qt::UserRole + 21;
+constexpr int TemplateFilterCollectionRole = Qt::UserRole + 22;
+constexpr int TemplateFilterDepthRole = Qt::UserRole + 23;
 constexpr const char *kDockSettingsGroup = "TitleDock";
 constexpr const char *kDockSplitterStateKey = "sectionSplitterState";
 constexpr const char *kTemplateIconViewKey = "templateIconView";
@@ -127,6 +132,11 @@ constexpr const char *kPlaylistHoldSecondsKey = "playlistHoldSeconds";
 constexpr const char *kBackgroundPersistenceKey = "backgroundPersistence";
 constexpr const char *kTextPersistenceKey = "textPersistence";
 constexpr const char *kLiveTextLinesPerRowKey = "liveTextLinesPerRow";
+constexpr const char *kTemplateLibrarySettingsGroup = "TemplateLibrary";
+constexpr const char *kTemplateLibraryByCollectionKey = "viewByCollection";
+constexpr const char *kTemplateLibraryIconViewKey = "iconView";
+constexpr const char *kTemplateLibraryGeometryKey = "geometry";
+constexpr const char *kTemplateLibrarySplitterKey = "splitterState";
 constexpr int kMinLiveTextLinesPerRow = 1;
 constexpr int kMaxLiveTextLinesPerRow = 8;
 constexpr int kTitleListIconExtent = 16;
@@ -137,6 +147,8 @@ constexpr int kTitleIconViewItemHeight = 126;
 constexpr int kTitleIconViewTextLines = 2;
 constexpr int kTitlePlaylistActiveRole = Qt::UserRole + 20;
 constexpr int kTitleCuedRole = Qt::UserRole + 21;
+constexpr int kTitleListThumbnailRole = Qt::UserRole + 22;
+constexpr int kTitleShowStatusIconRole = Qt::UserRole + 23;
 constexpr int kLiveCueColumn = 0;
 constexpr int kLiveCacheColumn = 1;
 constexpr int kLiveSelectColumn = 2;
@@ -1470,18 +1482,20 @@ protected:
 
     void mouseReleaseEvent(QMouseEvent *event) override
     {
-        if (auto *item = delete_item_at(event ? event->pos() : QPoint())) {
+        if (category_delete_requested) {
+            if (auto *item = delete_item_at(event ? event->pos() : QPoint())) {
             setCurrentItem(item);
             if (category_delete_requested)
                 category_delete_requested(item);
-            return;
+                return;
+            }
         }
         QTreeWidget::mouseReleaseEvent(event);
     }
 
     void mouseDoubleClickEvent(QMouseEvent *event) override
     {
-        if (delete_item_at(event ? event->pos() : QPoint()))
+        if (category_delete_requested && delete_item_at(event ? event->pos() : QPoint()))
             return;
         QTreeWidget::mouseDoubleClickEvent(event);
     }
@@ -1783,7 +1797,7 @@ public:
     {
         const auto *list_view = qobject_cast<const QListView *>(option.widget);
         if (list_view && list_view->viewMode() == QListView::ListMode)
-            return QStyledItemDelegate::sizeHint(option, index);
+            return QSize(std::max(240, option.rect.width()), 44);
         return QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight);
     }
 
@@ -1794,19 +1808,46 @@ public:
 
         const auto *list_view = qobject_cast<const QListView *>(option.widget);
         if (list_view && list_view->viewMode() == QListView::ListMode) {
-            QStyledItemDelegate::paint(painter, option, index);
-            if (index.data(kTitleCuedRole).toBool())
-                paint_cued_border(painter, option.rect.adjusted(2, 1, -2, -1), 3);
-            if (index.data(kTitlePlaylistActiveRole).toBool()) {
-                const QRect badge_rect(option.rect.right() - 28,
-                                       option.rect.center().y() - 10,
-                                       20, 20);
-                const bool selected = option.state.testFlag(QStyle::State_Selected);
-                const QColor icon_color = selected
-                    ? option.palette.color(QPalette::HighlightedText)
-                    : QColor(39, 186, 103);
-                paint_playlist_badge(*painter, badge_rect, false, icon_color);
+            QStyleOptionViewItem opt(option);
+            initStyleOption(&opt, index);
+            opt.text.clear();
+            opt.icon = QIcon();
+            const QWidget *widget = option.widget;
+            QStyle *style = widget ? widget->style() : QApplication::style();
+            style->drawPrimitive(QStyle::PE_PanelItemViewItem, &opt, painter, widget);
+
+            const QRect row = option.rect.adjusted(4, 3, -4, -3);
+            const QSize thumb_size(64, 36);
+            const QRect thumb_rect(row.left(), row.center().y() - thumb_size.height() / 2,
+                                   thumb_size.width(), thumb_size.height());
+            paint_transparency_grid(*painter, thumb_rect, 6);
+            const QPixmap thumb = index.data(kTitleListThumbnailRole).value<QPixmap>();
+            if (!thumb.isNull()) {
+                const QPixmap scaled = thumb.scaled(thumb_rect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                painter->drawPixmap(thumb_rect.center() - QPoint(scaled.width() / 2, scaled.height() / 2), scaled);
             }
+            painter->setPen(QPen(QColor(0, 0, 0, 90), 1));
+            painter->drawRect(thumb_rect.adjusted(0, 0, -1, -1));
+
+            const QRect text_rect(thumb_rect.right() + 10, row.top(),
+                                  std::max(0, row.right() - thumb_rect.right() - 52), row.height());
+            painter->setPen(option.palette.color((option.state & QStyle::State_Selected)
+                                                     ? QPalette::HighlightedText : QPalette::Text));
+            painter->drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft,
+                              option.fontMetrics.elidedText(index.data(Qt::DisplayRole).toString(),
+                                                            Qt::ElideRight, text_rect.width()));
+
+            if (index.data(kTitleShowStatusIconRole).toBool()) {
+                const QIcon status_icon = index.data(Qt::DecorationRole).value<QIcon>();
+                const QPixmap status = status_icon.pixmap(QSize(kTitleListIconExtent * 2 + 3, kTitleListIconExtent));
+                if (!status.isNull())
+                    painter->drawPixmap(row.right() - status.width() - 4,
+                                        row.center().y() - status.height() / 2, status);
+            }
+            if (index.data(kTitleCuedRole).toBool())
+                paint_cued_border(painter, thumb_rect.adjusted(1, 1, -1, -1), 3);
+            if (index.data(kTitlePlaylistActiveRole).toBool())
+                paint_playlist_badge(*painter, QRect(thumb_rect.right() - 22, thumb_rect.bottom() - 22, 20, 20));
             return;
         }
 
@@ -1822,10 +1863,22 @@ public:
         const QRect item_rect = option.rect.adjusted(6, 6, -6, -6);
         const int thumb_x = item_rect.x() + (item_rect.width() - kTitleIconViewThumbWidth) / 2;
         const QRect thumb_rect(thumb_x, item_rect.y(), kTitleIconViewThumbWidth, kTitleIconViewThumbHeight);
-        const QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
-        const QPixmap pixmap = icon.pixmap(thumb_rect.size());
+        QPixmap pixmap;
+        if (index.data(kTitleShowStatusIconRole).toBool()) {
+            const QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
+            pixmap = icon.pixmap(thumb_rect.size());
+        } else {
+            paint_transparency_grid(*painter, thumb_rect, 8);
+            const QPixmap thumbnail = index.data(kTitleListThumbnailRole).value<QPixmap>();
+            if (!thumbnail.isNull())
+                pixmap = thumbnail.scaled(thumb_rect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        }
         if (!pixmap.isNull())
-            painter->drawPixmap(thumb_rect.topLeft(), pixmap);
+            painter->drawPixmap(thumb_rect.center() - QPoint(pixmap.width() / 2, pixmap.height() / 2), pixmap);
+        if (!index.data(kTitleShowStatusIconRole).toBool()) {
+            painter->setPen(QPen(QColor(0, 0, 0, 90), 1));
+            painter->drawRect(thumb_rect.adjusted(0, 0, -1, -1));
+        }
         if (index.data(kTitleCuedRole).toBool())
             paint_cued_border(painter, thumb_rect.adjusted(1, 1, -1, -1), 4);
 
@@ -1988,6 +2041,52 @@ static void populate_metadata_from_title(const Title &title, TitleTemplateExport
         metadata.screenshot_png_base64 = title.preview_screenshot_png_base64;
 }
 
+static QString template_library_root_path();
+
+static QStringList template_metadata_values(const QString &field)
+{
+    QSet<QString> values;
+    QDirIterator it(template_library_root_path(), QStringList() << QStringLiteral("*.obgt"),
+                    QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QFile file(it.next());
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isObject()) continue;
+        const QJsonObject root = doc.object();
+        const QJsonObject metadata = root.value(QStringLiteral("metadata")).toObject();
+        QString value = metadata.value(field).toString().trimmed();
+        if (value.isEmpty()) value = root.value(field).toString().trimmed();
+        if (!value.isEmpty()) values.insert(value);
+    }
+    QStringList result = values.values();
+    result.sort(Qt::CaseInsensitive);
+    return result;
+}
+
+static QComboBox *make_template_metadata_combo(QWidget *parent, const QString &field,
+                                                const QString &current_value)
+{
+    auto *combo = new QComboBox(parent);
+    combo->setEditable(true);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->addItem(bgl_tr("OBSTitles.TemplateMetadataAddNew"));
+    combo->insertSeparator(1);
+    combo->addItems(template_metadata_values(field));
+    const QString current = current_value.trimmed();
+    if (!current.isEmpty() && combo->findText(current, Qt::MatchFixedString) < 0)
+        combo->addItem(current);
+    combo->setEditText(current);
+    QObject::connect(combo, QOverload<int>::of(&QComboBox::activated), combo, [combo](int index) {
+        if (index != 0) return;
+        combo->setCurrentIndex(-1);
+        combo->setEditText(QString());
+        combo->setFocus(Qt::OtherFocusReason);
+        if (combo->lineEdit()) combo->lineEdit()->selectAll();
+    });
+    return combo;
+}
+
 static bool prompt_template_metadata(QWidget *parent, const Title &title,
                                      const QImage &screenshot,
                                      TitleTemplateExportMetadata &metadata,
@@ -2036,11 +2135,17 @@ static bool prompt_template_metadata(QWidget *parent, const Title &title,
     description_edit->setMinimumHeight(96);
     auto *creator_edit = new QLineEdit(QString::fromStdString(metadata.creator), &dialog);
     auto *date_edit = new QLineEdit(QString::fromStdString(metadata.creation_date), &dialog);
+    auto *category_edit = make_template_metadata_combo(&dialog, QStringLiteral("category"), QString::fromStdString(metadata.category));
+    auto *subcategory_edit = make_template_metadata_combo(&dialog, QStringLiteral("subcategory"), QString::fromStdString(metadata.subcategory));
+    auto *collection_edit = make_template_metadata_combo(&dialog, QStringLiteral("collection"), QString::fromStdString(metadata.collection));
 
     form->addRow(bgl_tr("OBSTitles.TemplateExportTitleLabel"), title_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateExportDescriptionLabel"), description_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateExportCreatorLabel"), creator_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateCreationDateLabel"), date_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateCategoryLabel"), category_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateSubcategoryLabel"), subcategory_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateCollectionLabel"), collection_edit);
     layout->addLayout(form);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -2071,15 +2176,20 @@ static bool prompt_template_metadata(QWidget *parent, const Title &title,
     metadata.description = description_edit->toPlainText().trimmed().toStdString();
     metadata.creator = creator_edit->text().trimmed().toStdString();
     metadata.creation_date = date_edit->text().trimmed().toStdString();
+    metadata.category = category_edit->currentText().trimmed().toStdString();
+    metadata.subcategory = subcategory_edit->currentText().trimmed().toStdString();
+    metadata.collection = collection_edit->currentText().trimmed().toStdString();
     return true;
 }
 
 struct TemplateLibraryEntry {
     int id;
-    const char *name_key;
-    const char *description_key;
-    const char *default_name_key;
-    const char *category_folder;
+    const char *title;
+    const char *description;
+    const char *default_name;
+    const char *category;
+    const char *subcategory;
+    const char *collection;
     const char *file_name;
 };
 
@@ -2088,30 +2198,101 @@ struct TemplateFileMetadata {
     QString description;
     QString creator;
     QString creation_date;
+    QString category;
+    QString subcategory;
+    QString collection;
     QIcon screenshot_icon;
     QPixmap screenshot_pixmap;
 };
 
-static const std::array<const char *, 5> template_library_category_folders{{
-    "Lower Thirds",
-    "Tickers",
-    "Clocks",
-    "Centered",
-    "Full Screen",
+static const std::array<const char *, 0> template_library_category_folders{};
+
+static const std::array<TemplateLibraryEntry, 12> template_library_entries{{
+    {101, "Breaking News Lower Third", "Bold breaking-news identification with headline and supporting line.",
+     "BREAKING NEWS", "News", "Lower Thirds", "Big News Studio", "breaking-news-lower-third.obgt"},
+    {102, "Headline Strap", "Full-width headline strap for major developing stories.",
+     "Major story develops", "News", "Straps", "Big News Studio", "headline-strap.obgt"},
+    {103, "Reporter ID", "On-air reporter identification with role and organization.",
+     "REPORTER NAME", "News", "Lower Thirds", "Big News Studio", "reporter-id.obgt"},
+    {104, "Live Location", "Live location identifier with prominent LIVE status.",
+     "ATHENS", "News", "Location IDs", "Big News Studio", "live-location.obgt"},
+    {105, "News Quote Card", "Editorial quote card for statements and key excerpts.",
+     "A key statement from the story goes here.", "News", "Quote Cards", "Big News Studio", "news-quote-card.obgt"},
+    {106, "Full Screen Bulletin", "Full-screen bulletin for urgent headlines and summaries.",
+     "BREAKING NEWS", "News", "Full Screen", "Big News Studio", "full-screen-bulletin.obgt"},
+
+    {201, "Podcast Host", "Friendly lower third for the podcast host.",
+     "HOST NAME", "Podcast", "Lower Thirds", "Casual Podcast", "podcast-host.obgt"},
+    {202, "Podcast Guest", "Relaxed guest identification with a short role line.",
+     "GUEST NAME", "Podcast", "Lower Thirds", "Casual Podcast", "podcast-guest.obgt"},
+    {203, "Episode Opener", "Centered episode title card with show and episode information.",
+     "EPISODE TITLE", "Podcast", "Openers", "Casual Podcast", "episode-opener.obgt"},
+    {204, "Topic Card", "Simple discussion-topic card for chapter changes.",
+     "TODAY'S TOPIC", "Podcast", "Topic Cards", "Casual Podcast", "topic-card.obgt"},
+    {205, "Social Handle", "Compact social-media handle and follow prompt.",
+     "@yourhandle", "Podcast", "Social", "Casual Podcast", "social-handle.obgt"},
+    {206, "Podcast Break Screen", "Full-screen intermission graphic for short breaks.",
+     "WE'LL BE RIGHT BACK", "Podcast", "Full Screen", "Casual Podcast", "podcast-break-screen.obgt"},
 }};
 
-static const std::array<TemplateLibraryEntry, 5> template_library_entries{{
-    {1, "OBSTitles.TemplateLowerThird", "OBSTitles.TemplateLowerThirdDescription", "OBSTitles.TemplateSpeakerName",
-     "Lower Thirds", "lower-third.obgt"},
-    {3, "OBSTitles.TemplateTickerStrap", "OBSTitles.TemplateTickerStrapDescription", "OBSTitles.TemplateBreakingNews",
-     "Tickers", "ticker-strap.obgt"},
-    {4, "OBSTitles.TemplateClock", "OBSTitles.TemplateClockDescription", "OBSTitles.TemplateClockTitle",
-     "Clocks", "clock.obgt"},
-    {2, "OBSTitles.TemplateCenteredTitle", "OBSTitles.TemplateCenteredTitleDescription", "OBSTitles.TemplateProgramTitle",
-     "Centered", "centered-title.obgt"},
-    {5, "OBSTitles.TemplateFullScreen", "OBSTitles.TemplateFullScreenDescription", "OBSTitles.TemplateFullScreenTitle",
-     "Full Screen", "full-screen.obgt"},
-}};
+
+struct CannedTemplateDefinition {
+    int id = 0;
+    QString title;
+    QString description;
+    QString default_name;
+    QString category;
+    QString subcategory;
+    QString collection;
+    QString file_name;
+};
+
+static CannedTemplateDefinition canned_template_definition(const TemplateLibraryEntry &fallback)
+{
+    CannedTemplateDefinition result;
+    result.id = fallback.id;
+    result.title = QString::fromUtf8(fallback.title);
+    result.description = QString::fromUtf8(fallback.description);
+    result.default_name = QString::fromUtf8(fallback.default_name);
+    result.category = QString::fromUtf8(fallback.category);
+    result.subcategory = QString::fromUtf8(fallback.subcategory);
+    result.collection = QString::fromUtf8(fallback.collection);
+    result.file_name = QString::fromUtf8(fallback.file_name);
+
+    const QString definition_name = QFileInfo(result.file_name).completeBaseName() + QStringLiteral(".json");
+    char *raw_path = obs_module_file((QStringLiteral("canned-templates/") + definition_name).toUtf8().constData());
+    const QString definition_path = raw_path ? QString::fromUtf8(raw_path) : QString();
+    bfree(raw_path);
+    QFile file(definition_path);
+    if (!definition_path.isEmpty() && file.open(QIODevice::ReadOnly)) {
+        const QJsonObject object = QJsonDocument::fromJson(file.readAll()).object();
+        if (!object.isEmpty()) {
+            result.id = object.value(QStringLiteral("id")).toInt(result.id);
+            result.title = object.value(QStringLiteral("title")).toString(result.title);
+            result.description = object.value(QStringLiteral("description")).toString(result.description);
+            result.default_name = object.value(QStringLiteral("default_name")).toString(result.default_name);
+            result.category = object.value(QStringLiteral("category")).toString(result.category);
+            result.subcategory = object.value(QStringLiteral("subcategory")).toString(result.subcategory);
+            result.collection = object.value(QStringLiteral("collection")).toString(result.collection);
+            result.file_name = object.value(QStringLiteral("file_name")).toString(result.file_name);
+        }
+    }
+    return result;
+}
+
+static void remove_legacy_canned_templates(const QString &root_path)
+{
+    static const std::array<std::pair<const char *, const char *>, 5> legacy_templates{{
+        {"Lower Thirds", "lower-third.obgt"},
+        {"Tickers", "ticker-strap.obgt"},
+        {"Clocks", "clock.obgt"},
+        {"Centered", "centered-title.obgt"},
+        {"Full Screen", "full-screen.obgt"},
+    }};
+    for (const auto &legacy : legacy_templates)
+        QFile::remove(QDir(QDir(root_path).filePath(QString::fromUtf8(legacy.first)))
+                          .filePath(QString::fromUtf8(legacy.second)));
+}
 
 static const TemplateLibraryEntry *template_library_entry_by_id(int id)
 {
@@ -2212,6 +2393,9 @@ static TemplateFileMetadata read_template_file_metadata(const QString &path)
     metadata.description = meta.value(QStringLiteral("description")).toString(root.value(QStringLiteral("description")).toString());
     metadata.creator = meta.value(QStringLiteral("creator")).toString(root.value(QStringLiteral("creator")).toString());
     metadata.creation_date = meta.value(QStringLiteral("creation_date")).toString(root.value(QStringLiteral("creation_date")).toString());
+    metadata.category = meta.value(QStringLiteral("category")).toString(root.value(QStringLiteral("category")).toString()).trimmed();
+    metadata.subcategory = meta.value(QStringLiteral("subcategory")).toString(root.value(QStringLiteral("subcategory")).toString()).trimmed();
+    metadata.collection = meta.value(QStringLiteral("collection")).toString(root.value(QStringLiteral("collection")).toString()).trimmed();
 
     QJsonObject screenshot = meta.value(QStringLiteral("screenshot")).toObject();
     if (screenshot.isEmpty())
@@ -2246,6 +2430,9 @@ static bool write_template_file_metadata(const QString &path, const TemplateFile
     meta[QStringLiteral("description")] = metadata.description;
     meta[QStringLiteral("creator")] = metadata.creator;
     meta[QStringLiteral("creation_date")] = metadata.creation_date;
+    meta[QStringLiteral("category")] = metadata.category;
+    meta[QStringLiteral("subcategory")] = metadata.subcategory;
+    meta[QStringLiteral("collection")] = metadata.collection;
     if (!root.value(QStringLiteral("screenshot")).isUndefined())
         meta[QStringLiteral("screenshot")] = root.value(QStringLiteral("screenshot"));
 
@@ -2253,6 +2440,9 @@ static bool write_template_file_metadata(const QString &path, const TemplateFile
     root[QStringLiteral("description")] = metadata.description;
     root[QStringLiteral("creator")] = metadata.creator;
     root[QStringLiteral("creation_date")] = metadata.creation_date;
+    root[QStringLiteral("category")] = metadata.category;
+    root[QStringLiteral("subcategory")] = metadata.subcategory;
+    root[QStringLiteral("collection")] = metadata.collection;
     root[QStringLiteral("metadata")] = meta;
 
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -2285,11 +2475,17 @@ static bool prompt_edit_template_file_metadata(QWidget *parent, const QString &p
     description_edit->setMinimumHeight(110);
     auto *creator_edit = new QLineEdit(metadata.creator, &dialog);
     auto *date_edit = new QLineEdit(metadata.creation_date, &dialog);
+    auto *category_edit = make_template_metadata_combo(&dialog, QStringLiteral("category"), metadata.category);
+    auto *subcategory_edit = make_template_metadata_combo(&dialog, QStringLiteral("subcategory"), metadata.subcategory);
+    auto *collection_edit = make_template_metadata_combo(&dialog, QStringLiteral("collection"), metadata.collection);
 
     form->addRow(bgl_tr("OBSTitles.TemplateExportTitleLabel"), title_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateExportDescriptionLabel"), description_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateExportCreatorLabel"), creator_edit);
     form->addRow(bgl_tr("OBSTitles.TemplateCreationDateLabel"), date_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateCategoryLabel"), category_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateSubcategoryLabel"), subcategory_edit);
+    form->addRow(bgl_tr("OBSTitles.TemplateCollectionLabel"), collection_edit);
     layout->addLayout(form);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -2311,6 +2507,9 @@ static bool prompt_edit_template_file_metadata(QWidget *parent, const QString &p
     metadata.description = description_edit->toPlainText().trimmed();
     metadata.creator = creator_edit->text().trimmed();
     metadata.creation_date = date_edit->text().trimmed();
+    metadata.category = category_edit->currentText().trimmed();
+    metadata.subcategory = subcategory_edit->currentText().trimmed();
+    metadata.collection = collection_edit->currentText().trimmed();
 
     QString error;
     if (!write_template_file_metadata(path, metadata, &error)) {
@@ -2320,6 +2519,100 @@ static bool prompt_edit_template_file_metadata(QWidget *parent, const QString &p
     return true;
 }
 
+
+struct TemplateLibraryRecord {
+    QString path;
+    TemplateFileMetadata metadata;
+};
+
+static QList<TemplateLibraryRecord> scan_template_library(const QString &root_path)
+{
+    QList<TemplateLibraryRecord> records;
+    QDirIterator it(root_path, template_file_filter().split(' ', Qt::SkipEmptyParts),
+                    QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        TemplateFileMetadata metadata = read_template_file_metadata(path);
+        // Backward compatibility: old libraries used the first physical folder as category.
+        if (metadata.category.isEmpty()) {
+            const QString relative = QDir(root_path).relativeFilePath(path);
+            const QStringList parts = relative.split('/', Qt::SkipEmptyParts);
+            if (parts.size() > 1) metadata.category = parts.first();
+        }
+        records.push_back({path, metadata});
+    }
+    std::sort(records.begin(), records.end(), [](const auto &a, const auto &b) {
+        return QString::compare(a.metadata.title, b.metadata.title, Qt::CaseInsensitive) < 0;
+    });
+    return records;
+}
+
+static QString template_group_name(const QString &value)
+{
+    return value.trimmed().isEmpty() ? bgl_tr("OBSTitles.TemplateUncategorized") : value.trimmed();
+}
+
+static QTreeWidgetItem *ensure_template_group(QTreeWidget *tree, QTreeWidgetItem *parent,
+                                               QHash<QString, QTreeWidgetItem *> &items,
+                                               const QString &key, const QString &label)
+{
+    if (items.contains(key)) return items.value(key);
+    auto *item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree);
+    item->setText(0, label);
+    item->setFlags(item->flags() & ~Qt::ItemIsDropEnabled);
+    items.insert(key, item);
+    return item;
+}
+
+static void populate_dynamic_template_tree(QTreeWidget *tree,
+                                           const QList<TemplateLibraryRecord> &records,
+                                           bool by_collection)
+{
+    tree->clear();
+    tree->setColumnCount(1);
+    tree->setHeaderHidden(true);
+    QHash<QString, QTreeWidgetItem *> items;
+    for (const auto &record : records) {
+        const QString category = template_group_name(record.metadata.category);
+        const QString subcategory = template_group_name(record.metadata.subcategory);
+        const QString collection = template_group_name(record.metadata.collection);
+        const QStringList labels = by_collection
+            ? QStringList{collection, category, subcategory}
+            : QStringList{category, subcategory, collection};
+        QTreeWidgetItem *parent = nullptr;
+        QString key;
+        for (int depth = 0; depth < labels.size(); ++depth) {
+            if (!key.isEmpty()) key += QLatin1Char('/');
+            key += labels[depth].toCaseFolded();
+            parent = ensure_template_group(tree, parent, items, key, labels[depth]);
+            parent->setData(0, TemplateFilterCategoryRole, record.metadata.category);
+            parent->setData(0, TemplateFilterSubcategoryRole, record.metadata.subcategory);
+            parent->setData(0, TemplateFilterCollectionRole, record.metadata.collection);
+            parent->setData(0, TemplateFilterDepthRole, depth + 1);
+        }
+    }
+    tree->expandAll();
+    if (tree->topLevelItemCount() > 0) tree->setCurrentItem(tree->topLevelItem(0));
+}
+
+static bool template_matches_tree_item(const TemplateLibraryRecord &record,
+                                       const QTreeWidgetItem *item, bool by_collection)
+{
+    if (!item) return false;
+    QStringList selected;
+    for (auto *cursor = item; cursor; cursor = cursor->parent()) selected.prepend(cursor->text(0));
+    const QStringList actual = by_collection
+        ? QStringList{template_group_name(record.metadata.collection),
+                      template_group_name(record.metadata.category),
+                      template_group_name(record.metadata.subcategory)}
+        : QStringList{template_group_name(record.metadata.category),
+                      template_group_name(record.metadata.subcategory),
+                      template_group_name(record.metadata.collection)};
+    if (selected.size() > actual.size()) return false;
+    for (int i = 0; i < selected.size(); ++i)
+        if (selected[i].compare(actual[i], Qt::CaseInsensitive) != 0) return false;
+    return true;
+}
 static QTreeWidgetItem *add_template_category_item(QTreeWidget *tree, QTreeWidgetItem *parent,
                                                    const QFileInfo &dir_info)
 {
@@ -2830,6 +3123,8 @@ void TitleDock::update_title_list_cache_icon(const QString &title_id)
         } else {
             item->setIcon(title_list_combined_status_icon(has_exposed_text, has_scene_mask, cache_status));
         }
+        item->setData(kTitleListThumbnailRole, title_preview_pixmap(*title, QSize(96, 54)));
+        item->setData(kTitleShowStatusIconRole, true);
         item->setData(kTitlePlaylistActiveRole, title->playlist_active);
         item->setToolTip(QStringLiteral("%1\n%2")
                              .arg(bgl_tr("OBSTitles.LayerCountTooltipFormat").arg(title->layers.size()).arg(title->duration),
@@ -3610,6 +3905,8 @@ void TitleDock::populate_list()
             item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         }
         item->setData(Qt::UserRole, title_id);
+        item->setData(kTitleListThumbnailRole, title_preview_pixmap(*t, QSize(96, 54)));
+        item->setData(kTitleShowStatusIconRole, true);
         item->setData(kTitlePlaylistActiveRole, t->playlist_active);
         item->setData(kTitleCuedRole, t->current_cue_row >= 0 || t->pending_cue_row >= 0);
         // Layer count hint as tooltip
@@ -5168,61 +5465,130 @@ std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
         layer->position.static_value.y = y;
         layer->align_h = align_h;
         layer->align_v = align_v;
+
+        /* The GPU text renderer consumes the canonical rich-text document,
+         * not the legacy mirror fields above.  Build it only after all font,
+         * colour and paragraph defaults have been assigned so canned
+         * template text is visible immediately and preserves its styling. */
+        layer->rich_text = rich_text_document_from_layer_defaults(*layer);
+        rich_text_document_ensure_canonical(*layer);
+        rich_text_document_sync_layer_mirrors(*layer);
+
         layer->out_time = title->duration;
         title->layers.push_back(layer);
         return layer;
     };
 
     switch (template_id) {
-    case 1: { /* Lower third */
+    case 101: { /* Big News Studio — Breaking News Lower Third */
         title->duration = 8.0;
-        add_rect(obs_text_std("OBSTitles.LayerLowerThirdBackplate"), 640, 835, 1120, 155, 0xD0161B24, 18.0f);
-        add_rect(obs_text_std("OBSTitles.LayerAccentBar"), 120, 835, 18, 155, 0xFF00A3FF, 9.0f);
-        add_text(obs_text_std("OBSTitles.LayerName"), name, 670, 800, 58, 0xFFFFFFFF, true, 0, 1);
-        add_text(obs_text_std("OBSTitles.LayerSubtitle"), obs_text_std("OBSTitles.TemplateSubtitleRole"), 670, 872, 34, 0xFFE8E8E8, false, 0, 1);
+        add_rect("Breaking News Backplate", 690, 860, 1260, 150, 0xF0121720, 8.0f);
+        add_rect("Breaking News Accent", 170, 860, 220, 150, 0xFFE5232A, 8.0f);
+        add_text("Breaking Label", "BREAKING", 170, 836, 42, 0xFFFFFFFF, true, 1, 1);
+        add_text("Headline", name, 770, 828, 58, 0xFFFFFFFF, true, 0, 1);
+        add_text("Supporting Line", "Developing story • Add details here", 770, 895, 30, 0xFFD9DEE7, false, 0, 1);
         break;
     }
-    case 2: { /* Center title */
-        title->duration = 6.0;
-        add_rect(obs_text_std("OBSTitles.LayerSoftPanel"), 960, 540, 1280, 270, 0xB0101018, 28.0f);
-        add_rect(obs_text_std("OBSTitles.LayerTopAccent"), 960, 395, 520, 10, 0xFF00A3FF, 5.0f);
-        add_text(obs_text_std("OBSTitles.LayerMainTitle"), name, 960, 505, 86, 0xFFFFFFFF, true, 1, 1);
-        add_text(obs_text_std("OBSTitles.LayerSubtitle"), obs_text_std("OBSTitles.TemplateEditableSubtitle"), 960, 610, 42, 0xFFE0E0E0, false, 1, 1);
-        break;
-    }
-    case 3: { /* Ticker / strap */
-        title->duration = 12.0;
-        add_rect(obs_text_std("OBSTitles.LayerTickerBackground"), 960, 1010, 1920, 110, 0xE0101010, 0.0f);
-        add_rect(obs_text_std("OBSTitles.LayerTickerAccent"), 125, 1010, 250, 110, 0xFF0078D4, 0.0f);
-        add_text(obs_text_std("OBSTitles.LayerTickerLabel"), obs_text_std("OBSTitles.TemplateLive"), 125, 1010, 44, 0xFFFFFFFF, true, 1, 1);
-        auto ticker = add_text(obs_text_std("OBSTitles.LayerTickerText"), name, 1030, 1010, 44, 0xFFFFFFFF, false, 0, 1);
-        ticker->type = LayerType::Ticker;
-        ticker->rect_width = 1640.0f;
-        ticker->size.static_value.x = ticker->rect_width;
-        ticker->ticker_style = 0;
-        ticker->ticker_direction = 1;
-        ticker->ticker_speed = 140.0;
-        break;
-    }
-    case 4: { /* Clock */
+    case 102: { /* Big News Studio — Headline Strap */
         title->duration = 10.0;
-        add_rect(obs_text_std("OBSTitles.ClockBox"), 960, 540, 620, 210, 0xC0101018, 24.0f);
-        auto clock = add_text(obs_text_std("OBSTitles.Clock"), name, 960, 530, 92, 0xFFFFFFFF, true, 1, 1);
-        clock->type = LayerType::Clock;
-        clock->clock_format = "H:i:s";
-        add_text(obs_text_std("OBSTitles.LayerSubtitle"), obs_text_std("OBSTitles.TemplateClockSubtitle"), 960, 640, 34, 0xFFE0E0E0, false, 1, 1);
+        add_rect("Headline Strap", 960, 985, 1920, 190, 0xF00D1118, 0.0f);
+        add_rect("Top Red Rule", 960, 888, 1920, 10, 0xFFE5232A, 0.0f);
+        add_rect("News Label Box", 175, 985, 270, 190, 0xFFE5232A, 0.0f);
+        add_text("News Label", "BIG NEWS", 175, 970, 46, 0xFFFFFFFF, true, 1, 1);
+        add_text("Main Headline", name, 1100, 950, 52, 0xFFFFFFFF, true, 0, 1);
+        add_text("Headline Detail", "Short supporting information or developing update", 1100, 1025, 30, 0xFFCBD2DD, false, 0, 1);
         break;
     }
-    case 5: { /* Full screen */
+    case 103: { /* Big News Studio — Reporter ID */
+        title->duration = 8.0;
+        add_rect("Reporter Plate", 560, 858, 980, 142, 0xED101722, 14.0f);
+        add_rect("Reporter Accent", 95, 858, 26, 142, 0xFFE5232A, 10.0f);
+        add_text("Reporter Name", name, 590, 827, 52, 0xFFFFFFFF, true, 0, 1);
+        add_text("Reporter Role", "Senior Correspondent", 590, 890, 30, 0xFFB8C3D3, false, 0, 1);
+        break;
+    }
+    case 104: { /* Big News Studio — Live Location */
+        title->duration = 8.0;
+        add_rect("Location Plate", 360, 110, 620, 104, 0xF0101620, 10.0f);
+        add_rect("Live Box", 102, 110, 180, 104, 0xFFE5232A, 10.0f);
+        add_text("Live Label", "LIVE", 102, 110, 42, 0xFFFFFFFF, true, 1, 1);
+        add_text("Location", name, 430, 110, 42, 0xFFFFFFFF, true, 0, 1);
+        break;
+    }
+    case 105: { /* Big News Studio — Quote Card */
+        title->duration = 9.0;
+        add_rect("Quote Background", 960, 540, 1450, 610, 0xF00C1119, 28.0f);
+        add_rect("Quote Accent", 310, 540, 18, 450, 0xFFE5232A, 9.0f);
+        add_text("Quote Mark", "“", 420, 350, 140, 0xFFE5232A, true, 0, 1);
+        auto quote = add_text("Quote", name, 1000, 520, 54, 0xFFFFFFFF, true, 0, 1);
+        quote->rect_width = 1120.0f;
+        quote->size.static_value.x = quote->rect_width;
+        add_text("Attribution", "SOURCE / TITLE", 1000, 740, 30, 0xFFB8C3D3, true, 0, 1);
+        break;
+    }
+    case 106: { /* Big News Studio — Full Screen Bulletin */
+        title->duration = 8.0;
+        add_rect("Bulletin Background", 960, 540, 1920, 1080, 0xFF0B1018, 0.0f);
+        add_rect("Red Header", 960, 165, 1920, 330, 0xFFE5232A, 0.0f);
+        add_text("Bulletin Label", "NEWS BULLETIN", 960, 130, 44, 0xFFFFFFFF, true, 1, 1);
+        add_text("Bulletin Headline", name, 960, 455, 94, 0xFFFFFFFF, true, 1, 1);
+        add_text("Bulletin Summary", "Add a concise summary of the developing story here.", 960, 625, 42, 0xFFD8DEE8, false, 1, 1);
+        add_rect("Bottom Rule", 960, 865, 1280, 8, 0xFFE5232A, 4.0f);
+        break;
+    }
+    case 201: { /* Casual Podcast — Host */
+        title->duration = 8.0;
+        add_rect("Host Card", 500, 850, 900, 150, 0xF6F4E9D8, 28.0f);
+        add_rect("Host Accent", 95, 850, 34, 150, 0xFFFF8A5B, 17.0f);
+        add_text("Host Name", name, 540, 818, 54, 0xFF262B33, true, 0, 1);
+        add_text("Host Role", "HOST", 540, 885, 28, 0xFF6B625D, true, 0, 1);
+        break;
+    }
+    case 202: { /* Casual Podcast — Guest */
+        title->duration = 8.0;
+        add_rect("Guest Card", 510, 850, 920, 150, 0xF6E6F2F1, 28.0f);
+        add_rect("Guest Accent", 100, 850, 36, 150, 0xFF49A6A2, 18.0f);
+        add_text("Guest Name", name, 550, 818, 54, 0xFF223033, true, 0, 1);
+        add_text("Guest Role", "GUEST • Add role or organization", 550, 885, 28, 0xFF587174, false, 0, 1);
+        break;
+    }
+    case 203: { /* Casual Podcast — Episode Opener */
         title->duration = 7.0;
-        add_rect(obs_text_std("OBSTitles.LayerSoftPanel"), 960, 540, 1920, 1080, 0xD0101018, 0.0f);
-        add_rect(obs_text_std("OBSTitles.LayerTopAccent"), 960, 250, 700, 12, 0xFF00A3FF, 6.0f);
-        add_text(obs_text_std("OBSTitles.LayerMainTitle"), name, 960, 480, 96, 0xFFFFFFFF, true, 1, 1);
-        add_text(obs_text_std("OBSTitles.LayerSubtitle"), obs_text_std("OBSTitles.TemplateEditableSubtitle"), 960, 610, 48, 0xFFE0E0E0, false, 1, 1);
+        add_rect("Episode Background", 960, 540, 1920, 1080, 0xFFF4E9D8, 0.0f);
+        add_rect("Episode Blob", 960, 540, 1180, 560, 0xFFFF8A5B, 72.0f);
+        add_text("Show Name", "CASUAL PODCAST", 960, 350, 34, 0xFF5F392D, true, 1, 1);
+        add_text("Episode Title", name, 960, 515, 88, 0xFFFFFFFF, true, 1, 1);
+        add_text("Episode Number", "EPISODE 01 • NEW CONVERSATIONS", 960, 670, 30, 0xFFFFF5EE, true, 1, 1);
+        break;
+    }
+    case 204: { /* Casual Podcast — Topic Card */
+        title->duration = 6.0;
+        add_rect("Topic Card", 960, 540, 1320, 430, 0xF6E6F2F1, 42.0f);
+        add_rect("Topic Dot", 430, 430, 82, 82, 0xFF49A6A2, 41.0f);
+        add_text("Topic Label", "NOW TALKING ABOUT", 960, 425, 30, 0xFF4D7374, true, 1, 1);
+        add_text("Topic", name, 960, 555, 78, 0xFF223033, true, 1, 1);
+        break;
+    }
+    case 205: { /* Casual Podcast — Social Handle */
+        title->duration = 8.0;
+        add_rect("Social Card", 410, 930, 730, 112, 0xF6FFFFFF, 56.0f);
+        add_rect("Social Icon", 105, 930, 86, 86, 0xFFFF8A5B, 43.0f);
+        add_text("Social Symbol", "@", 105, 930, 44, 0xFFFFFFFF, true, 1, 1);
+        add_text("Social Handle", name, 455, 913, 42, 0xFF252A31, true, 0, 1);
+        add_text("Follow Prompt", "FOLLOW THE CONVERSATION", 455, 958, 22, 0xFF7D7772, true, 0, 1);
+        break;
+    }
+    case 206: { /* Casual Podcast — Break Screen */
+        title->duration = 10.0;
+        add_rect("Break Background", 960, 540, 1920, 1080, 0xFF223033, 0.0f);
+        add_rect("Warm Panel", 960, 540, 1320, 650, 0xFFFF8A5B, 70.0f);
+        add_text("Break Message", name, 960, 490, 86, 0xFFFFFFFF, true, 1, 1);
+        add_text("Break Detail", "Grab a drink — the conversation continues shortly.", 960, 620, 38, 0xFFFFF2EA, false, 1, 1);
+        add_text("Show Name", "CASUAL PODCAST", 960, 785, 28, 0xFF6A3D30, true, 1, 1);
         break;
     }
     default: {
-        add_text(obs_text_std("OBSTitles.TemplateTitleText"), name, 960, 540, 72, 0xFFFFFFFF, true, 1, 1);
+        add_text("Template Title", name, 960, 540, 72, 0xFFFFFFFF, true, 1, 1);
         break;
     }
     }
@@ -5271,26 +5637,50 @@ void TitleDock::on_add()
 void TitleDock::on_add_from_templates_library()
 {
     const QString root_path = template_library_root_path();
-    for (const char *folder : template_library_category_folders)
-        QDir(root_path).mkpath(QString::fromUtf8(folder));
+    remove_legacy_canned_templates(root_path);
 
-    for (const auto &entry : template_library_entries) {
-        const QString category_path = QDir(root_path).filePath(QString::fromUtf8(entry.category_folder));
-        const QString template_path = QDir(category_path).filePath(QString::fromUtf8(entry.file_name));
-        if (QFileInfo::exists(template_path))
+    const QString canned_version_path = QDir(root_path).filePath(QStringLiteral(".bgl-canned-template-version"));
+    QString installed_canned_version;
+    {
+        QFile version_file(canned_version_path);
+        if (version_file.open(QIODevice::ReadOnly | QIODevice::Text))
+            installed_canned_version = QString::fromUtf8(version_file.readAll()).trimmed();
+    }
+    const QString current_canned_version = QStringLiteral("038");
+    const bool refresh_builtins = installed_canned_version != current_canned_version;
+
+    for (const auto &fallback_entry : template_library_entries) {
+        const CannedTemplateDefinition entry = canned_template_definition(fallback_entry);
+        const QString collection_path = QDir(root_path).filePath(entry.collection);
+        QDir().mkpath(collection_path);
+        const QString template_path = QDir(collection_path).filePath(entry.file_name);
+        if (QFileInfo::exists(template_path) && !refresh_builtins)
             continue;
+        if (refresh_builtins)
+            QFile::remove(template_path);
 
-        auto canned = create_template_title(obs_text_std(entry.default_name_key), entry.id);
+        auto canned = create_template_title(entry.default_name.toStdString(), entry.id);
         TitleTemplateExportMetadata metadata;
-        metadata.title = obs_text_std(entry.name_key);
-        metadata.description = obs_text_std(entry.description_key);
+        metadata.title = entry.title.toStdString();
+        metadata.description = entry.description.toStdString();
         metadata.creator = "Broadcast Graphics Live";
         metadata.creation_date = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
+        metadata.category = entry.category.toStdString();
+        metadata.subcategory = entry.subcategory.toStdString();
+        metadata.collection = entry.collection.toStdString();
+        const QImage canned_screenshot = title_screenshot_image(*canned);
+        metadata.screenshot_png_base64 = title_screenshot_png_base64(canned_screenshot).toStdString();
+        canned->preview_screenshot_png_base64 = metadata.screenshot_png_base64;
 
         std::string error;
         TitleDataStore::instance().export_title(canned->id, template_path.toStdString(), metadata, &error);
         TitleDataStore::instance().delete_title(canned->id);
         TitleDataStore::instance().save();
+    }
+    if (refresh_builtins) {
+        QFile version_file(canned_version_path);
+        if (version_file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+            version_file.write(current_canned_version.toUtf8());
     }
     refresh();
 
@@ -5300,6 +5690,16 @@ void TitleDock::on_add_from_templates_library()
     window->setModal(false);
     window->resize(900, 520);
 
+    QSettings library_settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
+    library_settings.beginGroup(QString::fromUtf8(kTemplateLibrarySettingsGroup));
+    const bool saved_by_collection = library_settings.value(QString::fromUtf8(kTemplateLibraryByCollectionKey), false).toBool();
+    const bool saved_icon_view = library_settings.value(QString::fromUtf8(kTemplateLibraryIconViewKey), true).toBool();
+    const QByteArray saved_geometry = library_settings.value(QString::fromUtf8(kTemplateLibraryGeometryKey)).toByteArray();
+    const QByteArray saved_splitter = library_settings.value(QString::fromUtf8(kTemplateLibrarySplitterKey)).toByteArray();
+    library_settings.endGroup();
+    if (!saved_geometry.isEmpty())
+        window->restoreGeometry(saved_geometry);
+
     auto *layout = new QVBoxLayout(window);
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(obs_layout_spacing(window));
@@ -5308,19 +5708,78 @@ void TitleDock::on_add_from_templates_library()
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
+    auto *view_mode_row = new QHBoxLayout();
+    view_mode_row->setContentsMargins(0, 0, 0, 0);
+    auto *view_mode_label = new QLabel(bgl_tr("OBSTitles.TemplateViewModeLabel"), window);
+    auto *view_mode_toggle = new QToolButton(window);
+    view_mode_toggle->setCheckable(true);
+    view_mode_toggle->setChecked(saved_by_collection);
+    view_mode_toggle->setText(saved_by_collection
+        ? bgl_tr("OBSTitles.TemplateViewByCollection")
+        : bgl_tr("OBSTitles.TemplateViewByCategory"));
+    view_mode_toggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    view_mode_row->addWidget(view_mode_label);
+    view_mode_row->addWidget(view_mode_toggle);
+    view_mode_row->addStretch(1);
+    layout->addLayout(view_mode_row);
+
     auto *splitter = new QSplitter(Qt::Horizontal, window);
     auto *categories = new TemplateCategoryTree(splitter);
+    categories->setAcceptDrops(false);
+    categories->viewport()->setAcceptDrops(false);
+    categories->setDragDropMode(QAbstractItemView::NoDragDrop);
     categories->setMinimumWidth(180);
     categories->setAlternatingRowColors(true);
-    populate_template_categories(categories, root_path);
+    auto records = std::make_shared<QList<TemplateLibraryRecord>>(scan_template_library(root_path));
+    populate_dynamic_template_tree(categories, *records, saved_by_collection);
 
-    auto *templates = new TemplateListWidget(splitter);
-    templates->setViewMode(QListView::IconMode);
-    templates->setIconSize(QSize(120, 72));
-    templates->setResizeMode(QListView::Adjust);
+    auto *templates_section = new QWidget(splitter);
+    auto *templates_layout = new QVBoxLayout(templates_section);
+    templates_layout->setContentsMargins(0, 0, 0, 0);
+    templates_layout->setSpacing(obs_layout_spacing(templates_section));
+
+    auto *templates_header = new QHBoxLayout();
+    templates_header->setContentsMargins(0, 0, 0, 0);
+    auto *templates_label = new QLabel(bgl_tr("OBSTitles.TitlesAndGraphics"), templates_section);
+    set_bold_label(templates_label);
+    templates_header->addWidget(templates_label);
+    templates_header->addStretch(1);
+    templates_layout->addLayout(templates_header);
+
+    auto *templates_toolbar = make_obs_dock_toolbar(templates_section);
+    auto *templates_view_toggle = make_obs_dock_tool_button(
+        templates_toolbar, bgl_tr("OBSTitles.ListView"), obs_icon("list-view.svg"),
+        bgl_tr("OBSTitles.ListViewTooltip"));
+    templates_toolbar->addWidget(toolbar_spacer(templates_toolbar));
+    templates_toolbar->addWidget(templates_view_toggle);
+    templates_layout->addWidget(templates_toolbar);
+
+    auto *templates = new TemplateListWidget(templates_section);
+    // Use the exact same delegate as the Dock so list/icon cards, thumbnails,
+    // selection painting and dimensions remain visually identical.
+    templates->setItemDelegate(new TitleIconViewDelegate(templates));
+    templates->setViewMode(saved_icon_view ? QListView::IconMode : QListView::ListMode);
+    templates->setIconSize(saved_icon_view
+        ? QSize(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight)
+        : QSize(96, 54));
+    templates->setGridSize(saved_icon_view
+        ? QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight)
+        : QSize());
+    templates->setResizeMode(saved_icon_view ? QListView::Adjust : QListView::Fixed);
     templates->setMovement(QListView::Static);
     templates->setSelectionMode(QAbstractItemView::SingleSelection);
-    templates->setSpacing(8);
+    templates->setSpacing(saved_icon_view ? 6 : 0);
+    templates->setUniformItemSizes(true);
+    templates->setWordWrap(saved_icon_view);
+    templates->setTextElideMode(Qt::ElideRight);
+    templates->setAlternatingRowColors(true);
+    if (!saved_icon_view) {
+        templates_view_toggle->setText(bgl_tr("OBSTitles.IconView"));
+        templates_view_toggle->setAccessibleName(bgl_tr("OBSTitles.IconView"));
+        templates_view_toggle->setToolTip(bgl_tr("OBSTitles.IconViewTooltip"));
+        templates_view_toggle->setIcon(obs_icon("icon-view.svg"));
+    }
+    templates_layout->addWidget(templates, 1);
 
     auto *metadata_panel = new QWidget(splitter);
     auto *metadata_layout = new QVBoxLayout(metadata_panel);
@@ -5339,33 +5798,45 @@ void TitleDock::on_add_from_templates_library()
     metadata_layout->addWidget(details, 1);
 
     splitter->addWidget(categories);
-    splitter->addWidget(templates);
+    splitter->addWidget(templates_section);
     splitter->addWidget(metadata_panel);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setStretchFactor(2, 0);
+    if (!saved_splitter.isEmpty())
+        splitter->restoreState(saved_splitter);
     layout->addWidget(splitter, 1);
 
-    auto load_templates_for_category = [templates](const QString &dir_path) {
+    auto load_templates_for_group = [templates, categories, records, view_mode_toggle]() {
         templates->clear();
-        QDir dir(dir_path);
-        const QStringList filters = template_file_filter().split(' ', Qt::SkipEmptyParts);
-        for (const QFileInfo &file : dir.entryInfoList(filters, QDir::Files, QDir::Name)) {
-            TemplateFileMetadata metadata = read_template_file_metadata(file.absoluteFilePath());
-            auto *item = new QListWidgetItem(metadata.screenshot_icon, metadata.title);
+        auto *selected_group = categories->currentItem();
+        const bool by_collection = view_mode_toggle->isChecked();
+        for (const auto &record : *records) {
+            if (!template_matches_tree_item(record, selected_group, by_collection)) continue;
+            auto *item = new QListWidgetItem(record.metadata.screenshot_icon, record.metadata.title);
             item->setFlags(item->flags() | Qt::ItemIsDragEnabled);
-            item->setData(Qt::UserRole, file.absoluteFilePath());
-            item->setToolTip(metadata.description);
+            item->setData(Qt::UserRole, record.path);
+            item->setData(kTitleListThumbnailRole, record.metadata.screenshot_pixmap);
+            item->setData(kTitlePlaylistActiveRole, false);
+            item->setData(kTitleCuedRole, false);
+            if (templates->viewMode() == QListView::IconMode) {
+                item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
+                item->setTextAlignment(Qt::AlignHCenter);
+            } else {
+                item->setSizeHint(QSize());
+                item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            }
+            item->setToolTip(record.metadata.description);
             templates->addItem(item);
         }
     };
-    auto reload_current_category = [categories, load_templates_for_category, templates]() {
-        if (categories->currentItem())
-            load_templates_for_category(categories->currentItem()->data(0, Qt::UserRole).toString());
-        if (templates->count() > 0)
-            templates->setCurrentRow(0);
+    auto reload_library = [categories, records, root_path, view_mode_toggle, load_templates_for_group, templates]() {
+        *records = scan_template_library(root_path);
+        populate_dynamic_template_tree(categories, *records, view_mode_toggle->isChecked());
+        load_templates_for_group();
+        if (templates->count() > 0) templates->setCurrentRow(0);
     };
-    categories->templates_moved = reload_current_category;
+    categories->templates_moved = reload_library;
 
     auto update_metadata = [templates, preview, details]() {
         auto *item = templates->currentItem();
@@ -5387,31 +5858,86 @@ void TitleDock::on_add_from_templates_library()
                 .arg(metadata.title.toHtmlEscaped(),
                      metadata.description.toHtmlEscaped().replace('\n', QStringLiteral("<br>")),
                      bgl_tr("OBSTitles.TemplateCreatorLabel"), metadata.creator.toHtmlEscaped(),
-                     bgl_tr("OBSTitles.TemplateCreationDateLabel"), metadata.creation_date.toHtmlEscaped()));
+                     bgl_tr("OBSTitles.TemplateCreationDateLabel"), metadata.creation_date.toHtmlEscaped())
+                + QStringLiteral("<br><b>%1</b> %2<br><b>%3</b> %4<br><b>%5</b> %6")
+                    .arg(bgl_tr("OBSTitles.TemplateCategoryLabel"), template_group_name(metadata.category).toHtmlEscaped(),
+                         bgl_tr("OBSTitles.TemplateSubcategoryLabel"), template_group_name(metadata.subcategory).toHtmlEscaped(),
+                         bgl_tr("OBSTitles.TemplateCollectionLabel"), template_group_name(metadata.collection).toHtmlEscaped()));
     };
 
     QObject::connect(categories, &QTreeWidget::currentItemChanged, window,
-                     [load_templates_for_category, update_metadata](QTreeWidgetItem *current, QTreeWidgetItem *) {
+                     [load_templates_for_group, update_metadata](QTreeWidgetItem *current, QTreeWidgetItem *) {
         if (!current) return;
-        load_templates_for_category(current->data(0, Qt::UserRole).toString());
+        load_templates_for_group();
         update_metadata();
     });
-    QObject::connect(categories, &QTreeWidget::itemDoubleClicked, window,
-                     [window, categories, root_path, reload_current_category](QTreeWidgetItem *item, int column) {
-        if (!item || column != 0) return;
-        if (rename_template_category(window, item)) {
-            populate_template_categories(categories, root_path);
-            reload_current_category();
-        }
+    categories->category_delete_requested = nullptr;
+    QObject::connect(view_mode_toggle, &QToolButton::toggled, window,
+                     [view_mode_toggle, categories, records, load_templates_for_group, templates](bool by_collection) {
+        view_mode_toggle->setText(by_collection
+            ? bgl_tr("OBSTitles.TemplateViewByCollection")
+            : bgl_tr("OBSTitles.TemplateViewByCategory"));
+        populate_dynamic_template_tree(categories, *records, by_collection);
+        QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
+        settings.beginGroup(QString::fromUtf8(kTemplateLibrarySettingsGroup));
+        settings.setValue(QString::fromUtf8(kTemplateLibraryByCollectionKey), by_collection);
+        settings.endGroup();
+        load_templates_for_group();
+        if (templates->count() > 0) templates->setCurrentRow(0);
     });
-    categories->category_delete_requested = [window, categories, root_path, reload_current_category](QTreeWidgetItem *item) {
-        if (delete_template_category(window, item, root_path)) {
-            populate_template_categories(categories, root_path);
-            reload_current_category();
+    QObject::connect(templates_view_toggle, &QToolButton::clicked, window,
+                     [templates, templates_view_toggle]() {
+        const bool use_list = templates->viewMode() == QListView::IconMode;
+        if (use_list) {
+            templates->setViewMode(QListView::ListMode);
+            templates->setIconSize(QSize(kTitleListIconExtent * 2 + 3, kTitleListIconExtent));
+            templates->setGridSize(QSize());
+            templates->setResizeMode(QListView::Fixed);
+            templates->setSpacing(0);
+            templates->setWordWrap(false);
+            templates_view_toggle->setText(bgl_tr("OBSTitles.IconView"));
+            templates_view_toggle->setAccessibleName(bgl_tr("OBSTitles.IconView"));
+            templates_view_toggle->setToolTip(bgl_tr("OBSTitles.IconViewTooltip"));
+            templates_view_toggle->setIcon(obs_icon("icon-view.svg"));
+        } else {
+            templates->setViewMode(QListView::IconMode);
+            templates->setIconSize(QSize(kTitleIconViewThumbWidth, kTitleIconViewThumbHeight));
+            templates->setGridSize(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
+            templates->setResizeMode(QListView::Adjust);
+            templates->setSpacing(6);
+            templates->setWordWrap(true);
+            templates_view_toggle->setText(bgl_tr("OBSTitles.ListView"));
+            templates_view_toggle->setAccessibleName(bgl_tr("OBSTitles.ListView"));
+            templates_view_toggle->setToolTip(bgl_tr("OBSTitles.ListViewTooltip"));
+            templates_view_toggle->setIcon(obs_icon("list-view.svg"));
         }
-    };
+        for (int i = 0; i < templates->count(); ++i) {
+            auto *item = templates->item(i);
+            if (!item) continue;
+            if (templates->viewMode() == QListView::IconMode) {
+                item->setSizeHint(QSize(kTitleIconViewItemWidth, kTitleIconViewItemHeight));
+                item->setTextAlignment(Qt::AlignHCenter);
+            } else {
+                item->setSizeHint(QSize());
+                item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+            }
+        }
+        templates->viewport()->update();
+        QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
+        settings.beginGroup(QString::fromUtf8(kTemplateLibrarySettingsGroup));
+        settings.setValue(QString::fromUtf8(kTemplateLibraryIconViewKey), templates->viewMode() == QListView::IconMode);
+        settings.endGroup();
+    });
+
     QObject::connect(templates, &QListWidget::currentItemChanged, window,
                      [update_metadata](QListWidgetItem *, QListWidgetItem *) { update_metadata(); });
+    QObject::connect(window, &QDialog::finished, window, [window, splitter](int) {
+        QSettings settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
+        settings.beginGroup(QString::fromUtf8(kTemplateLibrarySettingsGroup));
+        settings.setValue(QString::fromUtf8(kTemplateLibraryGeometryKey), window->saveGeometry());
+        settings.setValue(QString::fromUtf8(kTemplateLibrarySplitterKey), splitter->saveState());
+        settings.endGroup();
+    });
 
     auto import_selected_template = [this, window, templates]() {
         auto *selected = templates->currentItem();
@@ -5449,15 +5975,15 @@ void TitleDock::on_add_from_templates_library()
     template_actions->addStretch();
     layout->addLayout(template_actions);
 
-    QObject::connect(edit_template, &QPushButton::clicked, window, [window, templates, reload_current_category, update_metadata]() {
+    QObject::connect(edit_template, &QPushButton::clicked, window, [window, templates, reload_library, update_metadata]() {
         auto *selected = templates->currentItem();
         if (!selected) return;
         if (prompt_edit_template_file_metadata(window, selected->data(Qt::UserRole).toString())) {
-            reload_current_category();
+            reload_library();
             update_metadata();
         }
     });
-    QObject::connect(delete_template, &QPushButton::clicked, window, [window, templates, reload_current_category, update_metadata]() {
+    QObject::connect(delete_template, &QPushButton::clicked, window, [window, templates, reload_library, update_metadata]() {
         auto *selected = templates->currentItem();
         if (!selected) return;
         const QString path = selected->data(Qt::UserRole).toString();
@@ -5471,7 +5997,7 @@ void TitleDock::on_add_from_templates_library()
                                  bgl_tr("OBSTitles.DeleteTemplateFailed"));
             return;
         }
-        reload_current_category();
+        reload_library();
         update_metadata();
     });
 
@@ -5480,7 +6006,8 @@ void TitleDock::on_add_from_templates_library()
     QObject::connect(buttons, &QDialogButtonBox::rejected, window, &QDialog::close);
     layout->addWidget(buttons);
 
-    reload_current_category();
+    load_templates_for_group();
+    if (templates->count() > 0) templates->setCurrentRow(0);
     update_metadata();
 
     window->show();
@@ -5566,12 +6093,17 @@ void TitleDock::on_export()
 
     QString path;
     if (save_in_template_library) {
-        QString category;
-        if (!prompt_template_library_category(this, category))
-            return;
-        const QString category_path = QDir(template_library_root_path()).filePath(category);
-        QDir().mkpath(category_path);
-        path = QDir(category_path).filePath(safe_name + QStringLiteral(".obgt"));
+        QStringList hierarchy;
+        const QString category = sanitized_template_category_path(QString::fromStdString(metadata.category));
+        const QString subcategory = sanitized_template_category_path(QString::fromStdString(metadata.subcategory));
+        const QString collection = sanitized_template_category_path(QString::fromStdString(metadata.collection));
+        if (!category.isEmpty()) hierarchy << category;
+        if (!subcategory.isEmpty()) hierarchy << subcategory;
+        if (!collection.isEmpty()) hierarchy << collection;
+        QString library_path = template_library_root_path();
+        if (!hierarchy.isEmpty()) library_path = QDir(library_path).filePath(hierarchy.join('/'));
+        QDir().mkpath(library_path);
+        path = QDir(library_path).filePath(safe_name + QStringLiteral(".obgt"));
     } else {
         path = QFileDialog::getSaveFileName(
             this, bgl_tr("OBSTitles.ExportTitleTemplate"),

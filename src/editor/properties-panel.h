@@ -136,6 +136,9 @@ private:
     QWidget         *row_ticker_playback_ = nullptr;
     QToolButton     *btn_ticker_pause_ = nullptr;
     QComboBox       *cmb_ticker_playback_mode_ = nullptr;
+    QWidget         *row_ticker_completion_ = nullptr;
+    QDoubleSpinBox  *spn_ticker_completion_ = nullptr;
+    QPushButton     *btn_kf_ticker_completion_ = nullptr;
     QComboBox       *cmb_ticker_style_ = nullptr;
     QDoubleSpinBox  *spn_ticker_speed_ = nullptr;
     QDoubleSpinBox  *spn_ticker_line_hold_ = nullptr;

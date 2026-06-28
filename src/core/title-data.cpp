@@ -1454,6 +1454,16 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["out_time"] = l.out_time;
 
     j["position"] = vec2_aprop_to_json(l.position);
+    j["transform_quad"] = {
+        l.transform_quad_tl_x, l.transform_quad_tl_y,
+        l.transform_quad_tr_x, l.transform_quad_tr_y,
+        l.transform_quad_br_x, l.transform_quad_br_y,
+        l.transform_quad_bl_x, l.transform_quad_bl_y
+    };
+    j["transform_quad_tl"] = vec2_aprop_to_json(l.transform_quad_tl);
+    j["transform_quad_tr"] = vec2_aprop_to_json(l.transform_quad_tr);
+    j["transform_quad_br"] = vec2_aprop_to_json(l.transform_quad_br);
+    j["transform_quad_bl"] = vec2_aprop_to_json(l.transform_quad_bl);
     j["scale"]    = vec2_aprop_to_json(l.scale);
     j["scale_lock"] = l.scale_lock;
     j["rotation"] = aprop_to_json(l.rotation);
@@ -1504,6 +1514,8 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["ticker_line_hold"] = l.ticker_line_hold;
     j["ticker_direction"] = l.ticker_direction;
     j["ticker_playback_mode"] = l.ticker_playback_mode;
+    j["ticker_completion"] = l.ticker_completion;
+    j["ticker_completion_prop"] = aprop_to_json(l.ticker_completion_prop);
     j["text_color"]    = l.text_color;
     j["outline_enabled"] = l.outline_enabled;
     j["stroke_fill_type"] = l.stroke_fill_type;
@@ -2112,6 +2124,22 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     }
 
     if (j.contains("position")) vec2_aprop_from_json(j["position"], l->position);
+    if (j.contains("transform_quad") && j["transform_quad"].is_array()) {
+        const auto &q = j["transform_quad"];
+        auto qv = [&](size_t i) { return i < q.size() && q[i].is_number() ? (float)q[i].get<double>() : 0.0f; };
+        l->transform_quad_tl_x = qv(0); l->transform_quad_tl_y = qv(1);
+        l->transform_quad_tr_x = qv(2); l->transform_quad_tr_y = qv(3);
+        l->transform_quad_br_x = qv(4); l->transform_quad_br_y = qv(5);
+        l->transform_quad_bl_x = qv(6); l->transform_quad_bl_y = qv(7);
+        l->transform_quad_tl.static_value = {l->transform_quad_tl_x, l->transform_quad_tl_y};
+        l->transform_quad_tr.static_value = {l->transform_quad_tr_x, l->transform_quad_tr_y};
+        l->transform_quad_br.static_value = {l->transform_quad_br_x, l->transform_quad_br_y};
+        l->transform_quad_bl.static_value = {l->transform_quad_bl_x, l->transform_quad_bl_y};
+    }
+    if (j.contains("transform_quad_tl")) vec2_aprop_from_json(j["transform_quad_tl"], l->transform_quad_tl);
+    if (j.contains("transform_quad_tr")) vec2_aprop_from_json(j["transform_quad_tr"], l->transform_quad_tr);
+    if (j.contains("transform_quad_br")) vec2_aprop_from_json(j["transform_quad_br"], l->transform_quad_br);
+    if (j.contains("transform_quad_bl")) vec2_aprop_from_json(j["transform_quad_bl"], l->transform_quad_bl);
     if (j.contains("scale"))    vec2_aprop_from_json(j["scale"], l->scale);
     l->scale_lock = json_bool(j, "scale_lock", true);
     if (j.contains("rotation")) l->rotation = aprop_from_json(j["rotation"], "rotation");
@@ -2173,7 +2201,12 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->ticker_speed = std::clamp(finite_or(json_double(j, "ticker_speed", 120.0), 120.0), 0.0, 10000.0);
     l->ticker_line_hold = std::clamp(finite_or(json_double(j, "ticker_line_hold", 2.0), 2.0), 0.0, kMaxDuration);
     l->ticker_direction = std::clamp(json_int(j, "ticker_direction", 1), 0, 1);
-    l->ticker_playback_mode = std::clamp(json_int(j, "ticker_playback_mode", 0), 0, 2);
+    l->ticker_playback_mode = std::clamp(json_int(j, "ticker_playback_mode", 0), 0, 3);
+    l->ticker_completion = std::clamp(json_double(j, "ticker_completion", 0.0), 0.0, 100.0);
+    l->ticker_completion_prop.static_value = l->ticker_completion;
+    if (j.contains("ticker_completion_prop"))
+        l->ticker_completion_prop = aprop_from_json(j["ticker_completion_prop"], "ticker_completion");
+    l->ticker_completion_prop.static_value = std::clamp(l->ticker_completion_prop.static_value, 0.0, 100.0);
     l->text_color    = json_color(j, "text_color", (uint32_t)0xFFFFFFFF);
     l->stroke_fill_type = std::clamp(json_int(j, "stroke_fill_type", 1), 0, 2);
     l->stroke_color  = json_color(j, "stroke_color", (uint32_t)0xFF000000);
@@ -3076,6 +3109,9 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
     root["description"] = export_metadata.description;
     root["creator"] = export_metadata.creator;
     root["creation_date"] = export_metadata.creation_date;
+    root["category"] = export_metadata.category;
+    root["subcategory"] = export_metadata.subcategory;
+    root["collection"] = export_metadata.collection;
     root["screenshot"] = {
         {"mime_type", "image/png"},
         {"data_base64", export_metadata.screenshot_png_base64},
@@ -3085,6 +3121,9 @@ bool TitleDataStore::export_title(const std::string &id, const std::string &path
         {"description", export_metadata.description},
         {"creator", export_metadata.creator},
         {"creation_date", export_metadata.creation_date},
+        {"category", export_metadata.category},
+        {"subcategory", export_metadata.subcategory},
+        {"collection", export_metadata.collection},
         {"screenshot", root["screenshot"]},
     };
     Title exported_copy = *t;

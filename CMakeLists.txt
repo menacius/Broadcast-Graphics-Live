@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "025")
+set(OBS_BGS_DEVELOPMENT_VERSION "043")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -718,6 +718,8 @@ install(TARGETS broadcast-graphics-live
 install(DIRECTORY data/locale
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 install(DIRECTORY data/icons
+        DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
+install(DIRECTORY data/canned-templates
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
 install(DIRECTORY data/effect-transitions
         DESTINATION ${OBS_TITLES_PLUGIN_NAME}/data)
