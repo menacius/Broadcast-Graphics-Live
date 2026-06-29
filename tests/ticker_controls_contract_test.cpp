@@ -1,17 +1,10 @@
 #include <cassert>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <string>
 
+#include "source_bundle_reader.h"
+
 namespace {
-std::string read_file(const char *path)
-{
-    std::ifstream input(path, std::ios::binary);
-    assert(input.good());
-    return {std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()};
-}
 
 void require(const std::string &source, const char *needle)
 {
@@ -52,12 +45,13 @@ int main(int argc, char **argv)
 
     require(layer_model, "int         ticker_playback_mode = 0");
     require(title_data, "j[\"ticker_playback_mode\"] = l.ticker_playback_mode");
-    require(title_data, "json_int(j, \"ticker_playback_mode\", 0), 0, 2");
+    require(title_data, "json_int(j, \"ticker_playback_mode\", 0), 0, 3");
 
     require(properties, "btn_ticker_pause_ = new QToolButton");
     require(properties, "TickerPlaybackMode::AlwaysPlay");
     require(properties, "TickerPlaybackMode::PausedUntilCued");
     require(properties, "TickerPlaybackMode::PausedUntilHotkey");
+    require(properties, "TickerPlaybackMode::CustomPlayback");
     require(properties, "bgs::ticker_runtime::toggle_pause");
     require(properties, "bgs::ticker_runtime::reset_for_mode_change");
     require(properties_header, "void runtime_visual_changed()");

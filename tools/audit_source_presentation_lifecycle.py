@@ -8,10 +8,11 @@ Preview/Program presentation.
 from __future__ import annotations
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / "src/obs/title-source.cpp").read_text(encoding="utf-8")
+SOURCE = read_source_bundle(ROOT / "src/obs/title-source.cpp")
 HEADER = (ROOT / "src/obs/title-source.h").read_text(encoding="utf-8")
 PLUGIN = (ROOT / "src/obs/plugin-main.cpp").read_text(encoding="utf-8")
 

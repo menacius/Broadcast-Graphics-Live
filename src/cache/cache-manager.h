@@ -83,6 +83,7 @@ class RamFrameCache : public QObject {
     Q_OBJECT
 public:
     explicit RamFrameCache(QObject *parent = nullptr);
+    bool contains(const CacheFrameKey &key) const;
     bool get(const CacheFrameKey &key, QImage &image) const;
     void put(const CacheFrameKey &key, const QImage &image);
     void remove(const CacheFrameKey &key);
@@ -121,6 +122,8 @@ public:
     bool get(const CacheFrameKey &key, QImage &image) const;
     void put(const CacheFrameKey &key, const QImage &image);
     void enqueuePut(const CacheFrameKey &key, const QImage &image);
+    void enqueueAlias(const CacheFrameKey &key,
+                      const CacheFrameKey &canonical_key);
     void flushWrites();
     QVector<CacheFrameKey> keysForTitle(const QString &title_id) const;
     void remove(const CacheFrameKey &key);
@@ -146,7 +149,12 @@ private:
     void cancelQueuedWrites();
     void putForGeneration(const CacheFrameKey &key, const QImage &image,
                           quint64 generation);
+    void aliasForGeneration(const CacheFrameKey &key,
+                            const CacheFrameKey &canonical_key,
+                            quint64 generation);
     void putLocked(const CacheFrameKey &key, const QImage &image);
+    bool aliasLocked(const CacheFrameKey &key,
+                     const CacheFrameKey &canonical_key);
     bool readFrameTileRefsLocked(const CacheFrameKey &key,
                                  QVector<TileRef> &refs) const;
     bool readTileLocked(const TileRef &ref, QImage &image) const;
@@ -155,7 +163,10 @@ private:
     void addTileReferencesLocked(const QVector<QByteArray> &digests);
     void releaseTileReferencesLocked(const QVector<QByteArray> &digests);
     struct WriteJob {
+        enum class Kind { Put, Alias };
+        Kind kind = Kind::Put;
         CacheFrameKey key;
+        CacheFrameKey canonical_key;
         QImage image;
         quint64 generation = 0;
         quint64 bytes = 0;

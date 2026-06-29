@@ -8,10 +8,13 @@
 #include "title-dock.h"
 #include "title-hotkeys.h"
 #include "title-editor.h"
+#include "title-assets.h"
 #include "title-data.h"
 #include "title-localization.h"
 #include "title-logger.h"
 #include "title-preferences.h"
+#include "title-text-layout.h"
+#include "title-text-layout-qt-font-registry.h"
 #include "cache-manager.h"
 #include "build-info.h"
 #include "extensions/effect-extension-catalog.h"
@@ -38,6 +41,7 @@ static void on_frontend_event(obs_frontend_event event, void *priv);
 static TitleDock *g_dock = nullptr;
 static QAction *g_dock_menu_action = nullptr;
 static bool g_frontend_ready = false;
+static bool g_frontend_exiting = false;
 constexpr int kObsDockLayoutStateVersion = 1;
 constexpr const char *kObsDockLayoutSettingsGroup = "ObsDockLayout";
 constexpr const char *kObsMainWindowStateKey = "mainWindowState";
@@ -87,9 +91,9 @@ static QMenu *find_docks_menu(QMainWindow *main)
     return nullptr;
 }
 
-static void destroy_dock_ui()
+static void destroy_dock_ui(bool frontend_api_available = true)
 {
-    if (g_dock) {
+    if (frontend_api_available && g_dock) {
         if (auto *main = qobject_cast<QMainWindow *>(g_dock->parentWidget()))
             save_obs_dock_layout(main);
     }
@@ -104,7 +108,8 @@ static void destroy_dock_ui()
 
     if (g_dock) {
         QObject::disconnect(g_dock, nullptr, nullptr, nullptr);
-        obs_frontend_remove_dock("broadcast-graphics-live-dock");
+        if (frontend_api_available)
+            obs_frontend_remove_dock("broadcast-graphics-live-dock");
         delete g_dock;
         g_dock = nullptr;
     }
@@ -115,7 +120,7 @@ static void add_docks_menu_entry(QMainWindow *main)
     QMenu *docks_menu = find_docks_menu(main);
     if (!docks_menu || !g_dock || g_dock_menu_action) return;
 
-    g_dock_menu_action = docks_menu->addAction(bgl_tr("OBSTitles.DockName"));
+    g_dock_menu_action = docks_menu->addAction(bgl_brand_icon(), bgl_tr("OBSTitles.DockName"));
     g_dock_menu_action->setObjectName("broadcast-graphics-live-docks-menu-action");
     g_dock_menu_action->setCheckable(true);
     g_dock_menu_action->setChecked(g_dock->isVisible());
@@ -132,6 +137,7 @@ static void add_docks_menu_entry(QMainWindow *main)
 /* ── module load ────────────────────────────────────────────────── */
 bool obs_module_load(void)
 {
+    g_frontend_exiting = false;
     TitleLogger::startSession();
     blog(LOG_INFO, "[Broadcast Graphics Live] Loading plugin %s", BGL_BUILD_DISPLAY);
     BGL_LOG_INFO("Plugin", QStringLiteral("Loading plugin %1").arg(QStringLiteral(BGL_BUILD_DISPLAY)));
@@ -157,9 +163,16 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
     title_hotkeys_unregister();
+    TitleDataStore::instance().shutdownSaveWorker();
     TitleDataStore::instance().save();
-    obs_frontend_remove_event_callback(on_frontend_event, nullptr);
-    destroy_dock_ui();
+    /* OBS_FRONTEND_EVENT_EXIT is the final point at which frontend API calls
+     * are permitted.  A normal OBS shutdown has already removed the dock in
+     * that callback, so module unload must not call remove_event_callback() or
+     * remove_dock() against a frontend that is being dismantled.  Manual plugin
+     * unload while OBS is still running keeps the normal frontend cleanup. */
+    if (!g_frontend_exiting)
+        obs_frontend_remove_event_callback(on_frontend_event, nullptr);
+    destroy_dock_ui(!g_frontend_exiting);
     /* Stop publication before rotating cache generations. This prevents an
      * in-flight prerender job from holding cache locks while shutdown clears the
      * index, and avoids deleting files on the OBS frontend thread. */
@@ -169,6 +182,8 @@ void obs_module_unload(void)
         CacheManager::instance().clearAll();
     }
     release_title_gpu_render_resources();
+    shared_text_layout_cache().clear();
+    text_layout_clear_raw_font_registry();
     BglEffectExtensionCatalog::instance().shutdown();
     blog(LOG_INFO, "[Broadcast Graphics Live] Plugin unloaded.");
     BGL_LOG_INFO("Plugin", QStringLiteral("Plugin unloaded"));
@@ -240,13 +255,15 @@ static void on_frontend_event(obs_frontend_event event, void * /*priv*/)
 
     if (event == OBS_FRONTEND_EVENT_EXIT) {
         BGL_LOG_INFO("Plugin", QStringLiteral("Frontend exit"));
+        g_frontend_exiting = true;
         title_source_begin_shutdown();
         /* Cache shutdown/rotation is performed once from obs_module_unload(),
          * after the prerender worker has stopped. Doing it here as well caused
          * duplicate clears while sources and the worker were still active. */
         g_frontend_ready = false;
         title_hotkeys_unregister();
+        TitleDataStore::instance().shutdownSaveWorker();
         TitleDataStore::instance().save();
-        destroy_dock_ui();
+        destroy_dock_ui(true);
     }
 }

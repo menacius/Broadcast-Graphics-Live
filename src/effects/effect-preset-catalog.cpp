@@ -1,4 +1,5 @@
 #include "effect-preset-catalog.h"
+#include "preset-category-path.h"
 #include "extensions/effect-extension-catalog.h"
 
 #include <obs-module.h>
@@ -58,38 +59,6 @@ bool is_effect_preset_file_in_library(const QString &file_path)
            paths_equal(info.absolutePath(), root);
 }
 
-
-QStringList category_path_from_json(const QJsonValue &value)
-{
-    QStringList parts;
-    if (value.isString()) {
-        QString path = value.toString().trimmed();
-        path.replace(QLatin1Char('\\'), QLatin1Char('/'));
-        parts = path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
-    } else if (value.isArray()) {
-        const QJsonArray array = value.toArray();
-        for (const QJsonValue &part : array) {
-            if (!part.isString())
-                return {};
-            parts.push_back(part.toString());
-        }
-    }
-
-    if (parts.size() > 16)
-        return {};
-    for (QString &part : parts) {
-        part = part.trimmed();
-        if (part.isEmpty() || part.size() > 128 ||
-            part == QStringLiteral(".") || part == QStringLiteral("..") ||
-            part.contains(QLatin1Char('/')) || part.contains(QLatin1Char('\\')))
-            return {};
-        for (const QChar ch : part) {
-            if (ch.category() == QChar::Other_Control)
-                return {};
-        }
-    }
-    return parts;
-}
 
 bool valid_effect_category_path(const QStringList &parts)
 {
@@ -474,6 +443,17 @@ LayerEffect make_default_layer_effect(LayerEffectType type)
         effect.effect_complexity = 4.0f;
         effect.effect_seed = 1;
         break;
+    case LayerEffectType::FourColorGradient: {
+        auto &catalog = BglEffectExtensionCatalog::instance();
+        if (catalog.effects().empty())
+            catalog.reload();
+        if (const auto *definition = catalog.find(type)) {
+            effect.extension_parameters_json = QJsonDocument(definition->defaults)
+                .toJson(QJsonDocument::Compact).toStdString();
+            effect.extension_schema_version = definition->schemaVersion;
+        }
+        break;
+    }
     case LayerEffectType::BrightnessContrast:
     case LayerEffectType::Saturation:
         break;
@@ -521,6 +501,7 @@ QString effect_type_id(LayerEffectType type)
     case LayerEffectType::Vignette: return QStringLiteral("vignette");
     case LayerEffectType::Noise: return QStringLiteral("noise");
     case LayerEffectType::RoughenEdges: return QStringLiteral("roughen-edges");
+    case LayerEffectType::FourColorGradient: return QStringLiteral("4-color-gradient");
     }
     return {};
 }
@@ -533,7 +514,7 @@ bool effect_type_from_id(const QString &id, LayerEffectType *type)
     normalized.replace(QLatin1Char('_'), QLatin1Char('-'));
     normalized.replace(QLatin1Char(' '), QLatin1Char('-'));
     for (int value = static_cast<int>(LayerEffectType::BackgroundColor);
-         value <= static_cast<int>(LayerEffectType::RoughenEdges); ++value) {
+         value <= static_cast<int>(LayerEffectType::FourColorGradient); ++value) {
         const auto candidate = static_cast<LayerEffectType>(value);
         if (effect_type_id(candidate) == normalized) {
             *type = candidate;
@@ -589,7 +570,7 @@ bool load_effect_preset_file(const QString &file_path,
     if (kind.compare(QStringLiteral("effect"), Qt::CaseInsensitive) != 0)
         return fail(QStringLiteral("The preset is not a layer effect."));
 
-    QStringList category_path = category_path_from_json(object.value(QStringLiteral("category")));
+    QStringList category_path = bgl_preset_category_path_from_json(object.value(QStringLiteral("category")));
     if (category_path.isEmpty())
         category_path = {QStringLiteral("Effects")};
     if (!valid_effect_category_path(category_path))

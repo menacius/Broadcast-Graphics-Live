@@ -26,6 +26,76 @@ void appendBuiltIns(std::vector<BglEffectExtensionDefinition> &effects)
         def.providerVersion = QStringLiteral(PLUGIN_VERSION);
         def.builtIn = true;
         def.builtInType = meta.type;
+        if (meta.type == LayerEffectType::FourColorGradient) {
+            def.defaults = QJsonObject{
+                {QStringLiteral("point1"), QJsonArray{0.25, 0.25}},
+                {QStringLiteral("color1"), QJsonArray{1.0, 0.16, 0.08, 1.0}},
+                {QStringLiteral("point2"), QJsonArray{0.75, 0.25}},
+                {QStringLiteral("color2"), QJsonArray{1.0, 0.82, 0.08, 1.0}},
+                {QStringLiteral("point3"), QJsonArray{0.25, 0.75}},
+                {QStringLiteral("color3"), QJsonArray{0.08, 0.42, 1.0, 1.0}},
+                {QStringLiteral("point4"), QJsonArray{0.75, 0.75}},
+                {QStringLiteral("color4"), QJsonArray{0.72, 0.10, 1.0, 1.0}},
+                {QStringLiteral("blend"), 50.0},
+                {QStringLiteral("jitter"), 0.0},
+                {QStringLiteral("opacity"), 1.0},
+                {QStringLiteral("blendMode"), 0}
+            };
+            const auto point = [](const QString &label, double x, double y) {
+                return QJsonObject{{QStringLiteral("type"), QStringLiteral("point")},
+                                   {QStringLiteral("label"), label},
+                                   {QStringLiteral("minX"), -2.0},
+                                   {QStringLiteral("maxX"), 3.0},
+                                   {QStringLiteral("minY"), -2.0},
+                                   {QStringLiteral("maxY"), 3.0},
+                                   {QStringLiteral("step"), 0.01},
+                                   {QStringLiteral("default"), QJsonArray{x, y}},
+                                   {QStringLiteral("animatable"), true}};
+            };
+            const auto color = [](const QString &label, const QJsonArray &value) {
+                return QJsonObject{{QStringLiteral("type"), QStringLiteral("color")},
+                                   {QStringLiteral("label"), label},
+                                   {QStringLiteral("default"), value},
+                                   {QStringLiteral("animatable"), true}};
+            };
+            def.parameterSchema.insert(QStringLiteral("point1"), point(QStringLiteral("Point 1"), 0.25, 0.25));
+            def.parameterSchema.insert(QStringLiteral("color1"), color(QStringLiteral("Color 1"), QJsonArray{1.0, 0.16, 0.08, 1.0}));
+            def.parameterSchema.insert(QStringLiteral("point2"), point(QStringLiteral("Point 2"), 0.75, 0.25));
+            def.parameterSchema.insert(QStringLiteral("color2"), color(QStringLiteral("Color 2"), QJsonArray{1.0, 0.82, 0.08, 1.0}));
+            def.parameterSchema.insert(QStringLiteral("point3"), point(QStringLiteral("Point 3"), 0.25, 0.75));
+            def.parameterSchema.insert(QStringLiteral("color3"), color(QStringLiteral("Color 3"), QJsonArray{0.08, 0.42, 1.0, 1.0}));
+            def.parameterSchema.insert(QStringLiteral("point4"), point(QStringLiteral("Point 4"), 0.75, 0.75));
+            def.parameterSchema.insert(QStringLiteral("color4"), color(QStringLiteral("Color 4"), QJsonArray{0.72, 0.10, 1.0, 1.0}));
+            def.parameterSchema.insert(QStringLiteral("blend"), QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("float")}, {QStringLiteral("label"), QStringLiteral("Blend")},
+                {QStringLiteral("min"), 0.0}, {QStringLiteral("max"), 1000.0}, {QStringLiteral("step"), 1.0},
+                {QStringLiteral("default"), 50.0}, {QStringLiteral("animatable"), true}});
+            def.parameterSchema.insert(QStringLiteral("jitter"), QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("float")}, {QStringLiteral("label"), QStringLiteral("Jitter")},
+                {QStringLiteral("min"), 0.0}, {QStringLiteral("max"), 100.0}, {QStringLiteral("step"), 1.0},
+                {QStringLiteral("default"), 0.0}, {QStringLiteral("animatable"), true}});
+            def.parameterSchema.insert(QStringLiteral("opacity"), QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("float")}, {QStringLiteral("label"), QStringLiteral("Opacity")},
+                {QStringLiteral("min"), 0.0}, {QStringLiteral("max"), 1.0}, {QStringLiteral("step"), 0.01},
+                {QStringLiteral("default"), 1.0}, {QStringLiteral("animatable"), true}});
+            def.parameterSchema.insert(QStringLiteral("blendMode"), QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("enum")}, {QStringLiteral("label"), QStringLiteral("Blending Mode")},
+                {QStringLiteral("default"), 0},
+                {QStringLiteral("options"), QJsonArray{
+                    QJsonObject{{QStringLiteral("label"), QStringLiteral("Normal")}, {QStringLiteral("value"), 0}},
+                    QJsonObject{{QStringLiteral("label"), QStringLiteral("Multiply")}, {QStringLiteral("value"), 1}},
+                    QJsonObject{{QStringLiteral("label"), QStringLiteral("Add")}, {QStringLiteral("value"), 2}},
+                    QJsonObject{{QStringLiteral("label"), QStringLiteral("Screen")}, {QStringLiteral("value"), 3}},
+                    QJsonObject{{QStringLiteral("label"), QStringLiteral("Overlay")}, {QStringLiteral("value"), 4}},
+                    QJsonObject{{QStringLiteral("label"), QStringLiteral("Color")}, {QStringLiteral("value"), 5}}
+                }}});
+            def.canvasHandles = QJsonArray{
+                QJsonObject{{QStringLiteral("path"), QStringLiteral("point1")}, {QStringLiteral("label"), QStringLiteral("1")}, {QStringLiteral("color"), QStringLiteral("#ff4a22")}},
+                QJsonObject{{QStringLiteral("path"), QStringLiteral("point2")}, {QStringLiteral("label"), QStringLiteral("2")}, {QStringLiteral("color"), QStringLiteral("#ffd11a")}},
+                QJsonObject{{QStringLiteral("path"), QStringLiteral("point3")}, {QStringLiteral("label"), QStringLiteral("3")}, {QStringLiteral("color"), QStringLiteral("#2178ff")}},
+                QJsonObject{{QStringLiteral("path"), QStringLiteral("point4")}, {QStringLiteral("label"), QStringLiteral("4")}, {QStringLiteral("color"), QStringLiteral("#b82bff")}}
+            };
+        }
         effects.push_back(std::move(def));
     }
 }

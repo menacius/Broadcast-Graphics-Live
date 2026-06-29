@@ -444,6 +444,81 @@ static void test_selected_inline_stroke_changes_only_selected_range()
            RichTextCharStroke);
 }
 
+static void test_utf16_mapping_and_canonical_single_edit()
+{
+    const std::string text = u8"AΩ🙂B";
+    assert(rich_text_utf8_byte_offset_from_utf16_position(text, 0) == 0);
+    assert(rich_text_utf8_byte_offset_from_utf16_position(text, 1) == 1);
+    assert(rich_text_utf8_byte_offset_from_utf16_position(text, 2) == 3);
+    /* Qt can transiently report a cursor inside a surrogate pair. Snap it to
+     * the beginning of the scalar instead of producing an invalid UTF-8 edit. */
+    assert(rich_text_utf8_byte_offset_from_utf16_position(text, 3) == 3);
+    assert(rich_text_utf8_byte_offset_from_utf16_position(text, 4) == 7);
+    assert(rich_text_utf8_byte_offset_from_utf16_position(text, 5) == 8);
+
+    RichTextDocument doc = text_doc(text);
+    RichTextCharFormat replacement = doc.default_format;
+    replacement.bold = true;
+    rich_text_document_replace_canonical_range(
+        doc, 3, 4, u8"Ψ", replacement, RichTextCharBold);
+    assert(doc.plain_text == u8"AΩΨB");
+    assert(doc.transactions.size() == 1);
+    assert(doc.transactions.back().position == 3);
+    assert(doc.transactions.back().removed_text == u8"🙂");
+    assert(doc.transactions.back().inserted_text == u8"Ψ");
+    assert(rich_text_format_at(doc, 3).bold);
+    assert(!rich_text_format_at(doc, 1).bold);
+}
+
+static void test_every_exposed_text_property_participates_in_model_masks()
+{
+    RichTextCharFormat base;
+    RichTextCharFormat changed = base;
+    changed.font_family = "Noto Sans";
+    changed.font_style = "Semibold";
+    changed.font_size += 7;
+    changed.bold = !base.bold;
+    changed.italic = !base.italic;
+    changed.underline = !base.underline;
+    changed.strikethrough = !base.strikethrough;
+    changed.kerning = !base.kerning;
+    changed.kerning_mode = 2;
+    changed.manual_kerning = 3.5f;
+    changed.tracking = 4.0f;
+    changed.scale_x = 1.25f;
+    changed.scale_y = 0.8f;
+    changed.baseline_shift = 6.0f;
+    changed.fill.type = 1;
+    changed.fill.gradient_type = 1;
+    changed.fill.gradient_start_color = 0xFF112233;
+    changed.fill.gradient_end_color = 0xFF445566;
+    changed.text_style = 1;
+    changed.ligatures = !base.ligatures;
+    changed.stylistic_alternates = !base.stylistic_alternates;
+    changed.fractions = !base.fractions;
+    changed.opentype_features = !base.opentype_features;
+    changed.language = "el";
+    changed.stroke.enabled = true;
+    changed.stroke.width = 5.0f;
+    changed.stroke.join_style = 1;
+    assert(rich_text_char_format_difference_mask(base, changed) ==
+           RichTextCharAll);
+
+    RichTextParagraphFormat paragraph;
+    RichTextParagraphFormat paragraph_changed = paragraph;
+    paragraph_changed.align_h = 2;
+    paragraph_changed.align_v = 2;
+    paragraph_changed.indent_left = 1.0f;
+    paragraph_changed.indent_right = 2.0f;
+    paragraph_changed.indent_first_line = 3.0f;
+    paragraph_changed.line_spacing = 4.0f;
+    paragraph_changed.space_before = 5.0f;
+    paragraph_changed.space_after = 6.0f;
+    paragraph_changed.hyphenate = !paragraph.hyphenate;
+    assert(rich_text_paragraph_format_difference_mask(
+               paragraph, paragraph_changed) == RichTextParagraphAll);
+}
+
 int main()
 {
     test_mixed_styles_and_transactions();
@@ -460,6 +535,8 @@ int main()
     test_mixed_property_difference_masks_are_precise();
     test_selected_swatch_fill_changes_only_selected_range();
     test_selected_inline_stroke_changes_only_selected_range();
+    test_utf16_mapping_and_canonical_single_edit();
+    test_every_exposed_text_property_participates_in_model_masks();
     std::cout << "rich text v2 sparse ranges, independent H/V scale, multi-style colors, Unicode-safe edits, transactions, and paragraph selection passed\n";
     return 0;
 }

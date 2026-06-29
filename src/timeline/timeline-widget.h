@@ -28,6 +28,7 @@
 #include <QColor>
 #include <QPixmap>
 #include <QElapsedTimer>
+#include <QJsonObject>
 #include <memory>
 #include <string>
 #include <vector>
@@ -137,7 +138,11 @@ private:
         std::string prop_name;
         Keyframe keyframe;
         VectorKeyframe vector_keyframe;
+        std::vector<Keyframe> scalar_group_keyframes;
+        QJsonObject extension_keyframe;
         bool is_vector = false;
+        bool is_scalar_group = false;
+        bool is_extension = false;
         double offset = 0.0;
     };
     struct DraggedLayerStrip {

@@ -44,6 +44,7 @@ enum class LayerEffectType {
     Vignette = 15,
     Noise = 16,
     RoughenEdges = 17,
+    FourColorGradient = 18,
 };
 
 enum class EffectBlendMode {

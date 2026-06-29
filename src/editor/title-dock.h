@@ -92,6 +92,7 @@ private:
     void schedule_title_list_cache_icon_update(const QString &title_id);
     void flush_title_list_cache_icon_updates();
     void update_title_list_cache_icon(const QString &title_id);
+    void refresh_title_list_cue_visual_states();
     void update_live_text_select_cell_status(int row);
     void adjust_live_text_table_columns(bool fill_to_viewport = false);
     void install_obs_state_callbacks();
@@ -125,6 +126,7 @@ private:
     int live_text_row_height() const;
     void apply_persistence_settings_to_title(const std::shared_ptr<Title> &title);
     void update_playlist_countdown_label();
+    void update_live_cue_timer_label();
     void stop_playlist();
     void stop_playlist_for_title(const std::shared_ptr<Title> &title);
     void sync_playlist_runtime_state();
@@ -157,6 +159,7 @@ private:
     QLabel       *template_lbl_ = nullptr;
     QLabel       *status_lbl_ = nullptr;
     QLabel       *text_editor_lbl_ = nullptr;
+    QLabel       *live_cue_timer_lbl_ = nullptr;
     QLabel       *playlist_countdown_lbl_ = nullptr;
     QTableWidget *text_table_ = nullptr;
     QToolButton *btn_add_text_row_ = nullptr;

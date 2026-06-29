@@ -250,9 +250,13 @@ static void cue_title_row(const std::shared_ptr<Title> &title, int row)
     normalize_live_text_rows(title, exposed);
 
     if (exposed.empty()) {
-        title->current_cue_row = -1;
+        const bool uncue_active = title->current_cue_row == 0 ||
+            title->pending_cue_row == 0;
+        /* The title-level hotkey toggles the same synthetic row used by the
+         * dock. Preserve current_cue_row while the outro runs. */
+        title->current_cue_row = 0;
         title->pending_cue_row = -1;
-        title->cue_uncue_requested = false;
+        title->cue_uncue_requested = uncue_active;
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.clear();
     } else {
@@ -400,12 +404,12 @@ static std::vector<HotkeyDescriptor> build_descriptors(std::vector<HotkeySection
     std::map<std::string, int> name_counts;
 
     for (const auto &title : TitleDataStore::instance().titles()) {
-        if (title)
+        if (title && !title->is_asset)
             ++name_counts[title_display_name(title)];
     }
 
     for (const auto &title : TitleDataStore::instance().titles()) {
-        if (!title) continue;
+        if (!title || title->is_asset) continue;
 
         const std::string safe_title_id = hotkey_safe_id(title->id);
         const std::string section_name = title_section_name(title, name_counts);

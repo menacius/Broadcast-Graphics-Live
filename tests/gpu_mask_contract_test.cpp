@@ -1,9 +1,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <fstream>
-#include <iterator>
 #include <string>
+
+#include "source_bundle_reader.h"
 
 namespace {
 
@@ -25,7 +25,7 @@ double gpu_mask_value(const PremultipliedPixel &pixel, int mode)
         value = (straight_r * 0.2126 + straight_g * 0.7152 +
                  straight_b * 0.0722) * pixel.a;
     }
-    if (mode == 2 || mode == 4)
+    if (mode == 2 || mode == 4 || mode == 6)
         value = 1.0 - value;
     return std::clamp(value, 0.0, 1.0);
 }
@@ -35,13 +35,6 @@ bool near(double actual, double expected)
     return std::abs(actual - expected) < 1e-9;
 }
 
-std::string read_file(const char *path)
-{
-    std::ifstream input(path, std::ios::binary);
-    assert(input.good());
-    return std::string((std::istreambuf_iterator<char>(input)),
-                       std::istreambuf_iterator<char>());
-}
 
 void test_mask_modes()
 {
@@ -50,12 +43,16 @@ void test_mask_modes()
     assert(near(gpu_mask_value(half_red, 2), 0.5));
     assert(near(gpu_mask_value(half_red, 3), 0.2126 * 0.5));
     assert(near(gpu_mask_value(half_red, 4), 1.0 - 0.2126 * 0.5));
+    assert(near(gpu_mask_value(half_red, 5), 0.5));
+    assert(near(gpu_mask_value(half_red, 6), 0.5));
 
     const PremultipliedPixel transparent {0.0, 0.0, 0.0, 0.0};
     assert(near(gpu_mask_value(transparent, 1), 0.0));
     assert(near(gpu_mask_value(transparent, 2), 1.0));
     assert(near(gpu_mask_value(transparent, 3), 0.0));
     assert(near(gpu_mask_value(transparent, 4), 1.0));
+    assert(near(gpu_mask_value(transparent, 5), 0.0));
+    assert(near(gpu_mask_value(transparent, 6), 1.0));
 }
 
 void test_source_contract(const std::string &source)
@@ -64,13 +61,31 @@ void test_source_contract(const std::string &source)
            std::string::npos);
     assert(source.find("maskMode == 3 || maskMode == 4") !=
            std::string::npos);
-    assert(source.find("maskMode == 2 || maskMode == 4") !=
+    assert(source.find("maskMode == 2 || maskMode == 4 || maskMode == 6") !=
            std::string::npos);
     assert(source.find("render_gpu_mask_graph_texture") !=
            std::string::npos);
     assert(source.find("MaskTextureCacheEntry") != std::string::npos);
     assert(source.find("mask_texture_cache") != std::string::npos);
     assert(source.find("effect_stack_respects_masks") != std::string::npos);
+    assert(source.find("layer_is_clipping_matte_source") != std::string::npos);
+    assert(source.find("MaskMode::InvertedClipping") != std::string::npos);
+    assert(source.find("emitted_clipping_bases") != std::string::npos);
+    assert(source.find("composite_clipping_base") != std::string::npos);
+    assert(source.find("base_layer->matte_visibility_mode !=") !=
+           std::string::npos);
+    assert(source.find("MatteVisibilityMode::VisibleAndMatte") !=
+           std::string::npos);
+    assert(source.find("enum class GpuMaskGraphPurpose") != std::string::npos);
+    assert(source.find("GpuMaskGraphPurpose::ClippingShape") != std::string::npos);
+    assert(source.find("|purpose=") != std::string::npos);
+    assert(source.find("const bool clipping_shape") != std::string::npos);
+    assert(source.find("clipping_shape ? 1.0") != std::string::npos);
+    assert(source.find("mask_mode_is_clipping(mode)") != std::string::npos);
+    assert(source.find("including 0%") != std::string::npos);
+    assert(source.find("Visible-base artwork is") != std::string::npos);
+    assert(source.find("MatteOnly still supplies alpha") !=
+           std::string::npos);
     assert(source.find("cairo_mask_surface") == std::string::npos);
     assert(source.find("render_layer_with_mask") == std::string::npos);
     assert(source.find("convert_argb32_surface_to_luma_alpha_mask") ==
@@ -87,6 +102,9 @@ void test_source_contract(const std::string &source)
     assert(apply_body.find("gs_matrix_push()") != std::string::npos);
     assert(apply_body.find("gs_matrix_identity()") != std::string::npos);
     assert(apply_body.find("gs_matrix_pop()") != std::string::npos);
+    assert(source.find("layer_texture == masked_storage") != std::string::npos);
+    assert(source.find("mask_texture == masked_storage") != std::string::npos);
+    assert(source.find("GPU read/write feedback loop") != std::string::npos);
     const std::size_t copy_end = source.find("enum class ExternalBackgroundMapping", copy_mask);
     assert(copy_end != std::string::npos);
     const std::string copy_body = source.substr(copy_mask, copy_end - copy_mask);

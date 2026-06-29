@@ -386,6 +386,76 @@ static void test_editor_selection_and_caret_geometry()
     assert(caret.x == 10.0f);
 }
 
+
+static void test_all_fill_and_stroke_fields_reach_paint_runs()
+{
+    RichTextDocument document = request_for("X").document;
+    RichTextCharFormat format = document.default_format;
+    format.fill.type = 1;
+    format.fill.color = 0xFF010203;
+    format.fill.gradient_type = 3;
+    format.fill.gradient_spread = 2;
+    format.fill.gradient_start_color = 0xFF102030;
+    format.fill.gradient_end_color = 0xFF405060;
+    format.fill.gradient_start_pos = 0.15f;
+    format.fill.gradient_end_pos = 0.85f;
+    format.fill.gradient_start_opacity = 0.25f;
+    format.fill.gradient_end_opacity = 0.75f;
+    format.fill.gradient_opacity = 0.6f;
+    format.fill.gradient_angle = 37.0f;
+    format.fill.gradient_center_x = 0.2f;
+    format.fill.gradient_center_y = 0.3f;
+    format.fill.gradient_scale = 1.75f;
+    format.fill.gradient_focal_x = 0.4f;
+    format.fill.gradient_focal_y = 0.45f;
+
+    format.stroke.enabled = true;
+    format.stroke.width = 7.5f;
+    format.stroke.opacity = 0.55f;
+    format.stroke.on_front = true;
+    format.stroke.alignment = 2;
+    format.stroke.antialias = false;
+    format.stroke.join_style = 2;
+    format.stroke.fill = format.fill;
+    format.stroke.fill.gradient_angle = 91.0f;
+
+    rich_text_document_apply_format(document, 0, 1, format,
+                                    RichTextCharFillColor | RichTextCharStroke);
+    const std::vector<TextLayoutPaintRun> runs =
+        text_layout_paint_runs(document);
+    assert(runs.size() == 1);
+    const RichTextFill &fill = runs[0].style.fill;
+    assert(fill.type == format.fill.type);
+    assert(fill.color == format.fill.color);
+    assert(fill.gradient_type == format.fill.gradient_type);
+    assert(fill.gradient_spread == format.fill.gradient_spread);
+    assert(fill.gradient_start_color == format.fill.gradient_start_color);
+    assert(fill.gradient_end_color == format.fill.gradient_end_color);
+    assert(fill.gradient_start_pos == format.fill.gradient_start_pos);
+    assert(fill.gradient_end_pos == format.fill.gradient_end_pos);
+    assert(fill.gradient_start_opacity == format.fill.gradient_start_opacity);
+    assert(fill.gradient_end_opacity == format.fill.gradient_end_opacity);
+    assert(fill.gradient_opacity == format.fill.gradient_opacity);
+    assert(fill.gradient_angle == format.fill.gradient_angle);
+    assert(fill.gradient_center_x == format.fill.gradient_center_x);
+    assert(fill.gradient_center_y == format.fill.gradient_center_y);
+    assert(fill.gradient_scale == format.fill.gradient_scale);
+    assert(fill.gradient_focal_x == format.fill.gradient_focal_x);
+    assert(fill.gradient_focal_y == format.fill.gradient_focal_y);
+
+    const RichTextStroke &stroke = runs[0].style.stroke;
+    assert(stroke.enabled == format.stroke.enabled);
+    assert(stroke.width == format.stroke.width);
+    assert(stroke.opacity == format.stroke.opacity);
+    assert(stroke.on_front == format.stroke.on_front);
+    assert(stroke.alignment == format.stroke.alignment);
+    assert(stroke.antialias == format.stroke.antialias);
+    assert(stroke.join_style == format.stroke.join_style);
+    assert(stroke.fill.gradient_angle == format.stroke.fill.gradient_angle);
+    assert(stroke.fill.gradient_focal_x == format.stroke.fill.gradient_focal_x);
+    assert(stroke.fill.gradient_focal_y == format.stroke.fill.gradient_focal_y);
+}
+
 int main()
 {
     test_key_and_cache_contract();
@@ -395,6 +465,7 @@ int main()
     test_paint_runs_do_not_fragment_shaping();
     test_stroke_is_paint_only_and_range_scoped();
     test_multiple_gradient_and_stroke_styles_split_one_cluster();
+    test_all_fill_and_stroke_fields_reach_paint_runs();
     test_editor_selection_and_caret_geometry();
     std::cout << "text layout contract tests passed\n";
     return 0;

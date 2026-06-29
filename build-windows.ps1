@@ -10,9 +10,13 @@ param(
     [string]$Generator = "Visual Studio 17 2022",
     [string]$Architecture = "x64",
     [string]$Configuration = "Release",
+    [string]$PackageName = "Broadcast_Graphics_Live",
+    [string]$PackagePlatform,
+    [string]$PackageOutputDir,
     [switch]$BuildTests,
     [switch]$Clean,
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [switch]$SkipPackage
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,7 +25,10 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
     $BuildDir = Join-Path $ScriptDir "build"
+} elseif (-not [IO.Path]::IsPathRooted($BuildDir)) {
+    $BuildDir = Join-Path $ScriptDir $BuildDir
 }
+$BuildDir = [IO.Path]::GetFullPath($BuildDir)
 if ([string]::IsNullOrWhiteSpace($VcpkgDir)) {
     $VcpkgDir = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } else { "C:\vcpkg" }
 }
@@ -77,6 +84,82 @@ if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
 }
 
 $PluginName = "broadcast-graphics-live"
+
+function Get-CMakeQuotedValue {
+    param(
+        [string]$Text,
+        [string]$VariableName
+    )
+
+    $Pattern = '(?im)^\s*set\s*\(\s*' + [regex]::Escape($VariableName) + '\s+"([^"]*)"\s*\)'
+    $Match = [regex]::Match($Text, $Pattern)
+    if (-not $Match.Success) {
+        return ""
+    }
+    return $Match.Groups[1].Value
+}
+
+function ConvertTo-PackageComponent {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "Package name components cannot be empty."
+    }
+
+    $Sanitized = $Value.Trim() -replace '[\\/:*?"<>|\s]+', '_'
+    $Sanitized = $Sanitized.Trim([char[]]@('_', '.'))
+    if ([string]::IsNullOrWhiteSpace($Sanitized)) {
+        throw "Package name component '$Value' does not contain any valid filename characters."
+    }
+    return $Sanitized
+}
+
+$CMakeListsPath = Join-Path $ScriptDir "CMakeLists.txt"
+if (-not (Test-Path $CMakeListsPath)) {
+    Write-Error "CMakeLists.txt was not found at: $CMakeListsPath"
+    exit 1
+}
+$CMakeListsText = Get-Content -Raw -LiteralPath $CMakeListsPath
+$ProjectVersionMatch = [regex]::Match(
+    $CMakeListsText,
+    '(?is)project\s*\(\s*[^\s\)]+\s+VERSION\s+([0-9]+(?:\.[0-9]+)*)'
+)
+if (-not $ProjectVersionMatch.Success) {
+    Write-Error "Could not read the project version from CMakeLists.txt."
+    exit 1
+}
+$ProjectVersion = $ProjectVersionMatch.Groups[1].Value
+$PrereleaseVersion = Get-CMakeQuotedValue -Text $CMakeListsText -VariableName "OBS_BGS_PRERELEASE"
+$DevelopmentVersion = Get-CMakeQuotedValue -Text $CMakeListsText -VariableName "OBS_BGS_DEVELOPMENT_VERSION"
+if ([string]::IsNullOrWhiteSpace($DevelopmentVersion)) {
+    Write-Error "Could not read OBS_BGS_DEVELOPMENT_VERSION from CMakeLists.txt."
+    exit 1
+}
+$VersionComponent = "v$ProjectVersion"
+if (-not [string]::IsNullOrWhiteSpace($PrereleaseVersion)) {
+    $VersionComponent += "-$PrereleaseVersion"
+}
+$DevelopmentComponent = "development-version-$DevelopmentVersion"
+
+if ([string]::IsNullOrWhiteSpace($PackagePlatform)) {
+    switch ($Architecture.ToLowerInvariant()) {
+        'x64'   { $PackagePlatform = 'windows-x64' }
+        'amd64' { $PackagePlatform = 'windows-x64' }
+        'win32' { $PackagePlatform = 'windows-x86' }
+        'x86'   { $PackagePlatform = 'windows-x86' }
+        'arm64' { $PackagePlatform = 'windows-arm64' }
+        default { $PackagePlatform = "windows-$($Architecture.ToLowerInvariant())" }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($PackageOutputDir)) {
+    $PackageOutputDir = $BuildDir
+} elseif (-not [IO.Path]::IsPathRooted($PackageOutputDir)) {
+    $PackageOutputDir = Join-Path $ScriptDir $PackageOutputDir
+}
+$PackageOutputDir = [IO.Path]::GetFullPath($PackageOutputDir)
+$PackageFileName = "$(ConvertTo-PackageComponent $PackageName)_$(ConvertTo-PackageComponent $VersionComponent)_$(ConvertTo-PackageComponent $DevelopmentComponent)_$(ConvertTo-PackageComponent $PackagePlatform).zip"
+$PackageZipPath = Join-Path $PackageOutputDir $PackageFileName
+
 $VcpkgToolchain = Join-Path $VcpkgDir "scripts\buildsystems\vcpkg.cmake"
 $ObsArchDir = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "32bit" } else { "64bit" }
 $VcpkgTriplet = if ($Architecture -eq "Win32" -or $Architecture -eq "x86") { "x86-windows" } else { "x64-windows" }
@@ -284,24 +367,18 @@ if ($BuildTests) {
     }
 }
 
-if ($SkipInstall) {
-    Write-Host "`n=== Build complete; skipping OBS install because -SkipInstall was set. ==="
-    exit 0
-}
-
-# 6. Copy build DLL and Locale to OBS plugins directory
-Write-Host "`n=== Installing Plugin to OBS ==="
-Write-Host "Install root: $InstallRoot"
-New-Item -ItemType Directory -Force -Path $ObsPluginBin | Out-Null
-New-Item -ItemType Directory -Force -Path $ObsPluginData | Out-Null
-
+# 6. Assemble the final OBS plugin package in the build tree. The same staged
+# tree is used for both the OBS installation and the distribution ZIP so the
+# two deliverables cannot silently diverge.
+Write-Host "`n=== Assembling final OBS plugin package ==="
 $StagedPluginRoot = Join-Path $BuildDir $PluginName
+$StagedPluginBin = Join-Path $StagedPluginRoot "bin\$ObsArchDir"
+$StagedPluginData = Join-Path $StagedPluginRoot "data"
+$StagedPluginLocale = Join-Path $StagedPluginData "locale"
+New-Item -ItemType Directory -Force -Path $StagedPluginBin | Out-Null
+New-Item -ItemType Directory -Force -Path $StagedPluginLocale | Out-Null
+
 $BuiltDllCandidates = @(
-    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$PluginDllName"),
-    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$Configuration\$PluginDllName"),
-    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Release\$PluginDllName"),
-    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\RelWithDebInfo\$PluginDllName"),
-    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Debug\$PluginDllName"),
     (Join-Path $BuildDir "obs-plugins\$Configuration\$PluginDllName"),
     (Join-Path $BuildDir "obs-plugins\Release\$PluginDllName"),
     (Join-Path $BuildDir "obs-plugins\$PluginDllName"),
@@ -309,7 +386,12 @@ $BuiltDllCandidates = @(
     (Join-Path $BuildDir "$Configuration\$PluginDllName"),
     (Join-Path $BuildDir "Release\$PluginDllName"),
     (Join-Path $BuildDir "RelWithDebInfo\$PluginDllName"),
-    (Join-Path $BuildDir "Debug\$PluginDllName")
+    (Join-Path $BuildDir "Debug\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\$Configuration\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Release\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\RelWithDebInfo\$PluginDllName"),
+    (Join-Path $StagedPluginRoot "bin\$ObsArchDir\Debug\$PluginDllName")
 )
 $BuiltDll = $BuiltDllCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
@@ -327,33 +409,29 @@ if (-not $BuiltDll) {
     exit 1
 }
 
-Copy-Item -Force $BuiltDll $ObsPluginBin
-Write-Host "Copied plugin DLL from: $BuiltDll"
-Write-Host "Copied plugin DLL to: $ObsPluginBin"
+$StagedDllPath = Join-Path $StagedPluginBin $PluginDllName
+if (-not ([IO.Path]::GetFullPath($BuiltDll).Equals([IO.Path]::GetFullPath($StagedDllPath), [StringComparison]::OrdinalIgnoreCase))) {
+    Copy-Item -Force -LiteralPath $BuiltDll -Destination $StagedDllPath
+}
+Write-Host "Staged plugin DLL: $StagedDllPath"
 
-$StagedData = Join-Path $StagedPluginRoot "data"
-if (Test-Path $StagedData) {
-    Copy-Item -Force -Recurse (Join-Path $StagedData "*") (Join-Path $ObsPluginRoot "data")
-    Write-Host "Copied staged plugin data to: $(Join-Path $ObsPluginRoot 'data')"
-} else {
-    $LocaleFile = Join-Path $ScriptDir "data\locale\en-US.ini"
-    if (Test-Path $LocaleFile) {
-        Copy-Item -Force $LocaleFile $ObsPluginData
-        Write-Host "Copied en-US.ini to: $ObsPluginData"
-    }
+$SourceData = Join-Path $ScriptDir "data"
+if (Test-Path $SourceData) {
+    Copy-Item -Force -Recurse (Join-Path $SourceData "*") $StagedPluginData
+    Write-Host "Staged plugin data: $StagedPluginData"
 }
 
-# 7. Copy runtime DLL dependencies next to the plugin binary.
-# A plugin can compile and still fail to load in OBS if Qt/Cairo/Pango DLLs are
-# not beside broadcast-graphics-live.dll, so copy every vcpkg runtime DLL rather than trying
-# to maintain a fragile hand-written dependency list.
-Write-Host "`n=== Copying runtime DLL dependencies ==="
+# 7. Copy runtime DLL dependencies into the staged package. A plugin can compile
+# and still fail to load in OBS if Qt/Cairo/Pango DLLs are missing.
+Write-Host "`n=== Staging runtime DLL dependencies ==="
 $RuntimeDllDirs = @()
 $VcpkgTriplets = @($Architecture.ToLower())
 if ($Architecture -eq "x64") {
     $VcpkgTriplets += "x64-windows"
-} elseif ($Architecture -eq "Win32") {
+} elseif ($Architecture -eq "Win32" -or $Architecture -eq "x86") {
     $VcpkgTriplets += "x86-windows"
+} elseif ($Architecture -eq "arm64") {
+    $VcpkgTriplets += "arm64-windows"
 }
 
 $VcpkgRuntimeRoots = @(
@@ -375,15 +453,15 @@ foreach ($RuntimeDllDir in ($RuntimeDllDirs | Select-Object -Unique)) {
     Write-Host "Copying DLLs from: $RuntimeDllDir"
     $RuntimeDlls = Get-ChildItem -Path $RuntimeDllDir -Filter "*.dll" -File -ErrorAction SilentlyContinue
     foreach ($Dll in $RuntimeDlls) {
-        Copy-Item -Force $Dll.FullName $ObsPluginBin
+        Copy-Item -Force -LiteralPath $Dll.FullName -Destination $StagedPluginBin
         $CopiedCount++
     }
 }
 
 if ($CopiedCount -eq 0) {
-    Write-Warning "No vcpkg runtime DLLs were copied. If OBS says broadcast-graphics-live failed to load, check for missing Qt/Cairo/Pango DLLs in $ObsPluginBin."
+    Write-Warning "No vcpkg runtime DLLs were staged. If OBS says $PluginName failed to load, check for missing Qt/Cairo/Pango DLLs in $StagedPluginBin."
 } else {
-    Write-Host "Copied $CopiedCount runtime DLL dependencies."
+    Write-Host "Staged $CopiedCount runtime DLL dependencies."
 }
 
 $ExpectedDlls = @(
@@ -394,16 +472,60 @@ $ExpectedDlls = @(
 )
 $MissingExpectedDlls = @()
 foreach ($Dll in $ExpectedDlls) {
-    if (-not (Test-Path (Join-Path $ObsPluginBin $Dll))) {
+    if (-not (Test-Path (Join-Path $StagedPluginBin $Dll))) {
         $MissingExpectedDlls += $Dll
     }
 }
 if ($MissingExpectedDlls.Count -gt 0) {
-    Write-Warning "The install folder is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that broadcast-graphics-live failed to load."
+    Write-Warning "The staged package is missing expected DLL(s): $($MissingExpectedDlls -join ', '). OBS may report that $PluginName failed to load."
 }
 
-Write-Host "`nInstalled OBS plugin layout:"
-Write-Host "  $ObsPluginRoot"
-Write-Host "  $ObsPluginBin\$PluginDllName"
-Write-Host "  $ObsPluginData\en-US.ini"
-Write-Host "`n=== Broadcast Graphics Live built and installed successfully! ==="
+# 8. Install the exact staged package into the configured OBS plugins folder.
+if ($SkipInstall) {
+    Write-Host "`n=== Skipping OBS install because -SkipInstall was set. ==="
+} else {
+    Write-Host "`n=== Installing final package to OBS ==="
+    Write-Host "Install root: $InstallRoot"
+    New-Item -ItemType Directory -Force -Path $ObsPluginRoot | Out-Null
+    Copy-Item -Force -Recurse (Join-Path $StagedPluginRoot "*") $ObsPluginRoot
+    Write-Host "Installed package to: $ObsPluginRoot"
+}
+
+# 9. Create a redistributable ZIP directly inside the build folder (or the
+# configured output directory) using the requested deterministic naming scheme:
+# <name>_<version>_<development-version>_<platform>.zip
+if ($SkipPackage) {
+    Write-Host "`n=== Skipping distribution ZIP because -SkipPackage was set. ==="
+} else {
+    Write-Host "`n=== Creating distribution ZIP ==="
+    $ResolvedStagedRoot = [IO.Path]::GetFullPath($StagedPluginRoot).TrimEnd([char[]]@('\', '/'))
+    $ResolvedPackageOutput = [IO.Path]::GetFullPath($PackageOutputDir).TrimEnd([char[]]@('\', '/'))
+    if ($ResolvedPackageOutput.Equals($ResolvedStagedRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $ResolvedPackageOutput.StartsWith($ResolvedStagedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Error "PackageOutputDir cannot be inside the staged plugin folder: $ResolvedStagedRoot"
+        exit 1
+    }
+    New-Item -ItemType Directory -Force -Path $PackageOutputDir | Out-Null
+    if (Test-Path -LiteralPath $PackageZipPath) {
+        Remove-Item -Force -LiteralPath $PackageZipPath
+    }
+    Compress-Archive -LiteralPath $StagedPluginRoot -DestinationPath $PackageZipPath -CompressionLevel Optimal -Force
+    if (-not (Test-Path -LiteralPath $PackageZipPath)) {
+        Write-Error "Distribution ZIP was not created: $PackageZipPath"
+        exit 1
+    }
+    Write-Host "Created package ZIP: $PackageZipPath"
+}
+
+Write-Host "`nFinal staged OBS plugin layout:"
+Write-Host "  $StagedPluginRoot"
+Write-Host "  $StagedPluginBin\$PluginDllName"
+Write-Host "  $StagedPluginLocale\en-US.ini"
+if (-not $SkipInstall) {
+    Write-Host "Installed to OBS: $ObsPluginRoot"
+}
+if (-not $SkipPackage) {
+    Write-Host "Distribution ZIP: $PackageZipPath"
+}
+Write-Host "`n=== Broadcast Graphics Live built, packaged, and installed successfully! ==="
+

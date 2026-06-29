@@ -209,6 +209,7 @@ private:
     struct Entry {
         ImmutableTextLayout layout;
         uint64_t generation = 0;
+        size_t estimated_bytes = 0;
     };
 
     struct KeyHash {
@@ -220,6 +221,8 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<TextLayoutKey, Entry, KeyHash> entries_;
     size_t capacity_ = 256;
+    size_t total_estimated_bytes_ = 0;
+    size_t byte_capacity_ = 64u * 1024u * 1024u;
     uint64_t generation_ = 0;
 };
 
@@ -231,6 +234,8 @@ ImmutableTextLayout cached_text_layout(const TextLayoutRequest &request);
  * invalidating or rebuilding the immutable shaped layout. */
 std::vector<TextLayoutPaintRun>
 text_layout_paint_runs(const RichTextDocument &document);
+std::vector<TextLayoutPaintRun>
+text_layout_paint_runs_canonical(const RichTextDocument &document);
 
 std::vector<TextLayoutPaintSlice> text_layout_cluster_paint_slices(
     const TextLayoutData &layout, const TextLayoutCluster &cluster,

@@ -1,6 +1,11 @@
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float2 texelSize;
+uniform float4 layerUvRect;
+uniform float2 layerUvOrigin;
+uniform float2 layerUvAxisX;
+uniform float2 layerUvAxisY;
+uniform float2 layerPixelSize;
 uniform float opacity;
 uniform float amount;
 uniform float scale;
@@ -34,6 +39,20 @@ VertDataOut VSDefault(VertDataIn v_in)
     return vert_out;
 }
 
+float2 layer_space_uv(float2 surface_uv)
+{
+    float2 delta = surface_uv - layerUvOrigin;
+    float determinant = layerUvAxisX.x * layerUvAxisY.y -
+                        layerUvAxisX.y * layerUvAxisY.x;
+    if (abs(determinant) <= 0.0000001) {
+        float2 extent = max(abs(layerUvRect.zw), float2(0.000001, 0.000001));
+        return (surface_uv - layerUvRect.xy) / extent;
+    }
+    return float2(
+        (delta.x * layerUvAxisY.y - delta.y * layerUvAxisY.x) / determinant,
+        (layerUvAxisX.x * delta.y - layerUvAxisX.y * delta.x) / determinant);
+}
+
 float rough_hash(float2 p)
 {
     return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
@@ -62,7 +81,8 @@ float rough_layers(float2 p, float layers)
 float4 PSRoughen(VertDataOut v_in) : TARGET
 {
     float4 original = image.Sample(textureSampler, v_in.uv);
-    float2 p = v_in.uv * max(scale, 0.001) +
+    float2 effect_uv = layer_space_uv(v_in.uv);
+    float2 p = effect_uv * max(scale, 0.001) +
                float2(evolution + seed * 3.1, evolution * 0.73 + seed * 7.7);
     float n1 = rough_layers(p, clamp(complexity, 1.0, 3.0)) - 0.5;
     float n2 = rough_layers(p + float2(41.7, 23.9), clamp(complexity, 1.0, 3.0)) - 0.5;

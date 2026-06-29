@@ -7,6 +7,16 @@
 
 RamFrameCache::RamFrameCache(QObject *parent) : QObject(parent) {}
 
+bool RamFrameCache::contains(const CacheFrameKey &key) const
+{
+    QMutexLocker lock(&mutex_);
+    const auto key_it = key_payload_ids_.constFind(key);
+    if (key_it == key_payload_ids_.constEnd())
+        return false;
+    const auto payload_it = payloads_.constFind(key_it.value());
+    return payload_it != payloads_.constEnd() && !payload_it->image.isNull();
+}
+
 bool RamFrameCache::get(const CacheFrameKey &key, QImage &image) const
 {
     QMutexLocker lock(&mutex_);

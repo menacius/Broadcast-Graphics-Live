@@ -492,6 +492,7 @@ const std::vector<TitleEffectDefinition> kEffectDefinitions = {
     {LayerEffectType::Vignette, "bgl.builtin.vignette", "vignette", "Vignette", "Built-in/Stylize", "effect-transitions/shaders/vignette/vignette.effect", true},
     {LayerEffectType::Noise, "bgl.builtin.noise", "noise", "Noise", "Built-in/Generate", "effect-transitions/shaders/noise/noise.effect", true},
     {LayerEffectType::RoughenEdges, "bgl.builtin.roughen-edges", "roughen-edges", "Roughen Edges", "Built-in/Stylize", "effect-transitions/shaders/roughen-edges/roughen-edges.effect", true},
+    {LayerEffectType::FourColorGradient, "bgl.builtin.4-color-gradient", "4-color-gradient", "4-Color Gradient", "Built-in/Generate", "effect-transitions/shaders/4-color-gradient/4-color-gradient.effect", false},
 };
 
 } // namespace

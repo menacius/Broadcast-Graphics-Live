@@ -103,6 +103,9 @@ void title_gpu_render_session_discard_readback(
  * The token is CacheFrameKey::toString(). Source/editor playback submits it
  * directly without reconstructing a full CPU frame. */
 bool title_gpu_frame_cache_contains(const std::string &cache_key);
+bool title_gpu_frame_cache_alias(
+    const std::string &cache_key,
+    const std::string &canonical_cache_key);
 bool title_gpu_frame_cache_store_image(
     const std::string &cache_key, const QImage &sparse_image,
     uint32_t canvas_width, uint32_t canvas_height);

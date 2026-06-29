@@ -48,6 +48,8 @@ const QVector<TitleLogCategory> &all_categories()
          QStringLiteral("Glyph layout, atlas rendering and text-raster readiness."), true},
         {QStringLiteral("Effects"), QStringLiteral("Effects"),
          QStringLiteral("Effect compilation, passes and effect-stack changes."), true},
+        {QStringLiteral("Extensions"), QStringLiteral("Extensions"),
+         QStringLiteral("Extension discovery, validation and shader loading."), true},
         {QStringLiteral("Masks"), QStringLiteral("Masks and mattes"),
          QStringLiteral("Layer masks, track mattes and OBS scene-mask composition."), true},
         {QStringLiteral("Cache"), QStringLiteral("Cache"),

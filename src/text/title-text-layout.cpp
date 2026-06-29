@@ -244,6 +244,17 @@ bool text_layout_request_equivalent(const TextLayoutRequest &a,
 
 TextLayoutCache::TextLayoutCache(size_t capacity) : capacity_(capacity) {}
 
+static size_t estimated_layout_bytes(const TextLayoutData &layout)
+{
+    return sizeof(TextLayoutData) + layout.text.capacity() +
+           layout.glyphs.capacity() * sizeof(TextLayoutGlyph) +
+           layout.clusters.capacity() * sizeof(TextLayoutCluster) +
+           layout.cursor_boundaries.capacity() *
+               sizeof(TextLayoutCursorBoundary) +
+           layout.runs.capacity() * sizeof(TextLayoutRun) +
+           layout.lines.capacity() * sizeof(TextLayoutLine);
+}
+
 size_t TextLayoutCache::KeyHash::operator()(const TextLayoutKey &key) const
 {
     return static_cast<size_t>(key.content ^
@@ -276,7 +287,9 @@ ImmutableTextLayout TextLayoutCache::get_or_build(
         existing->second.generation = ++generation_;
         return existing->second.layout;
     }
-    entries_.emplace(key, Entry{built, ++generation_});
+    const size_t bytes = estimated_layout_bytes(*built);
+    entries_.emplace(key, Entry{built, ++generation_, bytes});
+    total_estimated_bytes_ += bytes;
     trim_locked();
     return built;
 }
@@ -285,6 +298,7 @@ void TextLayoutCache::clear()
 {
     std::lock_guard<std::mutex> lock(mutex_);
     entries_.clear();
+    total_estimated_bytes_ = 0;
 }
 
 void TextLayoutCache::set_capacity(size_t capacity)
@@ -302,7 +316,8 @@ size_t TextLayoutCache::size() const
 
 void TextLayoutCache::trim_locked()
 {
-    while (entries_.size() > capacity_) {
+    while (entries_.size() > capacity_ ||
+           total_estimated_bytes_ > byte_capacity_) {
         auto oldest = entries_.end();
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
             if (oldest == entries_.end() ||
@@ -311,6 +326,8 @@ void TextLayoutCache::trim_locked()
         }
         if (oldest == entries_.end())
             break;
+        total_estimated_bytes_ -= std::min(total_estimated_bytes_,
+                                           oldest->second.estimated_bytes);
         entries_.erase(oldest);
     }
 }
@@ -332,10 +349,8 @@ ImmutableTextLayout cached_text_layout(const TextLayoutRequest &request)
 }
 
 std::vector<TextLayoutPaintRun>
-text_layout_paint_runs(const RichTextDocument &source_document)
+text_layout_paint_runs_canonical(const RichTextDocument &document)
 {
-    RichTextDocument document = source_document;
-    document.normalize();
     std::vector<size_t> breaks{0, document.plain_text.size()};
     constexpr uint32_t paint_mask =
         RichTextCharFillColor | RichTextCharStroke |
@@ -378,6 +393,14 @@ text_layout_paint_runs(const RichTextDocument &source_document)
         runs.push_back(std::move(run));
     }
     return runs;
+}
+
+std::vector<TextLayoutPaintRun>
+text_layout_paint_runs(const RichTextDocument &source_document)
+{
+    RichTextDocument document = source_document;
+    document.normalize();
+    return text_layout_paint_runs_canonical(document);
 }
 
 std::vector<TextLayoutPaintSlice> text_layout_cluster_paint_slices(

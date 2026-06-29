@@ -11,6 +11,7 @@
 #include <QString>
 #include <QStringList>
 #include <functional>
+#include <vector>
 
 class QLineEdit;
 class QComboBox;
@@ -50,8 +51,25 @@ public:
 
     static StylePreset makeTextPreset(const Layer &layer, const QString &name, const QString &category);
     static StylePreset makeGradientPreset(const Layer &layer, const QString &name, const QString &category);
+    static StylePreset makeGradientPreset(const RichTextFill &fill,
+                                          const std::vector<GradientStop> &extra_stops,
+                                          const QString &name,
+                                          const QString &category);
     static bool applyTextPreset(const StylePreset &preset, Layer &layer);
     static bool applyGradientPreset(const StylePreset &preset, Layer &layer);
+    static bool gradientPresetToFill(const StylePreset &preset,
+                                     RichTextFill &fill,
+                                     std::vector<GradientStop> *extra_stops = nullptr);
+    static bool isBuiltIn(const StylePreset &preset);
+    static QString gradientDescription(const StylePreset &preset);
+
+    /* Every editor surface owns its own lightweight library instance, but all
+     * of them observe the same on-disk collection. Subscribers are notified
+     * immediately after a mutation, so the Styles dock and every open
+     * fill/stroke popup stay in sync without maintaining duplicate preset
+     * models. The QObject context automatically invalidates the callback when
+     * the receiving widget is destroyed. */
+    static void subscribe(QObject *context, std::function<void()> callback);
 
     /* Inline application support: these convert a saved preset to the rich-text
      * character format used by the on-canvas editor. The returned mask uses the
@@ -66,6 +84,7 @@ public:
 private:
     QString storagePath() const;
     void ensureDefaults();
+    static void notifyChanged();
     QList<StylePreset> presets_;
 };
 

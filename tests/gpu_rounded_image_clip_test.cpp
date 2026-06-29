@@ -1,9 +1,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <fstream>
-#include <iterator>
 #include <string>
+
+#include "source_bundle_reader.h"
 
 namespace {
 
@@ -121,10 +121,7 @@ void test_independent_corner_radii()
 
 void test_shader_source_contract(const char *path)
 {
-    std::ifstream input(path, std::ios::binary);
-    assert(input.good());
-    const std::string source((std::istreambuf_iterator<char>(input)),
-                             std::istreambuf_iterator<char>());
+    const std::string source = read_file(path);
 
     assert(source.find("float4 clampedRadii = clamp(radii, 0.0, maxRadius);") !=
            std::string::npos);

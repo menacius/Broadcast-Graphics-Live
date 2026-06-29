@@ -1,6 +1,11 @@
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float2 texelSize;
+uniform float4 layerUvRect;
+uniform float2 layerUvOrigin;
+uniform float2 layerUvAxisX;
+uniform float2 layerUvAxisY;
+uniform float2 layerPixelSize;
 uniform float4 effectColor;
 uniform float4 secondaryColor;
 uniform float opacity;
@@ -38,6 +43,20 @@ VertDataOut VSDefault(VertDataIn v_in)
     return vert_out;
 }
 
+float2 layer_space_uv(float2 surface_uv)
+{
+    float2 delta = surface_uv - layerUvOrigin;
+    float determinant = layerUvAxisX.x * layerUvAxisY.y -
+                        layerUvAxisX.y * layerUvAxisY.x;
+    if (abs(determinant) <= 0.0000001) {
+        float2 extent = max(abs(layerUvRect.zw), float2(0.000001, 0.000001));
+        return (surface_uv - layerUvRect.xy) / extent;
+    }
+    return float2(
+        (delta.x * layerUvAxisY.y - delta.y * layerUvAxisY.x) / determinant,
+        (layerUvAxisX.x * delta.y - layerUvAxisX.y * delta.x) / determinant);
+}
+
 float flare_disc(float2 flare_pos, float discRadius, float feather)
 {
     float safe_radius = max(discRadius, 0.0001);
@@ -56,12 +75,13 @@ float flare_halo(float distance_value, float halo_radius, float decay)
 float4 PSLensFlare(VertDataOut v_in) : TARGET
 {
     float4 base = image.Sample(textureSampler, v_in.uv);
+    float2 effect_uv = layer_space_uv(v_in.uv);
 
     /* Keep the procedural geometry in square pixel space.  This avoids the
      * DX11/OpenGL divergence caused by deriving the flare shape directly from
      * non-square UV coordinates. */
-    float aspect = max(texelSize.y / max(texelSize.x, 0.000001), 0.0001);
-    float2 flare_pos = v_in.uv - center;
+    float aspect = max(layerPixelSize.x / max(layerPixelSize.y, 1.0), 0.0001);
+    float2 flare_pos = effect_uv - center;
     flare_pos.x *= aspect;
 
     float safe_scale = max(scale, 0.001);

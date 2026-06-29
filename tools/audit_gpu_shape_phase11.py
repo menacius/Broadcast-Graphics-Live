@@ -4,15 +4,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / "src/obs/title-source.cpp").read_text(encoding="utf-8", errors="replace")
-PROPERTIES = (ROOT / "src/editor/properties-panel.cpp").read_text(encoding="utf-8", errors="replace")
+SOURCE = read_source_bundle(ROOT / "src/obs/title-source.cpp")
+PROPERTIES = read_source_bundle(ROOT / "src/editor/properties-panel.cpp")
 TOOLS_SIDEBAR = (ROOT / "src/editor/tools-sidebar.cpp").read_text(encoding="utf-8", errors="replace")
-CANVAS = (ROOT / "src/canvas/canvas-preview.cpp").read_text(encoding="utf-8", errors="replace")
-TITLE_EDITOR = (ROOT / "src/editor/title-editor.cpp").read_text(encoding="utf-8", errors="replace")
+CANVAS = read_source_bundle(ROOT / "src/canvas/canvas-preview.cpp")
+TITLE_EDITOR = read_source_bundle(ROOT / "src/editor/title-editor.cpp")
 PATH_GEOMETRY = (ROOT / "src/layers/path-geometry.cpp").read_text(encoding="utf-8", errors="replace")
 
 

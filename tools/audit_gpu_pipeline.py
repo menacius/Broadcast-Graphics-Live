@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(path: str) -> str:
-    return (ROOT / path).read_text(encoding="utf-8", errors="replace")
+    return read_source_bundle(ROOT / path)
 
 
 def block(text: str, start: str, end: str) -> str:
@@ -53,10 +54,14 @@ else:
         passes.append("cached/final frame blits are isolated from layer transition uniforms")
 
 layer_draw = block(source, "static bool draw_gpu_layer_texture(", "static bool render_gpu_layer_to_target")
-if "session->copy_effect" not in layer_draw or '"wipeProgress"' not in layer_draw:
+transition_binder = block(source, "static void set_gpu_transition_effect_params(",
+                          "static bool draw_gpu_layer_texture(")
+if ("session->copy_effect" not in layer_draw or
+        "set_gpu_transition_effect_params" not in layer_draw or
+        '"wipeProgress"' not in transition_binder):
     errors.append("layer copy shader no longer owns its transition/crop parameters")
 else:
-    passes.append("layer-only shader retains wipe/crop ownership")
+    passes.append("layer-only shader retains wipe/crop ownership through the transition parameter binder")
 
 ensure = block(source, "static bool ensure_gpu_session_objects(", "static bool render_gpu_primitive_raster")
 if "session->blit_effect" not in ensure or "!session->blit_effect" not in ensure:

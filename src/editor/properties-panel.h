@@ -43,6 +43,7 @@ class QPaintEvent;
 class QPainter;
 class QScrollBar;
 class QTimer;
+class TimecodeSpinBox;
 
 class PropertiesPanel : public QScrollArea {
     Q_OBJECT
@@ -72,6 +73,7 @@ signals:
     void color_picker_tool_requested();
     void recent_colors_changed();
     void color_library_add_requested(const QColor &color);
+    void asset_overrides_requested(const std::string &layer_id);
 
 private:
     void build_text_section(QWidget *w, QFormLayout *fl);
@@ -79,6 +81,7 @@ private:
     void build_transform_section(QWidget *w, QFormLayout *fl);
 
     void load_values();
+    void update_asset_playback_controls_visibility();
     void update_ticker_runtime_button();
 
     std::shared_ptr<Layer> layer_;
@@ -93,6 +96,15 @@ private:
     std::string external_gradient_layer_id_;
     int external_gradient_stop_index_ = -1;
     bool external_gradient_stroke_ = false;
+
+    QGroupBox       *asset_box_    = nullptr;
+    QLabel          *lbl_asset_name_ = nullptr;
+    QComboBox       *cmb_asset_playback_ = nullptr;
+    QDoubleSpinBox  *spn_asset_offset_ = nullptr;
+    TimecodeSpinBox *spn_asset_pause_duration_ = nullptr;
+    QSpinBox        *spn_asset_loop_count_ = nullptr;
+    QCheckBox       *chk_asset_loop_ = nullptr;
+    QPushButton     *btn_asset_overrides_ = nullptr;
 
     QGroupBox       *text_box_     = nullptr;
     QGroupBox       *type_options_box_ = nullptr;

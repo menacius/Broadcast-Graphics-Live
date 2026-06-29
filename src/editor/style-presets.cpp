@@ -12,6 +12,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListView>
+#include <QAbstractItemView>
+#include <QMenu>
 #include <QPainter>
 #include <QStandardPaths>
 #include <QToolButton>
@@ -19,10 +21,28 @@
 #include <QHBoxLayout>
 #include <QUuid>
 #include <QMessageBox>
+#include <QPointer>
+#include <QBrush>
+#include <QLinearGradient>
+#include <QRadialGradient>
+#include <QConicalGradient>
 #include <algorithm>
+#include <cmath>
+#include <vector>
 
 namespace obsbgs {
 namespace {
+
+struct PresetChangeListener {
+    QPointer<QObject> context;
+    std::function<void()> callback;
+};
+
+std::vector<PresetChangeListener> &presetChangeListeners()
+{
+    static std::vector<PresetChangeListener> listeners;
+    return listeners;
+}
 
 QString kindToString(StylePresetKind kind)
 {
@@ -79,6 +99,38 @@ QJsonObject gradientPayloadFromLayer(const Layer &layer)
     o[QStringLiteral("focalY")] = layer.gradient_focal_y;
     QJsonArray stops;
     for (const auto &stop : layer.gradient_stops) {
+        QJsonObject s;
+        s[QStringLiteral("color")] = QString::number(stop.color, 16);
+        s[QStringLiteral("position")] = stop.position;
+        s[QStringLiteral("opacity")] = stop.opacity;
+        stops.append(s);
+    }
+    o[QStringLiteral("stops")] = stops;
+    return o;
+}
+
+QJsonObject gradientPayloadFromFill(const RichTextFill &fill,
+                                    const std::vector<GradientStop> &extra_stops)
+{
+    QJsonObject o;
+    o[QStringLiteral("fillType")] = 1;
+    o[QStringLiteral("gradientType")] = fill.gradient_type;
+    o[QStringLiteral("gradientSpread")] = fill.gradient_spread;
+    o[QStringLiteral("startColor")] = QString::number(fill.gradient_start_color, 16);
+    o[QStringLiteral("endColor")] = QString::number(fill.gradient_end_color, 16);
+    o[QStringLiteral("startPos")] = fill.gradient_start_pos;
+    o[QStringLiteral("endPos")] = fill.gradient_end_pos;
+    o[QStringLiteral("startOpacity")] = fill.gradient_start_opacity;
+    o[QStringLiteral("endOpacity")] = fill.gradient_end_opacity;
+    o[QStringLiteral("opacity")] = fill.gradient_opacity;
+    o[QStringLiteral("angle")] = fill.gradient_angle;
+    o[QStringLiteral("centerX")] = fill.gradient_center_x;
+    o[QStringLiteral("centerY")] = fill.gradient_center_y;
+    o[QStringLiteral("scale")] = fill.gradient_scale;
+    o[QStringLiteral("focalX")] = fill.gradient_focal_x;
+    o[QStringLiteral("focalY")] = fill.gradient_focal_y;
+    QJsonArray stops;
+    for (const auto &stop : extra_stops) {
         QJsonObject s;
         s[QStringLiteral("color")] = QString::number(stop.color, 16);
         s[QStringLiteral("position")] = stop.position;
@@ -152,6 +204,62 @@ void fillFormatFromGradientPayload(const QJsonObject &o, RichTextCharFormat &for
     format.fill.color = format.fill.type == 1 ? format.fill.gradient_start_color
                                                : parseArgb(o, "textColor", format.fill.color);
 }
+
+void fillFromGradientPayload(const QJsonObject &o,
+                             RichTextFill &fill,
+                             std::vector<GradientStop> *extra_stops)
+{
+    fill.type = 1;
+    fill.gradient_spread = gradientSpreadFromPayload(o, fill.gradient_spread);
+    fill.gradient_type = normalizedGradientType(o.value(QStringLiteral("gradientType")).toInt(fill.gradient_type));
+    fill.gradient_start_color = parseArgb(o, "startColor", fill.gradient_start_color);
+    fill.gradient_end_color = parseArgb(o, "endColor", fill.gradient_end_color);
+    fill.gradient_start_pos = float(o.value(QStringLiteral("startPos")).toDouble(fill.gradient_start_pos));
+    fill.gradient_end_pos = float(o.value(QStringLiteral("endPos")).toDouble(fill.gradient_end_pos));
+    fill.gradient_start_opacity = float(o.value(QStringLiteral("startOpacity")).toDouble(fill.gradient_start_opacity));
+    fill.gradient_end_opacity = float(o.value(QStringLiteral("endOpacity")).toDouble(fill.gradient_end_opacity));
+    fill.gradient_opacity = float(o.value(QStringLiteral("opacity")).toDouble(fill.gradient_opacity));
+    fill.gradient_angle = float(o.value(QStringLiteral("angle")).toDouble(fill.gradient_angle));
+    fill.gradient_center_x = float(o.value(QStringLiteral("centerX")).toDouble(fill.gradient_center_x));
+    fill.gradient_center_y = float(o.value(QStringLiteral("centerY")).toDouble(fill.gradient_center_y));
+    fill.gradient_scale = float(o.value(QStringLiteral("scale")).toDouble(fill.gradient_scale));
+    fill.gradient_focal_x = float(o.value(QStringLiteral("focalX")).toDouble(fill.gradient_focal_x));
+    fill.gradient_focal_y = float(o.value(QStringLiteral("focalY")).toDouble(fill.gradient_focal_y));
+    fill.color = fill.gradient_start_color;
+
+    if (!extra_stops)
+        return;
+    extra_stops->clear();
+    const auto stops = o.value(QStringLiteral("stops")).toArray();
+    for (const auto &entry : stops) {
+        const auto s = entry.toObject();
+        GradientStop stop;
+        stop.color = parseArgb(s, "color", 0xffffffffu);
+        stop.position = float(s.value(QStringLiteral("position")).toDouble(0.5));
+        stop.opacity = float(s.value(QStringLiteral("opacity")).toDouble(1.0));
+        extra_stops->push_back(stop);
+    }
+}
+
+QColor gradientStopColor(uint32_t argb, double stop_opacity, double overall_opacity)
+{
+    QColor color = colorFromArgb(argb);
+    color.setAlphaF(std::clamp(color.alphaF() * stop_opacity * overall_opacity, 0.0, 1.0));
+    return color;
+}
+
+void drawCheckerboard(QPainter &painter, const QRect &rect)
+{
+    constexpr int cell = 6;
+    const QColor light(214, 214, 214);
+    const QColor dark(164, 164, 164);
+    for (int y = rect.top(); y <= rect.bottom(); y += cell) {
+        for (int x = rect.left(); x <= rect.right(); x += cell) {
+            const bool alternate = (((x - rect.left()) / cell) + ((y - rect.top()) / cell)) % 2;
+            painter.fillRect(QRect(x, y, cell, cell).intersected(rect), alternate ? dark : light);
+        }
+    }
+}
 }
 
 StylePresetLibrary::StylePresetLibrary()
@@ -210,7 +318,7 @@ bool StylePresetLibrary::save() const
     }
     QJsonObject root;
     root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
-    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("version")] = 2;
     root[QStringLiteral("presets")] = arr;
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     return true;
@@ -235,7 +343,9 @@ bool StylePresetLibrary::importFromFile(const QString &path, QString *error)
         p.payload = o.value(QStringLiteral("payload")).toObject();
         if (!p.name.isEmpty()) presets_.append(p);
     }
-    return save();
+    const bool saved = save();
+    if (saved) notifyChanged();
+    return saved;
 }
 
 bool StylePresetLibrary::exportToFile(const QString &path, StylePresetKind kind, QString *error) const
@@ -258,7 +368,7 @@ bool StylePresetLibrary::exportToFile(const QString &path, StylePresetKind kind,
     }
     QJsonObject root;
     root[QStringLiteral("format")] = QStringLiteral("OBS-BGS Style Presets");
-    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("version")] = 2;
     root[QStringLiteral("presets")] = arr;
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     return true;
@@ -302,11 +412,13 @@ void StylePresetLibrary::upsert(const StylePreset &preset)
         if (p.id == preset.id) {
             p = preset;
             save();
+            notifyChanged();
             return;
         }
     }
     presets_.append(preset);
     save();
+    notifyChanged();
 }
 
 bool StylePresetLibrary::remove(const QString &id)
@@ -315,6 +427,7 @@ bool StylePresetLibrary::remove(const QString &id)
         if (presets_[i].id == id) {
             presets_.removeAt(i);
             save();
+            notifyChanged();
             return true;
         }
     }
@@ -363,6 +476,21 @@ StylePreset StylePresetLibrary::makeGradientPreset(const Layer &layer, const QSt
     p.category = category.isEmpty() ? QStringLiteral("User") : category;
     p.kind = StylePresetKind::Gradient;
     p.payload = gradientPayloadFromLayer(layer);
+    p.payload[QStringLiteral("fillType")] = 1;
+    return p;
+}
+
+StylePreset StylePresetLibrary::makeGradientPreset(const RichTextFill &fill,
+                                                   const std::vector<GradientStop> &extra_stops,
+                                                   const QString &name,
+                                                   const QString &category)
+{
+    StylePreset p;
+    p.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    p.name = name;
+    p.category = category.isEmpty() ? QStringLiteral("User") : category;
+    p.kind = StylePresetKind::Gradient;
+    p.payload = gradientPayloadFromFill(fill, extra_stops);
     return p;
 }
 
@@ -408,9 +536,64 @@ bool StylePresetLibrary::applyGradientPreset(const StylePreset &preset, Layer &l
 {
     if (preset.kind != StylePresetKind::Gradient) return false;
     applyGradientPayload(preset.payload, layer);
+    layer.fill_type = 1;
     if (layer.type == LayerType::Text || layer.type == LayerType::Clock || layer.type == LayerType::Ticker)
         layer.text_color = layer.gradient_start_color;
     return true;
+}
+
+bool StylePresetLibrary::gradientPresetToFill(const StylePreset &preset,
+                                              RichTextFill &fill,
+                                              std::vector<GradientStop> *extra_stops)
+{
+    if (preset.kind != StylePresetKind::Gradient)
+        return false;
+    fillFromGradientPayload(preset.payload, fill, extra_stops);
+    return true;
+}
+
+bool StylePresetLibrary::isBuiltIn(const StylePreset &preset)
+{
+    return preset.category.compare(QStringLiteral("Built-in"), Qt::CaseInsensitive) == 0;
+}
+
+QString StylePresetLibrary::gradientDescription(const StylePreset &preset)
+{
+    if (preset.kind != StylePresetKind::Gradient)
+        return preset.name;
+    const int type = normalizedGradientType(preset.payload.value(QStringLiteral("gradientType")).toInt(0));
+    QString type_name = bgl_tr("OBSTitles.LinearGradient");
+    if (type == 1) type_name = bgl_tr("OBSTitles.RadialGradient");
+    else if (type == 2) type_name = bgl_tr("OBSTitles.ConicalGradient");
+    const int stop_count = 2 + preset.payload.value(QStringLiteral("stops")).toArray().size();
+    return QStringLiteral("%1 — %2\n%3 · %4 stops")
+        .arg(preset.name, preset.category, type_name)
+        .arg(stop_count);
+}
+
+void StylePresetLibrary::subscribe(QObject *context, std::function<void()> callback)
+{
+    if (!context || !callback)
+        return;
+    auto &listeners = presetChangeListeners();
+    listeners.erase(std::remove_if(listeners.begin(), listeners.end(), [](const PresetChangeListener &listener) {
+        return listener.context.isNull();
+    }), listeners.end());
+    listeners.push_back({context, std::move(callback)});
+}
+
+void StylePresetLibrary::notifyChanged()
+{
+    auto &listeners = presetChangeListeners();
+    for (auto it = listeners.begin(); it != listeners.end();) {
+        if (it->context.isNull()) {
+            it = listeners.erase(it);
+            continue;
+        }
+        if (it->callback)
+            it->callback();
+        ++it;
+    }
 }
 
 
@@ -462,19 +645,67 @@ QPixmap StylePresetLibrary::thumbnail(const StylePreset &preset, const QSize &si
     pix.fill(Qt::transparent);
     QPainter p(&pix);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QRect r = pix.rect().adjusted(3, 3, -3, -3);
+    QRect r = pix.rect().adjusted(2, 2, -2, -2);
     p.setPen(QColor(60, 60, 60));
     if (preset.kind == StylePresetKind::Gradient) {
-        QLinearGradient g(r.topLeft(), r.topRight());
-        g.setColorAt(0.0, colorFromArgb(parseArgb(preset.payload, "startColor", 0xff4b6ea8)));
+        drawCheckerboard(p, r);
+        const int type = normalizedGradientType(preset.payload.value(QStringLiteral("gradientType")).toInt(0));
+        const double opacity = std::clamp(preset.payload.value(QStringLiteral("opacity")).toDouble(1.0), 0.0, 1.0);
+        const double angle = preset.payload.value(QStringLiteral("angle")).toDouble(0.0);
+        const QPointF center(r.left() + std::clamp(preset.payload.value(QStringLiteral("centerX")).toDouble(0.5), 0.0, 1.0) * r.width(),
+                             r.top() + std::clamp(preset.payload.value(QStringLiteral("centerY")).toDouble(0.5), 0.0, 1.0) * r.height());
+        QGradientStops gradient_stops;
+        gradient_stops.append(QGradientStop(
+            std::clamp(preset.payload.value(QStringLiteral("startPos")).toDouble(0.0), 0.0, 1.0),
+            gradientStopColor(parseArgb(preset.payload, "startColor", 0xff4b6ea8),
+                              preset.payload.value(QStringLiteral("startOpacity")).toDouble(1.0), opacity)));
         const auto stops = preset.payload.value(QStringLiteral("stops")).toArray();
         for (const auto &entry : stops) {
             const auto s = entry.toObject();
-            g.setColorAt(std::clamp(s.value(QStringLiteral("position")).toDouble(0.5), 0.0, 1.0), colorFromArgb(parseArgb(s, "color", 0xffffffff)));
+            gradient_stops.append(QGradientStop(
+                std::clamp(s.value(QStringLiteral("position")).toDouble(0.5), 0.0, 1.0),
+                gradientStopColor(parseArgb(s, "color", 0xffffffff),
+                                  s.value(QStringLiteral("opacity")).toDouble(1.0), opacity)));
         }
-        g.setColorAt(1.0, colorFromArgb(parseArgb(preset.payload, "endColor", 0xff1b1b1b)));
-        p.setBrush(g);
-        p.drawRoundedRect(r, 5, 5);
+        gradient_stops.append(QGradientStop(
+            std::clamp(preset.payload.value(QStringLiteral("endPos")).toDouble(1.0), 0.0, 1.0),
+            gradientStopColor(parseArgb(preset.payload, "endColor", 0xff1b1b1b),
+                              preset.payload.value(QStringLiteral("endOpacity")).toDouble(1.0), opacity)));
+        std::sort(gradient_stops.begin(), gradient_stops.end(), [](const QGradientStop &a, const QGradientStop &b) {
+            return a.first < b.first;
+        });
+
+        const auto spread = [&]() {
+            switch (gradientSpreadFromPayload(preset.payload, 0)) {
+            case 1: return QGradient::ReflectSpread;
+            case 2: return QGradient::RepeatSpread;
+            default: return QGradient::PadSpread;
+            }
+        }();
+        QBrush gradient_brush;
+        if (type == 1) {
+            const double scale = std::max(0.05, preset.payload.value(QStringLiteral("scale")).toDouble(1.0));
+            QRadialGradient gradient(center, std::max(1.0, 0.55 * std::min(r.width(), r.height()) * scale));
+            gradient.setSpread(spread);
+            gradient.setStops(gradient_stops);
+            gradient_brush = QBrush(gradient);
+        } else if (type == 2) {
+            QConicalGradient gradient(center, -angle);
+            gradient.setSpread(spread);
+            gradient.setStops(gradient_stops);
+            gradient_brush = QBrush(gradient);
+        } else {
+            constexpr double kPi = 3.14159265358979323846;
+            const double radians = angle * kPi / 180.0;
+            const QPointF direction(std::cos(radians), std::sin(radians));
+            const double half = 0.5 * std::hypot(r.width(), r.height());
+            QLinearGradient gradient(center - direction * half, center + direction * half);
+            gradient.setSpread(spread);
+            gradient.setStops(gradient_stops);
+            gradient_brush = QBrush(gradient);
+        }
+        p.setBrush(gradient_brush);
+        p.drawRoundedRect(r, 3, 3);
     } else {
         const QColor c = colorFromArgb(parseArgb(preset.payload, "textColor", 0xffffffff));
         p.setBrush(QColor(35, 35, 35));
@@ -540,13 +771,19 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
     list_->setViewMode(QListView::IconMode);
     list_->setResizeMode(QListView::Adjust);
     list_->setMovement(QListView::Static);
-    list_->setIconSize(QSize(96, 48));
-    list_->setGridSize(QSize(132, 92));
+    list_->setSpacing(kind_ == StylePresetKind::Gradient ? 4 : 2);
+    list_->setIconSize(kind_ == StylePresetKind::Gradient ? QSize(32, 32) : QSize(96, 48));
+    list_->setGridSize(kind_ == StylePresetKind::Gradient ? QSize(42, 42) : QSize(132, 92));
     list_->setUniformItemSizes(true);
+    list_->setSelectionMode(QAbstractItemView::SingleSelection);
+    list_->setContextMenuPolicy(Qt::CustomContextMenu);
     layout->addWidget(list_, 1);
 
     auto *buttons = new QHBoxLayout;
-    add_button_ = new QToolButton(this); add_button_->setText(QStringLiteral("+")); add_button_->setToolTip(bgl_tr("OBSTitles.SaveStylePreset"));
+    add_button_ = new QToolButton(this); add_button_->setText(QStringLiteral("+"));
+    add_button_->setToolTip(kind_ == StylePresetKind::Gradient
+                                ? bgl_tr("OBSTitles.SaveGradientPreset")
+                                : bgl_tr("OBSTitles.SaveStylePreset"));
     apply_button_ = new QToolButton(this); apply_button_->setText(QStringLiteral("✓")); apply_button_->setToolTip(bgl_tr("OBSTitles.ApplyStylePreset"));
     delete_button_ = new QToolButton(this); delete_button_->setText(QStringLiteral("−")); delete_button_->setToolTip(bgl_tr("OBSTitles.DeleteStylePreset"));
     import_button_ = new QToolButton(this); import_button_->setText(QStringLiteral("Import")); import_button_->setToolTip(bgl_tr("OBSTitles.ImportStylePresets"));
@@ -561,7 +798,35 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
 
     connect(search_, &QLineEdit::textChanged, this, &StylePresetPanel::refreshList);
     connect(category_filter_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &StylePresetPanel::refreshList);
-    connect(list_, &QListWidget::itemDoubleClicked, this, [this]() { applySelectedPreset(); });
+    if (kind_ == StylePresetKind::Gradient) {
+        connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem *) {
+            applySelectedPreset();
+        });
+        apply_button_->hide();
+    } else {
+        connect(list_, &QListWidget::itemDoubleClicked, this, [this]() {
+            applySelectedPreset();
+        });
+    }
+    connect(list_, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *, QListWidgetItem *) {
+                const StylePreset *preset = selectedPreset();
+                delete_button_->setEnabled(preset && !StylePresetLibrary::isBuiltIn(*preset));
+                apply_button_->setEnabled(preset != nullptr);
+            });
+    connect(list_, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        auto *item = list_->itemAt(pos);
+        if (!item)
+            return;
+        list_->setCurrentItem(item);
+        const StylePreset *preset = selectedPreset();
+        if (!preset || StylePresetLibrary::isBuiltIn(*preset))
+            return;
+        QMenu menu(list_);
+        QAction *remove_action = menu.addAction(bgl_tr("OBSTitles.DeleteStylePreset"));
+        if (menu.exec(list_->viewport()->mapToGlobal(pos)) == remove_action)
+            deleteSelectedPreset();
+    });
     connect(add_button_, &QToolButton::clicked, this, &StylePresetPanel::addCurrentAsPreset);
     connect(apply_button_, &QToolButton::clicked, this, &StylePresetPanel::applySelectedPreset);
     connect(delete_button_, &QToolButton::clicked, this, &StylePresetPanel::deleteSelectedPreset);
@@ -570,6 +835,11 @@ StylePresetPanel::StylePresetPanel(StylePresetKind kind, QWidget *parent)
 
     rebuildCategoryFilter();
     refreshList();
+    delete_button_->setEnabled(false);
+    apply_button_->setEnabled(false);
+    StylePresetLibrary::subscribe(this, [this]() {
+        reload();
+    });
 }
 
 void StylePresetPanel::setCreatePresetCallback(std::function<StylePreset(const QString &, const QString &)> callback)
@@ -609,9 +879,15 @@ void StylePresetPanel::refreshList()
     for (const auto &preset : library_.presets(kind_)) {
         if (!category.isEmpty() && preset.category != category) continue;
         if (!needle.isEmpty() && !preset.name.contains(needle, Qt::CaseInsensitive) && !preset.category.contains(needle, Qt::CaseInsensitive)) continue;
-        auto *item = new QListWidgetItem(QIcon(StylePresetLibrary::thumbnail(preset, QSize(96, 48))), preset.name + QStringLiteral("\n") + preset.category, list_);
+        const bool gradient = kind_ == StylePresetKind::Gradient;
+        const QSize thumbnail_size = gradient ? QSize(32, 32) : QSize(96, 48);
+        const QString label = gradient ? QString() : preset.name + QStringLiteral("\n") + preset.category;
+        auto *item = new QListWidgetItem(QIcon(StylePresetLibrary::thumbnail(preset, thumbnail_size)), label, list_);
         item->setData(Qt::UserRole, preset.id);
-        item->setToolTip(preset.name + QStringLiteral(" — ") + preset.category);
+        item->setToolTip(gradient ? StylePresetLibrary::gradientDescription(preset)
+                                  : preset.name + QStringLiteral(" — ") + preset.category);
+        if (gradient)
+            item->setSizeHint(QSize(42, 42));
     }
 }
 
@@ -639,7 +915,10 @@ void StylePresetPanel::addCurrentAsPreset()
 {
     if (!create_callback_) return;
     bool ok = false;
-    const QString name = QInputDialog::getText(this, bgl_tr("OBSTitles.SaveStylePreset"), bgl_tr("OBSTitles.StylePresetName"), QLineEdit::Normal, QString(), &ok);
+    const QString dialog_title = kind_ == StylePresetKind::Gradient
+        ? bgl_tr("OBSTitles.SaveGradientPreset")
+        : bgl_tr("OBSTitles.SaveStylePreset");
+    const QString name = QInputDialog::getText(this, dialog_title, bgl_tr("OBSTitles.StylePresetName"), QLineEdit::Normal, QString(), &ok);
     if (!ok || name.trimmed().isEmpty()) return;
     const QString category = QInputDialog::getText(this, bgl_tr("OBSTitles.StylePresetCategory"), bgl_tr("OBSTitles.StylePresetCategory"), QLineEdit::Normal, QStringLiteral("User"), &ok);
     if (!ok) return;
@@ -658,6 +937,7 @@ void StylePresetPanel::deleteSelectedPreset()
 {
     const StylePreset *preset = selectedPreset();
     if (!preset) return;
+    if (StylePresetLibrary::isBuiltIn(*preset)) return;
     if (QMessageBox::question(this, bgl_tr("OBSTitles.DeleteStylePreset"), bgl_tr("OBSTitles.DeleteStylePresetConfirm")) != QMessageBox::Yes) return;
     library_.remove(preset->id);
     rebuildCategoryFilter();

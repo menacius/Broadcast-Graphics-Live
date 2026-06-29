@@ -45,6 +45,12 @@ struct Title {
     int         width       = 1920;
     int         height      = 1080;
 
+    /* Titles saved as reusable assets remain in the shared data store, but
+     * are excluded from the Titles & Graphics dock and OBS source selector. */
+    bool        is_asset = false;
+    bool        asset_animated = false;
+    std::string asset_category = "Default";
+
     std::vector<std::shared_ptr<Layer>> layers;  /* bottom → top order */
 
     /* Editor defaults persisted with the title/template. These are used only
@@ -87,6 +93,26 @@ struct Title {
     void remove_layer(const std::string &layer_id);
     void move_layer(const std::string &layer_id, int delta);
 };
+
+struct LiveCueRuntimeSnapshot {
+    int row = -1;
+    double playhead = 0.0;
+    double elapsed_seconds = 0.0;
+    int64_t updated_ms = 0;
+    uintptr_t source_token = 0;
+    bool active = false;
+};
+
+/* Thread-safe, runtime-only timing channel between OBS source playback and the
+ * Live Text Cues dock. It deliberately lives outside Title so 60 Hz source
+ * updates never race title cloning, persistence, or cache fingerprinting. */
+void publish_live_cue_runtime_state(const std::string &title_id,
+                                    uintptr_t source_token, int row,
+                                    double playhead, double elapsed_seconds,
+                                    int64_t updated_ms);
+void clear_live_cue_runtime_state(const std::string &title_id,
+                                  uintptr_t source_token);
+LiveCueRuntimeSnapshot live_cue_runtime_state(const std::string &title_id);
 
 void ensure_live_text_row_ids(Title &title);
 std::string live_text_row_id(const Title &title, int row);
@@ -148,6 +174,7 @@ public:
     void load();
     void save() const;
     void save_async() const;
+    void shutdownSaveWorker() const;
 
     /* Change notifications */
     using ChangeCallback = std::function<void()>;

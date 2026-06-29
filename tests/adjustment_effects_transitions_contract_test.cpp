@@ -1,17 +1,10 @@
 #include <cassert>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <string>
 
+#include "source_bundle_reader.h"
+
 namespace {
-std::string read_file(const char *path)
-{
-    std::ifstream input(path, std::ios::binary);
-    assert(input.good());
-    return {std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()};
-}
 
 void require(const std::string &source, const char *needle)
 {
@@ -93,8 +86,14 @@ int main(int argc, char **argv)
     require(registry, "shaders/roughen-edges/roughen-edges.effect");
     require(properties, "is_fixed_canvas_layer");
     require(canvas, "layer_has_fixed_canvas_geometry");
-    require(layer_stack, "candidate->type == LayerType::Adjustment");
-    require(layer_stack, "mask->setEnabled(l->type != LayerType::Adjustment)");
+    /* Adjustment and Group layers intentionally participate in the same
+     * transform-parent and track-matte graph as artwork layers. */
+    require(layer_stack, "QComboBox *parent = new QComboBox");
+    require(layer_stack, "QComboBox *matte = new QComboBox");
+    require(layer_stack, "emit layer_parent_changed");
+    require(layer_stack, "emit layer_mask_changed");
+    forbid(layer_stack, "candidate->type == LayerType::Adjustment");
+    forbid(layer_stack, "setEnabled(l->type != LayerType::Adjustment)");
 
     std::cout << "adjustment/solid/effects/transitions integration contract: PASS\n";
     return 0;

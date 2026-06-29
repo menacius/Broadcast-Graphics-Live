@@ -2,15 +2,16 @@
 """Regression audit for text-only stroke order/alignment in GPU and compatibility paths."""
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 RENDERER = (ROOT / "src/rendering/title-gpu-text-renderer.cpp").read_text(encoding="utf-8", errors="replace")
 SDF = (ROOT / "src/rendering/title-gpu-text-sdf.cpp").read_text(encoding="utf-8", errors="replace")
-SOURCE = (ROOT / "src/obs/title-source.cpp").read_text(encoding="utf-8", errors="replace")
+SOURCE = read_source_bundle(ROOT / "src/obs/title-source.cpp")
 INLINE = (ROOT / "src/canvas/canvas-preview-inline-text.cpp").read_text(encoding="utf-8", errors="replace")
-CANVAS = (ROOT / "src/canvas/canvas-preview.cpp").read_text(encoding="utf-8", errors="replace")
+CANVAS = read_source_bundle(ROOT / "src/canvas/canvas-preview.cpp")
 
 passes: list[str] = []
 errors: list[str] = []

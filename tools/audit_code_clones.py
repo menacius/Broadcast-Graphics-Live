@@ -14,7 +14,7 @@ import hashlib
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp", ".inc"}
 
 
 def meaningful_lines(path: Path) -> tuple[list[str], list[int]]:

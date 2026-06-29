@@ -1,4 +1,5 @@
 #include "prerender-dock.h"
+#include "bgl-modern-controls.h"
 #include "title-localization.h"
 
 #include <algorithm>
@@ -59,7 +60,7 @@ void PrerenderDock::buildUi()
 
     QSettings prerender_settings(QStringLiteral("BroadcastGraphicsLive"), QStringLiteral("Dock"));
 
-    cached_only_ = new QCheckBox(bgl_tr("OBSTitles.PlayAfterRendering"), this);
+    cached_only_ = new BglSwitch(bgl_tr("OBSTitles.PlayAfterRendering"), this);
     form->addRow(QString(), cached_only_);
 
     start_mode_->setCurrentIndex(std::clamp(prerender_settings.value(QString::fromUtf8(kPrerenderStartModeKey), 0).toInt(), 0, start_mode_->count() - 1));

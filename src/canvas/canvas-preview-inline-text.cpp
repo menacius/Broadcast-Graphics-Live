@@ -13,7 +13,7 @@ static bool inline_text_group_chain_is_expanded(const std::shared_ptr<Title> &ti
     int guard = 0;
     while (!parent_id.empty() && guard++ < 64) {
         auto parent = title->find_layer(parent_id);
-        if (!parent || parent->type != LayerType::Group)
+        if (!parent || !layer_type_is_container(parent->type))
             break;
         if (parent->group_collapsed)
             return false;
@@ -209,8 +209,10 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
     QColor editor_text_color = color_from_argb(eval_text_color(layer, local_time));
     editor_text_color.setAlpha(0);
     char_format.setForeground(editor_text_color);
-    char_format.setFontUnderline(layer.text_underline);
-    char_format.setFontStrikeOut(layer.text_strikethrough);
+    /* qtext_format_from_rich_text_format() already contains the effective
+     * cursor/range underline and strikethrough state. Reapplying layer-wide
+     * mirrors here erased mixed inline decoration and made newly typed text
+     * inherit the document default instead of the caret style. */
 
     RichTextParagraphFormat paragraph_base = editor_model.default_paragraph_format;
     paragraph_base.align_h = layer.align_h;
@@ -241,35 +243,55 @@ void CanvasPreview::configure_inline_text_editor(const Layer &layer)
 
 bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
 {
-    if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_) return false;
+    if (!inline_text_editor_ || inline_text_layer_id_.empty() || !title_)
+        return false;
     auto layer = title_->find_layer(inline_text_layer_id_);
-    if (!layer) return false;
+    if (!layer)
+        return false;
+    /* begin_text_edit() and every model mutation leave a canonical document.
+     * Avoid a full normalize() on every cursor move/keystroke; only migrate a
+     * genuinely legacy/uninitialized layer here. */
+    if (layer->rich_text.version < 2 || layer->rich_text.blocks.empty())
+        rich_text_document_ensure_canonical(*layer);
 
     QTextDocument *editor_doc = inline_text_editor_->document();
-    const std::string plain = inline_text_editor_->toPlainText().toStdString();
-    if (plain == layer->text_content && editor_doc && !editor_doc->isModified()) {
-        const QTextCursor cursor = inline_text_editor_->textCursor();
-        const QString qplain = editor_doc ? editor_doc->toPlainText() : QString();
-        RichTextSelection selection{rich_byte_offset_from_qtext_position(qplain, std::max(0, cursor.anchor())),
-                                    rich_byte_offset_from_qtext_position(qplain, std::max(0, cursor.position()))};
+    const QTextCursor cursor = inline_text_editor_->textCursor();
+
+    /* Cursor/selection-only changes do not require toPlainText(), a complete
+     * UTF-8 conversion, or QTextDocument fragment traversal. The canonical
+     * model and QTextDocument contain the same text, so map Qt's UTF-16 cursor
+     * positions directly against the UTF-8 model. */
+    if (inline_text_change_count_ == 0 && editor_doc &&
+        !editor_doc->isModified()) {
+        RichTextSelection selection{
+            rich_text_utf8_byte_offset_from_utf16_position(
+                layer->rich_text.plain_text, std::max(0, cursor.anchor())),
+            rich_text_utf8_byte_offset_from_utf16_position(
+                layer->rich_text.plain_text, std::max(0, cursor.position()))};
         const size_t text_len = layer->rich_text.plain_text.size();
         selection.anchor = std::min(selection.anchor, text_len);
         selection.head = std::min(selection.head, text_len);
-        const bool selection_changed = layer->rich_text.selection.anchor != selection.anchor ||
-                                       layer->rich_text.selection.head != selection.head;
+        const bool selection_changed =
+            layer->rich_text.selection.anchor != selection.anchor ||
+            layer->rich_text.selection.head != selection.head;
         if (selection_changed)
             layer->rich_text.selection = selection;
         if (!cursor.hasSelection()) {
             const double visual_scale = inline_text_visual_scale(*layer);
-            layer->rich_text.typing_format = rich_text_format_from_qtext_format(cursor.charFormat(),
-                                                                               layer->rich_text.default_format,
-                                                                               visual_scale);
-            layer->rich_text.typing_format_mask = cursor.charFormat().hasProperty(RichTextPropManualMask)
-                ? (uint32_t)cursor.charFormat().property(RichTextPropManualMask).toUInt() & RichTextCharAll
-                : rich_text_char_format_difference_mask(layer->rich_text.typing_format,
-                                                        layer->rich_text.default_format);
+            layer->rich_text.typing_format =
+                rich_text_format_from_qtext_format(
+                    cursor.charFormat(), layer->rich_text.default_format,
+                    visual_scale);
+            layer->rich_text.typing_format_mask =
+                cursor.charFormat().hasProperty(RichTextPropManualMask)
+                    ? static_cast<uint32_t>(cursor.charFormat()
+                                                .property(RichTextPropManualMask)
+                                                .toUInt()) &
+                          RichTextCharAll
+                    : rich_text_char_format_difference_mask(
+                          layer->rich_text.typing_format,
+                          layer->rich_text.default_format);
             layer->rich_text.has_typing_format = true;
-            rich_text_document_sync_layer_mirrors(*layer);
         } else {
             layer->rich_text.has_typing_format = false;
             layer->rich_text.typing_format_mask = 0;
@@ -277,60 +299,183 @@ bool CanvasPreview::sync_inline_text_layer(bool mark_dirty)
         return selection_changed;
     }
 
+    /* Normal typing, backspace, Enter and one-character replacement arrive as
+     * one precise QTextDocument range edit. Read only the changed fragment and
+     * mutate the canonical UTF-8 model directly. This avoids three full-string
+     * conversions, a complete fragment walk, and redundant pre-normalization
+     * for every key press. Rich paste/IME/format batches retain the full model
+     * conversion fallback below. */
+    const bool simple_range_edit =
+        editor_doc && inline_text_change_count_ == 1 &&
+        inline_text_change_position_ >= 0 &&
+        inline_text_change_removed_ >= 0 && inline_text_change_added_ >= 0 &&
+        (inline_text_change_removed_ > 0 || inline_text_change_added_ > 0) &&
+        inline_text_change_added_ <= 2 && !cursor.hasSelection();
+    if (simple_range_edit) {
+        const std::string &old_text = layer->rich_text.plain_text;
+        const int old_position = std::max(0, inline_text_change_position_);
+        const int old_end = old_position + inline_text_change_removed_;
+        const size_t byte_position =
+            rich_text_utf8_byte_offset_from_utf16_position(old_text,
+                                                            old_position);
+        const size_t removed_end =
+            rich_text_utf8_byte_offset_from_utf16_position(old_text, old_end);
+
+        QString inserted_qtext;
+        if (inline_text_change_added_ > 0) {
+            const int document_end =
+                std::max(0, editor_doc->characterCount() - 1);
+            const int insertion_start = std::clamp(
+                inline_text_change_position_, 0, document_end);
+            const int insertion_end = std::clamp(
+                insertion_start + inline_text_change_added_, insertion_start,
+                document_end);
+            QTextCursor changed_cursor(editor_doc);
+            changed_cursor.setPosition(insertion_start);
+            changed_cursor.setPosition(insertion_end,
+                                       QTextCursor::KeepAnchor);
+            inserted_qtext = changed_cursor.selectedText();
+            inserted_qtext.replace(QChar::ParagraphSeparator, QChar('\n'));
+            inserted_qtext.replace(QChar::LineSeparator, QChar('\n'));
+        }
+        const std::string inserted_text =
+            inserted_qtext.toUtf8().toStdString();
+
+        const double visual_scale = inline_text_visual_scale(*layer);
+        const RichTextCharFormat insertion_format =
+            rich_text_format_from_qtext_format(
+                cursor.charFormat(), layer->rich_text.default_format,
+                visual_scale);
+        const uint32_t insertion_mask =
+            cursor.charFormat().hasProperty(RichTextPropManualMask)
+                ? static_cast<uint32_t>(cursor.charFormat()
+                                            .property(RichTextPropManualMask)
+                                            .toUInt()) &
+                      RichTextCharAll
+                : rich_text_char_format_difference_mask(
+                      insertion_format, layer->rich_text.default_format);
+
+        rich_text_document_replace_canonical_range(
+            layer->rich_text, byte_position, removed_end - byte_position,
+            inserted_text, insertion_format, insertion_mask);
+        layer->text_content = layer->rich_text.plain_text;
+        layer->rich_text.selection = {
+            rich_text_utf8_byte_offset_from_utf16_position(
+                layer->rich_text.plain_text, std::max(0, cursor.anchor())),
+            rich_text_utf8_byte_offset_from_utf16_position(
+                layer->rich_text.plain_text, std::max(0, cursor.position()))};
+        layer->rich_text.typing_format = insertion_format;
+        layer->rich_text.typing_format_mask = insertion_mask;
+        layer->rich_text.has_typing_format = true;
+        editor_doc->setModified(false);
+        inline_text_change_count_ = 0;
+        if (mark_dirty)
+            dirty_ = true;
+        return true;
+    }
+
+    /* Complex paste, IME and explicit rich-format changes can alter multiple
+     * QTextDocument fragments. Preserve exact formatting through the complete
+     * conversion path, but execute it only for those non-keystroke edits. */
+    const QString qplain = inline_text_editor_->toPlainText();
+    const std::string plain = qplain.toUtf8().toStdString();
     const double visual_scale = inline_text_visual_scale(*layer);
-    RichTextDocument next_model = rich_text_document_from_qtext_document(editor_doc, *layer, visual_scale, inline_text_editor_->textCursor());
-    const bool selection_changed = layer->rich_text.selection.anchor != next_model.selection.anchor ||
-                                   layer->rich_text.selection.head != next_model.selection.head;
-    const bool changed = layer->text_content != plain || layer->rich_text.plain_text != next_model.plain_text ||
-                         !rich_text_char_formats_equal(layer->rich_text.default_format, next_model.default_format) ||
-                         layer->rich_text.default_paragraph_format.align_h != next_model.default_paragraph_format.align_h ||
-                         layer->rich_text.default_paragraph_format.align_v != next_model.default_paragraph_format.align_v ||
-                         std::abs(layer->rich_text.default_paragraph_format.indent_left - next_model.default_paragraph_format.indent_left) >= 0.0001f ||
-                         std::abs(layer->rich_text.default_paragraph_format.indent_right - next_model.default_paragraph_format.indent_right) >= 0.0001f ||
-                         std::abs(layer->rich_text.default_paragraph_format.indent_first_line - next_model.default_paragraph_format.indent_first_line) >= 0.0001f ||
-                         std::abs(layer->rich_text.default_paragraph_format.line_spacing - next_model.default_paragraph_format.line_spacing) >= 0.0001f ||
-                         std::abs(layer->rich_text.default_paragraph_format.space_before - next_model.default_paragraph_format.space_before) >= 0.0001f ||
-                         std::abs(layer->rich_text.default_paragraph_format.space_after - next_model.default_paragraph_format.space_after) >= 0.0001f ||
-                         layer->rich_text.default_paragraph_format.hyphenate != next_model.default_paragraph_format.hyphenate ||
-                         layer->rich_text.has_typing_format != next_model.has_typing_format ||
-                         layer->rich_text.typing_format_mask != next_model.typing_format_mask ||
-                         (layer->rich_text.has_typing_format &&
-                          rich_text_char_format_difference_mask(layer->rich_text.typing_format,
-                                                               next_model.typing_format,
-                                                               layer->rich_text.typing_format_mask |
-                                                                   next_model.typing_format_mask) != 0) ||
-                         !rich_text_blocks_equal(layer->rich_text.blocks, next_model.blocks) ||
-                         !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
+    RichTextDocument next_model = rich_text_document_from_qtext_document(
+        editor_doc, *layer, visual_scale, cursor);
+    const bool selection_changed =
+        layer->rich_text.selection.anchor != next_model.selection.anchor ||
+        layer->rich_text.selection.head != next_model.selection.head;
+    const bool changed =
+        layer->text_content != plain ||
+        layer->rich_text.plain_text != next_model.plain_text ||
+        !rich_text_char_formats_equal(layer->rich_text.default_format,
+                                      next_model.default_format) ||
+        layer->rich_text.default_paragraph_format.align_h !=
+            next_model.default_paragraph_format.align_h ||
+        layer->rich_text.default_paragraph_format.align_v !=
+            next_model.default_paragraph_format.align_v ||
+        std::abs(layer->rich_text.default_paragraph_format.indent_left -
+                 next_model.default_paragraph_format.indent_left) >= 0.0001f ||
+        std::abs(layer->rich_text.default_paragraph_format.indent_right -
+                 next_model.default_paragraph_format.indent_right) >= 0.0001f ||
+        std::abs(layer->rich_text.default_paragraph_format.indent_first_line -
+                 next_model.default_paragraph_format.indent_first_line) >=
+            0.0001f ||
+        std::abs(layer->rich_text.default_paragraph_format.line_spacing -
+                 next_model.default_paragraph_format.line_spacing) >= 0.0001f ||
+        std::abs(layer->rich_text.default_paragraph_format.space_before -
+                 next_model.default_paragraph_format.space_before) >= 0.0001f ||
+        std::abs(layer->rich_text.default_paragraph_format.space_after -
+                 next_model.default_paragraph_format.space_after) >= 0.0001f ||
+        layer->rich_text.default_paragraph_format.hyphenate !=
+            next_model.default_paragraph_format.hyphenate ||
+        layer->rich_text.has_typing_format != next_model.has_typing_format ||
+        layer->rich_text.typing_format_mask != next_model.typing_format_mask ||
+        (layer->rich_text.has_typing_format &&
+         rich_text_char_format_difference_mask(
+             layer->rich_text.typing_format, next_model.typing_format,
+             layer->rich_text.typing_format_mask |
+                 next_model.typing_format_mask) != 0) ||
+        !rich_text_blocks_equal(layer->rich_text.blocks, next_model.blocks) ||
+        !rich_text_ranges_equal(layer->rich_text.ranges, next_model.ranges);
     if (!changed) {
         if (selection_changed)
             layer->rich_text.selection = next_model.selection;
+        inline_text_change_count_ = 0;
+        if (editor_doc)
+            editor_doc->setModified(false);
         return false;
     }
 
     /* Keep per-layer automatic styling metadata when committing the inline
      * QTextEdit back into the model. rich_text_document_from_qtext_document()
-     * only describes the visible/manual rich text contents, so assigning it
-     * directly would silently drop auto styling settings and make subsequent
-     * rule/default-style edits appear to do nothing while the text box is open.
-     */
+     * describes visible/manual rich text only. */
     const bool auto_style_enabled = layer->rich_text.auto_style_enabled;
-    const std::string auto_default_style_preset_id = layer->rich_text.auto_default_style_preset_id;
-    const RichTextCharFormat auto_default_style_cached_format = layer->rich_text.auto_default_style_cached_format;
-    const uint32_t auto_default_style_cached_mask = layer->rich_text.auto_default_style_cached_mask;
-    const std::vector<RichTextAutoStyleRule> auto_style_rules = layer->rich_text.auto_style_rules;
+    const std::string auto_default_style_preset_id =
+        layer->rich_text.auto_default_style_preset_id;
+    const RichTextCharFormat auto_default_style_cached_format =
+        layer->rich_text.auto_default_style_cached_format;
+    const uint32_t auto_default_style_cached_mask =
+        layer->rich_text.auto_default_style_cached_mask;
+    const std::vector<RichTextAutoStyleRule> auto_style_rules =
+        layer->rich_text.auto_style_rules;
 
     layer->text_content = plain;
     layer->rich_text = std::move(next_model);
     layer->rich_text.auto_style_enabled = auto_style_enabled;
-    layer->rich_text.auto_default_style_preset_id = auto_default_style_preset_id;
-    layer->rich_text.auto_default_style_cached_format = auto_default_style_cached_format;
-    layer->rich_text.auto_default_style_cached_mask = auto_default_style_cached_mask;
+    layer->rich_text.auto_default_style_preset_id =
+        auto_default_style_preset_id;
+    layer->rich_text.auto_default_style_cached_format =
+        auto_default_style_cached_format;
+    layer->rich_text.auto_default_style_cached_mask =
+        auto_default_style_cached_mask;
     layer->rich_text.auto_style_rules = auto_style_rules;
-    rich_text_document_sync_layer_mirrors(*layer);
+    rich_text_document_sync_layer_mirrors_canonical(*layer);
     if (editor_doc)
         editor_doc->setModified(false);
-    if (mark_dirty) dirty_ = true;
+    inline_text_change_count_ = 0;
+    if (mark_dirty)
+        dirty_ = true;
     return true;
+}
+
+void CanvasPreview::schedule_inline_text_refresh(bool mark_dirty,
+                                                 bool emit_changed)
+{
+    inline_text_refresh_mark_dirty_ =
+        inline_text_refresh_mark_dirty_ || mark_dirty;
+    inline_text_refresh_emit_changed_ =
+        inline_text_refresh_emit_changed_ || emit_changed;
+    if (inline_text_refresh_timer_) {
+        if (!inline_text_refresh_timer_->isActive())
+            inline_text_refresh_timer_->start();
+    } else {
+        const bool dirty = inline_text_refresh_mark_dirty_;
+        const bool changed = inline_text_refresh_emit_changed_;
+        inline_text_refresh_mark_dirty_ = false;
+        inline_text_refresh_emit_changed_ = false;
+        refresh_inline_text_edit(dirty, changed);
+    }
 }
 
 void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
@@ -397,23 +542,40 @@ void CanvasPreview::refresh_inline_text_edit(bool mark_dirty, bool emit_changed)
     if (mark_dirty || model_changed || geometry_changed) {
         dirty_ = true;
         gpu_model_dirty_ = true;
+
+        /* A text keystroke is an explicit editor-frame request. Merely
+         * invalidating the QTextEdit rectangle can leave the OBS swapchain's
+         * artwork texture on the previous model until the next unrelated
+         * repaint, which is especially visible on Linux/Wayland. Cancel any
+         * queued transport classification and authorize one immediate full
+         * canvas present for the newly committed canonical text model. */
+        playback_frame_pending_ = false;
+        playback_present_pending_ = false;
+        editing_present_pending_ = true;
+        force_present_pending_ = true;
+        if (render_coalesce_timer_)
+            render_coalesce_timer_->stop();
+        if (present_coalesce_timer_)
+            present_coalesce_timer_->stop();
     }
 
-    position_text_editor();
+    /* QTextEdit already maintains glyph/cursor layout for a text-only edit.
+     * Reconfiguring and reformatting the whole document on every keystroke was
+     * redundant. Reposition only when an auto-sized box actually changed. */
+    if (geometry_changed)
+        position_text_editor();
 
     /* Preserve the pre-12D inline-edit presentation semantics. Text edits and
      * the delayed document-size notification must publish the expanded box in
      * the same edit transaction; cursor/selection-only changes still bypass
      * this function and remain overlay-only. */
-    if (dirty_)
-        render_to_frame();
-
+    invalidate_canvas_overlay_caches();
     if (inline_text_editor_) {
-        const QRect editor_rect = inline_text_editor_->geometry().adjusted(-4, -4, 4, 4);
-        update(editor_rect);
+        /* Artwork is presented by a full-widget GPU swapchain; request the
+         * whole widget rather than only the child editor rectangle. */
+        update();
         inline_text_editor_->update();
         inline_text_editor_->viewport()->update();
-        repaint(editor_rect);
     } else {
         update();
     }
@@ -762,6 +924,10 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
 {
     if (committing_inline_text_ || !inline_text_editor_ || inline_text_layer_id_.empty()) return;
     committing_inline_text_ = true;
+    if (inline_text_refresh_timer_)
+        inline_text_refresh_timer_->stop();
+    inline_text_refresh_mark_dirty_ = false;
+    inline_text_refresh_emit_changed_ = false;
     const std::string layer_id = inline_text_layer_id_;
 
     /* Suspension flushes all pending QTextEdit changes before the gradient tool
@@ -775,6 +941,7 @@ void CanvasPreview::commit_text_edit(bool accept_changes)
     inline_text_layer_id_.clear();
     inline_text_suspended_for_gradient_ = false;
     inline_text_last_visual_scale_ = 0.0;
+    inline_text_change_count_ = 0;
     inline_text_editor_->hide();
     {
         updating_inline_text_editor_ = true;

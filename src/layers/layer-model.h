@@ -22,7 +22,19 @@ enum class LayerType {
     Adjustment = 6,
     ColorSolid = 7,
     Group = 8,
+    Asset = 9,       /* reusable nested title composition */
 };
+
+inline bool layer_type_is_asset(LayerType type)
+{
+    return type == LayerType::Asset;
+}
+
+inline bool layer_type_is_container(LayerType type)
+{
+    return type == LayerType::Group || type == LayerType::Asset;
+}
+
 
 enum class ShapeType {
     Rectangle,
@@ -49,7 +61,15 @@ enum class MaskMode {
     InvertedAlpha,
     Luma,
     InvertedLuma,
+    Clipping,
+    InvertedClipping,
 };
+
+inline bool mask_mode_is_clipping(MaskMode mode)
+{
+    return mode == MaskMode::Clipping ||
+           mode == MaskMode::InvertedClipping;
+}
 
 /* Visibility contract for a layer while it is referenced as a track matte.
  * HiddenInactive preserves the old disabled state, MatteOnly preserves the
@@ -120,11 +140,34 @@ struct Layer {
     /* Group rows can collapse their descendants in the layer/timeline UI.
      * This is presentation state only; it never affects rendering. */
     bool        group_collapsed = false;
-    /* Container hierarchy. Only Group layers may be referenced here. */
+    /* Container hierarchy. Group and Asset layers may be referenced here. */
     std::string parent_id;
     /* Independent transform parenting. This never changes group membership,
      * layer ordering, or the Layers/Timeline hierarchy. */
     std::string transform_parent_id;
+
+    /* Asset instance metadata. Asset layers are reusable title containers.
+     * Their cloned descendants carry asset_owner_id and asset_source_layer_id
+     * and remain hidden from the ordinary layer/timeline hierarchy. */
+    std::string asset_title_id;
+    std::string asset_owner_id;
+    std::string asset_source_layer_id;
+    std::string asset_category;
+    bool        asset_animated = false;
+    int         asset_playback_mode = 0; /* 0=synchronized, 1=independent */
+    double      asset_playback_offset = 0.0;
+    double      asset_duration = 5.0;
+    /* Snapshot of the source title playback contract. These fields belong to
+     * the Asset Layer instance so it remains self-contained if the library
+     * asset is later renamed, edited or removed. */
+    int         asset_source_playback_mode = 0; /* 0=play once, 1=loop, 2=pause */
+    int         asset_source_loop_type = 0;     /* 0=restart, 1=ping-pong */
+    double      asset_source_loop_start = 1.0;
+    double      asset_source_loop_end = 4.0;
+    double      asset_source_pause_time = 0.0;
+    double      asset_pause_duration = 1.0;
+    int         asset_loop_count = 1;
+    bool        asset_loop = false; /* repeat the complete independent pass */
     std::string mask_source_id;
     MaskMode    mask_mode = MaskMode::None;
     MatteVisibilityMode matte_visibility_mode = MatteVisibilityMode::MatteOnly;

@@ -6,9 +6,9 @@ TitlePropertiesPanel::TitlePropertiesPanel(QWidget *parent)
     apply_theme_style();
 
     auto *fl = new QFormLayout(this);
-    fl->setContentsMargins(14, 12, 14, 12);
-    fl->setHorizontalSpacing(8);
-    fl->setVerticalSpacing(6);
+    fl->setContentsMargins(8, 8, 8, 9);
+    fl->setHorizontalSpacing(6);
+    fl->setVerticalSpacing(4);
     fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     fl->setFormAlignment(Qt::AlignTop);
     fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -190,7 +190,7 @@ void TitlePropertiesPanel::apply_theme_style()
     const QColor hover = button.lightness() < 128 ? button.lighter(125) : button.darker(110);
 
     const QString theme_style = QStringLiteral(
-        "QGroupBox{color:%1;background:%2;border:none;margin:0;padding:0;font-size:14px;}"
+        "QGroupBox{color:%1;background:%2;border:none;border-top:2px solid %3;margin:0;padding-top:4px;font-size:11px;}"
         "QGroupBox::title{subcontrol-origin:margin;left:14px;top:8px;padding:0;background:transparent;}"
         "QDoubleSpinBox,QSpinBox,QComboBox{color:%4;background:%5;border:1px solid %3;"
         "border-radius:2px;padding:1px 3px;selection-background-color:%9;}"

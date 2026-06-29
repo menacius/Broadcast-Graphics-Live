@@ -100,6 +100,11 @@ struct RichTextCharFormat {
     RichTextStroke stroke;
 };
 
+#ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
+struct Layer;
+RichTextCharFormat rich_text_char_format_from_layer(const Layer &layer);
+#endif
+
 struct RichTextFontScaleMetrics {
     float vertical_factor = 1.0f;
     int horizontal_stretch_percent = 100;
@@ -254,17 +259,44 @@ struct RichTextDocument {
 };
 
 RichTextDocument rich_text_document_from_layer_defaults(const struct Layer &layer);
+/* Copy only the canonical rich-text model from a layer. This avoids copying
+ * effects, animation tracks and media state merely to render text. */
+RichTextDocument rich_text_document_canonical_copy(const struct Layer &layer);
 void rich_text_document_sync_layer_mirrors(struct Layer &layer);
+/* Hot-path variant for a document that has just been normalized by the
+ * canonical editor mutation helpers. */
+void rich_text_document_sync_layer_mirrors_canonical(struct Layer &layer);
 /* Ensure text layers use RichTextDocument as the single source of truth.
  * Manual styles, auto styles,
  * properties panel, inline editor, and renderer all read/write rich_text runs. */
 RichTextDocument rich_text_document_with_evaluated_defaults(
+    RichTextDocument document, const RichTextEvaluatedDefaults &defaults);
+RichTextDocument rich_text_document_with_evaluated_defaults_canonical(
     RichTextDocument document, const RichTextEvaluatedDefaults &defaults);
 void rich_text_document_ensure_canonical(struct Layer &layer);
 void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text);
 void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text,
                                      const RichTextCharFormat &insertion_format,
                                      uint32_t insertion_mask);
+void rich_text_document_replace_text_canonical(
+    RichTextDocument &doc, const std::string &next_text,
+    const RichTextCharFormat &insertion_format, uint32_t insertion_mask);
+/* Fast editor path for a known UTF-8 replacement range. This avoids scanning
+ * the complete old/new strings to rediscover the edit on every keystroke while
+ * preserving the same range, paragraph, typing-format and transaction rules as
+ * rich_text_document_replace_text(). Offsets are snapped to UTF-8 boundaries. */
+void rich_text_document_replace_range(RichTextDocument &doc, size_t byte_position,
+                                      size_t removed_byte_length,
+                                      const std::string &inserted_text,
+                                      const RichTextCharFormat &insertion_format,
+                                      uint32_t insertion_mask);
+/* Same edit contract for an already normalized canonical document. This is
+ * the inline editor hot path and deliberately avoids a redundant pre-edit full
+ * normalization; the result is normalized before returning. */
+void rich_text_document_replace_canonical_range(
+    RichTextDocument &doc, size_t byte_position, size_t removed_byte_length,
+    const std::string &inserted_text,
+    const RichTextCharFormat &insertion_format, uint32_t insertion_mask);
 
 /* Canonical character-format helpers shared by editor, renderer and shaping. */
 uint32_t rich_text_char_format_difference_mask(const RichTextCharFormat &a,
@@ -299,7 +331,14 @@ void rich_text_document_clear_paragraph_format_mask(RichTextDocument &doc, uint3
 bool rich_text_utf8_is_boundary(const std::string &text, size_t byte_offset);
 size_t rich_text_utf8_previous_boundary(const std::string &text, size_t byte_offset);
 size_t rich_text_utf8_next_boundary(const std::string &text, size_t byte_offset);
+/* Map a Qt UTF-16 document position to a UTF-8 byte boundary without
+ * allocating/converting the complete string. Positions inside a surrogate pair
+ * snap to the beginning of that code point. */
+size_t rich_text_utf8_byte_offset_from_utf16_position(
+    const std::string &text, int utf16_position);
 
 using RichTextAutoStyleResolver = std::function<bool(const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask)>;
 RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc,
                                                     const RichTextAutoStyleResolver &resolver);
+RichTextDocument rich_text_document_with_auto_styles_canonical(
+    RichTextDocument doc, const RichTextAutoStyleResolver &resolver);

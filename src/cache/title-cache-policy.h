@@ -46,7 +46,20 @@ inline TitleDynamicLayerAnalysis analyze_title_dynamic_layers(const Title &title
         const auto &layer = title.layers[i];
         if (!layer)
             continue;
-        dynamic[i] = layer->type == LayerType::Clock ||
+        bool independent_asset_time = layer->type == LayerType::Asset &&
+                                      layer->asset_animated &&
+                                      layer->asset_playback_mode == 1;
+        if (!independent_asset_time && !layer->asset_owner_id.empty()) {
+            const auto owner_it = index_by_id.find(layer->asset_owner_id);
+            if (owner_it != index_by_id.end()) {
+                const auto &owner = title.layers[owner_it->second];
+                independent_asset_time = owner && owner->type == LayerType::Asset &&
+                                         owner->asset_animated &&
+                                         owner->asset_playback_mode == 1;
+            }
+        }
+        dynamic[i] = independent_asset_time ||
+                     layer->type == LayerType::Clock ||
                      (layer->type == LayerType::Ticker &&
                       layer->ticker_playback_mode != static_cast<int>(TickerPlaybackMode::CustomPlayback));
     }

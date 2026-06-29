@@ -1,18 +1,10 @@
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 
+#include "source_bundle_reader.h"
+
 namespace {
-std::string read_file(const char *path)
-{
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        return {};
-    std::ostringstream out;
-    out << file.rdbuf();
-    return out.str();
-}
 
 bool require(const std::string &text, const std::string &needle, const char *label)
 {
@@ -55,6 +47,10 @@ int main(int argc, char **argv)
     ok &= require(layers, "group_expansion_state_changed", "three-state group caret behavior");
     ok &= require(layers, "add_to_group_requested", "add-to-group UI");
     ok &= require(layers, "remove_from_group_requested", "remove-from-group UI");
+    ok &= require(layers, "Group's own keyframe properties",
+                  "groups expose ordinary animated property rows");
+    ok &= require(layers, "has_group_ancestor(title_, *l, candidate->id)",
+                  "matte menu rejects recursive group-container dependencies");
 
     ok &= require(canvas, "layer.type == LayerType::Group", "dynamic group canvas bounds");
     ok &= require(canvas, "editor_outermost_group_ancestor", "canvas group drill-down helper");
@@ -65,6 +61,8 @@ int main(int argc, char **argv)
                   "marquee exposes children only for fully expanded groups");
     ok &= require(canvas, "editor_layer_has_ancestor(title_, *candidate, layer.id)",
                   "group bounds follow descendants");
+    ok &= require(canvas, "layer->locked || has_selected_parent(*layer)",
+                  "group plus child selection transforms only hierarchy roots");
 
     ok &= require(source, "if (layer.type == LayerType::Group)",
                   "group has no empty compositor raster");
@@ -74,6 +72,24 @@ int main(int argc, char **argv)
                   "child effects render before single local-opacity composite");
     ok &= require(source, "Affect-behind effects on a child operate",
                   "grouped child backdrop effects remain active");
+    ok &= require(source, "layer_compositor_opacity",
+                  "scope-correct matte opacity for groups and children");
+    ok &= require(source, "group-matte-v3",
+                  "groups publish a normal layer-style matte texture");
+    ok &= require(source, "snapshot_gpu_track_matte_target",
+                  "group matte rendering preserves its consumer texture");
+    ok &= require(source, "apply_gpu_track_matte_texture",
+                  "all target paths apply the protected matte graph");
+    ok &= require(source, "Could not preserve target texture before Group track-matte rendering",
+                  "group matte snapshot failures are explicit");
+    ok &= require(source, "apply_group_target_mask",
+                  "group target uses the ordinary layer-style matte graph");
+    ok &= require(source, "Match the ordinary-layer effect/matte ordering",
+                  "group target respects effects-before/after-mask ordering");
+    ok &= require(source, "A Group has no raster of its own",
+                  "group matte dependencies recursively include descendants");
+    ok &= require(source, "Preserve it before an",
+                  "child foreground survives shared effect buffers");
 
     return ok ? 0 : 1;
 }

@@ -6,6 +6,7 @@
 #include "extensions/effect-extension-catalog.h"
 #include "title-logger.h"
 #include "ticker-runtime.h"
+#include "asset-runtime.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/platform.h>
@@ -50,6 +51,9 @@ constexpr size_t kMaxScreenshotBase64Length = 32 * 1024 * 1024;
 constexpr double kMaxDuration = 3600.0;
 constexpr double kMaxPropertyValue = 100000.0;
 constexpr int kMaxCanvasDimension = 16384;
+
+std::mutex g_live_cue_runtime_mutex;
+std::unordered_map<std::string, LiveCueRuntimeSnapshot> g_live_cue_runtime_states;
 
 static double finite_or(double value, double fallback)
 {
@@ -498,6 +502,49 @@ static void ensure_unique_title_id(const std::shared_ptr<Title> &title,
 }
 } // namespace
 
+void publish_live_cue_runtime_state(const std::string &title_id,
+                                    uintptr_t source_token, int row,
+                                    double playhead, double elapsed_seconds,
+                                    int64_t updated_ms)
+{
+    if (title_id.empty() || source_token == 0 || row < 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_live_cue_runtime_mutex);
+    LiveCueRuntimeSnapshot &state = g_live_cue_runtime_states[title_id];
+    state.row = row;
+    state.playhead = std::max(0.0, playhead);
+    state.elapsed_seconds = std::max(0.0, elapsed_seconds);
+    state.updated_ms = updated_ms;
+    state.source_token = source_token;
+    state.active = true;
+}
+
+void clear_live_cue_runtime_state(const std::string &title_id,
+                                  uintptr_t source_token)
+{
+    if (title_id.empty() || source_token == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_live_cue_runtime_mutex);
+    const auto it = g_live_cue_runtime_states.find(title_id);
+    if (it != g_live_cue_runtime_states.end() &&
+        it->second.source_token == source_token)
+        g_live_cue_runtime_states.erase(it);
+}
+
+LiveCueRuntimeSnapshot live_cue_runtime_state(const std::string &title_id)
+{
+    if (title_id.empty())
+        return {};
+
+    std::lock_guard<std::mutex> lock(g_live_cue_runtime_mutex);
+    const auto it = g_live_cue_runtime_states.find(title_id);
+    return it != g_live_cue_runtime_states.end()
+        ? it->second
+        : LiveCueRuntimeSnapshot{};
+}
+
 static void set_argb_channels(AnimatedProperty &a, AnimatedProperty &r, AnimatedProperty &g, AnimatedProperty &b, uint32_t argb)
 {
     a.static_value = (argb >> 24) & 0xFF;
@@ -587,6 +634,7 @@ void Title::remove_layer(const std::string &lid)
         }
     }
     if (layers.size() != previous_count) {
+        bgs::asset_runtime::reset_layer(id, lid);
         BGL_LOG_DEBUG("Layers", QStringLiteral(
             "Removed layer title=%1 layer=%2 count=%3")
             .arg(QString::fromStdString(id), QString::fromStdString(lid))
@@ -744,6 +792,7 @@ void TitleDataStore::delete_title(const std::string &id)
 
     if (deleted) {
         bgs::ticker_runtime::clear_title(id);
+        bgs::asset_runtime::clear_title(id);
         notify_change();
     }
 }
@@ -1276,6 +1325,22 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["group_collapsed"] = l.group_collapsed;
     j["parent_id"] = l.parent_id;
     j["transform_parent_id"] = l.transform_parent_id;
+    j["asset_title_id"] = l.asset_title_id;
+    j["asset_owner_id"] = l.asset_owner_id;
+    j["asset_source_layer_id"] = l.asset_source_layer_id;
+    j["asset_category"] = l.asset_category;
+    j["asset_animated"] = l.asset_animated;
+    j["asset_playback_mode"] = l.asset_playback_mode;
+    j["asset_playback_offset"] = l.asset_playback_offset;
+    j["asset_duration"] = l.asset_duration;
+    j["asset_source_playback_mode"] = l.asset_source_playback_mode;
+    j["asset_source_loop_type"] = l.asset_source_loop_type;
+    j["asset_source_loop_start"] = l.asset_source_loop_start;
+    j["asset_source_loop_end"] = l.asset_source_loop_end;
+    j["asset_source_pause_time"] = l.asset_source_pause_time;
+    j["asset_pause_duration"] = l.asset_pause_duration;
+    j["asset_loop_count"] = l.asset_loop_count;
+    j["asset_loop"] = l.asset_loop;
     j["mask_source_id"] = l.mask_source_id;
     j["mask_mode"] = (int)l.mask_mode;
     j["matte_visibility_mode"] = (int)l.matte_visibility_mode;
@@ -1806,15 +1871,31 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
 
     l->id       = bounded_string(j, "id", "", kMaxNameLength);
     l->name     = bounded_string(j, "name", "Layer", kMaxNameLength);
-    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Group);
+    l->type     = (LayerType)std::clamp(json_int(j, "type", 0), 0, (int)LayerType::Asset);
     l->visible  = json_bool(j, "visible", true);
     l->locked   = json_bool(j, "locked", false);
     l->properties_expanded = json_bool(j, "properties_expanded", false);
     l->group_collapsed = json_bool(j, "group_collapsed", false);
     l->parent_id = bounded_string(j, "parent_id", "", kMaxNameLength);
     l->transform_parent_id = bounded_string(j, "transform_parent_id", "", kMaxNameLength);
+    l->asset_title_id = bounded_string(j, "asset_title_id", "", kMaxNameLength);
+    l->asset_owner_id = bounded_string(j, "asset_owner_id", "", kMaxNameLength);
+    l->asset_source_layer_id = bounded_string(j, "asset_source_layer_id", "", kMaxNameLength);
+    l->asset_category = bounded_string(j, "asset_category", "Default", kMaxNameLength);
+    l->asset_animated = json_bool(j, "asset_animated", false);
+    l->asset_playback_mode = std::clamp(json_int(j, "asset_playback_mode", 0), 0, 1);
+    l->asset_playback_offset = std::clamp(finite_or(json_double(j, "asset_playback_offset", 0.0), 0.0), -kMaxDuration, kMaxDuration);
+    l->asset_duration = std::clamp(finite_or(json_double(j, "asset_duration", 5.0), 5.0), 0.1, kMaxDuration);
+    l->asset_source_playback_mode = std::clamp(json_int(j, "asset_source_playback_mode", 0), 0, 2);
+    l->asset_source_loop_type = std::clamp(json_int(j, "asset_source_loop_type", 0), 0, 1);
+    l->asset_source_loop_start = std::clamp(finite_or(json_double(j, "asset_source_loop_start", 1.0), 1.0), 0.0, l->asset_duration);
+    l->asset_source_loop_end = std::clamp(finite_or(json_double(j, "asset_source_loop_end", 4.0), 4.0), l->asset_source_loop_start, l->asset_duration);
+    l->asset_source_pause_time = std::clamp(finite_or(json_double(j, "asset_source_pause_time", 0.0), 0.0), 0.0, l->asset_duration);
+    l->asset_pause_duration = std::clamp(finite_or(json_double(j, "asset_pause_duration", 1.0), 1.0), 0.0, kMaxDuration);
+    l->asset_loop_count = std::clamp(json_int(j, "asset_loop_count", 1), 1, 1000000);
+    l->asset_loop = json_bool(j, "asset_loop", false);
     l->mask_source_id = bounded_string(j, "mask_source_id", "", kMaxNameLength);
-    l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedLuma);
+    l->mask_mode = (MaskMode)std::clamp(json_int(j, "mask_mode", 0), 0, (int)MaskMode::InvertedClipping);
     if (j.contains("matte_visibility_mode")) {
         l->matte_visibility_mode = (MatteVisibilityMode)std::clamp(
             json_int(j, "matte_visibility_mode", (int)MatteVisibilityMode::MatteOnly),
@@ -1843,7 +1924,7 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             const bool extension_is_builtin = BglEffectExtensionCatalog::builtInTypeForId(
                 QString::fromStdString(loaded_extension_id), &resolved_type);
             const bool valid_legacy_type = raw_effect_type >= 0 &&
-                raw_effect_type <= (int)LayerEffectType::RoughenEdges;
+                raw_effect_type <= (int)LayerEffectType::FourColorGradient;
             if (!valid_legacy_type && loaded_extension_id.empty()) {
                 if (diagnostics) {
                     append_unique_import_diagnostic(
@@ -2740,6 +2821,9 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["bg_color"] = t.bg_color;
     jt["width"]    = t.width;
     jt["height"]   = t.height;
+    jt["is_asset"] = t.is_asset;
+    jt["asset_animated"] = t.asset_animated;
+    jt["asset_category"] = t.asset_category;
     if (t.editor_default_style_enabled) {
         json defaults = layer_to_json(t.editor_default_layer_style, false, false, nullptr, nullptr);
         defaults.erase("effects");
@@ -2811,6 +2895,9 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
     t->bg_color = json_color(jt, "bg_color", (uint32_t)0x00000000);
     t->width    = std::clamp(json_int(jt, "width", 1920), 1, kMaxCanvasDimension);
     t->height   = std::clamp(json_int(jt, "height", 1080), 1, kMaxCanvasDimension);
+    t->is_asset = json_bool(jt, "is_asset", false);
+    t->asset_animated = json_bool(jt, "asset_animated", false);
+    t->asset_category = bounded_string(jt, "asset_category", "Default", kMaxNameLength);
     if (jt.contains("editor_default_layer_style") && jt["editor_default_layer_style"].is_object()) {
         auto defaults = layer_from_json(jt["editor_default_layer_style"], false, nullptr);
         if (defaults) {
@@ -2850,7 +2937,7 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
         if (!layer || layer->parent_id.empty())
             continue;
         const auto legacy_parent = t->find_layer(layer->parent_id);
-        if (legacy_parent && legacy_parent->type != LayerType::Group) {
+        if (legacy_parent && !layer_type_is_container(legacy_parent->type)) {
             if (layer->transform_parent_id.empty())
                 layer->transform_parent_id = layer->parent_id;
             layer->parent_id.clear();
@@ -2947,6 +3034,11 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
                 layer->transform_parent_id = transform_parent_it->second;
             else if (!layer->transform_parent_id.empty())
                 layer->transform_parent_id.clear();
+            auto asset_owner_it = layer_id_map.find(layer->asset_owner_id);
+            if (asset_owner_it != layer_id_map.end())
+                layer->asset_owner_id = asset_owner_it->second;
+            else if (!layer->asset_owner_id.empty())
+                layer->asset_owner_id.clear();
             auto mask_it = layer_id_map.find(layer->mask_source_id);
             if (mask_it != layer_id_map.end())
                 layer->mask_source_id = mask_it->second;
@@ -2962,6 +3054,18 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
         }
     }
 
+    /* Asset animation is derived from the cloned nested composition, not from
+     * a stale/manual library flag. This also migrates Development 075-077
+     * instances so static assets lose playback controls and animated assets
+     * gain them automatically. */
+    for (auto &layer : t->layers) {
+        if (layer && layer->type == LayerType::Asset)
+            layer->asset_animated =
+                bgs::asset_runtime::asset_layer_has_timeline_animation(*t, *layer);
+    }
+    if (t->is_asset)
+        t->asset_animated = bgs::asset_runtime::title_has_timeline_animation(*t);
+
     return t;
 }
 
@@ -2969,13 +3073,7 @@ TitleDataStore::TitleDataStore() = default;
 
 TitleDataStore::~TitleDataStore()
 {
-    {
-        std::lock_guard<std::mutex> lock(save_mutex_);
-        save_stop_ = true;
-    }
-    save_cv_.notify_all();
-    if (save_thread_.joinable())
-        save_thread_.join();
+    shutdownSaveWorker();
 }
 
 bool TitleDataStore::write_snapshot_atomic(
@@ -3085,6 +3183,23 @@ void TitleDataStore::save_worker_loop() const
             write_snapshot_atomic(request->snapshot, request->path);
         }
     }
+}
+
+void TitleDataStore::shutdownSaveWorker() const
+{
+    {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        if (save_stop_ && !save_thread_.joinable())
+            return;
+        save_stop_ = true;
+        /* Discard any coalesced request that has not started yet. The caller
+         * performs the final synchronous save after this worker has joined, so
+         * an older snapshot cannot overwrite the shutdown snapshot. */
+        pending_save_.reset();
+    }
+    save_cv_.notify_all();
+    if (save_thread_.joinable())
+        save_thread_.join();
 }
 
 void TitleDataStore::save_async() const
@@ -3333,6 +3448,7 @@ void TitleDataStore::load()
         }
 
         bgs::ticker_runtime::clear_all();
+        bgs::asset_runtime::clear_all();
         notify_change();
         if (error == "Could not open the file.") {
             blog(LOG_INFO, "[Broadcast Graphics Live] No saved titles found for this scene collection, starting fresh.");
@@ -3369,6 +3485,7 @@ void TitleDataStore::load()
             loaded_count = titles_.size();
         }
         bgs::ticker_runtime::clear_all();
+        bgs::asset_runtime::clear_all();
         notify_change();
         blog(LOG_INFO, "[Broadcast Graphics Live] Loaded %zu title(s) for this scene collection.", loaded_count);
         BGL_LOG_INFO("TitleStore", QStringLiteral(
@@ -3396,6 +3513,7 @@ void TitleDataStore::load()
         }
 
         bgs::ticker_runtime::clear_all();
+        bgs::asset_runtime::clear_all();
         notify_change();
         blog(LOG_WARNING, "[Broadcast Graphics Live] Failed to parse scene collection titles file: %s", e.what());
     }

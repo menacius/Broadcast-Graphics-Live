@@ -508,7 +508,11 @@ bool TimelineWidget::copy_selected_keyframes()
         std::string prop_name;
         Keyframe keyframe;
         VectorKeyframe vector_keyframe;
+        std::vector<Keyframe> scalar_group_keyframes;
+        QJsonObject extension_keyframe;
         bool is_vector = false;
+        bool is_scalar_group = false;
+        bool is_extension = false;
         double timeline_time = 0.0;
     };
     std::vector<PendingCopy> pending;
@@ -524,8 +528,12 @@ bool TimelineWidget::copy_selected_keyframes()
         copy.layer_id = ref.layer_id;
         copy.prop_name = ref.prop_name;
         copy.is_vector = prop.is_vector();
+        copy.is_scalar_group = prop.is_scalar_group();
+        copy.is_extension = prop.is_extension();
         copy.keyframe = prop.scalar_keyframe((size_t)ref.index);
         copy.vector_keyframe = prop.vector_keyframe((size_t)ref.index);
+        copy.scalar_group_keyframes = prop.scalar_group_keyframes((size_t)ref.index);
+        copy.extension_keyframe = prop.extension_keyframe((size_t)ref.index);
         copy.timeline_time = timeline_time;
         pending.push_back(copy);
     }
@@ -540,7 +548,9 @@ bool TimelineWidget::copy_selected_keyframes()
     keyframe_clipboard_.reserve(pending.size());
     for (const auto &entry : pending)
         keyframe_clipboard_.push_back({entry.layer_id, entry.prop_name, entry.keyframe,
-                                       entry.vector_keyframe, entry.is_vector,
+                                       entry.vector_keyframe, entry.scalar_group_keyframes,
+                                       entry.extension_keyframe, entry.is_vector,
+                                       entry.is_scalar_group, entry.is_extension,
                                        entry.timeline_time - origin});
     return true;
 }
@@ -605,7 +615,16 @@ bool TimelineWidget::paste_keyframes_at(double timeline_time)
         const double target_time = paste_origin + entry.offset;
         const double local_time = std::clamp(snap_time(target_time - layer->in_time),
                                              0.0, std::max(0.0, layer->out_time - layer->in_time));
-        if (entry.is_vector) {
+        if (entry.is_extension) {
+            QJsonObject pasted = entry.extension_keyframe;
+            pasted.insert(QStringLiteral("time"), local_time);
+            prop.push_keyframe(pasted);
+        } else if (entry.is_scalar_group) {
+            std::vector<Keyframe> pasted = entry.scalar_group_keyframes;
+            for (Keyframe &keyframe : pasted)
+                keyframe.time = local_time;
+            prop.push_keyframes(pasted);
+        } else if (entry.is_vector) {
             VectorKeyframe pasted = entry.vector_keyframe;
             pasted.time = local_time;
             prop.push_keyframe(pasted);
@@ -821,6 +840,8 @@ static QString timeline_layer_switches_text(const Title &title, const Layer &lay
         tags << (layer.mask_mode == MaskMode::InvertedAlpha ? bgl_tr("OBSTitles.TrackMatteInvAlpha") :
                  layer.mask_mode == MaskMode::Luma ? bgl_tr("OBSTitles.TrackMatteLuma") :
                  layer.mask_mode == MaskMode::InvertedLuma ? bgl_tr("OBSTitles.TrackMatteInvLuma") :
+                 layer.mask_mode == MaskMode::Clipping ? bgl_tr("OBSTitles.TrackMatteClipping") :
+                 layer.mask_mode == MaskMode::InvertedClipping ? bgl_tr("OBSTitles.TrackMatteInvClipping") :
                  bgl_tr("OBSTitles.TrackMatteAlpha"));
     if (!layer.transform_parent_id.empty()) {
         QString parent_name = bgl_tr("OBSTitles.Parent");

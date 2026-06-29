@@ -5,5 +5,5 @@
 #endif
 
 #ifndef PLUGIN_VERSION
-#define PLUGIN_VERSION "0.8.5-alpha"
+#define PLUGIN_VERSION "0.8.7-alpha"
 #endif

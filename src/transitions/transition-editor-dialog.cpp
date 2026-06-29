@@ -1,4 +1,6 @@
 #include "transition-editor-dialog.h"
+#include "bgl-modern-controls.h"
+#include "title-assets.h"
 
 #include "title-localization.h"
 #include "transition-preset-catalog.h"
@@ -552,6 +554,7 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
                                                QWidget *parent)
     : QDialog(parent), transition_(transition)
 {
+    bgl_apply_brand_icon(this);
     const QString display_name = transition_settings_display_name(transition);
     setWindowTitle(bgl_tr("OBSTitles.TransitionSettingsNamed").arg(display_name));
     setModal(true);
@@ -567,7 +570,7 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     layout->addWidget(preview_);
 
     auto *form = new QFormLayout;
-    enabled_ = new QCheckBox(bgl_tr("OBSTitles.Enabled"), this);
+    enabled_ = new BglSwitch(bgl_tr("OBSTitles.Enabled"), this);
     enabled_->setChecked(transition.enabled);
     form->addRow(QString(), enabled_);
 
@@ -639,7 +642,7 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     softness_label_ = make_numeric_drag_label(bgl_tr("OBSTitles.Softness"), softness_, this);
     form->addRow(softness_label_, softness_);
 
-    reverse_order_ = new QCheckBox(bgl_tr("OBSTitles.ReverseOrder"), this);
+    reverse_order_ = new BglSwitch(bgl_tr("OBSTitles.ReverseOrder"), this);
     reverse_order_->setChecked(transition.reverse_order);
     form->addRow(QString(), reverse_order_);
 
@@ -681,11 +684,11 @@ TransitionEditorDialog::TransitionEditorDialog(const LayerTransition &transition
     image_channel_label_ = new QLabel(bgl_tr("OBSTitles.Channel"), this);
     form->addRow(image_channel_label_, image_channel_);
 
-    invert_ = new QCheckBox(QStringLiteral("Invert"), this);
+    invert_ = new BglSwitch(QStringLiteral("Invert"), this);
     invert_->setChecked(transition.invert);
     form->addRow(QString(), invert_);
 
-    clockwise_ = new QCheckBox(bgl_tr("OBSTitles.Clockwise"), this);
+    clockwise_ = new BglSwitch(bgl_tr("OBSTitles.Clockwise"), this);
     clockwise_->setChecked(transition.clockwise);
     form->addRow(QString(), clockwise_);
 

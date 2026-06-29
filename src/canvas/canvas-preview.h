@@ -69,6 +69,7 @@ class CanvasPreview : public QWidget {
 public:
     explicit CanvasPreview(QWidget *parent = nullptr);
     ~CanvasPreview() override;
+    void prepare_for_shutdown();
 
     struct ViewState {
         int zoom_percent = 100;
@@ -80,8 +81,9 @@ public:
     void set_title(std::shared_ptr<Title> t, bool preserve_view = false);
     ViewState view_state() const;
     void restore_view_state(const ViewState &state);
-    void set_playhead(double t);
+    void set_playhead(double t, bool playback_frame = false);
     void set_display_refresh_rate(double hz);
+    void set_playback_active(bool active);
     void refresh_runtime_dynamic_content();
     void set_selected_layer(const std::string &lid);
     void set_selected_layers(const std::vector<std::string> &ids);
@@ -176,6 +178,8 @@ signals:
     void color_picked(const QColor &color, bool foreground);
     void external_image_layer_requested(const QString &image_path, const QPointF &canvas_pt);
     void external_text_layer_requested(const QString &text, const QPointF &canvas_pt);
+    void asset_layer_requested(const QString &asset_id, const QPointF &canvas_pt);
+    void edit_asset_requested(const QString &asset_id);
     void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
     void corner_context_changed();
     void extension_canvas_handle_moved(const QString &path, const QPointF &normalized_position, bool final_change);
@@ -336,6 +340,7 @@ private:
 
     void render_to_frame();
     void render_dirty_frame_if_due();
+    bool present_gpu_display_if_due();
     void begin_adaptive_interaction();
     void end_adaptive_interaction();
     double adaptive_preview_scale() const;
@@ -435,6 +440,7 @@ private:
     void position_text_editor();
     void configure_inline_text_editor(const Layer &layer);
     bool sync_inline_text_layer(bool mark_dirty);
+    void schedule_inline_text_refresh(bool mark_dirty, bool emit_changed);
     void refresh_inline_text_edit(bool mark_dirty, bool emit_changed);
     void suspend_inline_text_edit_for_gradient();
     void resume_inline_text_edit_after_gradient();
@@ -460,6 +466,7 @@ private:
     const HoverOverlayGeometry &hover_overlay_geometry() const;
 
     std::shared_ptr<Title> title_;
+    bool shutting_down_ = false;
     std::string sel_layer_id_;
     std::vector<std::string> selected_layer_ids_;
     double playhead_ = 0.0;
@@ -483,11 +490,17 @@ private:
     QSize frame_image_canvas_size_;
     bool dirty_ = true;
     QTimer *render_coalesce_timer_ = nullptr;
+    QTimer *present_coalesce_timer_ = nullptr;
     QTimer *adaptive_full_quality_timer_ = nullptr;
     QElapsedTimer last_render_clock_;
+    QElapsedTimer last_present_clock_;
     int render_interval_ms_ = 16;
     int display_refresh_interval_ms_ = 16;
     bool playback_frame_pending_ = false;
+    bool playback_present_pending_ = false;
+    bool editing_present_pending_ = false;
+    bool transport_playback_active_ = false;
+    bool force_present_pending_ = true;
     QImage prefetched_cache_frame_;
     double prefetched_cache_time_ = -1.0;
     qint64 last_runtime_clock_second_ = std::numeric_limits<qint64>::min();
@@ -550,6 +563,13 @@ private:
     bool updating_inline_text_editor_ = false;
     bool refreshing_inline_text_ = false;
     bool inline_text_suspended_for_gradient_ = false;
+    QTimer *inline_text_refresh_timer_ = nullptr;
+    bool inline_text_refresh_mark_dirty_ = false;
+    bool inline_text_refresh_emit_changed_ = false;
+    int inline_text_change_position_ = 0;
+    int inline_text_change_removed_ = 0;
+    int inline_text_change_added_ = 0;
+    int inline_text_change_count_ = 0;
     QPointF shape_draw_start_canvas_;
     QPointF shape_draw_current_canvas_;
     QRectF shape_draw_current_rect_;
@@ -589,6 +609,7 @@ private:
     bool drag_changed_ = false;
     bool alt_duplicate_pending_ = false;
     bool alt_duplicate_done_ = false;
+    bool alt_duplicate_active_ = false;
     bool drag_text_object_scaling_ = false;
     bool marquee_active_ = false;
     QPointF drag_start_view_;
@@ -656,6 +677,8 @@ private:
         double y = 0.0;
         float w = 1.0f;
         float h = 1.0f;
+        double local_left = -0.5;
+        double local_top = -0.5;
         double scale_x = 1.0;
         double scale_y = 1.0;
         double rotation = 0.0;

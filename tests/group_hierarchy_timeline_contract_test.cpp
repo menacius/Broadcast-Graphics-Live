@@ -1,17 +1,10 @@
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 
+#include "source_bundle_reader.h"
+
 namespace {
-std::string read_file(const char *path)
-{
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return {};
-    std::ostringstream out;
-    out << file.rdbuf();
-    return out.str();
-}
 
 bool require(const std::string &text, const std::string &needle, const char *label)
 {

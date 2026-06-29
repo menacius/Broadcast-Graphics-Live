@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Broadcast Graphics Live application icon</title>
+  <rect x="18" y="18" width="476" height="476" rx="76" fill="#242424"/>
+  <path d="M322 103
+           C257 77 181 98 137 151
+           C91 207 87 289 129 349
+           C171 409 250 434 319 410
+           C379 389 424 333 430 272"
+        fill="none" stroke="#00e0d0" stroke-width="55" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M376 149
+           C414 186 432 231 430 272"
+        fill="none" stroke="#00e0d0" stroke-width="55" stroke-linecap="round"/>
+  <path d="M220 172
+           C186 194 173 228 185 257
+           C196 283 224 294 259 293
+           C295 292 326 303 335 330
+           C344 357 323 383 286 397
+           C250 411 211 407 181 389"
+        fill="none" stroke="#ff5a0a" stroke-width="51" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M225 168
+           C266 139 319 139 356 168"
+        fill="none" stroke="#ff5a0a" stroke-width="51" stroke-linecap="round"/>
+</svg>

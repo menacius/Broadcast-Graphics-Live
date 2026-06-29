@@ -9,7 +9,7 @@
 #include <utility>
 
 #ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
-static RichTextCharFormat layer_char_format(const Layer &layer)
+RichTextCharFormat rich_text_char_format_from_layer(const Layer &layer)
 {
     RichTextCharFormat f;
     f.font_family = layer.font_family;
@@ -246,6 +246,51 @@ size_t rich_text_utf8_next_boundary(const std::string &text, size_t byte_offset)
            utf8_continuation(static_cast<unsigned char>(text[byte_offset])))
         ++byte_offset;
     return byte_offset;
+}
+
+size_t rich_text_utf8_byte_offset_from_utf16_position(
+    const std::string &text, int utf16_position)
+{
+    if (utf16_position <= 0 || text.empty())
+        return 0;
+    size_t byte_offset = 0;
+    int utf16_units = 0;
+    while (byte_offset < text.size() && utf16_units < utf16_position) {
+        const unsigned char lead =
+            static_cast<unsigned char>(text[byte_offset]);
+        size_t byte_length = 1;
+        uint32_t codepoint = lead;
+        if ((lead & 0xE0u) == 0xC0u && byte_offset + 1 < text.size()) {
+            byte_length = 2;
+            codepoint = ((lead & 0x1Fu) << 6) |
+                        (static_cast<unsigned char>(text[byte_offset + 1]) &
+                         0x3Fu);
+        } else if ((lead & 0xF0u) == 0xE0u &&
+                   byte_offset + 2 < text.size()) {
+            byte_length = 3;
+            codepoint = ((lead & 0x0Fu) << 12) |
+                        ((static_cast<unsigned char>(text[byte_offset + 1]) &
+                          0x3Fu) << 6) |
+                        (static_cast<unsigned char>(text[byte_offset + 2]) &
+                         0x3Fu);
+        } else if ((lead & 0xF8u) == 0xF0u &&
+                   byte_offset + 3 < text.size()) {
+            byte_length = 4;
+            codepoint = ((lead & 0x07u) << 18) |
+                        ((static_cast<unsigned char>(text[byte_offset + 1]) &
+                          0x3Fu) << 12) |
+                        ((static_cast<unsigned char>(text[byte_offset + 2]) &
+                          0x3Fu) << 6) |
+                        (static_cast<unsigned char>(text[byte_offset + 3]) &
+                         0x3Fu);
+        }
+        const int units = codepoint > 0xFFFFu ? 2 : 1;
+        if (utf16_units + units > utf16_position)
+            break;
+        utf16_units += units;
+        byte_offset += byte_length;
+    }
+    return std::min(byte_offset, text.size());
 }
 
 static size_t utf8_codepoint_end(const std::string &text, size_t start)
@@ -572,7 +617,7 @@ RichTextDocument rich_text_document_from_layer_defaults(const Layer &layer)
 {
     RichTextDocument doc;
     doc.plain_text = layer.text_content;
-    doc.default_format = layer_char_format(layer);
+    doc.default_format = rich_text_char_format_from_layer(layer);
     doc.default_paragraph_format = layer_paragraph_format(layer);
     doc.selection = {doc.plain_text.size(), doc.plain_text.size()};
     doc.typing_format = doc.default_format;
@@ -580,6 +625,19 @@ RichTextDocument rich_text_document_from_layer_defaults(const Layer &layer)
     doc.has_typing_format = false;
     doc.normalize();
     return doc;
+}
+
+RichTextDocument rich_text_document_canonical_copy(const Layer &layer)
+{
+    if (layer.rich_text.empty())
+        return rich_text_document_from_layer_defaults(layer);
+    RichTextDocument document = layer.rich_text;
+    /* Version-2 documents with paragraph blocks are normalized at every
+     * persistent mutation/deserialization boundary. Do not rescan the complete
+     * text simply because a frame needs a read-only copy. */
+    if (document.version < 2 || document.blocks.empty())
+        document.normalize();
+    return document;
 }
 
 
@@ -594,13 +652,17 @@ static void set_static_argb_channels(AnimatedProperty &a, AnimatedProperty &r,
     b.static_value = argb & 0xFF;
 }
 
-void rich_text_document_sync_layer_mirrors(Layer &layer)
+static void rich_text_document_sync_layer_mirrors_impl(
+    Layer &layer, bool document_is_canonical)
 {
     if (layer.type != LayerType::Text && layer.type != LayerType::Ticker && layer.type != LayerType::Clock)
         return;
-    if (layer.rich_text.empty())
+    if (layer.rich_text.empty()) {
         layer.rich_text = rich_text_document_from_layer_defaults(layer);
-    layer.rich_text.normalize();
+        document_is_canonical = true;
+    }
+    if (!document_is_canonical)
+        layer.rich_text.normalize();
 
     /* Layer scalar fields are compatibility mirrors for the document defaults.
      * Cursor/typing state is editor-session data and must never rewrite the
@@ -664,49 +726,38 @@ void rich_text_document_sync_layer_mirrors(Layer &layer)
     layer.paragraph_space_after_prop.static_value = p.space_after;
 }
 
+
+void rich_text_document_sync_layer_mirrors(Layer &layer)
+{
+    rich_text_document_sync_layer_mirrors_impl(layer, false);
+}
+
+void rich_text_document_sync_layer_mirrors_canonical(Layer &layer)
+{
+    rich_text_document_sync_layer_mirrors_impl(layer, true);
+}
+
 #endif
 
-static void rich_text_document_replace_text_impl(RichTextDocument &doc,
-                                                 const std::string &next_text,
-                                                 const RichTextCharFormat *insertion_format,
-                                                 uint32_t insertion_mask)
+static void rich_text_document_replace_range_impl(
+    RichTextDocument &doc, size_t prefix, size_t removed_len,
+    const std::string &inserted_text,
+    const RichTextCharFormat *insertion_format, uint32_t insertion_mask,
+    bool input_is_canonical)
 {
-    doc.normalize();
-    const std::string old = doc.plain_text;
-    if (old == next_text) {
+    if (!input_is_canonical)
         doc.normalize();
+    const std::string old = doc.plain_text;
+    prefix = rich_text_utf8_previous_boundary(old, std::min(prefix, old.size()));
+    const size_t raw_old_suffix = removed_len > old.size() - prefix
+        ? old.size() : prefix + removed_len;
+    const size_t old_suffix = rich_text_utf8_next_boundary(old, raw_old_suffix);
+    const size_t inserted_len = inserted_text.size();
+    const std::string next_text = old.substr(0, prefix) + inserted_text +
+                                  old.substr(old_suffix);
+    if (old == next_text)
         return;
-    }
-
-    /* Diff on complete UTF-8 codepoints. A byte-prefix diff can stop in the
-     * middle of Greek, emoji or combining text and corrupt both ranges and
-     * transaction strings. */
-    size_t prefix = 0;
-    while (prefix < old.size() && prefix < next_text.size()) {
-        const size_t old_end = utf8_codepoint_end(old, prefix);
-        const size_t next_end = utf8_codepoint_end(next_text, prefix);
-        const size_t old_len = old_end - prefix;
-        const size_t next_len = next_end - prefix;
-        if (old_len != next_len || old.compare(prefix, old_len, next_text, prefix, next_len) != 0)
-            break;
-        prefix = old_end;
-    }
-
-    size_t old_suffix = old.size();
-    size_t new_suffix = next_text.size();
-    while (old_suffix > prefix && new_suffix > prefix) {
-        const size_t old_start = utf8_codepoint_start_before(old, old_suffix);
-        const size_t new_start = utf8_codepoint_start_before(next_text, new_suffix);
-        const size_t old_len = old_suffix - old_start;
-        const size_t new_len = new_suffix - new_start;
-        if (old_len != new_len || old.compare(old_start, old_len, next_text, new_start, new_len) != 0)
-            break;
-        old_suffix = old_start;
-        new_suffix = new_start;
-    }
-
-    const size_t removed_len = old_suffix - prefix;
-    const size_t inserted_len = new_suffix - prefix;
+    removed_len = old_suffix - prefix;
     const RichTextSelection before_selection = doc.selection;
     const RichTextCharFormat inherited_format = insertion_format ? *insertion_format : doc.default_format;
     insertion_mask = insertion_format ? (insertion_mask & RichTextCharAll) : 0;
@@ -773,7 +824,7 @@ static void rich_text_document_replace_text_impl(RichTextDocument &doc,
     transaction.type = "replace_text";
     transaction.position = prefix;
     transaction.removed_text = old.substr(prefix, removed_len);
-    transaction.inserted_text = next_text.substr(prefix, inserted_len);
+    transaction.inserted_text = inserted_text;
     transaction.before_selection = before_selection;
     transaction.after_selection = after_selection;
     doc.transactions.push_back(std::move(transaction));
@@ -783,9 +834,58 @@ static void rich_text_document_replace_text_impl(RichTextDocument &doc,
     doc.normalize();
 }
 
+static void rich_text_document_replace_text_impl(
+    RichTextDocument &doc, const std::string &next_text,
+    const RichTextCharFormat *insertion_format, uint32_t insertion_mask,
+    bool input_is_canonical)
+{
+    if (!input_is_canonical)
+        doc.normalize();
+    const std::string old = doc.plain_text;
+    if (old == next_text) {
+        doc.normalize();
+        return;
+    }
+
+    /* Diff on complete UTF-8 codepoints. A byte-prefix diff can stop in the
+     * middle of Greek, emoji or combining text and corrupt both ranges and
+     * transaction strings. */
+    size_t prefix = 0;
+    while (prefix < old.size() && prefix < next_text.size()) {
+        const size_t old_end = utf8_codepoint_end(old, prefix);
+        const size_t next_end = utf8_codepoint_end(next_text, prefix);
+        const size_t old_len = old_end - prefix;
+        const size_t next_len = next_end - prefix;
+        if (old_len != next_len ||
+            old.compare(prefix, old_len, next_text, prefix, next_len) != 0)
+            break;
+        prefix = old_end;
+    }
+
+    size_t old_suffix = old.size();
+    size_t new_suffix = next_text.size();
+    while (old_suffix > prefix && new_suffix > prefix) {
+        const size_t old_start = utf8_codepoint_start_before(old, old_suffix);
+        const size_t new_start = utf8_codepoint_start_before(next_text, new_suffix);
+        const size_t old_len = old_suffix - old_start;
+        const size_t new_len = new_suffix - new_start;
+        if (old_len != new_len ||
+            old.compare(old_start, old_len, next_text, new_start, new_len) != 0)
+            break;
+        old_suffix = old_start;
+        new_suffix = new_start;
+    }
+
+    rich_text_document_replace_range_impl(
+        doc, prefix, old_suffix - prefix,
+        next_text.substr(prefix, new_suffix - prefix), insertion_format,
+        insertion_mask, true);
+}
+
 void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text)
 {
-    rich_text_document_replace_text_impl(doc, next_text, nullptr, 0);
+    rich_text_document_replace_text_impl(doc, next_text, nullptr, 0,
+                                         false);
 }
 
 void rich_text_document_replace_text(RichTextDocument &doc, const std::string &next_text,
@@ -793,14 +893,42 @@ void rich_text_document_replace_text(RichTextDocument &doc, const std::string &n
                                      uint32_t insertion_mask)
 {
     rich_text_document_replace_text_impl(doc, next_text, &insertion_format,
-                                         insertion_mask);
+                                         insertion_mask, false);
+}
+
+void rich_text_document_replace_text_canonical(
+    RichTextDocument &doc, const std::string &next_text,
+    const RichTextCharFormat &insertion_format, uint32_t insertion_mask)
+{
+    rich_text_document_replace_text_impl(doc, next_text, &insertion_format,
+                                         insertion_mask, true);
+}
+
+void rich_text_document_replace_range(RichTextDocument &doc, size_t byte_position,
+                                      size_t removed_byte_length,
+                                      const std::string &inserted_text,
+                                      const RichTextCharFormat &insertion_format,
+                                      uint32_t insertion_mask)
+{
+    rich_text_document_replace_range_impl(
+        doc, byte_position, removed_byte_length, inserted_text,
+        &insertion_format, insertion_mask, false);
+}
+
+void rich_text_document_replace_canonical_range(
+    RichTextDocument &doc, size_t byte_position, size_t removed_byte_length,
+    const std::string &inserted_text,
+    const RichTextCharFormat &insertion_format, uint32_t insertion_mask)
+{
+    rich_text_document_replace_range_impl(
+        doc, byte_position, removed_byte_length, inserted_text,
+        &insertion_format, insertion_mask, true);
 }
 
 
-RichTextDocument rich_text_document_with_evaluated_defaults(
-    RichTextDocument document, const RichTextEvaluatedDefaults &defaults)
+static void apply_rich_text_evaluated_defaults(
+    RichTextDocument &document, const RichTextEvaluatedDefaults &defaults)
 {
-    document.normalize();
     document.default_format.font_size = std::max(1, defaults.font_size);
     document.default_format.tracking = defaults.tracking;
     document.default_format.scale_x = defaults.scale_x;
@@ -818,8 +946,21 @@ RichTextDocument rich_text_document_with_evaluated_defaults(
     document.default_paragraph_format.space_before = defaults.space_before;
     document.default_paragraph_format.space_after = defaults.space_after;
     document.default_paragraph_format.hyphenate = defaults.hyphenate;
-    document.normalize();
+}
+
+RichTextDocument rich_text_document_with_evaluated_defaults_canonical(
+    RichTextDocument document, const RichTextEvaluatedDefaults &defaults)
+{
+    apply_rich_text_evaluated_defaults(document, defaults);
     return document;
+}
+
+RichTextDocument rich_text_document_with_evaluated_defaults(
+    RichTextDocument document, const RichTextEvaluatedDefaults &defaults)
+{
+    document.normalize();
+    return rich_text_document_with_evaluated_defaults_canonical(
+        std::move(document), defaults);
 }
 
 #ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
@@ -841,7 +982,7 @@ void rich_text_document_ensure_canonical(Layer &layer)
      * round-tripping, stale spans, and mismatched Properties/Canvas state. */
     layer.rich_text.normalize();
     layer.text_content = layer.rich_text.plain_text;
-    rich_text_document_sync_layer_mirrors(layer);
+    rich_text_document_sync_layer_mirrors_canonical(layer);
 }
 #endif
 
@@ -1108,11 +1249,9 @@ static void merge_auto_format_bits(RichTextCharFormat &target, const RichTextCha
     rich_text_merge_char_format(target, source, mask);
 }
 
-RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc,
-                                                    const RichTextAutoStyleResolver &resolver)
+RichTextDocument rich_text_document_with_auto_styles_canonical(
+    RichTextDocument out, const RichTextAutoStyleResolver &resolver)
 {
-    RichTextDocument out = doc;
-    out.normalize();
     if (!out.auto_style_enabled)
         return out;
 
@@ -1122,7 +1261,8 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
         if (resolver) {
             RichTextCharFormat resolved;
             uint32_t resolved_mask = 0;
-            if (resolver(out.auto_default_style_preset_id, resolved, resolved_mask)) {
+            if (resolver(out.auto_default_style_preset_id, resolved,
+                         resolved_mask)) {
                 fmt = resolved;
                 mask = resolved_mask;
             }
@@ -1137,46 +1277,76 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
         return out;
     }
 
-    std::vector<RichTextCharFormat> formats(text_len, out.default_format);
-    std::vector<uint32_t> claimed_masks(text_len, 0);
-    std::vector<bool> blocked_for_future_rules(text_len, false);
+    /* Auto-style state used to be allocated once per UTF-8 byte. That wastes
+     * 2-4 entries for every Greek/CJK/emoji code point and made rule exclusion
+     * matrices particularly expensive. Operate on canonical codepoint spans
+     * while keeping all public ranges in UTF-8 byte offsets. */
+    std::vector<size_t> boundaries;
+    boundaries.reserve(text_len + 1);
+    boundaries.push_back(0);
+    for (size_t pos = 0; pos < text_len;) {
+        pos += std::max<size_t>(1, utf8_codepoint_advance(out.plain_text, pos));
+        boundaries.push_back(std::min(pos, text_len));
+    }
+    if (boundaries.back() != text_len)
+        boundaries.push_back(text_len);
+    const size_t unit_count = boundaries.size() - 1;
+    auto boundary_unit = [&](size_t byte_offset) {
+        byte_offset = std::min(byte_offset, text_len);
+        const auto it = std::lower_bound(boundaries.begin(), boundaries.end(),
+                                         byte_offset);
+        return static_cast<size_t>(it - boundaries.begin());
+    };
 
-    auto merge_masked_range = [&](size_t start, size_t length, const RichTextCharFormat &format, uint32_t mask, const std::string &mode) {
+    std::vector<RichTextCharFormat> formats(unit_count, out.default_format);
+    std::vector<uint32_t> claimed_masks(unit_count, 0);
+    std::vector<bool> blocked_for_future_rules(unit_count, false);
+
+    auto normalized_units = [&](size_t start, size_t length) {
         const size_t raw_start = std::min(start, text_len);
         const size_t raw_end = clamped_end(raw_start, length, text_len);
-        start = rich_text_utf8_previous_boundary(out.plain_text, raw_start);
-        const size_t end = rich_text_utf8_next_boundary(out.plain_text, raw_end);
-        for (size_t i = start; i < end; ++i) {
-            if (blocked_for_future_rules[i])
+        const size_t begin = rich_text_utf8_previous_boundary(
+            out.plain_text, raw_start);
+        const size_t end = rich_text_utf8_next_boundary(out.plain_text,
+                                                        raw_end);
+        return std::pair<size_t, size_t>{boundary_unit(begin),
+                                         boundary_unit(end)};
+    };
+
+    auto merge_masked_range = [&](size_t start, size_t length,
+                                  const RichTextCharFormat &format,
+                                  uint32_t mask,
+                                  const std::string &mode) {
+        const auto [first, last] = normalized_units(start, length);
+        for (size_t unit = first; unit < last && unit < unit_count; ++unit) {
+            if (blocked_for_future_rules[unit])
                 continue;
             uint32_t effective_mask = mask;
             if (mode == "respect_previous")
-                effective_mask &= ~claimed_masks[i];
-            else if (mode == "apply_if_empty" && claimed_masks[i] != 0)
+                effective_mask &= ~claimed_masks[unit];
+            else if (mode == "apply_if_empty" && claimed_masks[unit] != 0)
                 effective_mask = 0;
-            /* merge and override_previous both apply the selected preset fields;
-             * override semantics happen naturally because later rules write last. */
             if (effective_mask == 0)
                 continue;
-            merge_auto_format_bits(formats[i], format, effective_mask);
-            claimed_masks[i] |= effective_mask;
+            merge_auto_format_bits(formats[unit], format, effective_mask);
+            claimed_masks[unit] |= effective_mask;
         }
     };
 
     auto mark_blocked = [&](size_t start, size_t length) {
-        const size_t raw_start = std::min(start, text_len);
-        const size_t raw_end = clamped_end(raw_start, length, text_len);
-        start = rich_text_utf8_previous_boundary(out.plain_text, raw_start);
-        const size_t end = rich_text_utf8_next_boundary(out.plain_text, raw_end);
-        for (size_t i = start; i < end; ++i)
-            blocked_for_future_rules[i] = true;
+        const auto [first, last] = normalized_units(start, length);
+        for (size_t unit = first; unit < last && unit < unit_count; ++unit)
+            blocked_for_future_rules[unit] = true;
     };
 
-    std::vector<std::vector<std::pair<size_t, size_t>>> resolved_rule_ranges(out.auto_style_rules.size());
+    std::vector<std::vector<std::pair<size_t, size_t>>>
+        resolved_rule_ranges(out.auto_style_rules.size());
     for (size_t ri = 0; ri < out.auto_style_rules.size(); ++ri)
-        resolved_rule_ranges[ri] = auto_style_rule_ranges(out.auto_style_rules[ri], out.plain_text);
+        resolved_rule_ranges[ri] =
+            auto_style_rule_ranges(out.auto_style_rules[ri], out.plain_text);
 
-    std::vector<std::vector<bool>> excluded_by_rule(out.auto_style_rules.size(), std::vector<bool>(text_len, false));
+    std::vector<std::vector<bool>> excluded_by_rule(
+        out.auto_style_rules.size(), std::vector<bool>(unit_count, false));
     for (size_t ri = 0; ri < out.auto_style_rules.size(); ++ri) {
         const auto &rule = out.auto_style_rules[ri];
         if (!rule.enabled || rule.style_preset_id.empty())
@@ -1197,65 +1367,98 @@ RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc
         for (const auto &range : resolved_rule_ranges[ri]) {
             if (range.second <= range.first)
                 continue;
-            const size_t start = std::min(range.first, text_len);
-            const size_t end = std::min(range.second, text_len);
-            if (start >= end)
-                continue;
-            size_t seg_start = start;
-            while (seg_start < end) {
-                while (seg_start < end && excluded_by_rule[ri][seg_start])
-                    ++seg_start;
-                size_t seg_end = seg_start;
-                while (seg_end < end && !excluded_by_rule[ri][seg_end])
-                    ++seg_end;
-                if (seg_end > seg_start)
-                    merge_masked_range(seg_start, seg_end - seg_start, fmt, mask, rule.conflict_mode);
-                seg_start = seg_end;
+            const auto [first, last] = normalized_units(
+                range.first, range.second - range.first);
+            size_t segment = first;
+            while (segment < last && segment < unit_count) {
+                while (segment < last && excluded_by_rule[ri][segment])
+                    ++segment;
+                size_t segment_end = segment;
+                while (segment_end < last &&
+                       !excluded_by_rule[ri][segment_end])
+                    ++segment_end;
+                if (segment_end > segment) {
+                    merge_masked_range(
+                        boundaries[segment],
+                        boundaries[segment_end] - boundaries[segment], fmt,
+                        mask, rule.conflict_mode);
+                }
+                segment = segment_end;
             }
         }
 
-        if (rule.conflict_mode == "exclude_other_rules" && !rule.excludes_rule_ids.empty()) {
-            for (size_t other = 0; other < out.auto_style_rules.size(); ++other) {
-                const std::string &other_id = out.auto_style_rules[other].rule_id;
+        if (rule.conflict_mode == "exclude_other_rules" &&
+            !rule.excludes_rule_ids.empty()) {
+            for (size_t other = 0; other < out.auto_style_rules.size();
+                 ++other) {
+                const std::string &other_id =
+                    out.auto_style_rules[other].rule_id;
                 const std::string other_index_id = std::to_string(other + 1);
-                const bool should_exclude = std::find(rule.excludes_rule_ids.begin(), rule.excludes_rule_ids.end(), other_id) != rule.excludes_rule_ids.end() ||
-                                            std::find(rule.excludes_rule_ids.begin(), rule.excludes_rule_ids.end(), other_index_id) != rule.excludes_rule_ids.end();
+                const bool should_exclude =
+                    std::find(rule.excludes_rule_ids.begin(),
+                              rule.excludes_rule_ids.end(), other_id) !=
+                        rule.excludes_rule_ids.end() ||
+                    std::find(rule.excludes_rule_ids.begin(),
+                              rule.excludes_rule_ids.end(), other_index_id) !=
+                        rule.excludes_rule_ids.end();
                 if (!should_exclude)
                     continue;
                 for (const auto &range : resolved_rule_ranges[ri]) {
-                    const size_t start = std::min(range.first, text_len);
-                    const size_t end = std::min(range.second, text_len);
-                    for (size_t i = start; i < end; ++i)
-                        excluded_by_rule[other][i] = true;
+                    if (range.second <= range.first)
+                        continue;
+                    const auto [first, last] = normalized_units(
+                        range.first, range.second - range.first);
+                    for (size_t unit = first;
+                         unit < last && unit < unit_count; ++unit)
+                        excluded_by_rule[other][unit] = true;
                 }
             }
         }
         if (rule.stop_processing) {
             for (const auto &range : resolved_rule_ranges[ri])
-                mark_blocked(range.first, range.second > range.first ? range.second - range.first : 0);
+                mark_blocked(range.first,
+                             range.second > range.first
+                                 ? range.second - range.first
+                                 : 0);
         }
     }
 
-    /* Manual inline styles are intentionally applied last, so user-authored
-     * character formatting overrides automatic rules. */
+    /* Manual inline styles remain authoritative over automatic rules. */
     for (const auto &range : out.ranges) {
         if (range.length == 0 || range.start >= text_len)
             continue;
-        const size_t end = clamped_end(range.start, range.length, text_len);
-        for (size_t i = range.start; i < end; ++i)
-            rich_text_merge_char_format(formats[i], range.format, range.mask);
+        const auto [first, last] = normalized_units(range.start, range.length);
+        for (size_t unit = first; unit < last && unit < unit_count; ++unit)
+            rich_text_merge_char_format(formats[unit], range.format,
+                                        range.mask);
     }
 
     out.ranges.clear();
-    size_t start = 0;
-    while (start < text_len) {
-        size_t end = start + 1;
-        while (end < text_len && same_format(formats[end], formats[start]))
-            ++end;
-        const uint32_t mask = rich_text_char_format_difference_mask(formats[start], out.default_format);
-        if (mask != 0)
-            out.ranges.push_back({start, end - start, formats[start], mask});
-        start = end;
+    size_t start_unit = 0;
+    while (start_unit < unit_count) {
+        size_t end_unit = start_unit + 1;
+        while (end_unit < unit_count &&
+               same_format(formats[end_unit], formats[start_unit]))
+            ++end_unit;
+        const uint32_t mask = rich_text_char_format_difference_mask(
+            formats[start_unit], out.default_format);
+        if (mask != 0) {
+            out.ranges.push_back(
+                {boundaries[start_unit],
+                 boundaries[end_unit] - boundaries[start_unit],
+                 formats[start_unit], mask});
+        }
+        start_unit = end_unit;
     }
     return out;
 }
+
+RichTextDocument rich_text_document_with_auto_styles(
+    const RichTextDocument &doc, const RichTextAutoStyleResolver &resolver)
+{
+    RichTextDocument out = doc;
+    out.normalize();
+    return rich_text_document_with_auto_styles_canonical(
+        std::move(out), resolver);
+}
+

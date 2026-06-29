@@ -1,4 +1,5 @@
 #include "title-text-layout.h"
+#include "title-text-layout-qt-font-registry.h"
 
 #include <QByteArray>
 #include <QFont>
@@ -18,7 +19,77 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <unordered_map>
 #include <utility>
+
+namespace {
+
+struct RegisteredRawFont {
+    QRawFont font;
+    uint64_t generation = 0;
+};
+
+std::mutex g_raw_font_registry_mutex;
+std::unordered_map<uint64_t, RegisteredRawFont> g_raw_font_registry;
+uint64_t g_raw_font_registry_generation = 0;
+constexpr size_t kRawFontRegistryCapacity = 512;
+
+} // namespace
+
+QRawFont text_layout_registered_raw_font(const TextLayoutFontKey &key)
+{
+    if (key.fingerprint == 0)
+        return {};
+    std::lock_guard<std::mutex> lock(g_raw_font_registry_mutex);
+    const auto it = g_raw_font_registry.find(key.fingerprint);
+    if (it == g_raw_font_registry.end() || !it->second.font.isValid())
+        return {};
+    it->second.generation = ++g_raw_font_registry_generation;
+    QRawFont font = it->second.font;
+    if (std::abs(font.pixelSize() - key.pixel_size) > 0.001)
+        font.setPixelSize(key.pixel_size);
+    return font;
+}
+
+void text_layout_register_raw_font(const TextLayoutFontKey &key,
+                                   const QRawFont &font)
+{
+    if (key.fingerprint == 0 || !font.isValid())
+        return;
+    std::lock_guard<std::mutex> lock(g_raw_font_registry_mutex);
+    const uint64_t generation = ++g_raw_font_registry_generation;
+    const auto existing = g_raw_font_registry.find(key.fingerprint);
+    if (existing != g_raw_font_registry.end()) {
+        /* The same fallback face commonly appears in every line/run. Keep the
+         * retained QRawFont and only refresh its LRU age instead of repeatedly
+         * detaching/copying the implicitly shared font object while typing. */
+        existing->second.generation = generation;
+        if (!existing->second.font.isValid())
+            existing->second.font = font;
+        return;
+    }
+    g_raw_font_registry.emplace(
+        key.fingerprint, RegisteredRawFont{font, generation});
+    while (g_raw_font_registry.size() > kRawFontRegistryCapacity) {
+        auto oldest = g_raw_font_registry.end();
+        for (auto it = g_raw_font_registry.begin();
+             it != g_raw_font_registry.end(); ++it) {
+            if (oldest == g_raw_font_registry.end() ||
+                it->second.generation < oldest->second.generation)
+                oldest = it;
+        }
+        if (oldest == g_raw_font_registry.end())
+            break;
+        g_raw_font_registry.erase(oldest);
+    }
+}
+
+void text_layout_clear_raw_font_registry()
+{
+    std::lock_guard<std::mutex> lock(g_raw_font_registry_mutex);
+    g_raw_font_registry.clear();
+}
 
 namespace {
 
@@ -42,33 +113,75 @@ static std::vector<ParagraphSpan> paragraph_spans(const std::string &text)
     return spans;
 }
 
-static int qtext_position_from_byte_offset(const QString &text, size_t byte_offset)
-{
-    const QByteArray utf8 = text.toUtf8();
-    const size_t clamped = std::min(byte_offset, static_cast<size_t>(utf8.size()));
-    int units = 0;
-    size_t bytes_seen = 0;
-    const int text_size = static_cast<int>(text.size());
-    for (int i = 0; i < text_size; ++i) {
-        const ushort u = text.at(i).unicode();
-        const bool high = u >= 0xD800 && u <= 0xDBFF && i + 1 < text_size;
-        const int char_units = high ? 2 : 1;
-        const size_t chunk_bytes = static_cast<size_t>(text.mid(i, char_units).toUtf8().size());
-        if (bytes_seen + chunk_bytes > clamped)
-            break;
-        bytes_seen += chunk_bytes;
-        units += char_units;
-        if (high)
-            ++i;
-    }
-    return units;
-}
+/* QTextLayout uses UTF-16 positions while the canonical rich-text model uses
+ * UTF-8 byte offsets.  The old helpers rebuilt progressively larger QString
+ * slices for every range, glyph run and cursor boundary.  A single paragraph
+ * could therefore spend quadratic time just converting positions while a
+ * user typed.  Build one immutable map per paragraph and make both directions
+ * O(log n)/O(1), snapping positions inside a surrogate pair to its start. */
+class QtUtf8PositionMap {
+public:
+    explicit QtUtf8PositionMap(const QString &text)
+    {
+        byte_at_qpos_.assign(static_cast<size_t>(text.size()) + 1, 0);
+        qpos_boundaries_.reserve(static_cast<size_t>(text.size()) + 1);
+        byte_boundaries_.reserve(static_cast<size_t>(text.size()) + 1);
+        qpos_boundaries_.push_back(0);
+        byte_boundaries_.push_back(0);
 
-static size_t byte_offset_from_qtext_position(const QString &text, int qpos)
-{
-    qpos = std::clamp(qpos, 0, static_cast<int>(text.size()));
-    return static_cast<size_t>(text.left(qpos).toUtf8().size());
-}
+        size_t bytes = 0;
+        const int size = static_cast<int>(text.size());
+        int qpos = 0;
+        while (qpos < size) {
+            const ushort first = text.at(qpos).unicode();
+            const bool surrogate_pair = first >= 0xD800 && first <= 0xDBFF &&
+                                        qpos + 1 < size &&
+                                        text.at(qpos + 1).unicode() >= 0xDC00 &&
+                                        text.at(qpos + 1).unicode() <= 0xDFFF;
+            const int units = surrogate_pair ? 2 : 1;
+            byte_at_qpos_[static_cast<size_t>(qpos)] = bytes;
+            if (surrogate_pair)
+                byte_at_qpos_[static_cast<size_t>(qpos + 1)] = bytes;
+
+            const size_t encoded_bytes = surrogate_pair
+                ? 4u
+                : (first < 0x80u ? 1u : (first < 0x800u ? 2u : 3u));
+            bytes += encoded_bytes;
+            qpos += units;
+            byte_at_qpos_[static_cast<size_t>(qpos)] = bytes;
+            qpos_boundaries_.push_back(qpos);
+            byte_boundaries_.push_back(bytes);
+        }
+        total_bytes_ = bytes;
+    }
+
+    int qpos_from_byte(size_t byte_offset) const
+    {
+        const size_t clamped = std::min(byte_offset, total_bytes_);
+        const auto upper = std::upper_bound(byte_boundaries_.begin(),
+                                            byte_boundaries_.end(), clamped);
+        if (upper == byte_boundaries_.begin())
+            return 0;
+        const size_t index = static_cast<size_t>(std::prev(upper) -
+                                                 byte_boundaries_.begin());
+        return qpos_boundaries_[index];
+    }
+
+    size_t byte_from_qpos(int qpos) const
+    {
+        if (byte_at_qpos_.empty())
+            return 0;
+        qpos = std::clamp(qpos, 0,
+                          static_cast<int>(byte_at_qpos_.size()) - 1);
+        return byte_at_qpos_[static_cast<size_t>(qpos)];
+    }
+
+private:
+    std::vector<size_t> byte_at_qpos_;
+    std::vector<int> qpos_boundaries_;
+    std::vector<size_t> byte_boundaries_;
+    size_t total_bytes_ = 0;
+};
 
 static QFont font_from_rich_format(const RichTextCharFormat &format,
                                    float device_scale)
@@ -293,7 +406,7 @@ using LayoutFormatList = QVector<QTextLayout::FormatRange>;
 
 static LayoutFormatList formats_for_paragraph(const RichTextDocument &doc,
                                               const ParagraphSpan &paragraph,
-                                              const QString &text,
+                                              const QtUtf8PositionMap &positions,
                                               float device_scale)
 {
     LayoutFormatList formats;
@@ -304,8 +417,8 @@ static LayoutFormatList formats_for_paragraph(const RichTextDocument &doc,
         if (end <= begin)
             continue;
         QTextLayout::FormatRange range;
-        range.start = qtext_position_from_byte_offset(text, begin - paragraph.start);
-        const int qend = qtext_position_from_byte_offset(text, end - paragraph.start);
+        range.start = positions.qpos_from_byte(begin - paragraph.start);
+        const int qend = positions.qpos_from_byte(end - paragraph.start);
         range.length = std::max(0, qend - range.start);
         range.format = qtext_format(rich_text_format_at(doc, begin), device_scale);
         if (range.length > 0)
@@ -345,7 +458,8 @@ static void append_empty_line(TextLayoutData &data,
  * boundary table and rebuild cursor geometry from that exact table. */
 static void finalize_line_cluster_boundaries(
     TextLayoutData &data, TextLayoutLine &line,
-    const ParagraphSpan &paragraph, const QString &paragraph_text,
+    const ParagraphSpan &paragraph,
+    const QtUtf8PositionMap &positions,
     const QTextLine &qline)
 {
     const uint32_t cluster_end_index =
@@ -378,10 +492,10 @@ static void finalize_line_cluster_boundaries(
         cluster.byte_start = cluster_start;
         cluster.byte_length = cluster_end - cluster_start;
 
-        const int cluster_qstart = qtext_position_from_byte_offset(
-            paragraph_text, cluster_start - paragraph.start);
-        const int cluster_qend = qtext_position_from_byte_offset(
-            paragraph_text, cluster_end - paragraph.start);
+        const int cluster_qstart = positions.qpos_from_byte(
+            cluster_start - paragraph.start);
+        const int cluster_qend = positions.qpos_from_byte(
+            cluster_end - paragraph.start);
         const qreal cursor_start = qline.cursorToX(cluster_qstart);
         const qreal cursor_end = qline.cursorToX(cluster_qend);
         cluster.x = line.x + static_cast<float>(
@@ -395,8 +509,8 @@ static void finalize_line_cluster_boundaries(
             data.cursor_boundaries.size());
         size_t boundary_offset = cluster_start;
         while (true) {
-            const int boundary_qpos = qtext_position_from_byte_offset(
-                paragraph_text, boundary_offset - paragraph.start);
+            const int boundary_qpos = positions.qpos_from_byte(
+                boundary_offset - paragraph.start);
             data.cursor_boundaries.push_back({
                 boundary_offset,
                 line.x + static_cast<float>(qline.cursorToX(boundary_qpos))});
@@ -439,7 +553,8 @@ static void finalize_line_cluster_boundaries(
 ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
 {
     TextLayoutRequest request = source_request;
-    request.document.normalize();
+    if (request.document.version < 2 || request.document.blocks.empty())
+        request.document.normalize();
     request.device_scale = std::clamp(request.device_scale, 0.01f, 64.0f);
     request.minimum_horizontal_fit =
         std::clamp(request.minimum_horizontal_fit, 0.01f, 1.0f);
@@ -449,6 +564,22 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
     auto data = std::make_shared<TextLayoutData>();
     data->key = text_layout_key(request);
     data->text = request.document.plain_text;
+
+    /* font_key() hashes physical OpenType tables so fallback faces with the
+     * same display name remain distinct. That exactness is important on Linux,
+     * but doing the table reads again for every glyph run/line is unnecessary.
+     * Reuse the key for equal QRawFont instances within this layout build. */
+    std::vector<std::pair<QRawFont, TextLayoutFontKey>> resolved_font_keys;
+    auto resolved_font_key = [&](const QRawFont &raw_font) {
+        for (const auto &entry : resolved_font_keys) {
+            if (entry.first == raw_font)
+                return entry.second;
+        }
+        TextLayoutFontKey key = font_key(raw_font);
+        resolved_font_keys.emplace_back(raw_font, key);
+        text_layout_register_raw_font(key, raw_font);
+        return key;
+    };
 
     const std::vector<ParagraphSpan> paragraphs = paragraph_spans(data->text);
     float cursor_y = 0.0f;
@@ -466,6 +597,7 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
         const QString paragraph_text = QString::fromUtf8(
             data->text.data() + paragraph.start,
             static_cast<int>(paragraph.length));
+        const QtUtf8PositionMap paragraph_positions(paragraph_text);
         if (paragraph_text.isEmpty()) {
             append_empty_line(*data, request.document, paragraph,
                               paragraph_index, cursor_y,
@@ -482,7 +614,7 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                            font_from_rich_format(base_format,
                                                  request.device_scale));
         layout.setFormats(formats_for_paragraph(request.document, paragraph,
-                                                paragraph_text,
+                                                paragraph_positions,
                                                 request.device_scale));
         QTextOption option;
         option.setUseDesignMetrics(true);
@@ -523,11 +655,10 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
 
             TextLayoutLine line;
             line.byte_start = paragraph.start +
-                              byte_offset_from_qtext_position(paragraph_text,
-                                                              qline.textStart());
+                              paragraph_positions.byte_from_qpos(
+                                  qline.textStart());
             const size_t line_end = paragraph.start +
-                                    byte_offset_from_qtext_position(
-                                        paragraph_text,
+                                    paragraph_positions.byte_from_qpos(
                                         qline.textStart() + qline.textLength());
             line.byte_length = line_end - line.byte_start;
             line.paragraph_index = paragraph_index;
@@ -572,7 +703,7 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                 run.clip_width = static_cast<float>(run_clip.width());
                 run.clip_height = static_cast<float>(run_clip.height());
                 const QRawFont raw_font = glyph_run.rawFont();
-                run.font = font_key(raw_font);
+                run.font = resolved_font_key(raw_font);
 
                 std::vector<size_t> cluster_starts;
                 cluster_starts.reserve(static_cast<size_t>(glyph_count));
@@ -595,8 +726,8 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                     qindex = std::clamp(qindex, qline.textStart(),
                                         qline.textStart() + qline.textLength());
                     cluster_starts.push_back(
-                        paragraph.start + byte_offset_from_qtext_position(
-                                              paragraph_text, qindex));
+                        paragraph.start +
+                        paragraph_positions.byte_from_qpos(qindex));
                 }
 
                 size_t run_start = line.byte_start + line.byte_length;
@@ -684,13 +815,10 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
                     if (cluster.glyph_begin ==
                         std::numeric_limits<uint32_t>::max())
                         cluster.glyph_begin = run.glyph_begin;
-                    const int cluster_qstart =
-                        qtext_position_from_byte_offset(
-                            paragraph_text, cluster_start - paragraph.start);
-                    const int cluster_qend =
-                        qtext_position_from_byte_offset(
-                            paragraph_text,
-                            cluster_end_for(cluster_start) - paragraph.start);
+                    const int cluster_qstart = paragraph_positions.qpos_from_byte(
+                        cluster_start - paragraph.start);
+                    const int cluster_qend = paragraph_positions.qpos_from_byte(
+                        cluster_end_for(cluster_start) - paragraph.start);
                     const qreal cursor_start =
                         qline.cursorToX(cluster_qstart);
                     const qreal cursor_end = qline.cursorToX(cluster_qend);
@@ -722,7 +850,7 @@ ImmutableTextLayout build_text_layout(const TextLayoutRequest &source_request)
             }
 
             finalize_line_cluster_boundaries(*data, line, paragraph,
-                                             paragraph_text, qline);
+                                             paragraph_positions, qline);
             line.run_count = static_cast<uint32_t>(data->runs.size()) -
                              line.run_begin;
             line.cluster_count = static_cast<uint32_t>(data->clusters.size()) -

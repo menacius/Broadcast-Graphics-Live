@@ -1,11 +1,13 @@
 #include "title-gpu-text-renderer.h"
 #include "title-gpu-text-sdf.h"
+#include "title-text-layout-qt-font-registry.h"
 
 #include <QByteArray>
 #include <QFont>
 #include <QFontDatabase>
 #include <QImage>
 #include <QRawFont>
+#include <QRectF>
 #include <QTransform>
 
 #include <graphics/vec2.h>
@@ -26,8 +28,12 @@
 namespace bgs::gpu_text {
 namespace {
 
-constexpr int kAtlasSize = 2048;
-constexpr int kAtlasMaxPages = 8;
+/* OBS maps GS_DYNAMIC textures with discard semantics on supported backends,
+ * so preserving an atlas requires rewriting the complete mapped page. Use
+ * smaller pages while retaining the previous 32 MiB worst-case R8 capacity:
+ * a newly typed glyph now uploads at most 1 MiB instead of 4 MiB. */
+constexpr int kAtlasSize = 1024;
+constexpr int kAtlasMaxPages = 32;
 constexpr int kSdfSpread = 32;
 constexpr int kAtlasGap = 1;
 constexpr float kPi = 3.14159265358979323846f;
@@ -55,6 +61,7 @@ uniform float2 fillFocal;
 uniform float fillScale;
 
 uniform int strokeEnabled;
+uniform int strokeAntialias;
 uniform float strokeWidth;
 uniform float strokeOutside;
 uniform float strokeInside;
@@ -175,11 +182,12 @@ float4 PSText(VertDataOut v) : TARGET
 
     float strokeCoverage = 0.0;
     if (coverageMode == 0 && strokeEnabled != 0 && strokeWidth > 0.0001) {
+        float strokeAa = strokeAntialias != 0 ? aa : 0.0001;
         /* Text-only placement contract: outer coverage expands the SDF edge,
          * inner coverage consumes the glyph interior, and mid splits exactly. */
         strokeCoverage = clamp(
-            coverageInside(signedDistance + strokeOutside, aa) -
-            coverageInside(signedDistance - strokeInside, aa),
+            coverageInside(signedDistance + strokeOutside, strokeAa) -
+            coverageInside(signedDistance - strokeInside, strokeAa),
             0.0, 1.0);
     }
 
@@ -244,9 +252,31 @@ struct AtlasPage {
     int cursor_y = kAtlasGap;
     int row_height = 0;
     bool dirty = true;
+    int dirty_x0 = kAtlasSize;
+    int dirty_y0 = kAtlasSize;
+    int dirty_x1 = 0;
+    int dirty_y1 = 0;
     gs_texture_t *texture = nullptr;
 
     AtlasPage() : pixels(static_cast<size_t>(kAtlasSize) * kAtlasSize, 0) {}
+
+    void mark_dirty(int x, int y, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+        dirty = true;
+        dirty_x0 = std::min(dirty_x0, x);
+        dirty_y0 = std::min(dirty_y0, y);
+        dirty_x1 = std::max(dirty_x1, x + width);
+        dirty_y1 = std::max(dirty_y1, y + height);
+    }
+
+    void clear_dirty()
+    {
+        dirty = false;
+        dirty_x0 = dirty_y0 = kAtlasSize;
+        dirty_x1 = dirty_y1 = 0;
+    }
 };
 
 struct Vertex {
@@ -353,30 +383,49 @@ static uint64_t shaping_variant_fingerprint(
     return hash;
 }
 
-static QRawFont raw_font_for_run(const TextLayoutRun &run)
+static QRawFont reconstructed_raw_font_for_run(const TextLayoutRun &run)
 {
     const TextLayoutFontKey &key = run.font;
     const int pixel_size =
         std::max(1, static_cast<int>(std::lround(key.pixel_size)));
     QFontDatabase database;
-    QFont font = database.font(QString::fromStdString(key.family),
-                               QString::fromStdString(key.style),
-                               pixel_size);
-    if (!key.style.empty())
-        font.setStyleName(QString::fromStdString(key.style));
-    font.setPixelSize(pixel_size);
-    font.setBold(run.shaping_style.bold);
-    font.setItalic(run.shaping_style.italic);
-    const RichTextFontScaleMetrics scale = rich_text_font_scale_metrics(
-        run.shaping_style.scale_x, run.shaping_style.scale_y);
-    font.setStretch(scale.horizontal_stretch_percent);
+    const QString family = QString::fromStdString(key.family);
+    const QString requested_style = QString::fromStdString(key.style);
 
-    QRawFont raw = QRawFont::fromFont(font);
-    if (raw.isValid())
+    auto exact_raw = [&](QFont font) -> QRawFont {
+        font.setPixelSize(pixel_size);
+        QRawFont raw = QRawFont::fromFont(font);
+        if (!raw.isValid())
+            return {};
         raw.setPixelSize(key.pixel_size);
-    if (!raw.isValid() || raw_font_fingerprint(raw) != key.fingerprint)
-        return {};
-    return raw;
+        return raw_font_fingerprint(raw) == key.fingerprint ? raw : QRawFont{};
+    };
+
+    /* The layout key already describes the physical face returned by Qt.
+     * Reapplying synthetic bold/italic/stretch here can make Fontconfig choose
+     * a different face on Linux, so try the exact family/style first. */
+    if (!family.isEmpty()) {
+        if (QRawFont raw = exact_raw(database.font(
+                family, requested_style, pixel_size)); raw.isValid())
+            return raw;
+
+        QFont direct(family);
+        if (!requested_style.isEmpty())
+            direct.setStyleName(requested_style);
+        if (QRawFont raw = exact_raw(direct); raw.isValid())
+            return raw;
+
+        /* Style display names vary across Fontconfig backends. Enumerating the
+         * installed family is a bounded compatibility fallback and happens at
+         * most once per physical face because Renderer::Impl caches success. */
+        const QStringList styles = database.styles(family);
+        for (const QString &style : styles) {
+            if (QRawFont raw = exact_raw(database.font(
+                    family, style, pixel_size)); raw.isValid())
+                return raw;
+        }
+    }
+    return {};
 }
 
 static bool raw_font_has_color_glyph_tables(const QRawFont &font)
@@ -385,6 +434,46 @@ static bool raw_font_has_color_glyph_tables(const QRawFont &font)
            !font.fontTable("CBDT").isEmpty() ||
            !font.fontTable("sbix").isEmpty() ||
            !font.fontTable("SVG ").isEmpty();
+}
+
+/* QRawFont::alphaMapForGlyph() is backend-dependent. DirectWrite commonly
+ * returns a luminance image, while FreeType/Fontconfig commonly returns
+ * QImage::Format_Alpha8. Converting Alpha8 with convertToFormat(Grayscale8)
+ * does not preserve the alpha plane as glyph coverage on every Qt build and
+ * can therefore turn valid Linux glyphs into an all-black SDF input. Extract
+ * the actual coverage channel explicitly and keep the atlas input contract
+ * identical on Windows, Linux and macOS. */
+static QImage glyph_coverage_grayscale8(const QImage &source)
+{
+    if (source.isNull() || source.width() <= 0 || source.height() <= 0)
+        return {};
+
+    QImage coverage(source.size(), QImage::Format_Grayscale8);
+    if (coverage.isNull())
+        return {};
+
+    if (source.format() == QImage::Format_Alpha8 ||
+        source.format() == QImage::Format_Grayscale8) {
+        for (int y = 0; y < source.height(); ++y) {
+            std::memcpy(coverage.scanLine(y), source.constScanLine(y),
+                        static_cast<size_t>(source.width()));
+        }
+        return coverage;
+    }
+
+    const bool use_alpha = source.hasAlphaChannel();
+    const QImage argb = source.convertToFormat(QImage::Format_ARGB32);
+    if (argb.isNull())
+        return {};
+    for (int y = 0; y < argb.height(); ++y) {
+        const QRgb *input = reinterpret_cast<const QRgb *>(
+            argb.constScanLine(y));
+        uchar *output = coverage.scanLine(y);
+        for (int x = 0; x < argb.width(); ++x)
+            output[x] = static_cast<uchar>(
+                use_alpha ? qAlpha(input[x]) : qGray(input[x]));
+    }
+    return coverage;
 }
 
 static uint32_t multiply_alpha(uint32_t argb, float multiplier)
@@ -457,7 +546,13 @@ static void append_quad(std::vector<Vertex> &vertices, const Quad &source,
                    quad.local_x1, quad.local_y1};
     const Vertex d{quad.x0 * scale, quad.y1 * scale, quad.u0, quad.v1,
                    quad.local_x0, quad.local_y1};
-    vertices.insert(vertices.end(), {a, b, c, a, c, d});
+    vertices.reserve(vertices.size() + 6);
+    vertices.push_back(a);
+    vertices.push_back(b);
+    vertices.push_back(c);
+    vertices.push_back(a);
+    vertices.push_back(c);
+    vertices.push_back(d);
 }
 
 static void append_quad(std::vector<Vertex> &vertices,
@@ -476,12 +571,21 @@ static void append_quad(std::vector<Vertex> &vertices,
 static size_t paint_run_index_at(const std::vector<TextLayoutPaintRun> &runs,
                                  size_t byte_offset)
 {
-    for (size_t i = 0; i < runs.size(); ++i) {
-        const size_t end = runs[i].byte_start + runs[i].byte_length;
-        if (byte_offset >= runs[i].byte_start && byte_offset < end)
-            return i;
-    }
-    return runs.empty() ? 0 : runs.size() - 1;
+    if (runs.empty())
+        return 0;
+    const auto upper = std::upper_bound(
+        runs.begin(), runs.end(), byte_offset,
+        [](size_t value, const TextLayoutPaintRun &run) {
+            return value < run.byte_start;
+        });
+    if (upper == runs.begin())
+        return 0;
+    const auto candidate = std::prev(upper);
+    const size_t index = static_cast<size_t>(candidate - runs.begin());
+    const size_t end = candidate->byte_start + candidate->byte_length;
+    if (byte_offset < end || upper == runs.end())
+        return index;
+    return static_cast<size_t>(upper - runs.begin());
 }
 
 static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices)
@@ -634,6 +738,7 @@ struct Layer::Impl {
 struct Renderer::Impl {
     std::vector<AtlasPage> pages;
     std::unordered_map<GlyphKey, AtlasGlyph, GlyphKeyHash> glyphs;
+    std::unordered_map<uint64_t, QRawFont> raw_fonts;
     gs_effect_t *effect = nullptr;
     gs_texture_t *white_texture = nullptr;
     bool backend_available = true;
@@ -683,7 +788,17 @@ struct Renderer::Impl {
             return true;
         }
 
-        const QRawFont raw = raw_font_for_run(run);
+        QRawFont raw;
+        const auto cached_font = raw_fonts.find(font_key.fingerprint);
+        if (cached_font != raw_fonts.end()) {
+            raw = cached_font->second;
+        } else {
+            raw = text_layout_registered_raw_font(font_key);
+            if (!raw.isValid())
+                raw = reconstructed_raw_font_for_run(run);
+            if (raw.isValid())
+                raw_fonts.emplace(font_key.fingerprint, raw);
+        }
         if (!raw.isValid()) {
             reason = "Could not reconstruct the exact shaped font face.";
             return false;
@@ -695,11 +810,27 @@ struct Renderer::Impl {
         const QImage alpha = raw.alphaMapForGlyph(
             glyph_id, QRawFont::PixelAntialiasing, QTransform());
         if (alpha.isNull() || alpha.width() <= 0 || alpha.height() <= 0) {
+            /* Whitespace/control glyphs legitimately have no ink.  A visible
+             * glyph with non-empty font bounds but no alpha map is a backend
+             * rasterization failure (observed with some Fontconfig/FreeType
+             * combinations); treating it as whitespace makes complete Linux
+             * text layers disappear.  Route that layer through the exact Qt
+             * compatibility raster instead. */
+            const QRectF bounds = raw.boundingRect(glyph_id);
+            if (!bounds.isEmpty() && bounds.width() > 0.0 &&
+                bounds.height() > 0.0) {
+                reason = "The shaped glyph face could not produce an alpha map.";
+                return false;
+            }
             out = AtlasGlyph{};
             glyphs.emplace(key, out);
             return true;
         }
-        QImage gray = alpha.convertToFormat(QImage::Format_Grayscale8);
+        QImage gray = glyph_coverage_grayscale8(alpha);
+        if (gray.isNull()) {
+            reason = "Could not normalize the glyph coverage map.";
+            return false;
+        }
         const int sdf_padding = (kSdfSpread + 2) * 2;
         if (gray.width() + sdf_padding > kAtlasSize ||
             gray.height() + sdf_padding > kAtlasSize) {
@@ -728,7 +859,7 @@ struct Renderer::Impl {
                           static_cast<size_t>(allocated.y + y) * kAtlasSize +
                           allocated.x);
         }
-        page.dirty = true;
+        page.mark_dirty(allocated.x, allocated.y, sdf_width, sdf_height);
         glyphs.emplace(key, allocated);
         out = allocated;
         return true;
@@ -745,14 +876,40 @@ struct Renderer::Impl {
                                                  GS_R8, 1, planes,
                                                  GS_DYNAMIC);
             } else {
-                gs_texture_set_image(page.texture, page.pixels.data(),
-                                     kAtlasSize, false);
+                /* gs_texture_map() is a discard-style write for dynamic OBS
+                 * textures. Copying only the dirty rectangle leaves every
+                 * untouched texel undefined and produced the random glyph
+                 * fragments seen while typing, particularly with OpenGL on
+                 * Linux. Rewrite this smaller page completely so all prior
+                 * glyphs remain valid. */
+                uint8_t *mapped = nullptr;
+                uint32_t linesize = 0;
+                const bool map_succeeded =
+                    gs_texture_map(page.texture, &mapped, &linesize);
+                if (map_succeeded) {
+                    if (mapped) {
+                        for (int y = 0; y < kAtlasSize; ++y) {
+                            std::memcpy(
+                                mapped + static_cast<size_t>(y) * linesize,
+                                page.pixels.data() +
+                                    static_cast<size_t>(y) * kAtlasSize,
+                                static_cast<size_t>(kAtlasSize));
+                        }
+                    }
+                    /* A successful map must always be paired with unmap, even
+                     * on an unusual backend that returns a null data pointer. */
+                    gs_texture_unmap(page.texture);
+                }
+                if (!map_succeeded || !mapped) {
+                    gs_texture_set_image(page.texture, page.pixels.data(),
+                                         kAtlasSize, false);
+                }
             }
             if (!page.texture) {
                 last_error = "Could not upload a persistent glyph-atlas page.";
                 return false;
             }
-            page.dirty = false;
+            page.clear_dirty();
         }
         if (!white_texture) {
             const uint8_t white = 255;
@@ -815,6 +972,15 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
                 *reason = "Inline text stroke exceeds the SDF atlas spread.";
             return false;
         }
+        /* The SDF renderer naturally produces a round offset contour. Miter
+         * and bevel joins require the vector outline path, so route only those
+         * explicitly selected styles through the exact compatibility raster
+         * instead of silently ignoring the property. */
+        if (run.style.stroke.enabled && run.style.stroke.join_style != 1) {
+            if (reason)
+                *reason = "Miter/bevel inline text joins require the compatibility raster path.";
+            return false;
+        }
     }
 
     std::vector<Batch> behind_strokes;
@@ -842,6 +1008,7 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
         batch.draw_part = draw_part;
         batch.material.fill = resolved_runs[paint_index].style.fill;
         batch.material.stroke = resolved_runs[paint_index].style.stroke;
+        batch.vertices.reserve(96);
         batch.domain = {0.0f, 0.0f,
                         std::max(1.0f, options.text_width),
                         std::max(1.0f, options.text_height)};
@@ -946,45 +1113,48 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
         }
     }
 
-    /* Underline/strikethrough remain vector geometry and are composited in the
-     * fill phase. They never enter a QPainter text surface. */
-    for (const TextLayoutRun &run : layout->runs) {
-        if (run.cluster_count == 0 || run.line_index >= layout->lines.size())
+    /* Decorations are paint properties, not shaping properties. Build them
+     * from the same cluster paint slices used by glyphs so a mixed-style run
+     * can underline/strike only the selected byte range. The previous run-wide
+     * implementation sampled the style at run start and therefore ignored
+     * later underline/strikethrough changes inside a shaped run. */
+    for (size_t cluster_index = 0;
+         cluster_index < layout->clusters.size(); ++cluster_index) {
+        const TextLayoutCluster &cluster = layout->clusters[cluster_index];
+        if (cluster.line_index >= layout->lines.size() ||
+            cluster.run_index >= layout->runs.size())
             continue;
-        const size_t paint_index = std::min(
-            paint_run_index_at(resolved_runs, run.byte_start),
-            resolved_runs.size() - 1);
-        const TextLayoutPaintStyle &style = resolved_runs[paint_index].style;
-        if (!style.underline && !style.strikethrough)
-            continue;
-        const TextLayoutLine &line = layout->lines[run.line_index];
-        float left = std::numeric_limits<float>::max();
-        float right = -std::numeric_limits<float>::max();
-        for (uint32_t i = 0; i < run.cluster_count; ++i) {
-            const TextLayoutCluster &cluster =
-                layout->clusters[run.cluster_begin + i];
-            left = std::min(left, cluster.x);
-            right = std::max(right, cluster.x + cluster.width);
-        }
-        if (!(right > left))
-            continue;
+        const TextLayoutLine &line = layout->lines[cluster.line_index];
+        const TextLayoutRun &run = layout->runs[cluster.run_index];
         const float pixel_size = std::max(1.0f, run.font.pixel_size);
         const float thickness = std::max(1.0f, pixel_size * 0.055f);
-        auto add_decoration = [&](float y) {
-            Batch &batch = batch_for(fills, DrawPart::Fill, -1,
-                                     paint_index, true);
-            const float x0 = options.text_offset_x + left;
-            const float x1 = options.text_offset_x + right;
-            const float y0 = options.text_offset_y + y;
-            const float y1 = y0 + thickness;
-            append_quad(batch.vertices, x0, y0, x1, y1,
-                        0.0f, 0.0f, 1.0f, 1.0f,
-                        left, y, right, y + thickness, options);
-        };
-        if (style.underline)
-            add_decoration(line.baseline + pixel_size * 0.08f);
-        if (style.strikethrough)
-            add_decoration(line.baseline - pixel_size * 0.32f);
+        for (const TextLayoutPaintSlice &slice : cluster_slices[cluster_index]) {
+            const size_t paint_index =
+                std::min(slice.paint_index, resolved_runs.size() - 1);
+            const TextLayoutPaintStyle &style =
+                resolved_runs[paint_index].style;
+            if (!style.underline && !style.strikethrough)
+                continue;
+            const float left = std::min(slice.x0, slice.x1);
+            const float right = std::max(slice.x0, slice.x1);
+            if (!(right > left))
+                continue;
+            auto add_decoration = [&](float y) {
+                Batch &batch = batch_for(fills, DrawPart::Fill, -1,
+                                         paint_index, true);
+                const float x0 = options.text_offset_x + left;
+                const float x1 = options.text_offset_x + right;
+                const float y0 = options.text_offset_y + y;
+                const float y1 = y0 + thickness;
+                append_quad(batch.vertices, x0, y0, x1, y1,
+                            0.0f, 0.0f, 1.0f, 1.0f,
+                            left, y, right, y + thickness, options);
+            };
+            if (style.underline)
+                add_decoration(line.baseline + pixel_size * 0.08f);
+            if (style.strikethrough)
+                add_decoration(line.baseline - pixel_size * 0.32f);
+        }
     }
 
     std::vector<Batch> batches;
@@ -1088,6 +1258,8 @@ bool Renderer::render(Layer &layer)
                 batch.draw_part == DrawPart::Fill
                     ? 0
                     : (batch.material.stroke.enabled ? 1 : 0));
+        set_int(impl_->effect, "strokeAntialias",
+                batch.material.stroke.antialias ? 1 : 0);
         const float stroke_width =
             std::max(0.0f, batch.material.stroke.width);
         const TextStrokeCoverageExtents stroke_extents =
@@ -1151,6 +1323,7 @@ void Renderer::reset()
     }
     impl_->pages.clear();
     impl_->glyphs.clear();
+    impl_->raw_fonts.clear();
     if (impl_->white_texture)
         gs_texture_destroy(impl_->white_texture);
     impl_->white_texture = nullptr;

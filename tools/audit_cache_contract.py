@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
@@ -11,14 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read(path: str) -> str:
-    return (ROOT / path).read_text(encoding="utf-8", errors="replace")
+    return read_source_bundle(ROOT / path)
 
 
 errors: list[str] = []
 notes: list[str] = []
 warnings: list[str] = []
 
-source_files = list((ROOT / "src").rglob("*.cpp")) + list((ROOT / "src").rglob("*.h"))
+source_files = list((ROOT / "src").rglob("*.cpp")) + list((ROOT / "src").rglob("*.h")) + list((ROOT / "src").rglob("*.inc"))
 all_source = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in source_files)
 
 for path in source_files:
@@ -104,10 +105,10 @@ if "take_source_cache_wake_frame(" not in source:
 else:
     notes.append("static OBS sources wake and adopt completed prerender frames")
 
-if "gpu-renderer-v25-transactional-text-prerender" not in cache_manager:
+if "gpu-renderer-v31-lens-flare-dx11-keyword-fix" not in cache_manager:
     errors.append("renderer cache ABI was not bumped for the Phase 15 visibility-recovery contract")
 else:
-    notes.append("pre-recovery blank/legacy frame cache generations are invalidated by renderer ABI v25")
+    notes.append("pre-recovery blank/legacy frame cache generations are invalidated by current renderer ABI")
 
 if "add(QString::fromStdString(p.name))" in cache_manager:
     errors.append("animation editor labels still pollute the visual cache hash")
@@ -176,7 +177,7 @@ if not (actual_compilation_units - listed_compilation_units) and not (
 import hashlib
 hashes: dict[str, list[str]] = {}
 for path in (ROOT / "src").rglob("*"):
-    if path.is_file() and path.suffix in {".cpp", ".h", ".hpp", ".c"}:
+    if path.is_file() and path.suffix in {".cpp", ".h", ".hpp", ".c", ".inc"}:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         hashes.setdefault(digest, []).append(str(path.relative_to(ROOT)))
 for duplicate_paths in hashes.values():

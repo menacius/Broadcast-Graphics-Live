@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.5)
+project(broadcast-graphics-live VERSION 0.8.7)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "057")
+set(OBS_BGS_DEVELOPMENT_VERSION "105")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -349,10 +349,12 @@ set(OBS_BGS_CORE_SOURCES
     src/core/title-preferences.cpp
     src/core/system-memory.cpp
     src/core/ticker-runtime.cpp
+    src/core/asset-runtime.cpp
 )
 set(OBS_BGS_CORE_HEADERS
     src/core/build-info.h
     src/core/live-text-cue-utils.h
+    src/core/preset-category-path.h
     src/core/title-data.h
     src/core/title-snapshot.h
     src/core/title-localization.h
@@ -360,6 +362,7 @@ set(OBS_BGS_CORE_HEADERS
     src/core/title-preferences.h
     src/core/system-memory.h
     src/core/ticker-runtime.h
+    src/core/asset-runtime.h
 )
 
 set(OBS_BGS_LAYER_HEADERS
@@ -423,6 +426,7 @@ set(OBS_BGS_TEXT_SOURCES
 set(OBS_BGS_TEXT_HEADERS
     src/text/title-rich-text.h
     src/text/title-text-layout.h
+    src/text/title-text-layout-qt-font-registry.h
 )
 
 set(OBS_BGS_RENDERING_SOURCES
@@ -471,6 +475,7 @@ set(OBS_BGS_OBS_HEADERS
 )
 
 set(OBS_BGS_EDITOR_SOURCES
+    src/editor/bgl-modern-controls.cpp
     src/editor/title-hotkeys.cpp
     src/editor/timecode-spinbox.cpp
     src/editor/title-dock.cpp
@@ -478,19 +483,30 @@ set(OBS_BGS_EDITOR_SOURCES
     src/editor/title-properties-panel.cpp
     src/editor/properties-panel.cpp
     src/editor/style-presets.cpp
+    src/editor/asset-library.cpp
     src/editor/title-editor.cpp
 )
 set(OBS_BGS_EDITOR_HEADERS
+    src/editor/bgl-modern-controls.h
     src/editor/title-hotkeys.h
+    src/editor/long-press-tool-button.h
+    src/editor/open-color-palette.h
     src/editor/timecode-spinbox.h
     src/editor/title-dock.h
     src/editor/tools-sidebar.h
     src/editor/title-properties-panel.h
     src/editor/properties-panel.h
     src/editor/style-presets.h
+    src/editor/asset-library.h
     src/editor/title-editor-internal.h
     src/editor/title-editor.h
     src/editor/title-assets.h
+)
+
+include(cmake/BglSourceModules.cmake)
+
+set(PLUGIN_MODULES
+    ${OBS_BGS_IMPLEMENTATION_MODULES}
 )
 
 set(PLUGIN_SOURCES
@@ -525,6 +541,7 @@ set(PLUGIN_HEADERS
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Source Files" FILES ${PLUGIN_SOURCES})
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Header Files" FILES ${PLUGIN_HEADERS})
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/src" PREFIX "Implementation Modules" FILES ${PLUGIN_MODULES})
 
 # ── LZ4 frame compression ───────────────────────────────────────────
 # Prefer a package supplied by OBS/vcpkg/the host. When none is installed,
@@ -571,6 +588,7 @@ endif()
 add_library(broadcast-graphics-live MODULE
     ${PLUGIN_SOURCES}
     ${PLUGIN_HEADERS}
+    ${PLUGIN_MODULES}
 )
 
 target_include_directories(broadcast-graphics-live PRIVATE
@@ -730,6 +748,15 @@ message(STATUS "Broadcast Graphics Live: Qt${QT_VERSION_MAJOR}, Cairo ${CAIRO_VE
 option(OBS_BGS_BUILD_TESTS "Build lightweight Broadcast Graphics Live validation tests" OFF)
 if(OBS_BGS_BUILD_TESTS)
   enable_testing()
+
+  add_executable(ram_frame_cache_membership_contract_test
+      tests/ram_frame_cache_membership_contract_test.cpp)
+  add_test(NAME ram_frame_cache_membership_contract_test
+      COMMAND ram_frame_cache_membership_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/ram-frame-cache.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp)
+
   add_executable(rich_text_model_test
       tests/rich_text_model_test.cpp
       src/text/title-rich-text.cpp)
@@ -744,6 +771,22 @@ if(OBS_BGS_BUILD_TESTS)
   target_include_directories(text_layout_contract_test PRIVATE src src/core src/layers src/effects src/timeline src/text)
   target_compile_definitions(text_layout_contract_test PRIVATE OBS_BGS_RICH_TEXT_STANDALONE_TEST)
   add_test(NAME text_layout_contract_test COMMAND text_layout_contract_test)
+
+  add_executable(text_pipeline_performance_contract_test
+      tests/text_pipeline_performance_contract_test.cpp)
+  target_include_directories(text_pipeline_performance_contract_test PRIVATE tests)
+  add_test(NAME text_pipeline_performance_contract_test
+      COMMAND text_pipeline_performance_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/text/title-text-layout-qt.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-gpu-text-renderer.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview-inline-text.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/preview-cache-view.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/document-shape-editing.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/layer-evaluation-layout.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/rich-text-model-adapters.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/text/title-rich-text.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/rich-text-color-utils.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-text-rendering.inc)
 
   add_executable(animation_model_test
       tests/animation_model_test.cpp
@@ -768,6 +811,14 @@ if(OBS_BGS_BUILD_TESTS)
       src src/core src/layers src/effects src/timeline src/text src/transitions)
   add_test(NAME ticker_runtime_contract_test COMMAND ticker_runtime_contract_test)
 
+  add_executable(asset_runtime_contract_test
+      tests/asset_runtime_contract_test.cpp
+      src/core/asset-runtime.cpp
+      src/timeline/animation.cpp)
+  target_include_directories(asset_runtime_contract_test PRIVATE
+      src src/core src/layers src/effects src/timeline src/text src/transitions)
+  add_test(NAME asset_runtime_contract_test COMMAND asset_runtime_contract_test)
+
   add_executable(ticker_controls_contract_test
       tests/ticker_controls_contract_test.cpp)
   add_test(NAME ticker_controls_contract_test
@@ -782,6 +833,49 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
       ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini)
+
+  add_executable(uncue_playback_snapshot_contract_test
+      tests/uncue_playback_snapshot_contract_test.cpp)
+  add_test(NAME uncue_playback_snapshot_contract_test
+      COMMAND uncue_playback_snapshot_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-effects-transitions.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/list-selection-cues.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-hotkeys.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/live-cue-queueing.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.h)
+
+  add_executable(cue_ending_visual_contract_test
+      tests/cue_ending_visual_contract_test.cpp)
+  add_test(NAME cue_ending_visual_contract_test
+      COMMAND cue_ending_visual_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/template-library-helpers.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/dock-lifecycle.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/live-text-cache-playlist.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-effects-transitions.inc)
+
+  add_executable(live_cue_header_timer_contract_test
+      tests/live_cue_header_timer_contract_test.cpp)
+  add_test(NAME live_cue_header_timer_contract_test
+      COMMAND live_cue_header_timer_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-runtime.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-effects-transitions.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/dock-lifecycle.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/live-text-cache-playlist.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(title_thumbnail_cue_state_contract_test
+      tests/title_thumbnail_cue_state_contract_test.cpp)
+  add_test(NAME title_thumbnail_cue_state_contract_test
+      COMMAND title_thumbnail_cue_state_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/template-library-helpers.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/import-export-helpers.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/dock-lifecycle.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/list-selection-cues.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/title-actions.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
 
   add_executable(adjustment_effects_transitions_contract_test
       tests/adjustment_effects_transitions_contract_test.cpp)
@@ -799,6 +893,87 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-effect-registry.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp)
+
+  add_executable(effects_cleanup_four_color_gradient_contract_test
+      tests/effects_cleanup_four_color_gradient_contract_test.cpp)
+  add_test(NAME effects_cleanup_four_color_gradient_contract_test
+      COMMAND effects_cleanup_four_color_gradient_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/layer-effects.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-effect-registry.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/extensions/effect-extension-catalog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-presentation-readback.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-effects-compositor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/background-color/background-color.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/emboss/emboss.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/4-color-gradient/4-color-gradient.effect
+      "${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/4-Color Gradient.obgeffect"
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/asset-runtime.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-runtime.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effect-preset-catalog.cpp)
+
+  add_executable(effects_stack_layer_space_contract_test
+      tests/effects_stack_layer_space_contract_test.cpp)
+  add_test(NAME effects_stack_layer_space_contract_test
+      COMMAND effects_stack_layer_space_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-presentation-readback.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-effects-compositor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-lifecycle-playback.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-masks-groups-cache.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/background-color/background-color.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/4-color-gradient/4-color-gradient.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/lens-flare/lens-flare.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/vignette/vignette.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/noise/noise.effect
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/effect-transitions/shaders/roughen-edges/roughen-edges.effect)
+
+  add_executable(effect_keyframe_timeline_canvas_contract_test
+      tests/effect_keyframe_timeline_canvas_contract_test.cpp)
+  add_test(NAME effect_keyframe_timeline_canvas_contract_test
+      COMMAND effect_keyframe_timeline_canvas_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effect-animation-utils.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/hierarchy-model.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/canvas-overlay-paint.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/gpu-frame-rendering.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/keyboard-wheel-events.inc)
+
+  add_executable(shutdown_performance_regression_contract_test
+      tests/shutdown_performance_regression_contract_test.cpp)
+  add_test(NAME shutdown_performance_regression_contract_test
+      COMMAND shutdown_performance_regression_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/preview-cache-view.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/keyboard-wheel-events.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/playback-cache-preferences.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/plugin-main.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.h)
+
+  add_executable(canvas_refresh_pacing_contract_test
+      tests/canvas_refresh_pacing_contract_test.cpp)
+  add_test(NAME canvas_refresh_pacing_contract_test
+      COMMAND canvas_refresh_pacing_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/preview-cache-view.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/keyboard-wheel-events.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/editor-events.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/signal-handlers.inc)
+
+  add_executable(effects_interaction_regression_contract_test
+      tests/effects_interaction_regression_contract_test.cpp)
+  add_test(NAME effects_interaction_regression_contract_test
+      COMMAND effects_interaction_regression_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effects-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/path-gradient-tools.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/bgl-modern-controls.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp)
 
   add_executable(effect_preview_shortcuts_contract_test
@@ -931,6 +1106,12 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp)
 
+  add_executable(group_alt_drag_duplicate_contract_test
+      tests/group_alt_drag_duplicate_contract_test.cpp)
+  add_test(NAME group_alt_drag_duplicate_contract_test
+      COMMAND group_alt_drag_duplicate_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp)
+
   add_executable(parenting_matte_expansion_contract_test
       tests/parenting_matte_expansion_contract_test.cpp)
   add_test(NAME parenting_matte_expansion_contract_test
@@ -951,6 +1132,12 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.h
       ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp)
+
+  add_executable(canvas_scaling_manipulation_contract_test
+      tests/canvas_scaling_manipulation_contract_test.cpp)
+  add_test(NAME canvas_scaling_manipulation_contract_test
+      COMMAND canvas_scaling_manipulation_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp)
 
   add_executable(group_hierarchy_timeline_contract_test
       tests/group_hierarchy_timeline_contract_test.cpp)
@@ -980,4 +1167,32 @@ if(OBS_BGS_BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
       ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.h
       ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp)
+
+  add_executable(asset_layer_contract_test
+      tests/asset_layer_contract_test.cpp)
+  add_test(NAME asset_layer_contract_test
+      COMMAND asset_layer_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/asset-library.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/asset-runtime.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(gradient_preset_unification_contract_test
+      tests/gradient_preset_unification_contract_test.cpp)
+  add_test(NAME gradient_preset_unification_contract_test
+      COMMAND gradient_preset_unification_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/style-presets.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/style-presets.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/construction-type-live-shape.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/color-gradient-editing.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/ui-construction.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini)
 endif()

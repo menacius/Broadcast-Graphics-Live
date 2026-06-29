@@ -2,17 +2,18 @@
 """Structural acceptance audit for Phase 12D editor GPU text integration."""
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYOUT_H = (ROOT / "src/text/title-text-layout.h").read_text(encoding="utf-8", errors="replace")
 LAYOUT = (ROOT / "src/text/title-text-layout.cpp").read_text(encoding="utf-8", errors="replace")
-CANVAS = (ROOT / "src/canvas/canvas-preview.cpp").read_text(encoding="utf-8", errors="replace")
+CANVAS = read_source_bundle(ROOT / "src/canvas/canvas-preview.cpp")
 INLINE = (ROOT / "src/canvas/canvas-preview-inline-text.cpp").read_text(encoding="utf-8", errors="replace")
-EDITOR_INTERNAL = (ROOT / "src/editor/title-editor-internal.h").read_text(encoding="utf-8", errors="replace")
-CACHE = (ROOT / "src/cache/cache-manager.cpp").read_text(encoding="utf-8", errors="replace")
-DOC = (ROOT / "docs/phase12d-editor-gpu-integration.md").read_text(encoding="utf-8", errors="replace")
+EDITOR_INTERNAL = read_source_bundle(ROOT / "src/editor/title-editor-internal.h")
+CACHE = read_source_bundle(ROOT / "src/cache/cache-manager.cpp")
+DOC = (ROOT / "docs/RENDERING_AND_CACHE.md").read_text(encoding="utf-8", errors="replace")
 
 passes: list[str] = []
 errors: list[str] = []
@@ -92,7 +93,7 @@ if not size_handler:
     errors.append("transparent QTextEdit document-size handler was not found")
 else:
     body = size_handler.group("body")
-    if "refresh_inline_text_edit(true, true)" in body:
+    if "schedule_inline_text_refresh(true, true)" in body:
         passes.append("delayed QTextDocument size changes preserve pre-12D point-text growth")
     else:
         errors.append("delayed QTextDocument size changes no longer complete point-text auto-grow")
@@ -120,14 +121,16 @@ else:
     body = refresh.group(0)
     if "gpu_model_dirty_ = true" not in body:
         errors.append("content edits do not invalidate the GPU text model")
-    elif "render_to_frame();" not in body or "repaint(editor_rect);" not in body:
+    elif ("editing_present_pending_ = true" not in body or
+          "force_present_pending_ = true" not in body or
+          "update();" not in body):
         errors.append("inline edits no longer publish the expanded textbox in the established transaction")
     else:
         passes.append("content edits publish model and auto-grown geometry in one edit transaction")
 
 require(
     CACHE,
-    ("gpu-renderer-v25-transactional-text-prerender",),
+    ("gpu-renderer-v31-lens-flare-dx11-keyword-fix",),
     "Transactional renderer ABI invalidates incomplete and older text/editor frame payloads",
 )
 

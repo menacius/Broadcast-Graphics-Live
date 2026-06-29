@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-source = (ROOT / "src/obs/title-source.cpp").read_text(encoding="utf-8")
+source = read_source_bundle(ROOT / "src/obs/title-source.cpp")
 cache_h = (ROOT / "src/cache/cache-manager.h").read_text(encoding="utf-8")
-cache = (ROOT / "src/cache/cache-manager.cpp").read_text(encoding="utf-8")
+cache = read_source_bundle(ROOT / "src/cache/cache-manager.cpp")
 canvas_h = (ROOT / "src/canvas/canvas-preview.h").read_text(encoding="utf-8")
-canvas = (ROOT / "src/canvas/canvas-preview.cpp").read_text(encoding="utf-8")
+canvas = read_source_bundle(ROOT / "src/canvas/canvas-preview.cpp")
 logger_h = (ROOT / "src/core/title-logger.h").read_text(encoding="utf-8")
 logger = (ROOT / "src/core/title-logger.cpp").read_text(encoding="utf-8")
 prefs_h = (ROOT / "src/core/title-preferences.h").read_text(encoding="utf-8")
 prefs = (ROOT / "src/core/title-preferences.cpp").read_text(encoding="utf-8")
-editor = (ROOT / "src/editor/title-editor.cpp").read_text(encoding="utf-8")
+editor = read_source_bundle(ROOT / "src/editor/title-editor.cpp")
 plugin = (ROOT / "src/obs/plugin-main.cpp").read_text(encoding="utf-8")
 locale = (ROOT / "data/locale/en-US.ini").read_text(encoding="utf-8")
 
@@ -23,7 +24,7 @@ used_category_keys = set()
 category_call = re.compile(
     r'BGL_LOG_(?:ERROR|WARNING|INFO|DEBUG|TRACE)\("([^"]+)"')
 for source_file in (ROOT / "src").rglob("*"):
-    if source_file.suffix not in {".cpp", ".h"}:
+    if source_file.suffix not in {".cpp", ".h", ".inc"}:
         continue
     used_category_keys.update(category_call.findall(
         source_file.read_text(encoding="utf-8", errors="ignore")))
@@ -60,7 +61,7 @@ checks = [
      all(f'retryFailedJob(job, live_state_key, "{stage}")' in cache
          for stage in ("submit", "resolve", "payload"))),
     ("renderer cache ABI invalidates previously published blank frames",
-     "gpu-renderer-v25-transactional-text-prerender" in cache),
+     "gpu-renderer-v31-lens-flare-dx11-keyword-fix" in cache),
     ("logger exposes categories and session lifecycle",
      "struct TitleLogCategory" in logger_h and
      "void startSession();" in logger_h and

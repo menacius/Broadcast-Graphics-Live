@@ -1,17 +1,10 @@
 #include <cassert>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <string>
 
+#include "source_bundle_reader.h"
+
 namespace {
-std::string read_file(const char *path)
-{
-    std::ifstream input(path, std::ios::binary);
-    assert(input.good());
-    return {std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()};
-}
 void require(const std::string &source, const char *needle)
 {
     if (source.find(needle) == std::string::npos) {

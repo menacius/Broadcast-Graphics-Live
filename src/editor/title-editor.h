@@ -143,6 +143,7 @@ private:
     void set_live_editing_enabled(bool enabled);
     void save_live_edit();
     void save_title_as_new();
+    void save_title_as_asset();
     void export_title_template(bool save_in_library);
     void copy_title_to_store(const std::shared_ptr<Title> &source, const std::shared_ptr<Title> &dest) const;
     void align_selected_to_canvas(int x_mode, int y_mode);
@@ -184,6 +185,9 @@ private:
     void choose_image_file_for_layer(const std::string &layer_id);
     void create_image_layer_from_external_source(const QString &image_path, const QPointF &canvas_pt);
     void create_text_layer_from_external_source(const QString &text, const QPointF &canvas_pt);
+    void insert_asset_layer(const std::string &asset_id, const QPointF &canvas_pt);
+    void edit_asset(const std::string &asset_id);
+    void open_asset_overrides_dialog(const std::string &asset_layer_id);
     void update_canvas_created_shape(const QRectF &canvas_rect);
     void finish_canvas_created_shape(bool keep_layer);
     void push_undo_snapshot();
@@ -237,7 +241,9 @@ private:
     void update_panel_lock_state();
     void schedule_cache_invalidation();
     void force_next_title_visual_update();
+    void apply_playhead_change(double t, bool playback_frame);
     void update_display_refresh_pacing();
+    void begin_shutdown();
 
     /* Current editing state */
     std::shared_ptr<Title> title_;
@@ -250,6 +256,7 @@ private:
     bool                   manual_reverse_playback_ = false;
     bool                   full_loop_playback_ = false;
     bool                   dirty_ = false;
+    bool                   shutting_down_ = false;
     bool                   force_next_visual_update_ = false;
     QTimer                *play_timer_ = nullptr;
     QTimer                *gui_refresh_timer_ = nullptr;
@@ -258,6 +265,8 @@ private:
     QTimer                *cache_invalidation_timer_ = nullptr;
     QTimer                *autosave_timer_ = nullptr;
     QTimer                *status_activity_timer_ = nullptr;
+    QTimer                *inline_text_panel_refresh_timer_ = nullptr;
+    QTimer                *inline_text_live_publish_timer_ = nullptr;
     QElapsedTimer          playback_clock_;
     QElapsedTimer          cache_reprioritize_clock_;
     double                 display_refresh_hz_ = 60.0;
@@ -276,7 +285,6 @@ private:
     QDockWidget     *effects_dock_ = nullptr;
     QDockWidget     *effects_presets_dock_ = nullptr;
     QDockWidget     *styles_dock_ = nullptr;
-    QDockWidget     *color_swatches_dock_ = nullptr;
     QDockWidget     *timeline_dock_ = nullptr;
     QDockWidget     *prerender_dock_ = nullptr;
     QDockWidget     *tools_dock_ = nullptr;
@@ -366,7 +374,6 @@ private:
     QAction         *act_effects_visible_ = nullptr;
     QAction         *act_effects_presets_visible_ = nullptr;
     QAction         *act_styles_visible_ = nullptr;
-    QAction         *act_color_swatches_visible_ = nullptr;
     QAction         *act_timeline_visible_ = nullptr;
     QAction         *act_prerender_visible_ = nullptr;
     QAction         *act_tools_visible_ = nullptr;
@@ -377,6 +384,7 @@ private:
     int              undo_index_ = -1;
     bool             restoring_undo_ = false;
     bool             live_editing_ = false;
+    std::string      pending_inline_text_refresh_layer_id_;
     bool             updating_layer_panels_ = false;
     bool             panels_locked_ = false;
     bool             restoring_editor_layout_ = false;

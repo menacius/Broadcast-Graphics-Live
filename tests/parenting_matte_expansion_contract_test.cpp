@@ -1,17 +1,10 @@
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 
+#include "source_bundle_reader.h"
+
 namespace {
-std::string read_file(const char *path)
-{
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return {};
-    std::ostringstream out;
-    out << file.rdbuf();
-    return out.str();
-}
 
 bool require(const std::string &text, const std::string &needle, const char *label)
 {
@@ -41,8 +34,10 @@ int main(int argc, char **argv)
     bool ok = true;
     ok &= require(model, "std::string transform_parent_id", "independent transform parent field");
     ok &= require(model, "VisibleAndMatte", "third matte visibility state");
+    ok &= require(model, "InvertedClipping", "clipping matte enum values");
     ok &= require(data, "j[\"transform_parent_id\"]", "parent serialization");
     ok &= require(data, "j[\"matte_visibility_mode\"]", "matte state serialization");
+    ok &= require(data, "MaskMode::InvertedClipping", "clipping matte deserialization bound");
     ok &= require(data, "Normal hidden layers must keep their own",
                   "non-matte visibility survives reload");
     ok &= require(data, "legacy_parent->type != LayerType::Group", "legacy parenting migration keeps groups");
@@ -57,9 +52,13 @@ int main(int argc, char **argv)
                   "world-preserving parent/unparent conversion order");
     ok &= require(editor, "source_was_already_matte",
                   "first matte assignment preserves prior visibility state");
+    ok &= require(editor, "Clipping visibility is now resolved by the GPU",
+                  "clipping type does not leak source visibility state");
     ok &= require(layers, "l->transform_parent_id", "parent dropdown reads transform parent");
     ok &= require(layers, "QStringLiteral(\"%1. %2\")", "numbered dropdown labels");
     ok &= require(layers, "layer_matte_visibility_changed", "three-state matte button");
+    ok &= require(layers, "matte-clipping.svg", "clipping matte UI icon");
+    ok &= require(layers, "% 3", "alpha luma clipping type cycle");
     ok &= require(layers, "group_expansion_state_changed", "three-state group caret");
 
     ok &= require(canvas, "editor_layer_local_transform(layer, playhead) * parent_basis",
@@ -72,6 +71,10 @@ int main(int argc, char **argv)
                   "open groups show group keyframes");
     ok &= require(source, "MatteVisibilityMode::VisibleAndMatte",
                   "visible-and-active matte composition");
+    ok &= require(source, "emitted_clipping_bases",
+                  "clipping matte base is emitted once by the compositor");
+    ok &= require(source, "base_layer->matte_visibility_mode !=",
+                  "clipping artwork obeys matte visibility mode");
     ok &= require(source, "layer.transform_parent_id", "renderer follows transform parent");
     ok &= require(source, "layer_local_transform_qt(layer, title_time) * parent_basis",
                   "renderer matches local-to-world transform order");
@@ -81,6 +84,6 @@ int main(int argc, char **argv)
         std::cerr << "Parenting renderer still decomposes affine transforms and can lose shear\n";
         ok = false;
     }
-    ok &= require(cmake, "OBS_BGS_DEVELOPMENT_VERSION \"057\"", "development version 057");
+    ok &= require(cmake, "OBS_BGS_DEVELOPMENT_VERSION", "development version variable");
     return ok ? 0 : 1;
 }

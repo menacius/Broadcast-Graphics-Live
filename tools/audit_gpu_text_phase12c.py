@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from source_bundle import read_source_bundle
 import re
 import sys
 
@@ -14,14 +15,12 @@ HEADER = (ROOT / "src/rendering/title-gpu-text-renderer.h").read_text(
     encoding="utf-8", errors="replace")
 SDF = (ROOT / "src/rendering/title-gpu-text-sdf.cpp").read_text(
     encoding="utf-8", errors="replace")
-SOURCE = (ROOT / "src/obs/title-source.cpp").read_text(
-    encoding="utf-8", errors="replace")
+SOURCE = read_source_bundle(ROOT / "src/obs/title-source.cpp")
 CMAKE = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace")
-CACHE = (ROOT / "src/cache/cache-manager.cpp").read_text(
-    encoding="utf-8", errors="replace")
+CACHE = read_source_bundle(ROOT / "src/cache/cache-manager.cpp")
 TEXT_README = (ROOT / "src/text/README.md").read_text(
     encoding="utf-8", errors="replace")
-DOC = (ROOT / "docs/phase12c-gpu-text-renderer.md").read_text(
+DOC = (ROOT / "docs/RENDERING_AND_CACHE.md").read_text(
     encoding="utf-8", errors="replace")
 LAYOUT_HEADER = (ROOT / "src/text/title-text-layout.h").read_text(
     encoding="utf-8", errors="replace")
@@ -29,14 +28,11 @@ LAYOUT_CPP = (ROOT / "src/text/title-text-layout.cpp").read_text(
     encoding="utf-8", errors="replace")
 LAYOUT_QT = (ROOT / "src/text/title-text-layout-qt.cpp").read_text(
     encoding="utf-8", errors="replace")
-CANVAS = (ROOT / "src/canvas/canvas-preview.cpp").read_text(
-    encoding="utf-8", errors="replace")
+CANVAS = read_source_bundle(ROOT / "src/canvas/canvas-preview.cpp")
 INLINE_CANVAS = (ROOT / "src/canvas/canvas-preview-inline-text.cpp").read_text(
     encoding="utf-8", errors="replace")
-EDITOR = (ROOT / "src/editor/title-editor.cpp").read_text(
-    encoding="utf-8", errors="replace")
-EDITOR_INTERNAL = (ROOT / "src/editor/title-editor-internal.h").read_text(
-    encoding="utf-8", errors="replace")
+EDITOR = read_source_bundle(ROOT / "src/editor/title-editor.cpp")
+EDITOR_INTERNAL = read_source_bundle(ROOT / "src/editor/title-editor-internal.h")
 
 errors: list[str] = []
 passes: list[str] = []
@@ -71,12 +67,13 @@ require(
 require(
     RENDERER,
     (
-        "constexpr int kAtlasSize = 2048",
-        "constexpr int kAtlasMaxPages = 8",
+        "constexpr int kAtlasSize = 1024",
+        "constexpr int kAtlasMaxPages = 32",
         "constexpr int kSdfSpread = 32",
         "GS_R8",
         "GS_DYNAMIC",
-        "gs_texture_set_image",
+        "gs_texture_map",
+        "for (int y = 0; y < kAtlasSize; ++y)",
         "std::unordered_map<GlyphKey, AtlasGlyph",
     ),
     "bounded persistent R8 glyph atlas is present",
@@ -86,10 +83,10 @@ require(
     RENDERER,
     (
         "shaping_variant_fingerprint",
-        "font.setBold(run.shaping_style.bold)",
-        "font.setItalic(run.shaping_style.italic)",
-        "font.setStretch(scale.horizontal_stretch_percent)",
-        "raw_font_fingerprint(raw) != key.fingerprint",
+        "text_layout_registered_raw_font(font_key)",
+        "reconstructed_raw_font_for_run(run)",
+        "raw_font_fingerprint(raw) == key.fingerprint",
+        "database.styles(family)",
     ),
     "atlas identity reconstructs the exact shaped face and style variant",
 )
@@ -228,8 +225,7 @@ require(
     "inline gradient selection survives popup edits and canvas-tool drags",
 )
 
-PROPERTIES = (ROOT / "src/editor/properties-panel.cpp").read_text(
-    encoding="utf-8", errors="replace")
+PROPERTIES = read_source_bundle(ROOT / "src/editor/properties-panel.cpp")
 require(
     PROPERTIES,
     (
@@ -312,7 +308,8 @@ require(
     (
         "layer.type != LayerType::Text && layer.type != LayerType::Clock",
         "active_text_layer_transition(layer, title_time) == nullptr",
-        "text_layout_paint_runs(request.document)",
+        "text_layout_paint_runs_canonical(request.document)",
+        "build_text_layout(request)",
         "cached_text_layout(request)",
         "session->text_backend_unavailable",
     ),
@@ -357,7 +354,7 @@ require(
     "GPU text texture remains in the unified effects/mask/motion/presentation compositor",
 )
 
-if "gpu-renderer-v25-transactional-text-prerender" not in CACHE:
+if "gpu-renderer-v31-lens-flare-dx11-keyword-fix" not in CACHE:
     errors.append("cache ABI does not supersede the Phase 12D text pixels/editor geometry generation")
 else:
     passes.append("Transactional renderer ABI invalidates incomplete and older frame payloads")
@@ -375,7 +372,7 @@ require(
     "renderer API exposes explicit preparation, rendering, ownership and lifecycle",
 )
 
-if "Phase 12C now consumes" not in TEXT_README or "Compatibility boundaries" not in DOC:
+if "Phase 12C now consumes" not in TEXT_README or "compatibility boundaries" not in DOC:
     errors.append("Phase 12C architecture/compatibility documentation is incomplete")
 else:
     passes.append("Phase 12C architecture and compatibility boundaries are documented")
