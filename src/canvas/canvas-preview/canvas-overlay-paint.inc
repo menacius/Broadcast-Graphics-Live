@@ -609,6 +609,11 @@ void CanvasPreview::mouseDoubleClickEvent(QMouseEvent *ev)
         return;
     }
     if (ev->button() == Qt::LeftButton && title_) {
+        if (active_tool_ == CanvasTool::Selection &&
+            add_position_keyframe_at_path(ev->pos())) {
+            ev->accept();
+            return;
+        }
         const QPointF canvas = view_to_canvas(ev->pos());
         std::shared_ptr<Layer> hit_child;
         for (auto it = title_->layers.rbegin(); it != title_->layers.rend(); ++it) {
@@ -864,6 +869,18 @@ void CanvasPreview::mousePressEvent(QMouseEvent *ev)
         snap_cursor_visible_ = !snap_feedback_.empty();
         snap_cursor_canvas_ = anchor;
         update();
+        ev->accept();
+        return;
+    }
+
+    if (active_tool_ == CanvasTool::Selection &&
+        begin_position_tangent_drag(ev->pos(), ev->modifiers())) {
+        ev->accept();
+        return;
+    }
+
+    if (active_tool_ == CanvasTool::Selection &&
+        begin_position_vertex_drag(ev->pos())) {
         ev->accept();
         return;
     }

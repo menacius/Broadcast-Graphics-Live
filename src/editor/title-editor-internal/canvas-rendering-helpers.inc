@@ -103,10 +103,9 @@ static QPainterPath editor_scene_mask_layer_path(const Layer &layer, const QRect
         else if (layer.align_v == 2) align |= Qt::AlignBottom;
         else align |= Qt::AlignTop;
 
-        QString text = layer.type == LayerType::Ticker
-            ? QString::fromStdString(layer.text_content)
-            : display_text_for_style(layer);
-        if (layer.type == LayerType::Text && !layer.rich_text.plain_text.empty())
+        QString text = display_text_for_style(layer);
+        if (layer.type == LayerType::Text && !layer.rich_text.plain_text.empty() &&
+            !layer_has_external_binding(layer, ExternalPropertyPaths::TextContent))
             text = QString::fromStdString(layer.rich_text.plain_text);
 
         QPainterPath text_path = layer.type == LayerType::Ticker
@@ -765,6 +764,8 @@ static void set_channel_statics(Layer &layer, bool text, uint32_t argb)
 static void apply_easing_preset(Keyframe &keyframe, EasingType easing)
 {
     keyframe.easing = easing;
+    keyframe.temporal_velocity_explicit = false;
+    keyframe.temporal_tangents_linked = true;
     switch (easing) {
     case EasingType::Bezier:
         keyframe.cx1 = 0.33f; keyframe.cy1 = 0.0f;
@@ -794,6 +795,8 @@ static void apply_easing_preset(Keyframe &keyframe, EasingType easing)
 static void apply_easing_preset(VectorKeyframe &keyframe, EasingType easing)
 {
     keyframe.easing = easing;
+    keyframe.temporal_velocity_explicit = false;
+    keyframe.temporal_tangents_linked = true;
     switch (easing) {
     case EasingType::Bezier:
         keyframe.cx1 = 0.33f; keyframe.cy1 = 0.0f;

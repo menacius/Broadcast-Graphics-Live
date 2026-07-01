@@ -378,11 +378,13 @@ public:
     explicit HoldMenuToolButton(QWidget *parent = nullptr) : QToolButton(parent)
     {
         hold_timer_.setSingleShot(true);
-        hold_timer_.setInterval(500);
+        /* Match the long-press delay used by the editor's other hold-for-menu
+         * controls (for example the Fit button). */
+        hold_timer_.setInterval(250);
         QObject::connect(&hold_timer_, &QTimer::timeout, this, [this]() {
             if (!menu() || !isDown() || !underMouse()) return;
             menu_opened_by_hold_ = true;
-            menu()->popup(mapToGlobal(QPoint(width() + 2, 0)));
+            popup_menu_beside_button();
         });
     }
 
@@ -435,6 +437,41 @@ protected:
     }
 
 private:
+    void popup_menu_beside_button()
+    {
+        QMenu *popup = menu();
+        if (!popup) return;
+
+        popup->ensurePolished();
+        const QSize popup_size = popup->sizeHint();
+        const QPoint global_top_left = mapToGlobal(QPoint(0, 0));
+        const QPoint global_center = mapToGlobal(rect().center());
+        QScreen *screen = QGuiApplication::screenAt(global_center);
+        if (!screen) screen = QGuiApplication::primaryScreen();
+        const QRect available = screen ? screen->availableGeometry()
+                                       : QRect(0, 0, 1920, 1080);
+
+        const int gap = 2;
+        const int right_x = global_top_left.x() + width() + gap;
+        const int left_x = global_top_left.x() - popup_size.width() - gap;
+        const int right_space = available.right() - (global_top_left.x() + width());
+        const int left_space = global_top_left.x() - available.left();
+
+        /* Open toward the nearest screen interior.  If that side cannot fit
+         * the menu, fall back to the side with more usable space. */
+        bool open_left = global_center.x() >= available.center().x();
+        if (open_left && left_space < popup_size.width() + gap && right_space > left_space)
+            open_left = false;
+        else if (!open_left && right_space < popup_size.width() + gap && left_space > right_space)
+            open_left = true;
+
+        const int max_x = std::max(available.left(), available.right() - popup_size.width() + 1);
+        const int x = std::clamp(open_left ? left_x : right_x, available.left(), max_x);
+        const int max_y = std::max(available.top(), available.bottom() - popup_size.height() + 1);
+        const int y = std::clamp(global_top_left.y(), available.top(), max_y);
+        popup->popup(QPoint(x, y));
+    }
+
     QTimer hold_timer_;
     bool menu_opened_by_hold_ = false;
 };
@@ -508,7 +545,8 @@ static QString display_text_for_style(const Layer &layer)
 {
     QString text = layer.type == LayerType::Clock
         ? clock_text_for_layer(layer)
-        : QString::fromStdString(layer.text_content);
+        : QString::fromStdString(effective_external_string(
+              layer, ExternalPropertyPaths::TextContent, layer.text_content));
     if (layer.text_style == 1)
         return locale_for_text_transform(text).toUpper(text);
     return text;

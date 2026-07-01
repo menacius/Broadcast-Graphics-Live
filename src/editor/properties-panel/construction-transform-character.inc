@@ -5,6 +5,20 @@
     edit_image_path_ = new QLineEdit(image_form_widget);
     edit_image_path_->setFixedHeight(22);
     edit_image_path_->setStyleSheet(control_style);
+    btn_image_external_binding_ = new QToolButton(image_form_widget);
+    btn_image_external_binding_->setText(QStringLiteral("⛓"));
+    btn_image_external_binding_->setCheckable(true);
+    btn_image_external_binding_->setFixedSize(28, 22);
+    btn_image_external_binding_->setToolTip(QStringLiteral("Bind image path to external data"));
+    btn_image_external_binding_->setStyleSheet(QStringLiteral(
+        "QToolButton{border:1px solid palette(mid);border-radius:3px;}"
+        "QToolButton:checked{border:2px solid #f0a000;background:rgba(240,160,0,40);}"));
+    auto *image_path_row = new QWidget(image_form_widget);
+    auto *image_path_layout = new QHBoxLayout(image_path_row);
+    image_path_layout->setContentsMargins(0, 0, 0, 0);
+    image_path_layout->setSpacing(4);
+    image_path_layout->addWidget(edit_image_path_, 1);
+    image_path_layout->addWidget(btn_image_external_binding_);
     btn_pick_image_ = new QPushButton(bgl_tr("OBSTitles.Browse"), image_form_widget);
     style_push_button(btn_pick_image_);
     spn_layer_w_->setToolTip(bgl_tr("OBSTitles.ImageWidthTooltip"));
@@ -31,7 +45,7 @@
     btn_image_anchor_grid_ = new AnchorGridButton(image_form_widget);
     btn_image_anchor_grid_->setFixedSize(36, 36);
     btn_image_anchor_grid_->setToolTip(bgl_tr("OBSTitles.ImageBoxAnchorTooltip"));
-    add_form_row(image_form, bgl_tr("OBSTitles.PathLabel"), edit_image_path_);
+    add_form_row(image_form, bgl_tr("OBSTitles.PathLabel"), image_path_row);
     add_form_row(image_form, "", btn_pick_image_);
     add_form_row(image_form, bgl_tr("OBSTitles.ImageBoxMode"), cmb_image_box_mode_);
     add_form_row(image_form, QString(), chk_image_crop_when_outside_box_);

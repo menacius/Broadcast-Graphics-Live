@@ -63,6 +63,7 @@ static void editor_set_quad_value(Layer &layer, AnimatedVec2Property &prop,
 /* Ordered implementation modules. Keep this list in source order. */
 #include "canvas-preview/preview-cache-view.inc"
 #include "canvas-preview/geometry-selection.inc"
+#include "canvas-preview/spatial-bezier-keyframes.inc"
 #include "canvas-preview/transform-snap.inc"
 #include "canvas-preview/path-gradient-tools.inc"
 #include "canvas-preview/pointer-events.inc"

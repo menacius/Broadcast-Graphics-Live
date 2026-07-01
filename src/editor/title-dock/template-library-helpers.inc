@@ -833,6 +833,16 @@ public:
 
     QString path() const { return path_; }
 
+    void set_read_only(bool read_only)
+    {
+        read_only_ = read_only;
+        if (button_)
+            button_->setVisible(!read_only_);
+        setProperty("externalTableReadOnly", read_only_);
+    }
+
+    bool is_read_only() const { return read_only_; }
+
     void set_path(const QString &path)
     {
         path_ = path;

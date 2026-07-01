@@ -9,6 +9,7 @@ set(OBS_BGS_IMPLEMENTATION_MODULES
     src/cache/cache-manager/worker-publication.inc
     src/canvas/canvas-preview/canvas-overlay-paint.inc
     src/canvas/canvas-preview/geometry-selection.inc
+    src/canvas/canvas-preview/spatial-bezier-keyframes.inc
     src/canvas/canvas-preview/gpu-frame-rendering.inc
     src/canvas/canvas-preview/keyboard-wheel-events.inc
     src/canvas/canvas-preview/path-gradient-tools.inc
@@ -23,6 +24,7 @@ set(OBS_BGS_IMPLEMENTATION_MODULES
     src/editor/properties-panel/popup-state.inc
     src/editor/properties-panel/property-synchronization.inc
     src/editor/properties-panel/selection-refresh.inc
+    src/editor/title-dock/collapsible-titles.inc
     src/editor/title-dock/dock-lifecycle.inc
     src/editor/title-dock/dock-ui.inc
     src/editor/title-dock/import-export-helpers.inc

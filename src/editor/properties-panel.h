@@ -7,6 +7,7 @@
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QListWidget>
+#include <QTreeWidget>
 #include <QToolButton>
 #include <QActionGroup>
 #include <QButtonGroup>
@@ -43,6 +44,8 @@ class QPaintEvent;
 class QPainter;
 class QScrollBar;
 class QTimer;
+class QDialog;
+class QTextEdit;
 class TimecodeSpinBox;
 
 class PropertiesPanel : public QScrollArea {
@@ -79,6 +82,13 @@ private:
     void build_text_section(QWidget *w, QFormLayout *fl);
     void build_rect_section(QWidget *w, QFormLayout *fl);
     void build_transform_section(QWidget *w, QFormLayout *fl);
+    void build_text_animator_section(QWidget *parent, QVBoxLayout *panel_layout);
+    void refresh_text_animator_controls();
+    void rebuild_text_animator_item_editor();
+    TextAnimator *selected_text_animator();
+    TextAnimatorProperty *selected_text_animator_property();
+    TextSelector *selected_text_animator_selector();
+    void notify_text_animator_changed(bool rebuild = true);
 
     void load_values();
     void update_asset_playback_controls_visibility();
@@ -107,6 +117,30 @@ private:
     QPushButton     *btn_asset_overrides_ = nullptr;
 
     QGroupBox       *text_box_     = nullptr;
+    QGroupBox       *text_animators_box_ = nullptr;
+    QListWidget     *lst_text_animators_ = nullptr;
+    QTreeWidget     *tree_text_animator_items_ = nullptr;
+    QLineEdit       *edt_text_animator_name_ = nullptr;
+    QCheckBox       *chk_text_animator_enabled_ = nullptr;
+    QCheckBox       *chk_text_animator_expanded_ = nullptr;
+    QCheckBox       *chk_text_animator_transform_as_unit_ = nullptr;
+    QComboBox       *cmb_text_animator_blend_ = nullptr;
+    QComboBox       *cmb_text_animator_granularity_ = nullptr;
+    QComboBox       *cmb_text_animator_change_behaviour_ = nullptr;
+    QPushButton     *btn_text_animator_add_ = nullptr;
+    QPushButton     *btn_text_animator_duplicate_ = nullptr;
+    QPushButton     *btn_text_animator_delete_ = nullptr;
+    QPushButton     *btn_text_animator_up_ = nullptr;
+    QPushButton     *btn_text_animator_down_ = nullptr;
+    QPushButton     *btn_text_animator_add_property_ = nullptr;
+    QPushButton     *btn_text_animator_add_selector_ = nullptr;
+    QPushButton     *btn_text_animator_delete_item_ = nullptr;
+    QPushButton     *btn_text_animator_item_up_ = nullptr;
+    QPushButton     *btn_text_animator_item_down_ = nullptr;
+    QPushButton     *btn_text_animator_apply_preset_ = nullptr;
+    QPushButton     *btn_text_animator_save_preset_ = nullptr;
+    QWidget         *text_animator_item_editor_host_ = nullptr;
+    QWidget         *text_animator_item_editor_ = nullptr;
     QGroupBox       *type_options_box_ = nullptr;
     QGroupBox       *paragraph_box_ = nullptr;
     QGroupBox       *dynamic_text_box_ = nullptr;
@@ -118,6 +152,7 @@ private:
 
     /* Text controls */
     QTextEdit       *txt_content_  = nullptr;
+    QToolButton     *btn_text_external_binding_ = nullptr;
     QComboBox       *cmb_font_     = nullptr;
     QComboBox       *cmb_font_style_ = nullptr;
     QSpinBox        *spn_size_     = nullptr;
@@ -177,6 +212,12 @@ private:
     QCheckBox       *chk_auto_style_enabled_ = nullptr;
     QComboBox       *cmb_auto_default_style_ = nullptr;
     QListWidget     *lst_auto_style_rules_ = nullptr;
+    QDialog         *auto_rules_dialog_ = nullptr;
+    QListWidget     *lst_auto_rules_dialog_ = nullptr;
+    QTextEdit       *txt_auto_rules_demo_ = nullptr;
+    QLabel          *lbl_auto_rules_demo_status_ = nullptr;
+    QPushButton     *btn_auto_rules_edit_ = nullptr;
+    QPushButton     *btn_auto_rules_clear_ = nullptr;
     QComboBox       *cmb_auto_rule_style_ = nullptr;
     QLineEdit       *edt_auto_rule_name_ = nullptr;
     QCheckBox       *chk_auto_rule_enabled_ = nullptr;
@@ -188,15 +229,28 @@ private:
     QLineEdit       *edt_auto_rule_end_chars_ = nullptr;
     QComboBox       *cmb_auto_rule_conflict_mode_ = nullptr;
     QComboBox       *cmb_auto_rule_match_mode_ = nullptr;
+    QComboBox       *cmb_auto_rule_generalization_ = nullptr;
+    QCheckBox       *chk_auto_rule_prevent_duplicates_ = nullptr;
+    QCheckBox       *chk_auto_rule_allow_multiple_cases_ = nullptr;
     QLineEdit       *edt_auto_rule_excludes_ = nullptr;
     QCheckBox       *chk_auto_rule_stop_processing_ = nullptr;
     QCheckBox       *chk_auto_rule_require_stop_match_ = nullptr;
     QCheckBox       *chk_auto_rule_include_start_marker_ = nullptr;
     QCheckBox       *chk_auto_rule_include_end_marker_ = nullptr;
     QSpinBox        *spn_auto_rule_chars_ = nullptr; // legacy hidden fallback
+    QPushButton     *btn_auto_learn_formatting_ = nullptr;
+    QPushButton     *btn_auto_rules_load_ = nullptr;
+    QPushButton     *btn_auto_rules_save_ = nullptr;
+    QPushButton     *btn_auto_rules_save_as_ = nullptr;
+    QLabel          *lbl_auto_rules_status_ = nullptr;
+    QGroupBox       *auto_rule_editor_box_ = nullptr;
+    QWidget         *auto_rule_advanced_widget_ = nullptr;
+    QToolButton     *btn_auto_rule_advanced_ = nullptr;
+    QString          auto_style_rules_file_path_;
     QPushButton     *btn_auto_rule_add_ = nullptr;
     QPushButton     *btn_auto_rule_update_ = nullptr;
     QPushButton     *btn_auto_rule_delete_ = nullptr;
+    QPushButton     *btn_auto_rules_clear_dialog_ = nullptr;
     QPushButton     *btn_auto_rule_up_ = nullptr;
     QPushButton     *btn_auto_rule_down_ = nullptr;
 
@@ -286,6 +340,7 @@ private:
     /* Image controls */
     QLabel          *lbl_image_preview_ = nullptr;
     QLineEdit       *edit_image_path_ = nullptr;
+    QToolButton     *btn_image_external_binding_ = nullptr;
     QPushButton     *btn_pick_image_ = nullptr;
     QComboBox       *cmb_image_scale_filter_ = nullptr;
     QComboBox       *cmb_image_box_mode_ = nullptr;

@@ -147,6 +147,21 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
         }
     }
 
+    if ((drag_mode_ == DragMode::PositionInTangent ||
+         drag_mode_ == DragMode::PositionOutTangent) &&
+        (ev->buttons() & Qt::LeftButton)) {
+        apply_position_tangent_drag(ev->pos(), ev->modifiers());
+        ev->accept();
+        return;
+    }
+
+    if (drag_mode_ == DragMode::PositionVertex &&
+        (ev->buttons() & Qt::LeftButton)) {
+        apply_position_vertex_drag(ev->pos(), ev->modifiers());
+        ev->accept();
+        return;
+    }
+
     if (drag_mode_ == DragMode::PathMarquee && (ev->buttons() & Qt::LeftButton)) {
         update_path_point_marquee(ev->pos(), ev->modifiers());
         ev->accept();
@@ -251,6 +266,10 @@ void CanvasPreview::mouseMoveEvent(QMouseEvent *ev)
     }
 
     clear_draw_tool_snap_cursor();
+
+    if (active_tool_ == CanvasTool::Selection &&
+        update_position_motion_path_hover(ev->pos()))
+        return;
 
     bool hover_x_axis = true;
     if (guide_hit_test(ev->pos(), hover_x_axis) >= 0) {
@@ -445,6 +464,13 @@ void CanvasPreview::leaveEvent(QEvent *ev)
         gpu_overlay_dirty_ = true;
         needs_update = true;
     }
+    if (motion_path_hover_type_ != MotionPathHoverType::None) {
+        motion_path_hover_type_ = MotionPathHoverType::None;
+        motion_path_hover_keyframe_index_ = -1;
+        invalidate_selection_overlay_cache();
+        gpu_overlay_dirty_ = true;
+        needs_update = true;
+    }
     if (snap_cursor_visible_ || final_snap_cursor_visible_) {
         snap_cursor_visible_ = false;
         final_snap_cursor_visible_ = false;
@@ -621,6 +647,56 @@ void CanvasPreview::mouseReleaseEvent(QMouseEvent *ev)
             invalidate_canvas_overlay_caches();
             update();
         }
+        ev->accept();
+        return;
+    }
+
+    if (ev->button() == Qt::LeftButton &&
+        drag_mode_ == DragMode::PositionVertex) {
+        if (spatial_vertex_drag_.moved ||
+            QLineF(drag_start_view_, ev->pos()).length() > 0.5)
+            apply_position_vertex_drag(ev->pos(), ev->modifiers());
+        const bool changed = spatial_vertex_drag_.moved;
+        if (changed && title_) {
+            if (auto layer = title_->find_layer(spatial_vertex_drag_.layer_id))
+                layer->position.recalculate_rove_times();
+        }
+        spatial_vertex_drag_ = SpatialVertexDragState{};
+        drag_mode_ = DragMode::None;
+        drag_changed_ = false;
+        end_adaptive_interaction();
+        clear_snap_feedback();
+        unsetCursor();
+        invalidate_canvas_overlay_caches();
+        if (changed)
+            emit layer_geometry_changed();
+        update();
+        ev->accept();
+        return;
+    }
+
+    if (ev->button() == Qt::LeftButton &&
+        (drag_mode_ == DragMode::PositionInTangent ||
+         drag_mode_ == DragMode::PositionOutTangent)) {
+        /* A click on a handle must not silently convert Auto/Linear state or
+         * create an undo entry. Mouse moves already apply live changes. */
+        if (spatial_tangent_drag_.moved ||
+            QLineF(drag_start_view_, ev->pos()).length() > 0.5)
+            apply_position_tangent_drag(ev->pos(), ev->modifiers());
+        const bool changed = spatial_tangent_drag_.moved;
+        if (changed && title_) {
+            if (auto layer = title_->find_layer(spatial_tangent_drag_.layer_id))
+                layer->position.recalculate_rove_times();
+        }
+        spatial_tangent_drag_ = SpatialTangentDragState{};
+        drag_mode_ = DragMode::None;
+        drag_changed_ = false;
+        end_adaptive_interaction();
+        unsetCursor();
+        invalidate_canvas_overlay_caches();
+        if (changed)
+            emit layer_geometry_changed();
+        update();
         ev->accept();
         return;
     }
@@ -889,6 +965,9 @@ void CanvasPreview::contextMenuEvent(QContextMenuEvent *ev)
         QWidget::contextMenuEvent(ev);
         return;
     }
+
+    if (show_position_motion_path_context_menu(ev))
+        return;
 
     std::shared_ptr<Layer> hit = layer_at_view_pos(ev->pos());
     const bool clicked_current_selection = hit &&

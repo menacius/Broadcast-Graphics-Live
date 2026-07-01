@@ -66,6 +66,18 @@ static void source_video_tick(void *priv, float seconds)
         data->first_frame_pending = true;
         return;
     }
+
+    /* Provider threads never touch GPU state. The atomic revision avoids
+     * polling/locking the queue on unchanged video ticks; pending notifications
+     * are consumed only after a real external state transition. */
+    const uint64_t pending_external_revision =
+        ExternalDataManager::instance().revision();
+    if (pending_external_revision != data->seen_external_data_revision) {
+        const auto external_updates =
+            ExternalDataManager::instance().take_render_updates();
+        (void)external_updates;
+    }
+
     if (data->title_missing) {
         data->title_missing = false;
         request_source_presentation_reset(data, "title-restored");
@@ -119,6 +131,22 @@ static void source_video_tick(void *priv, float seconds)
                                title->current_cue_row < cue_row_count;
             bool is_uncue = title->cue_uncue_requested && !has_pending && has_current;
             data->manual_uncue = is_uncue;
+            ExternalDataLog::write_lazy(
+                ExternalDataLogLevel::Debug, "CuePlayback", [&]() {
+                    std::ostringstream stream;
+                    stream << "consume revision title="
+                           << ExternalDataLog::sanitize(title->id, 160)
+                           << " revision=" << title->cue_revision
+                           << " playbackMode=" << title->playback_mode
+                           << " current=" << title->current_cue_row
+                           << " pending=" << title->pending_cue_row
+                           << " active=" << data->active_cue_row
+                           << " hasCurrent=" << (has_current ? 1 : 0)
+                           << " hasPending=" << (has_pending ? 1 : 0)
+                           << " uncue=" << (is_uncue ? 1 : 0)
+                           << " playhead=" << data->playhead;
+                    return stream.str();
+                });
             if (title->playback_mode == 1) {
                 if (has_pending) {
                     data->playhead = loop_end;
@@ -144,16 +172,40 @@ static void source_video_tick(void *priv, float seconds)
                     : TitleSourceData::CuePhase::OutroOnly;
             } else {
                 if (has_pending) {
-                    apply_live_text_row(title, title->pending_cue_row);
-                    title->current_cue_row = title->pending_cue_row;
+                    const int committed_row = title->pending_cue_row;
+                    apply_live_text_row(title, committed_row);
+                    title->current_cue_row = committed_row;
                     title->pending_cue_row = -1;
                     has_current = true;
+                    ExternalDataLog::write_lazy(
+                        ExternalDataLogLevel::Info, "CuePlayback", [&]() {
+                            std::ostringstream stream;
+                            stream << "committed pending row immediately title="
+                                   << ExternalDataLog::sanitize(title->id, 160)
+                                   << " row=" << committed_row
+                                   << " rowId=" << ExternalDataLog::sanitize(
+                                          live_text_row_id(*title, committed_row), 240)
+                                   << " playbackMode=" << title->playback_mode;
+                            return stream.str();
+                        });
                     TitleDataStore::instance().touch_runtime_change();
                 }
                 if (!is_uncue)
                     data->playhead = 0.0;
                 data->cue_phase = TitleSourceData::CuePhase::FreeRun;
             }
+            ExternalDataLog::write_lazy(
+                ExternalDataLogLevel::Info, "CuePlayback", [&]() {
+                    std::ostringstream stream;
+                    stream << "revision action title="
+                           << ExternalDataLog::sanitize(title->id, 160)
+                           << " playbackMode=" << title->playback_mode
+                           << " phase=" << static_cast<int>(data->cue_phase)
+                           << " current=" << title->current_cue_row
+                           << " pending=" << title->pending_cue_row
+                           << " playhead=" << data->playhead;
+                    return stream.str();
+                });
             if (has_current)
                 data->active_cue_row = title->current_cue_row;
             data->seen_cue_revision = title->cue_revision;
@@ -235,10 +287,22 @@ static void source_video_tick(void *priv, float seconds)
                 TitleDataStore::instance().touch_runtime_change();
             } else {
                 if (title->pending_cue_row >= 0 && title->pending_cue_row < (int)title->live_text_rows.size()) {
-                    apply_live_text_row(title, title->pending_cue_row);
-                    title->current_cue_row = title->pending_cue_row;
+                    const int committed_row = title->pending_cue_row;
+                    apply_live_text_row(title, committed_row);
+                    title->current_cue_row = committed_row;
                     title->pending_cue_row = -1;
                     data->active_cue_row = title->current_cue_row;
+                    ExternalDataLog::write_lazy(
+                        ExternalDataLogLevel::Info, "CuePlayback", [&]() {
+                            std::ostringstream stream;
+                            stream << "committed pending row after outro title="
+                                   << ExternalDataLog::sanitize(title->id, 160)
+                                   << " row=" << committed_row
+                                   << " rowId=" << ExternalDataLog::sanitize(
+                                          live_text_row_id(*title, committed_row), 240)
+                                   << " playbackMode=" << title->playback_mode;
+                            return stream.str();
+                        });
                     TitleDataStore::instance().touch_runtime_change();
                 }
                 if (title->playback_mode == 1) {
@@ -326,14 +390,25 @@ static void source_video_tick(void *priv, float seconds)
         }
     }
 
-    uint64_t revision = TitleDataStore::instance().revision();
-    if (revision != data->seen_store_revision) {
+    const uint64_t revision = TitleDataStore::instance().revision();
+    const uint64_t external_revision = pending_external_revision;
+    const bool store_revision_changed =
+        revision != data->seen_store_revision;
+    const bool external_revision_changed =
+        external_revision != data->seen_external_data_revision;
+    if (store_revision_changed || external_revision_changed) {
         data->seen_store_revision = revision;
+        data->seen_external_data_revision = external_revision;
         const QString next_visual_identity =
             CacheManager::instance().contentHashForTitle(*title);
+        const bool had_visual_identity =
+            !data->visual_identity_hash.isEmpty();
         const bool visual_identity_changed =
-            !data->visual_identity_hash.isEmpty() &&
+            had_visual_identity &&
             data->visual_identity_hash != next_visual_identity;
+        const bool external_visual_change =
+            external_revision_changed &&
+            (!had_visual_identity || visual_identity_changed);
         if (visual_identity_changed) {
             ++data->visual_model_revision;
             request_source_presentation_reset(data,
@@ -344,10 +419,16 @@ static void source_video_tick(void *priv, float seconds)
         data->visual_identity_hash = next_visual_identity;
         data->cached_content_hash = next_visual_identity;
         data->cache_hash_revision = revision;
-        if (data->source) {
+
+        /* Authored/store changes retain the existing full reconciliation path.
+         * External-only changes refresh GPU/cache state solely when the resolved
+         * visual value changed; unrelated fields and equivalent fallbacks do no
+         * rendering or cache invalidation. */
+        if (store_revision_changed && data->source) {
             obs_data_t *settings = obs_source_get_settings(data->source);
             if (settings) {
-                const bool keep_scene_masks_foreground = data->scene_mask_foreground_active;
+                const bool keep_scene_masks_foreground =
+                    data->scene_mask_foreground_active;
                 if (keep_scene_masks_foreground)
                     release_active_scene_mask_scenes(data);
                 refresh_scene_mask_configs(data, settings);
@@ -356,8 +437,10 @@ static void source_video_tick(void *priv, float seconds)
                 obs_data_release(settings);
             }
         }
-        data->effect_layer_cache.clear();
-        data->dirty = true;
+        if (store_revision_changed || external_visual_change) {
+            data->effect_layer_cache.clear();
+            data->dirty = true;
+        }
     }
 
     sync_scene_mask_scenes_for_cue(data, title);
@@ -1169,6 +1252,12 @@ struct TitleGpuRenderSession {
         bool pending_upload = false;
         bool gpu_text = false;
         std::unique_ptr<bgs::gpu_text::Layer> text_layer;
+        /* Dynamic text revisions keep only shaped-layout references and a
+         * cluster/UTF-8 remap. Glyph indices from an old cue/clock value are
+         * never reused by the new layout. */
+        ImmutableTextLayout text_animation_layout;
+        TextAnimatorContentChange text_animation_change;
+        double text_animation_change_local_time = 0.0;
         bool gpu_primitive = false;
         int primitive_shape_type = 0;
         int primitive_vertex_count = 0;

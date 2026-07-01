@@ -284,7 +284,8 @@ static bool layer_can_use_direct_gpu_image_raster(const Layer &layer,
                                                    double title_time,
                                                    int transition_blur_padding)
 {
-    if (layer.type != LayerType::Image || layer.image_path.empty())
+    if (layer.type != LayerType::Image ||
+        effective_external_string(layer, ExternalPropertyPaths::ImagePath, layer.image_path).empty())
         return false;
     if (transition_blur_padding > 0 || layer_has_stackable_pixel_effects(layer))
         return false;
@@ -393,7 +394,8 @@ static bool direct_gpu_image_geometry(const Layer &layer, double title_time,
     if (box_w <= 0.0 || box_h <= 0.0)
         return false;
 
-    const QString image_path = QString::fromStdString(layer.image_path);
+    const QString image_path = QString::fromStdString(
+        effective_external_string(layer, ExternalPropertyPaths::ImagePath, layer.image_path));
     double image_w = eval_image_width(layer, t);
     double image_h = eval_image_height(layer, t);
     if (image_w <= 0.0 || image_h <= 0.0) {
@@ -433,7 +435,8 @@ static MotionBaseRaster render_gpu_image_layer_base_raster_direct(
                                    logical_width, logical_height))
         return result;
 
-    const QString image_path = QString::fromStdString(layer.image_path);
+    const QString image_path = QString::fromStdString(
+        effective_external_string(layer, ExternalPropertyPaths::ImagePath, layer.image_path));
     const int max_sample_dim = std::clamp(std::max(title.width, title.height) * 2,
                                           512, 4096);
     const double resolved_scale = std::clamp(raster_scale, 0.25, 1.0);
@@ -583,11 +586,17 @@ static QRect gpu_text_surface_rect(const Title &title, const Layer &layer,
 {
     QRect surface = clipped_effect_surface_rect(
         layer, local_time, std::max(1, title.width), std::max(1, title.height));
+    const double box_width = std::max(0.0, eval_box_width(layer, local_time));
+    const double box_height = std::max(0.0, eval_box_height(layer, local_time));
     const int inline_stroke_pad = static_cast<int>(std::ceil(
         std::max(0.0, max_rich_text_stroke_width(layer, local_time)))) + 2;
-    if (inline_stroke_pad > 2) {
-        surface = surface.adjusted(-inline_stroke_pad, -inline_stroke_pad,
-                                   inline_stroke_pad, inline_stroke_pad);
+    const int animator_pad = static_cast<int>(std::ceil(
+        text_animator_stack_visual_padding(layer.text_animators,
+                                           box_width, box_height)));
+    const int visual_pad = std::max(inline_stroke_pad, animator_pad);
+    if (visual_pad > 2) {
+        surface = surface.adjusted(-visual_pad, -visual_pad,
+                                   visual_pad, visual_pad);
         const int max_w = std::max(1, title.width);
         const int max_h = std::max(1, title.height);
         surface = surface.intersected(
@@ -602,12 +611,22 @@ static bool layer_can_use_gpu_text_raster(const Layer &layer,
 {
     if (!backend_available)
         return false;
-    if (layer.type != LayerType::Text && layer.type != LayerType::Clock)
+    if (layer.type != LayerType::Text && layer.type != LayerType::Clock &&
+        layer.type != LayerType::Ticker)
         return false;
-    /* Phase 12C keeps per-character transition isolation on the exact legacy
-     * adapter until transition units are emitted directly as GPU instances.
-     * General layer transitions already remain in the unified compositor. */
-    return active_text_layer_transition(layer, title_time) == nullptr;
+    /* Transition-managed animators currently use the compatibility raster
+     * compositor deliberately. It consumes the same TextAnimatorEvaluation as
+     * the SDF renderer, but preserves the proven BGL transition behaviour while
+     * the per-glyph GPU path is validated independently. This is not a legacy
+     * transition evaluator: descriptors have already been converted to the
+     * generic animator stack before reaching this branch. */
+    if (text_animator_stack_has_managed_transition(layer.text_animators))
+        return false;
+    /* Legacy project/preset data is converted before rendering. There is no
+     * legacy text-transition runtime fallback; all text animation reaches this
+     * shared shaped-layout/TextAnimator path. */
+    (void)title_time;
+    return true;
 }
 
 static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
@@ -627,7 +646,51 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
     const QRectF style_rect = text_rect_for_style(
         QRectF(0.0, 0.0, box_width, box_height), layer);
     RichTextDocument model = rich_text_model_for_source_time(layer, local_time);
-    if (layer.text_overflow_mode == 2) {
+    double ticker_offset_x = 0.0;
+    double ticker_offset_y = 0.0;
+    const bool ticker_layer = layer.type == LayerType::Ticker;
+    const bool ticker_custom_playback = ticker_layer &&
+        layer.ticker_playback_mode == static_cast<int>(TickerPlaybackMode::CustomPlayback);
+    const double ticker_completion = ticker_layer ? std::clamp(
+        layer.ticker_completion_prop.is_animated()
+            ? layer.ticker_completion_prop.evaluate(local_time)
+            : layer.ticker_completion,
+        0.0, 100.0) / 100.0 : 0.0;
+    TickerRuntimeSnapshot ticker_state;
+    if (ticker_layer)
+        ticker_state = bgs::ticker_runtime::sample(
+            session->title.id, layer,
+            session->title.current_cue_row >= 0 ||
+                session->title.pending_cue_row >= 0);
+
+    if (ticker_layer && layer.ticker_style == 0) {
+        QString ticker_text = QString::fromStdString(model.plain_text);
+        ticker_text.replace('\r', ' ');
+        ticker_text.replace('\n', QStringLiteral("     •     "));
+        const RichTextCharFormat insertion_format =
+            rich_text_effective_typing_format(model);
+        rich_text_document_replace_text_canonical(
+            model, ticker_text.toStdString(), insertion_format,
+            model.has_typing_format ? model.typing_format_mask : 0);
+    } else if (ticker_layer && layer.ticker_style == 1) {
+        const QFont ticker_font = font_for_layer(layer, local_time);
+        const QStringList lines = ticker_lines(
+            QString::fromStdString(model.plain_text), ticker_font,
+            style_rect.width(), false);
+        const int line_count = std::max(1, static_cast<int>(lines.size()));
+        int index = ticker_custom_playback
+            ? std::min(line_count - 1,
+                       static_cast<int>(std::floor(ticker_completion * line_count)))
+            : static_cast<int>(std::floor(
+                  ticker_state.time_seconds / std::max(0.1, layer.ticker_line_hold))) %
+                  line_count;
+        if (layer.ticker_direction == 0) index = line_count - 1 - index;
+        const RichTextCharFormat insertion_format =
+            rich_text_effective_typing_format(model);
+        rich_text_document_replace_text_canonical(
+            model, lines.value(index).toStdString(), insertion_format,
+            model.has_typing_format ? model.typing_format_mask : 0);
+    } else if (layer.text_overflow_mode == 2) {
         const QString fitted = overflow_layout_text(
             QString::fromStdString(model.plain_text), layer);
         const RichTextCharFormat insertion_format =
@@ -639,12 +702,18 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
 
     TextLayoutRequest request;
     request.document = model;
-    request.max_width = static_cast<float>(std::max(1.0, style_rect.width()));
-    request.max_height = static_cast<float>(std::max(1.0, style_rect.height()));
+    request.max_width = static_cast<float>(std::max(
+        1.0, ticker_layer && layer.ticker_style == 0
+            ? 1000000.0 : style_rect.width()));
+    request.max_height = static_cast<float>(std::max(
+        1.0, ticker_layer && layer.ticker_style == 2
+            ? std::max(style_rect.height(), 100000.0) : style_rect.height()));
     request.device_scale = 1.0f;
     request.minimum_horizontal_fit =
         std::clamp(layer.text_fit_min_scale, 0.05f, 1.0f);
-    request.overflow_mode = layer.text_overflow_mode;
+    request.overflow_mode = ticker_layer
+        ? (layer.ticker_style == 2 ? layer.text_overflow_mode : 1)
+        : layer.text_overflow_mode;
     /* LayerRaster already owns the last prepared editor layer and calls this
      * function only after its model key changes.  Keeping every intermediate
      * typed string in the process-wide layout cache provided no editor reuse
@@ -654,6 +723,31 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         : cached_text_layout(request);
     if (!layout || !layout->valid)
         return false;
+
+    if (ticker_layer) {
+        const double speed = std::max(1.0, layer.ticker_speed);
+        if (layer.ticker_style == 0) {
+            const double text_width = std::max(1.0,
+                static_cast<double>(layout->natural_width));
+            const double travel = style_rect.width() + text_width;
+            const double progress = ticker_custom_playback
+                ? ticker_completion * travel
+                : std::fmod(ticker_state.time_seconds * speed, travel);
+            ticker_offset_x = layer.ticker_direction == 0
+                ? -text_width + progress
+                : style_rect.width() - progress;
+        } else if (layer.ticker_style == 2) {
+            const double content_height = std::max(1.0,
+                static_cast<double>(layout->natural_height));
+            const double travel = style_rect.height() + content_height;
+            const double progress = ticker_custom_playback
+                ? ticker_completion * travel
+                : std::fmod(ticker_state.time_seconds * speed, travel);
+            ticker_offset_y = layer.ticker_direction == 0
+                ? -content_height + progress
+                : style_rect.height() - progress;
+        }
+    }
 
     if (!session->text_renderer)
         session->text_renderer =
@@ -665,8 +759,8 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         -eval_origin_x(layer, local_time) * box_width - surface_rect.x();
     const double box_local_y =
         -eval_origin_y(layer, local_time) * box_height - surface_rect.y();
-    const double text_offset_x = box_local_x + style_rect.x();
-    const double text_offset_y = box_local_y + style_rect.y();
+    const double text_offset_x = box_local_x + style_rect.x() + ticker_offset_x;
+    const double text_offset_y = box_local_y + style_rect.y() + ticker_offset_y;
     const double clip_pad =
         std::max(0.0, max_rich_text_stroke_width(layer, local_time)) + 2.0;
     const QRectF target_bounds(0.0, 0.0, surface_rect.width(),
@@ -692,10 +786,41 @@ static bool prepare_gpu_text_raster(TitleGpuRenderSession *session,
         ? std::clamp(session->preview_quality_scale, 0.25f, 1.0f)
         : 1.0f;
 
+    if (!entry.text_animation_layout ||
+        entry.text_animation_layout->key.content != layout->key.content) {
+        if (entry.text_animation_layout && entry.text_animation_layout->valid) {
+            entry.text_animation_change = map_text_animator_content_change(
+                *entry.text_animation_layout, *layout);
+            entry.text_animation_change_local_time = local_time;
+            if (!entry.text_animation_change.identical) {
+                BGL_LOG_DEBUG("TextAnimator", QStringLiteral(
+                    "stage=content-remap layer=%1 added=%2 changed=%3 removed=%4 localTime=%5")
+                    .arg(QString::fromStdString(layer.id))
+                    .arg(entry.text_animation_change.added_byte_ranges.size())
+                    .arg(entry.text_animation_change.changed_byte_ranges.size())
+                    .arg(entry.text_animation_change.removed_byte_ranges.size())
+                    .arg(local_time, 0, 'f', 6));
+            }
+        } else {
+            entry.text_animation_change = TextAnimatorContentChange();
+            entry.text_animation_change.identical = true;
+            entry.text_animation_change_local_time = local_time;
+        }
+        entry.text_animation_layout = layout;
+    }
+
+    const TextAnimatorStack evaluation_stack =
+        entry.text_animation_change.identical
+            ? layer.text_animators
+            : text_animator_stack_for_content_change(
+                  layer.text_animators, entry.text_animation_change,
+                  entry.text_animation_change_local_time);
+    const TextAnimatorEvaluation text_animation =
+        evaluate_text_animators(evaluation_stack, *layout, local_time);
     if (!session->text_renderer->prepare(
             *entry.text_layer, layout,
             text_layout_paint_runs_canonical(request.document), options,
-            failure_reason))
+            &text_animation, failure_reason))
         return false;
 
     entry.gpu_text = true;

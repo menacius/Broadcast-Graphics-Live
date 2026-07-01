@@ -53,6 +53,10 @@ struct Title {
 
     std::vector<std::shared_ptr<Layer>> layers;  /* bottom → top order */
 
+    /* Provider-neutral external-data schema authored with this title. Current
+     * values, timestamps and connection state are runtime-only manager state. */
+    std::vector<ExternalDataSourceDefinition> external_data_sources;
+
     /* Editor defaults persisted with the title/template. These are used only
      * as the initial style for newly-created layers; they must not affect
      * rendering and must not carry an effect stack. */
@@ -66,6 +70,8 @@ struct Title {
     std::vector<std::vector<std::string>> live_text_rows;
     std::vector<std::string> live_text_row_ids; /* persistent stable IDs parallel to live_text_rows */
     std::vector<std::string> live_text_column_order; /* exposed text layer IDs by logical cue column */
+    std::vector<LiveTextExternalBinding> live_text_external_bindings; /* optional provider bindings keyed by stable row/layer IDs */
+    std::vector<LiveTextTableBinding> live_text_table_bindings; /* source-managed table-to-cue row mappings */
     std::string live_text_header_state; /* base64-encoded dock header layout */
     std::string preview_screenshot_png_base64; /* manually captured title-list thumbnail */
     bool external_data_enabled = false; /* live text cue external data source toggle */

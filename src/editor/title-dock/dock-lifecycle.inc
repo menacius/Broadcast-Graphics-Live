@@ -32,6 +32,46 @@ TitleDock::TitleDock(QWidget *parent)
                 refresh();
         });
     });
+    const QPointer<TitleDock> external_table_guard(this);
+    external_data_callback_id_ = ExternalDataManager::instance().on_change(
+        [external_table_guard](const ExternalDataUpdate &update) {
+            if (!external_table_guard || !update.table_changed)
+                return;
+            ExternalDataLog::write_lazy(
+                ExternalDataLogLevel::Debug, "Dock", [&]() {
+                    std::ostringstream stream;
+                    stream << "table update received source="
+                           << ExternalDataLog::sanitize(update.source_id, 160)
+                           << " table=" << ExternalDataLog::sanitize(update.table_path, 320)
+                           << " sequence=" << update.sequence;
+                    return stream.str();
+                });
+            QTimer::singleShot(0, external_table_guard,
+                [external_table_guard, update]() {
+                    if (!external_table_guard)
+                        return;
+                    bool selected_changed = false;
+                    for (const auto &title : TitleDataStore::instance().titles()) {
+                        if (!title || !title_uses_external_update(*title, update))
+                            continue;
+                        if (!synchronize_live_text_table_bindings(*title, update.source_id))
+                            continue;
+                        TitleDataStore::instance().touch_runtime_change();
+                        CacheManager::instance().refreshLiveCueStructureAsync(title);
+                        if (title->id == external_table_guard->selected_id())
+                            selected_changed = true;
+                    }
+                    ExternalDataLog::write_lazy(
+                        ExternalDataLogLevel::Debug, "Dock", [&]() {
+                            return std::string("table update applied source=") +
+                                   ExternalDataLog::sanitize(update.source_id, 160) +
+                                   " selectedChanged=" + (selected_changed ? "1" : "0");
+                        });
+                    if (selected_changed &&
+                        !external_table_guard->updating_exposed_text_)
+                        external_table_guard->populate_exposed_text();
+                });
+        });
 
     install_obs_state_callbacks();
     populate_list();
@@ -257,6 +297,7 @@ void TitleDock::update_live_text_runtime_status_fast(const std::shared_ptr<Title
     text_table_->viewport()->update();
 
     update_live_cue_timer_label();
+    update_titles_compact_rail();
 
     // The aggregate cache badge can be comparatively expensive on titles with many cue rows
     // because it queries every cue.  Defer it so row/program feedback stays immediate.
@@ -294,6 +335,7 @@ void TitleDock::update_live_text_runtime_status(const std::shared_ptr<Title> &ti
         cue_table->viewport()->update();
     text_table_->viewport()->update();
     update_live_cue_timer_label();
+    update_titles_compact_rail();
 }
 
 void TitleDock::refresh_title_list_cue_visual_states()
@@ -326,6 +368,7 @@ void TitleDock::refresh_title_list_cue_visual_states()
     // regression in this include path.
     if (visual_state_changed && list_->viewport())
         list_->viewport()->update();
+    update_titles_compact_rail();
 }
 
 void TitleDock::schedule_title_list_cache_icon_update(const QString &title_id)
@@ -386,6 +429,8 @@ void TitleDock::update_title_list_cache_icon(const QString &title_id)
                                   aggregate_live_cue_cache_tooltip(cache_status)));
         break;
     }
+    if (title_id == QString::fromStdString(selected_id()))
+        update_titles_compact_rail();
 }
 
 void TitleDock::update_live_text_select_cell_status(int row)
@@ -498,11 +543,14 @@ void TitleDock::adjust_live_text_table_columns(bool fill_to_viewport)
 
 TitleDock::~TitleDock()
 {
+    save_dock_settings();
     BGL_LOG_INFO("Dock", QStringLiteral("Dock destroyed"));
     remove_obs_state_callbacks();
 
     TitleDataStore::instance().remove_change_callback(change_callback_id_);
     change_callback_id_ = 0;
+    ExternalDataManager::instance().remove_change_callback(external_data_callback_id_);
+    external_data_callback_id_ = 0;
 
     stop_playlist();
     if (live_refresh_timer_)
@@ -539,9 +587,32 @@ void TitleDock::load_dock_settings()
                                           kMinLiveTextLinesPerRow,
                                           kMaxLiveTextLinesPerRow);
 
+    titles_collapsed_ = settings.value(QString::fromUtf8(kTitlesCollapsedKey),
+                                        titles_collapsed_).toBool();
+    titles_expanded_width_ = std::max(kTitlesMinimumExpandedWidth,
+        settings.value(QString::fromUtf8(kTitlesExpandedWidthKey), titles_expanded_width_).toInt());
+    const bool has_saved_expanded_splitter =
+        settings.contains(QString::fromUtf8(kTitlesExpandedSplitterSizeKey));
+    titles_expanded_splitter_size_ = std::max(kTitlesCompactRailHeight + 8,
+        settings.value(QString::fromUtf8(kTitlesExpandedSplitterSizeKey),
+                       titles_expanded_splitter_size_).toInt());
+    const int stored_area = settings.value(QString::fromUtf8(kStoredDockAreaKey),
+                                           static_cast<int>(stored_dock_area_)).toInt();
+    if (stored_area == static_cast<int>(Qt::LeftDockWidgetArea) ||
+        stored_area == static_cast<int>(Qt::RightDockWidgetArea) ||
+        stored_area == static_cast<int>(Qt::TopDockWidgetArea) ||
+        stored_area == static_cast<int>(Qt::BottomDockWidgetArea)) {
+        stored_dock_area_ = static_cast<Qt::DockWidgetArea>(stored_area);
+    }
+
     const QByteArray splitter_state = settings.value(QString::fromUtf8(kDockSplitterStateKey)).toByteArray();
     if (!splitter_state.isEmpty() && sections_)
         sections_->restoreState(splitter_state);
+    if (!has_saved_expanded_splitter && sections_) {
+        const QList<int> sizes = sections_->sizes();
+        if (!sizes.isEmpty() && sizes.front() > kTitlesCompactRailHeight + 8)
+            titles_expanded_splitter_size_ = sizes.front();
+    }
 
     settings.endGroup();
 }
@@ -562,6 +633,12 @@ void TitleDock::save_dock_settings() const
     settings.setValue(QString::fromUtf8(kBackgroundPersistenceKey), background_persistence_);
     settings.setValue(QString::fromUtf8(kTextPersistenceKey), text_persistence_);
     settings.setValue(QString::fromUtf8(kLiveTextLinesPerRowKey), live_text_lines_per_row_);
+    settings.setValue(QString::fromUtf8(kTitlesCollapsedKey), titles_collapsed_);
+    settings.setValue(QString::fromUtf8(kTitlesExpandedWidthKey), titles_expanded_width_);
+    settings.setValue(QString::fromUtf8(kTitlesExpandedSplitterSizeKey),
+                      titles_expanded_splitter_size_);
+    settings.setValue(QString::fromUtf8(kStoredDockAreaKey),
+                      static_cast<int>(stored_dock_area_));
 
     settings.endGroup();
 }
@@ -608,8 +685,9 @@ void TitleDock::remove_obs_state_callbacks()
 
 void TitleDock::refresh_for_obs_source_state_change()
 {
-    if (!visibility_filter_active_) return;
-    populate_list();
+    update_titles_compact_rail();
+    if (visibility_filter_active_)
+        populate_list();
 }
 
 void TitleDock::on_obs_source_state_signal(void *priv, calldata_t *)
@@ -649,13 +727,19 @@ void TitleDock::build_ui()
     sections_->setChildrenCollapsible(false);
     root->addWidget(sections_, 1);
 
-    auto *template_section = new QWidget(sections_);
-    auto *template_layout = new QVBoxLayout(template_section);
+    titles_section_ = new QWidget(sections_);
+    auto *titles_section_layout = new QVBoxLayout(titles_section_);
+    titles_section_layout->setContentsMargins(0, 0, 0, 0);
+    titles_section_layout->setSpacing(0);
+
+    titles_expanded_content_ = new QWidget(titles_section_);
+    auto *template_layout = new QVBoxLayout(titles_expanded_content_);
     template_layout->setContentsMargins(0, 0, 0, 0);
-    template_layout->setSpacing(obs_layout_spacing(template_section));
+    template_layout->setSpacing(obs_layout_spacing(titles_expanded_content_));
+    titles_section_layout->addWidget(titles_expanded_content_, 1);
 
     /* ── header toolbar ── */
-    auto *template_toolbar = make_obs_dock_toolbar(template_section);
+    auto *template_toolbar = make_obs_dock_toolbar(titles_expanded_content_);
 
     btn_add_ = make_obs_dock_tool_button(template_toolbar, bgl_tr("OBSTitles.Add"), obs_icon("add.svg"),
                                          bgl_tr("OBSTitles.AddTooltip"));
@@ -693,26 +777,33 @@ void TitleDock::build_ui()
     template_toolbar->addWidget(btn_scene_);
 
     /* ── template/title section ── */
-    auto *template_header = new QHBoxLayout();
-    template_header->setContentsMargins(0, 0, 0, 0);
-    template_header->setSpacing(0);
+    titles_header_layout_ = new QHBoxLayout();
+    titles_header_layout_->setContentsMargins(0, 0, 0, 0);
+    titles_header_layout_->setSpacing(0);
 
-    template_lbl_ = new QLabel(current_scene_collection_titles_label(), template_section);
+    btn_titles_collapse_ = new BglCaretButton(titles_expanded_content_);
+    btn_titles_collapse_->setAutoRaise(true);
+    btn_titles_collapse_->setFocusPolicy(Qt::NoFocus);
+    btn_titles_collapse_->setAccessibleName(bgl_tr("OBSTitles.CollapseTitlesAndGraphics"));
+    btn_titles_collapse_->setToolTip(bgl_tr("OBSTitles.CollapseTitlesAndGraphics"));
+    titles_header_layout_->addWidget(btn_titles_collapse_);
+
+    template_lbl_ = new QLabel(current_scene_collection_titles_label(), titles_expanded_content_);
     set_bold_label(template_lbl_);
-    template_header->addWidget(template_lbl_);
-    template_header->addStretch();
-    auto *build_label = new QLabel(QStringLiteral(BGL_BUILD_DISPLAY), template_section);
+    titles_header_layout_->addWidget(template_lbl_);
+    titles_header_layout_->addStretch();
+    auto *build_label = new QLabel(QStringLiteral(BGL_BUILD_DISPLAY), titles_expanded_content_);
     build_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     build_label->setToolTip(QStringLiteral("Delivery identifier for this package"));
     QFont build_font = build_label->font();
     build_font.setPointSize(std::max(1, build_font.pointSize() - 1));
     build_label->setFont(build_font);
     build_label->setProperty("bglSecondaryText", true);
-    template_header->addWidget(build_label);
-    template_layout->addLayout(template_header);
+    titles_header_layout_->addWidget(build_label);
+    template_layout->addLayout(titles_header_layout_);
     template_layout->addWidget(template_toolbar);
 
-    auto *title_list = new TitleListWidget(template_section);
+    auto *title_list = new TitleListWidget(titles_expanded_content_);
     title_list->delete_requested = [this]() { on_delete(); };
     title_list->files_dropped = [this](const QStringList &paths) { import_title_paths(paths); };
     list_ = title_list;
@@ -742,6 +833,47 @@ void TitleDock::build_ui()
         menu.exec(list_->viewport()->mapToGlobal(pos));
     });
     template_layout->addWidget(list_, 1);
+
+    titles_compact_rail_ = new QWidget(titles_section_);
+    titles_compact_rail_->setObjectName(QStringLiteral("BglTitlesCompactRail"));
+    titles_compact_rail_->setFixedHeight(kTitlesCompactRailHeight);
+    titles_compact_layout_ = new QHBoxLayout(titles_compact_rail_);
+    titles_compact_layout_->setContentsMargins(4, 2, 4, 2);
+    titles_compact_layout_->setSpacing(4);
+
+    btn_titles_expand_ = new BglCaretButton(titles_compact_rail_);
+    btn_titles_expand_->setAutoRaise(true);
+    btn_titles_expand_->setFocusPolicy(Qt::NoFocus);
+    btn_titles_expand_->setAccessibleName(bgl_tr("OBSTitles.ExpandTitlesAndGraphics"));
+    btn_titles_expand_->setToolTip(bgl_tr("OBSTitles.ExpandTitlesAndGraphics"));
+    titles_compact_layout_->addWidget(btn_titles_expand_);
+
+    titles_compact_dock_icon_ = new QLabel(titles_compact_rail_);
+    titles_compact_dock_icon_->setPixmap(bgl_brand_icon().pixmap(20, 20));
+    titles_compact_dock_icon_->setToolTip(bgl_tr("OBSTitles.DockName"));
+    titles_compact_layout_->addWidget(titles_compact_dock_icon_);
+
+    titles_compact_active_title_ = new QToolButton(titles_compact_rail_);
+    titles_compact_active_title_->setAutoRaise(true);
+    titles_compact_active_title_->setFocusPolicy(Qt::NoFocus);
+    titles_compact_active_title_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    titles_compact_active_title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    titles_compact_active_title_->setMinimumWidth(0);
+    titles_compact_layout_->addWidget(titles_compact_active_title_, 1);
+
+    titles_compact_cue_state_ = new QToolButton(titles_compact_rail_);
+    titles_compact_cue_state_->setAutoRaise(true);
+    titles_compact_cue_state_->setFocusPolicy(Qt::NoFocus);
+    titles_compact_cue_state_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    titles_compact_layout_->addWidget(titles_compact_cue_state_);
+
+    titles_compact_cache_state_ = new QToolButton(titles_compact_rail_);
+    titles_compact_cache_state_->setAutoRaise(true);
+    titles_compact_cache_state_->setFocusPolicy(Qt::NoFocus);
+    titles_compact_cache_state_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    titles_compact_layout_->addWidget(titles_compact_cache_state_);
+    titles_section_layout->addWidget(titles_compact_rail_);
+    titles_compact_rail_->hide();
 
     auto *live_section = new QWidget(sections_);
     auto *live_layout = new QVBoxLayout(live_section);
@@ -783,6 +915,10 @@ void TitleDock::build_ui()
                                  this, &TitleDock::on_import_append_live_text_data);
     data_sources_menu->addAction(obs_icon("export.svg"), bgl_tr("OBSTitles.ExportData"),
                                  this, &TitleDock::on_export_live_text_data);
+    data_sources_menu->addSeparator();
+    data_sources_menu->addAction(obs_icon("import.svg"),
+                                 QStringLiteral("Populate from external table…"),
+                                 this, &TitleDock::on_map_external_table);
     btn_data_sources_->setMenu(data_sources_menu);
     btn_data_sources_->setPopupMode(QToolButton::InstantPopup);
     btn_data_sources_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
@@ -901,7 +1037,7 @@ void TitleDock::build_ui()
     live_layout->addWidget(text_table_, 1);
     live_layout->addWidget(live_toolbar);
 
-    sections_->addWidget(template_section);
+    sections_->addWidget(titles_section_);
     sections_->addWidget(live_section);
     sections_->setStretchFactor(0, 2);
     sections_->setStretchFactor(1, 1);
@@ -926,6 +1062,19 @@ void TitleDock::build_ui()
     btn_add_->setMenu(add_menu);
     btn_add_->setPopupMode(QToolButton::InstantPopup);
     btn_add_->setStyleSheet(QStringLiteral("QToolButton::menu-indicator{image:none;width:0px;}"));
+
+    connect(btn_titles_collapse_, &QToolButton::clicked, this,
+            [this]() { set_titles_collapsed(true); });
+    connect(btn_titles_expand_, &QToolButton::clicked, this,
+            [this]() { set_titles_collapsed(false); });
+    connect(this, &QDockWidget::dockLocationChanged, this,
+            [this](Qt::DockWidgetArea area) { update_stored_dock_area(area); });
+    connect(this, &QDockWidget::topLevelChanged, this, [this](bool floating) {
+        update_titles_collapse_direction();
+        if (floating && !titles_collapsed_ && titles_expanded_width_ >= kTitlesMinimumExpandedWidth)
+            resize(titles_expanded_width_, height());
+        save_dock_settings();
+    });
 
     connect(btn_dup_,   &QToolButton::clicked, this, &TitleDock::on_duplicate);
     connect(btn_rename_, &QToolButton::clicked, this, &TitleDock::on_rename);

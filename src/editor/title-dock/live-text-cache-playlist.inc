@@ -488,6 +488,155 @@ void TitleDock::populate_exposed_text()
     }
     adjust_live_text_table_columns(first_width_fit_for_title);
 
+    auto configure_external_cell_binding =
+        [this, title](QWidget *widget, int row, int col,
+                      const std::shared_ptr<Layer> &layer,
+                      const std::string &authored_value) {
+            if (!widget || !layer) return;
+            const std::string row_id = live_text_row_id(*title, row);
+            const LiveTextCueCellState cell_state =
+                live_text_cue_cell_state(*title, row_id, layer->id);
+            const auto *existing = live_text_external_binding_for_cell(
+                *title, row_id, layer->id);
+            const bool table_managed =
+                cell_state == LiveTextCueCellState::ExternalTableManaged;
+            const bool table_detached =
+                cell_state == LiveTextCueCellState::DetachedFromTable;
+            widget->setProperty("liveCueCellState",
+                table_managed ? "external-table-managed"
+                : table_detached ? "external-table-detached"
+                : existing ? "external-bound" : "authored");
+            widget->setProperty("externalDataBound", existing != nullptr);
+            widget->setProperty("externalTableManaged", table_managed);
+            widget->setProperty("externalTableReadOnly", table_managed);
+
+            if (auto *edit = dynamic_cast<LiveTextCueField *>(widget))
+                edit->setReadOnly(table_managed);
+            if (auto *image = dynamic_cast<LiveImageCueField *>(widget))
+                image->set_read_only(table_managed);
+
+            QFont display_font = widget->font();
+            display_font.setItalic(table_managed);
+            widget->setFont(display_font);
+            const QString base_tip = widget->toolTip();
+            if (table_managed) {
+                const QString binding_tip = QStringLiteral(
+                    "Mapped table data · read-only\n%1 · %2\n"
+                    "Use ‘Convert to editable value’ to detach this cell.")
+                    .arg(QString::fromStdString(existing ? existing->binding.source_id : std::string{}),
+                         QString::fromStdString(existing ? existing->binding.field_path : std::string{}));
+                widget->setToolTip(base_tip.isEmpty() ? binding_tip
+                                                      : base_tip + QStringLiteral("\n") + binding_tip);
+            } else if (table_detached) {
+                const QString detached_tip = QStringLiteral(
+                    "Editable value detached from its table mapping.");
+                widget->setToolTip(base_tip.isEmpty() ? detached_tip
+                                                      : base_tip + QStringLiteral("\n") + detached_tip);
+            } else if (existing) {
+                const QString binding_tip = QStringLiteral("External data: %1 · %2")
+                    .arg(QString::fromStdString(existing->binding.source_id),
+                         QString::fromStdString(existing->binding.field_path));
+                widget->setToolTip(base_tip.isEmpty() ? binding_tip
+                                                      : base_tip + QStringLiteral("\n") + binding_tip);
+            }
+            if (existing) {
+                widget->setStyleSheet(widget->styleSheet() + QStringLiteral(
+                    "QPlainTextEdit{border:2px solid #f0a000;}"
+                    "QWidget[externalDataBound=\"true\"]{border:2px solid #f0a000;}"));
+            }
+            widget->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(widget, &QWidget::customContextMenuRequested, this,
+                    [this, title, row, col, layer, authored_value, widget](const QPoint &point) {
+                const std::string row_id = live_text_row_id(*title, row);
+                const LiveTextCueCellState state =
+                    live_text_cue_cell_state(*title, row_id, layer->id);
+                const auto *current = live_text_external_binding_for_cell(
+                    *title, row_id, layer->id);
+
+                QMenu menu(widget);
+                QAction *edit_action = nullptr;
+                QAction *remove_action = nullptr;
+                QAction *detach_action = nullptr;
+                QAction *restore_action = nullptr;
+                if (state == LiveTextCueCellState::ExternalTableManaged) {
+                    QAction *managed_label = menu.addAction(
+                        QStringLiteral("Externally managed table value"));
+                    managed_label->setEnabled(false);
+                    menu.addSeparator();
+                    detach_action = menu.addAction(
+                        QStringLiteral("Convert to editable value"));
+                } else {
+                    edit_action = menu.addAction(QStringLiteral("Bind external data…"));
+                    if (current)
+                        remove_action = menu.addAction(QStringLiteral("Remove external binding"));
+                    if (state == LiveTextCueCellState::DetachedFromTable)
+                        restore_action = menu.addAction(
+                            QStringLiteral("Restore table-managed value"));
+                }
+
+                QAction *chosen = menu.exec(widget->mapToGlobal(point));
+                if (!chosen) return;
+                if (chosen == detach_action) {
+                    const std::string live_value = effective_live_text_cue_value(
+                        *title, row, *layer, authored_value);
+                    if (row >= 0 && row < static_cast<int>(title->live_text_rows.size()) &&
+                        col >= 0 && col < static_cast<int>(title->live_text_rows[row].size()))
+                        title->live_text_rows[row][col] = live_value;
+                    if (!detach_live_text_table_cell(*title, row_id, layer->id))
+                        return;
+                    TitleDataStore::instance().save();
+                    TitleDataStore::instance().touch_runtime_change();
+                    CacheManager::instance().refreshLiveCueStructureAsync(title);
+                    seen_store_revision_ = TitleDataStore::instance().revision();
+                    populate_exposed_text();
+                    return;
+                }
+                if (chosen == restore_action) {
+                    if (!restore_live_text_table_cell(*title, row_id, layer->id))
+                        return;
+                    synchronize_live_text_table_bindings(*title);
+                    TitleDataStore::instance().save();
+                    TitleDataStore::instance().touch_runtime_change();
+                    CacheManager::instance().refreshLiveCueStructureAsync(title);
+                    seen_store_revision_ = TitleDataStore::instance().revision();
+                    populate_exposed_text();
+                    return;
+                }
+                if (chosen == remove_action) {
+                    remove_live_text_external_binding(*title, row_id, layer->id);
+                    synchronize_live_text_table_bindings(*title);
+                    TitleDataStore::instance().save();
+                    TitleDataStore::instance().notify_change();
+                    populate_exposed_text();
+                    return;
+                }
+                if (chosen != edit_action || !edit_action) return;
+                const std::string property = layer->type == LayerType::Image
+                    ? ExternalPropertyPaths::ImagePath : ExternalPropertyPaths::TextContent;
+                const ExternalDataValue authored = ExternalDataValue::string(
+                    authored_value, layer->type == LayerType::Image
+                        ? ExternalDataType::FilePath : ExternalDataType::String);
+                const ExternalPropertyBinding *binding = current ? &current->binding : nullptr;
+                ExternalDataBindingDialog dialog(title, property, authored, binding, this);
+                if (dialog.exec() != QDialog::Accepted) return;
+                if (dialog.remove_requested()) {
+                    remove_live_text_external_binding(*title, row_id, layer->id);
+                } else {
+                    LiveTextExternalBinding cell;
+                    cell.row_id = row_id;
+                    cell.layer_id = layer->id;
+                    cell.binding = dialog.binding();
+                    cell.binding.property_path = property;
+                    pin_external_data_field(*title, cell.binding.source_id,
+                                            cell.binding.field_path);
+                    set_live_text_external_binding(*title, std::move(cell));
+                }
+                TitleDataStore::instance().save();
+                TitleDataStore::instance().notify_change();
+                populate_exposed_text();
+            });
+        };
+
     for (int row = 0; row < (int)title->live_text_rows.size(); ++row) {
         text_table_->setVerticalHeaderItem(row, new QTableWidgetItem(QString::number(row + 1)));
         auto *select_item = new QTableWidgetItem();
@@ -504,25 +653,67 @@ void TitleDock::populate_exposed_text()
                 text_table_->setItem(row, col + kLiveFirstValueColumn, single_item);
                 continue;
             }
+            const std::string &authored_cell_value = title->live_text_rows[row][col];
+            /* Bound cue cells must display the resolved provider value, not the
+             * intentionally untouched authored/fallback storage. Table mappings
+             * create rows with bindings while leaving authored values empty, so
+             * constructing widgets from live_text_rows alone made correctly
+             * populated source-managed rows appear blank in the dock. */
+            const std::string displayed_cell_value = exposed[col]
+                ? effective_live_text_cue_value(
+                    *title, row, *exposed[col], authored_cell_value)
+                : authored_cell_value;
+            if (exposed[col]) {
+                const std::string row_id = live_text_row_id(*title, row);
+                const LiveTextCueCellState cell_state = live_text_cue_cell_state(
+                    *title, row_id, exposed[col]->id);
+                ExternalDataLog::write_lazy(
+                    cell_state == LiveTextCueCellState::ExternalTableManaged
+                        ? ExternalDataLogLevel::Debug
+                        : ExternalDataLogLevel::Trace,
+                    "DockCell", [&]() {
+                        std::ostringstream stream;
+                        stream << "populate title=" << ExternalDataLog::sanitize(title->id, 160)
+                               << " rowIndex=" << row
+                               << " rowId=" << ExternalDataLog::sanitize(row_id, 240)
+                               << " column=" << col
+                               << " layer=" << ExternalDataLog::sanitize(exposed[col]->id, 160)
+                               << " state=" << static_cast<int>(cell_state)
+                               << " authoredEmpty=" << (authored_cell_value.empty() ? 1 : 0)
+                               << " displayed=" << ExternalDataLog::value_summary(
+                                      ExternalDataValue::string(displayed_cell_value));
+                        return stream.str();
+                    });
+            }
             if (layer_uses_image_cue_value(exposed[col])) {
-                auto *image = new LiveImageCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+                auto *image = new LiveImageCueField(
+                    QString::fromStdString(displayed_cell_value), text_table_);
                 image->path_changed = [this, title, row, col](const QString &path) {
                     commit_live_text_cell_edit(title, row, col, path);
                 };
                 text_table_->setCellWidget(row, col + kLiveFirstValueColumn, image);
+                configure_external_cell_binding(image, row, col, exposed[col],
+                    authored_cell_value);
             } else {
-                auto *edit = new LiveTextCueField(QString::fromStdString(title->live_text_rows[row][col]), text_table_);
+                auto *edit = new LiveTextCueField(
+                    QString::fromStdString(displayed_cell_value), text_table_);
                 edit->setPlaceholderText(live_text_layer_header(exposed[col]));
                 edit->setStyleSheet("QPlainTextEdit{padding:3px;}");
                 edit->editing_finished = [this, title, row, col](const QString &text) {
                     commit_live_text_cell_edit(title, row, col, text);
                 };
-                QPointer<TitleDock> dock_guard(this);
-                edit->focus_changed = [dock_guard, title, row](bool focused) {
-                    if (dock_guard)
-                        dock_guard->set_live_text_row_render_paused(title, row, focused);
-                };
+                if (live_text_cue_cell_state(
+                        *title, live_text_row_id(*title, row), exposed[col]->id) !=
+                    LiveTextCueCellState::ExternalTableManaged) {
+                    QPointer<TitleDock> dock_guard(this);
+                    edit->focus_changed = [dock_guard, title, row](bool focused) {
+                        if (dock_guard)
+                            dock_guard->set_live_text_row_render_paused(title, row, focused);
+                    };
+                }
                 text_table_->setCellWidget(row, col + kLiveFirstValueColumn, edit);
+                configure_external_cell_binding(edit, row, col, exposed[col],
+                    authored_cell_value);
             }
         }
 
@@ -712,49 +903,22 @@ void TitleDock::on_toggle_external_data_source()
 
 void TitleDock::on_show_external_data_settings()
 {
-    QDialog dialog(this);
-    bgl_apply_brand_icon(&dialog);
-    dialog.setWindowTitle(bgl_tr("OBSTitles.ExternalDataSource"));
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *header = new QLabel(bgl_tr("OBSTitles.ExternalDataSource"), &dialog);
-    set_bold_label(header);
-    layout->addWidget(header);
-
-    auto *tabs = new QTabWidget(&dialog);
-    const QStringList names = {
-        bgl_tr("OBSTitles.CSV"),
-        bgl_tr("OBSTitles.URL"),
-        bgl_tr("OBSTitles.RSSFeed"),
-        bgl_tr("OBSTitles.DataSourcesSettings")
-    };
-    for (const QString &name : names) {
-        auto *tab = new QWidget(tabs);
-        auto *tab_layout = new QVBoxLayout(tab);
-        auto *placeholder = new QLabel(bgl_tr("OBSTitles.ExternalDataSettingsPlaceholder"), tab);
-        placeholder->setWordWrap(true);
-        tab_layout->addWidget(placeholder);
-        tab_layout->addStretch();
-        tabs->addTab(tab, name);
-    }
-    layout->addWidget(tabs);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::accept);
-    layout->addWidget(buttons);
-    dialog.resize(520, 360);
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title)
+        return;
+    ExternalDataSettingsDialog dialog(title, this);
     dialog.exec();
+    update_external_data_controls();
+    populate_exposed_text();
 }
 
 void TitleDock::on_refresh_external_data()
 {
     auto title = TitleDataStore::instance().get_title(selected_id());
-    if (!title) return;
-    auto exposed = exposed_text_layers(title);
-    normalize_live_text_rows(title, exposed);
-    TitleDataStore::instance().save();
-    TitleDataStore::instance().touch_runtime_change();
-    seen_store_revision_ = TitleDataStore::instance().revision();
-    populate_exposed_text();
+    if (!title)
+        return;
+    for (const auto &source : title->external_data_sources)
+        ExternalDataProviderService::instance().refresh_source(source.id);
     status_lbl_->setText(bgl_tr("OBSTitles.ExternalDataRefreshed"));
 }
 
@@ -958,6 +1122,75 @@ void TitleDock::select_title(const std::string &id)
         }
     }
 }
+
+void TitleDock::on_map_external_table()
+{
+    auto title = TitleDataStore::instance().get_title(selected_id());
+    if (!title)
+        return;
+    auto exposed = exposed_text_layers(title);
+    if (exposed.empty()) {
+        QMessageBox::information(
+            this, QStringLiteral("External table mapping"),
+            QStringLiteral("Expose at least one text, ticker, or image layer to Live Text Cues first."));
+        return;
+    }
+    if (title->external_data_sources.empty()) {
+        QMessageBox::information(
+            this, QStringLiteral("External table mapping"),
+            QStringLiteral("Create an external data source and refresh it before mapping a table."));
+        return;
+    }
+
+    normalize_live_text_rows(title, exposed);
+    const LiveTextTableBinding *existing = title->live_text_table_bindings.empty()
+        ? nullptr : &title->live_text_table_bindings.front();
+    ExternalDataTableMappingDialog dialog(title, existing, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    ExternalDataLog::write_lazy(
+        ExternalDataLogLevel::Info, "Dock", [&]() {
+            const LiveTextTableBinding mapping = dialog.mapping();
+            std::ostringstream stream;
+            stream << (dialog.remove_requested() ? "remove table mapping" : "apply table mapping")
+                   << " title=" << ExternalDataLog::sanitize(title->id, 160)
+                   << " id=" << ExternalDataLog::sanitize(mapping.id, 160)
+                   << " source=" << ExternalDataLog::sanitize(mapping.source_id, 160)
+                   << " table=" << ExternalDataLog::sanitize(mapping.table_path, 320)
+                   << " columns=" << mapping.columns.size();
+            return stream.str();
+        });
+    bool changed = false;
+    if (dialog.remove_requested()) {
+        if (existing)
+            changed = remove_live_text_table_binding(*title, existing->id, true);
+    } else {
+        LiveTextTableBinding mapping = dialog.mapping();
+        auto current = std::find_if(
+            title->live_text_table_bindings.begin(),
+            title->live_text_table_bindings.end(),
+            [&mapping](const LiveTextTableBinding &candidate) {
+                return candidate.id == mapping.id;
+            });
+        if (current == title->live_text_table_bindings.end())
+            title->live_text_table_bindings.push_back(std::move(mapping));
+        else
+            *current = std::move(mapping);
+        changed = true;
+        changed = synchronize_live_text_table_bindings(*title) || changed;
+    }
+
+    if (!changed)
+        return;
+    TitleDataStore::instance().save();
+    TitleDataStore::instance().touch_runtime_change();
+    CacheManager::instance().refreshLiveCueStructureAsync(title);
+    seen_store_revision_ = TitleDataStore::instance().revision();
+    populate_exposed_text();
+    update_external_data_controls();
+}
+
 
 std::shared_ptr<Title> TitleDock::create_template_title(const std::string &name,
                                                          int template_id)

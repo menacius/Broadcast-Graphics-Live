@@ -4,6 +4,8 @@
 
 #include "title-localization.h"
 #include "transition-preset-catalog.h"
+#include "text-animator-presets.h"
+#include "text-animator.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -406,100 +408,147 @@ private:
         font.setPixelSize(48);
         font.setBold(true);
         painter.setFont(font);
-        QFontMetricsF metrics(font);
+        const QFontMetricsF metrics(font);
         const qreal total_width = metrics.horizontalAdvance(text);
-        qreal x = area.center().x() - total_width / 2.0;
-        const qreal baseline = area.center().y() + metrics.ascent() / 2.0;
+        const qreal text_left = area.center().x() - total_width / 2.0;
+        const qreal text_top = area.center().y() - metrics.height() / 2.0;
+        const qreal baseline = text_top + metrics.ascent();
 
-        // Keep unit positions anchored to advances from the complete string.
-        // Summing isolated glyph widths loses pair kerning (for example A/V),
-        // which made the preview disagree with the renderer.
-        QVector<QPair<int, int>> unit_ranges;
-        if (transition_.unit == LayerTransitionUnit::Word) {
-            unit_ranges = {{0, 3}, {3, 1}, {4, 2}};
-        } else if (transition_.unit == LayerTransitionUnit::Sentence) {
-            unit_ranges = {{0, text.size()}};
-        } else {
-            for (int i = 0; i < text.size(); ++i)
-                unit_ranges.push_back({i, 1});
+        /* Build the small immutable layout consumed by the real selector and
+         * animator evaluator. Preview rendering remains lightweight QPainter,
+         * but timing, ordering, easing, reveal bounds and transform origins are
+         * no longer reimplemented in the dialog. */
+        TextLayoutData layout;
+        layout.text = text.toUtf8().toStdString();
+        layout.valid = true;
+        layout.width = layout.natural_width = static_cast<float>(total_width);
+        layout.height = layout.natural_height =
+            static_cast<float>(metrics.height());
+        layout.clusters.reserve(static_cast<size_t>(text.size()));
+        for (int index = 0; index < text.size(); ++index) {
+            const qreal x0 = metrics.horizontalAdvance(text.left(index));
+            const qreal x1 = metrics.horizontalAdvance(text.left(index + 1));
+            TextLayoutCluster cluster;
+            cluster.byte_start = static_cast<size_t>(index);
+            cluster.byte_length = 1;
+            cluster.line_index = 0;
+            cluster.x = static_cast<float>(x0);
+            cluster.y = 0.0f;
+            cluster.width = static_cast<float>(std::max<qreal>(0.0, x1 - x0));
+            cluster.height = static_cast<float>(metrics.height());
+            layout.clusters.push_back(cluster);
         }
+        TextLayoutLine line;
+        line.byte_start = 0;
+        line.byte_length = layout.text.size();
+        line.cluster_begin = 0;
+        line.cluster_count = static_cast<uint32_t>(layout.clusters.size());
+        line.x = 0.0f;
+        line.y = 0.0f;
+        line.width = static_cast<float>(total_width);
+        line.height = static_cast<float>(metrics.height());
+        line.baseline = static_cast<float>(metrics.ascent());
+        line.ascent = static_cast<float>(metrics.ascent());
+        line.descent = static_cast<float>(metrics.descent());
+        layout.lines.push_back(line);
 
-        int animated_count = 0;
-        for (const auto &range : unit_ranges) {
-            if (!text.mid(range.first, range.second).trimmed().isEmpty())
-                ++animated_count;
-        }
-        int animated_index = 0;
-        const qreal text_left = x;
-        for (const auto &range : unit_ranges) {
-            const QString unit = text.mid(range.first, range.second);
-            const qreal unit_left = text_left + metrics.horizontalAdvance(text.left(range.first));
-            const qreal unit_right = text_left + metrics.horizontalAdvance(
-                text.left(range.first + range.second));
-            x = unit_left;
-            const qreal width = std::max<qreal>(0.0, unit_right - unit_left);
-            if (unit.trimmed().isEmpty())
+        const double duration = std::max(1.0 / 240.0, transition_.duration);
+        TextAnimatorStack stack;
+        stack.schema_version = kTextAnimatorSchemaVersion;
+        stack.animators.push_back(make_text_animator_from_legacy_transition(
+            transition_, 0.0, duration, nullptr));
+        const TextAnimatorEvaluation evaluation = evaluate_text_animators(
+            stack, layout, std::clamp(phase, 0.0, 1.0) * duration);
+        if (evaluation.clusters.size() != layout.clusters.size())
+            return;
+
+        const TextAnimatorUnitMap unit_map = build_text_animator_unit_map(layout);
+        const TextAnimatorUnit granularity = stack.animators.front().granularity;
+        const auto &units = unit_map.units(granularity);
+        for (const TextAnimatorUnitRange &unit : units) {
+            if (unit.whitespace || unit.cluster_count == 0 ||
+                unit.cluster_begin >= evaluation.clusters.size())
                 continue;
-            int order = transition_.reverse_order ? animated_count - 1 - animated_index : animated_index;
-            const double delay = animated_count <= 1 ? 0.0 : transition_.stagger * order / (animated_count - 1.0);
-            const double global_progress = layer_transition_ease(
-                transition_.edge == LayerTransitionEdge::In ? phase : 1.0 - phase,
-                transition_.easing);
-            const double span = std::max(0.05, 1.0 - transition_.stagger);
-            double local = transition_.edge == LayerTransitionEdge::In
-                ? std::clamp((global_progress - delay) / span, 0.0, 1.0)
-                : 1.0 - std::clamp(((1.0 - global_progress) - delay) / span, 0.0, 1.0);
-            local = layer_transition_ease(local, transition_.easing);
-            const double hidden = 1.0 - local;
-            double dx = 0.0, dy = 0.0;
-            if (transition_.type == LayerTransitionType::TextSlide ||
-                transition_.type == LayerTransitionType::TextBlurSlide) {
-                switch (transition_.direction) {
-                case LayerTransitionDirection::Right: dx = transition_.offset * hidden * 0.45; break;
-                case LayerTransitionDirection::Up: dy = -transition_.offset * hidden * 0.45; break;
-                case LayerTransitionDirection::Down: dy = transition_.offset * hidden * 0.45; break;
-                case LayerTransitionDirection::Left:
-                case LayerTransitionDirection::None:
-                default: dx = -transition_.offset * hidden * 0.45; break;
-                }
-            }
-            const double scale = transition_.type == LayerTransitionType::TextScale
-                ? transition_.scale_from + (1.0 - transition_.scale_from) * local : 1.0;
+            const size_t end = std::min(
+                unit.cluster_begin + unit.cluster_count,
+                layout.clusters.size());
+            const TextLayoutCluster &first = layout.clusters[unit.cluster_begin];
+            const TextLayoutCluster &last = layout.clusters[end - 1];
+            const qreal x = text_left + first.x;
+            const qreal width = std::max<qreal>(
+                0.0, last.x + last.width - first.x);
+            const QString fragment = QString::fromUtf8(
+                layout.text.data() + unit.byte_start,
+                static_cast<int>(unit.byte_length));
+            if (fragment.trimmed().isEmpty())
+                continue;
+
+            const TextAnimatorClusterState &state =
+                evaluation.clusters[unit.cluster_begin];
+            const double reveal_opacity =
+                state.reveal_direction == TextRevealDirection::None
+                    ? state.reveal : 1.0;
+            const double opacity = std::clamp(
+                state.opacity * state.visibility * reveal_opacity,
+                0.0, 1.0);
+            if (opacity <= 0.0001)
+                continue;
+
+            const QPointF base_center = state.has_transform_origin
+                ? QPointF(text_left + state.transform_origin_x,
+                          text_top + state.transform_origin_y)
+                : QPointF(x + width / 2.0,
+                          text_top + metrics.height() / 2.0);
+            const QPointF center = base_center +
+                                   QPointF(state.anchor_x, state.anchor_y);
+            const double preview_offset_scale = 0.45;
+            const double sx = state.scale_x * state.horizontal_scale;
+            const double sy = state.scale_y * state.vertical_scale;
+
             painter.save();
-            painter.setOpacity(local);
-            QRectF unit_clip(x, baseline - metrics.ascent(), width, metrics.height());
-            if (transition_.type == LayerTransitionType::TextWipe && local < 0.999) {
-                switch (transition_.direction) {
-                case LayerTransitionDirection::Right:
-                    unit_clip.setLeft(unit_clip.right() - unit_clip.width() * local);
+            painter.translate(
+                center.x() + state.position_x * preview_offset_scale,
+                center.y() + (state.position_y - state.baseline_shift) *
+                                 preview_offset_scale);
+            painter.rotate(state.rotation + state.character_rotation);
+            painter.rotate(state.skew_axis);
+            painter.shear(std::tan(std::clamp(
+                state.skew * 3.14159265358979323846 / 180.0,
+                -1.553343, 1.553343)), 0.0);
+            painter.rotate(-state.skew_axis);
+            painter.scale(sx, sy);
+            painter.translate(-center.x(), -center.y());
+
+            if (state.has_reveal_bounds &&
+                state.reveal_direction != TextRevealDirection::None) {
+                const double reveal = std::clamp(state.reveal, 0.0, 1.0);
+                QRectF visible(text_left + state.reveal_x0,
+                               text_top + state.reveal_y0,
+                               state.reveal_x1 - state.reveal_x0,
+                               state.reveal_y1 - state.reveal_y0);
+                switch (state.reveal_direction) {
+                case TextRevealDirection::Right:
+                    visible.setLeft(visible.right() - visible.width() * reveal);
                     break;
-                case LayerTransitionDirection::Up:
-                    unit_clip.setTop(unit_clip.bottom() - unit_clip.height() * local);
+                case TextRevealDirection::Up:
+                    visible.setTop(visible.bottom() - visible.height() * reveal);
                     break;
-                case LayerTransitionDirection::Down:
-                    unit_clip.setHeight(unit_clip.height() * local);
+                case TextRevealDirection::Down:
+                    visible.setHeight(visible.height() * reveal);
                     break;
-                case LayerTransitionDirection::Left:
-                case LayerTransitionDirection::None:
-                default:
-                    unit_clip.setWidth(unit_clip.width() * local);
+                case TextRevealDirection::Left:
+                    visible.setWidth(visible.width() * reveal);
+                    break;
+                case TextRevealDirection::None:
                     break;
                 }
-                painter.setClipRect(unit_clip, Qt::IntersectClip);
+                painter.setClipRect(visible, Qt::IntersectClip);
             }
-            const QPointF center(x + width / 2.0, baseline - metrics.ascent() / 2.0);
-            painter.translate(center.x() + dx, center.y() + dy);
-            painter.scale(scale, scale);
-            painter.translate(-center.x(), -center.y());
+
             painter.setPen(palette().color(QPalette::Text));
-            bool drew_blurred_unit = false;
-            if ((transition_.type == LayerTransitionType::TextBlur ||
-                 transition_.type == LayerTransitionType::TextBlurSlide) && hidden > 0.001) {
-                // Preview the same radius-driven behavior as the renderer: the
-                // unit is represented by a progressively smaller blur, not by
-                // sharp text with a low-opacity halo drawn around it.
-                const double radius = std::clamp(
-                    transition_.blur_amount * hidden * 0.16, 0.5, 6.0);
+            const double radius = std::clamp(
+                state.blur * 0.16, 0.0, 6.0);
+            if (radius > 0.01) {
                 const double diagonal = radius * 0.70710678118;
                 const QVector<QPointF> samples = {
                     QPointF(0.0, 0.0),
@@ -508,17 +557,15 @@ private:
                     QPointF(-diagonal, -diagonal), QPointF(diagonal, -diagonal),
                     QPointF(-diagonal, diagonal), QPointF(diagonal, diagonal),
                 };
-                painter.save();
-                painter.setOpacity(local / static_cast<double>(samples.size()));
+                painter.setOpacity(opacity /
+                                   static_cast<double>(samples.size()));
                 for (const QPointF &offset : samples)
-                    painter.drawText(QPointF(x, baseline) + offset, unit);
-                painter.restore();
-                drew_blurred_unit = true;
+                    painter.drawText(QPointF(x, baseline) + offset, fragment);
+            } else {
+                painter.setOpacity(opacity);
+                painter.drawText(QPointF(x, baseline), fragment);
             }
-            if (!drew_blurred_unit)
-                painter.drawText(QPointF(x, baseline), unit);
             painter.restore();
-            ++animated_index;
         }
     }
 

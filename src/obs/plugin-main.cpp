@@ -10,6 +10,8 @@
 #include "title-editor.h"
 #include "title-assets.h"
 #include "title-data.h"
+#include "external-data-provider.h"
+#include "external-data-log.h"
 #include "title-localization.h"
 #include "title-logger.h"
 #include "title-preferences.h"
@@ -139,6 +141,37 @@ bool obs_module_load(void)
 {
     g_frontend_exiting = false;
     TitleLogger::startSession();
+    ExternalDataLog::set_sink(
+        [](ExternalDataLogLevel level, const std::string &component,
+           const std::string &message) {
+            const QString formatted = QStringLiteral("component=%1 %2")
+                .arg(QString::fromStdString(component), QString::fromStdString(message));
+            switch (level) {
+            case ExternalDataLogLevel::Error:
+                BGL_LOG_ERROR("ExternalData", formatted);
+                break;
+            case ExternalDataLogLevel::Warning:
+                BGL_LOG_WARNING("ExternalData", formatted);
+                break;
+            case ExternalDataLogLevel::Info:
+                BGL_LOG_INFO("ExternalData", formatted);
+                break;
+            case ExternalDataLogLevel::Debug:
+                BGL_LOG_DEBUG("ExternalData", formatted);
+                break;
+            case ExternalDataLogLevel::Trace:
+                BGL_LOG_TRACE("ExternalData", formatted);
+                break;
+            }
+        },
+        [](ExternalDataLogLevel level) {
+            return TitlePreferences::logging_enabled() &&
+                   TitleLogger::categoryEnabled(QStringLiteral("ExternalData")) &&
+                   static_cast<int>(level) <=
+                       static_cast<int>(TitlePreferences::logging_level());
+        });
+    BGL_LOG_INFO("ExternalData", QStringLiteral(
+        "External data diagnostics attached; values are fingerprinted and credentials are redacted"));
     blog(LOG_INFO, "[Broadcast Graphics Live] Loading plugin %s", BGL_BUILD_DISPLAY);
     BGL_LOG_INFO("Plugin", QStringLiteral("Loading plugin %1").arg(QStringLiteral(BGL_BUILD_DISPLAY)));
     BglEffectExtensionCatalog::instance().reload();
@@ -163,6 +196,9 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
     title_hotkeys_unregister();
+    ExternalDataProviderService::instance().shutdown();
+    BGL_LOG_INFO("ExternalData", QStringLiteral("External data diagnostics detached"));
+    ExternalDataLog::clear_sink();
     TitleDataStore::instance().shutdownSaveWorker();
     TitleDataStore::instance().save();
     /* OBS_FRONTEND_EVENT_EXIT is the final point at which frontend API calls

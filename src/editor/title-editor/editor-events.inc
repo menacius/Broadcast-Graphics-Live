@@ -807,6 +807,7 @@ void TitleEditor::apply_transition_preset_to_layer(const QString &file_path,
     LayerTransition transition = descriptor.transition;
     transition.id = TitleDataStore::make_uuid();
     transition.edge = edge;
+    LayerTransition *existing = find_layer_transition(layer->transitions, edge);
 
     const double frame = obs_frame_duration();
     const double layer_duration = std::max(frame, layer->out_time - layer->in_time);
@@ -814,12 +815,39 @@ void TitleEditor::apply_transition_preset_to_layer(const QString &file_path,
         layer->transitions,
         edge == LayerTransitionEdge::In ? LayerTransitionEdge::Out : LayerTransitionEdge::In);
     const double maximum_duration = std::max(frame, layer_duration - (other ? other->duration : 0.0));
-    transition.duration = std::clamp(transition.duration, frame, maximum_duration);
+    /* Dragging a preset over an existing transition is a replacement, not a
+     * new timing decision. Preserve the authored span and only clamp it if the
+     * opposite edge or current strip duration makes that span impossible. */
+    const double replacement_duration = existing
+        ? existing->duration : transition.duration;
+    transition.duration = std::clamp(replacement_duration, frame,
+                                     maximum_duration);
 
-    if (LayerTransition *existing = find_layer_transition(layer->transitions, edge))
+    if (existing) {
         *existing = transition;
-    else
-        layer->transitions.push_back(std::move(transition));
+    } else {
+        layer->transitions.push_back(transition);
+    }
+
+    if (transition.kind == LayerTransitionKind::Text) {
+        std::vector<std::string> migration_warnings;
+        synchronize_text_transition_animators(
+            layer->transitions, layer->text_animators,
+            layer->in_time, layer->out_time,
+            &migration_warnings, true);
+        for (const std::string &migration_warning : migration_warnings) {
+            BGL_LOG_WARNING("TextAnimator", QStringLiteral(
+                "Transition synchronization layer=%1 preset=%2 warning=%3")
+                .arg(QString::fromStdString(layer->id), descriptor.id,
+                     QString::fromStdString(migration_warning)));
+        }
+    } else {
+        /* Replacing a text transition with a general transition must remove
+         * the now-orphaned managed animator on the same edge. */
+        synchronize_text_transition_animators(
+            layer->transitions, layer->text_animators,
+            layer->in_time, layer->out_time, nullptr, false);
+    }
 
     on_layer_selected(layer_id);
     force_next_title_visual_update();
@@ -858,6 +886,9 @@ void TitleEditor::edit_layer_transition(const std::string &layer_id, int edge_va
     edited.edge = edge;
     edited.duration = std::clamp(edited.duration, frame, maximum_duration);
     *transition = std::move(edited);
+    synchronize_text_transition_animators(
+        layer->transitions, layer->text_animators,
+        layer->in_time, layer->out_time, nullptr, true);
 
     on_layer_selected(layer_id);
     force_next_title_visual_update();
@@ -915,6 +946,7 @@ void TitleEditor::apply_playhead_change(double t, bool playback_frame)
     playhead_ = t;
     canvas_->set_playhead(t, playback_frame);
     timeline_->set_playhead(t);
+    if (layers_) layers_->set_playhead(t);
     if (prerender_panel_) prerender_panel_->setPlayhead(t);
     if (!cache_reprioritize_clock_.isValid() || cache_reprioritize_clock_.elapsed() >= 80) {
         CacheManager::instance().reprioritize(title_, t);

@@ -5,7 +5,8 @@ Most monochrome UI SVGs in this directory use `currentColor` and are rendered th
 Branding assets are intentionally not recolored:
 
 - `broadcast-graphics-live-logo.svg` — full product wordmark used in the README and About dialog.
-- `broadcast-graphics-live-app-icon.svg` — application/window icon used by the editor and plugin-owned dialogs instead of inheriting the OBS icon.
+- `broadcast-graphics-live-app-icon.png` — application/window icon used by the editor and plugin-owned dialogs instead of inheriting the OBS icon. The supplied artwork is used as-is.
+- `broadcast-graphics-live-app-icon.svg` — legacy vector fallback kept for compatibility.
 - `omnianormal.svg` — OmniaTV logo for light themes.
 - `omniainvert.svg` — OmniaTV logo for dark themes.
 

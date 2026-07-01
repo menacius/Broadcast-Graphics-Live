@@ -406,6 +406,7 @@ struct TitleSourceData {
     /* Dirty flag – avoid re-uploading unchanged frames */
     bool dirty = true;
     uint64_t seen_store_revision = 0;
+    uint64_t seen_external_data_revision = 0;
 
     struct CachedEffectLayer {
         std::string key;
@@ -1041,15 +1042,53 @@ static void apply_live_cue_layer_value(const std::shared_ptr<Layer> &layer, cons
 
 static void apply_live_text_row(const std::shared_ptr<Title> &title, int row)
 {
-    if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
+    if (!title || row < 0 || row >= (int)title->live_text_rows.size())
+        return;
+
     auto exposed = exposed_text_layers(title);
     for (int col = 0; col < (int)exposed.size(); ++col) {
         const auto &target = exposed[col];
-        const int value_row = target && target->exposed_single_value ? 0 : row;
+        if (!target)
+            continue;
+        const int value_row = target->exposed_single_value ? 0 : row;
         if (value_row < 0 || value_row >= (int)title->live_text_rows.size() ||
             col >= (int)title->live_text_rows[value_row].size())
             continue;
-        apply_live_cue_layer_value(target, title->live_text_rows[value_row][col]);
+
+        /* Cue-to-cue changes in Loop/Pause are committed by the source after
+         * the outgoing segment. Resolve the exact same external cell binding
+         * used by immediate Play Once cues; the authored table cell is often
+         * intentionally empty for source-managed rows. */
+        apply_live_text_runtime_binding(*title, value_row, *target);
+        bool using_live_value = false;
+        bool using_fallback_value = false;
+        const std::string authored_value = title->live_text_rows[value_row][col];
+        const std::string cue_value = effective_live_text_cue_value(
+            *title, value_row, *target, authored_value,
+            &using_live_value, &using_fallback_value);
+
+        ExternalDataLog::write_lazy(
+            ExternalDataLogLevel::Debug, "CueApply", [&]() {
+                const std::string row_id = live_text_row_id(*title, value_row);
+                const LiveTextCueCellState state = live_text_cue_cell_state(
+                    *title, row_id, target->id);
+                std::ostringstream stream;
+                stream << "source apply title=" << ExternalDataLog::sanitize(title->id, 160)
+                       << " requestedRow=" << row
+                       << " valueRow=" << value_row
+                       << " rowId=" << ExternalDataLog::sanitize(row_id, 240)
+                       << " column=" << col
+                       << " layer=" << ExternalDataLog::sanitize(target->id, 160)
+                       << " playbackMode=" << title->playback_mode
+                       << " cellState=" << static_cast<int>(state)
+                       << " live=" << (using_live_value ? 1 : 0)
+                       << " fallback=" << (using_fallback_value ? 1 : 0)
+                       << " authoredEmpty=" << (authored_value.empty() ? 1 : 0)
+                       << " resolved=" << ExternalDataLog::value_summary(
+                              ExternalDataValue::string(cue_value));
+                return stream.str();
+            });
+        apply_live_cue_layer_value(target, cue_value);
     }
 }
 

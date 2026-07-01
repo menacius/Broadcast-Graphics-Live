@@ -3,8 +3,8 @@
  *
  * Unified GPU compositor for OBS live output, editor preview and final cache
  * readback. Supported Text/Clock layers are composed from persistent SDF glyph
- * atlases and GPU quads; compatibility text transitions, vector/image adapters
- * and unsupported color fonts rasterize only when their content changes.
+ * atlases and GPU quads; compatibility text raster adapters, vector/image
+ * adapters and unsupported color fonts rasterize only when their content changes.
  * Transforms, masks, effects, blending and temporal motion blur remain
  * GPU-resident through presentation.
  *
@@ -18,6 +18,8 @@
 #include "title-source.h"
 #include "style-presets.h"
 #include "title-data.h"
+#include "external-data.h"
+#include "external-data-log.h"
 #include "live-text-cue-utils.h"
 #include "title-snapshot.h"
 #include "plugin-main.h"
@@ -32,6 +34,7 @@
 #include "asset-runtime.h"
 #include "image-layer-utils.h"
 #include "title-text-layout.h"
+#include "text-animator-presets.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>

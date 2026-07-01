@@ -15,6 +15,7 @@
 #include "properties-panel.h"
 
 #include "title-data.h"
+#include "external-data.h"
 #include "title-source.h"
 #include "title-assets.h"
 #include "timecode-spinbox.h"

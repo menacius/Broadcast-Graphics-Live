@@ -63,7 +63,25 @@ static inline QIcon bgl_icon(const char *file_name)
 
 static inline QIcon bgl_brand_icon()
 {
-    char *path = obs_module_file("icons/broadcast-graphics-live-app-icon.svg");
+    char *path = obs_module_file("icons/broadcast-graphics-live-app-icon.png");
+    if (path) {
+        const QString icon_path = QString::fromUtf8(path);
+        bfree(path);
+
+        QPixmap source(icon_path);
+        if (!source.isNull()) {
+            QIcon icon;
+            const int sizes[] = {16, 20, 24, 32, 48, 64, 96, 128, 256};
+            for (int size : sizes)
+                icon.addPixmap(source.scaled(size, size, Qt::KeepAspectRatio,
+                                             Qt::SmoothTransformation));
+            return icon;
+        }
+
+        return QIcon(icon_path);
+    }
+
+    path = obs_module_file("icons/broadcast-graphics-live-app-icon.svg");
     if (!path)
         return QIcon();
 

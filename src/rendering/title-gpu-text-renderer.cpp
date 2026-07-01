@@ -44,6 +44,7 @@ uniform texture2d glyphAtlas;
 uniform int coverageMode;
 uniform int drawPart;
 uniform float sdfSpread;
+uniform float2 atlasTexelSize;
 uniform float2 materialOrigin;
 uniform float2 materialSize;
 
@@ -88,11 +89,17 @@ struct VertDataIn {
     float4 pos : POSITION;
     float2 uv : TEXCOORD0;
     float2 localPos : TEXCOORD1;
+    float opacity : TEXCOORD2;
+    float4 overrideColor : TEXCOORD3;
+    float4 animatorData : TEXCOORD4;
 };
 struct VertDataOut {
     float4 pos : POSITION;
     float2 uv : TEXCOORD0;
     float2 localPos : TEXCOORD1;
+    float opacity : TEXCOORD2;
+    float4 overrideColor : TEXCOORD3;
+    float4 animatorData : TEXCOORD4;
 };
 VertDataOut VSDefault(VertDataIn v)
 {
@@ -100,6 +107,9 @@ VertDataOut VSDefault(VertDataIn v)
     o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
     o.uv = v.uv;
     o.localPos = v.localPos;
+    o.opacity = v.opacity;
+    o.overrideColor = v.overrideColor;
+    o.animatorData = v.animatorData;
     return o;
 }
 
@@ -168,27 +178,90 @@ float coverageInside(float distanceValue, float aa)
 {
     return smoothstep(-aa, aa, distanceValue);
 }
+float signedDistanceAt(float2 uv)
+{
+    return (glyphAtlas.Sample(atlasSampler, uv).r - 0.5) *
+           (2.0 * sdfSpread);
+}
+float fillCoverageAt(float2 uv, float aa)
+{
+    return coverageInside(signedDistanceAt(uv), aa);
+}
+float strokeCoverageAt(float2 uv, float aa, float outsideDelta,
+                       float insideDelta)
+{
+    float distanceValue = signedDistanceAt(uv);
+    return clamp(
+        coverageInside(distanceValue + strokeOutside + outsideDelta, aa) -
+        coverageInside(distanceValue - strokeInside - insideDelta, aa),
+        0.0, 1.0);
+}
+float blurredFillCoverage(float2 uv, float aa, float radius)
+{
+    float2 fullStep = atlasTexelSize * radius;
+    float2 halfStep = fullStep * 0.5;
+    float result = fillCoverageAt(uv, aa) * 0.12;
+    result += fillCoverageAt(uv + float2( halfStep.x, 0.0), aa) * 0.08;
+    result += fillCoverageAt(uv + float2(-halfStep.x, 0.0), aa) * 0.08;
+    result += fillCoverageAt(uv + float2(0.0,  halfStep.y), aa) * 0.08;
+    result += fillCoverageAt(uv + float2(0.0, -halfStep.y), aa) * 0.08;
+    result += fillCoverageAt(uv + float2( halfStep.x,  halfStep.y), aa) * 0.06;
+    result += fillCoverageAt(uv + float2(-halfStep.x,  halfStep.y), aa) * 0.06;
+    result += fillCoverageAt(uv + float2( halfStep.x, -halfStep.y), aa) * 0.06;
+    result += fillCoverageAt(uv + float2(-halfStep.x, -halfStep.y), aa) * 0.06;
+    result += fillCoverageAt(uv + float2( fullStep.x, 0.0), aa) * 0.08;
+    result += fillCoverageAt(uv + float2(-fullStep.x, 0.0), aa) * 0.08;
+    result += fillCoverageAt(uv + float2(0.0,  fullStep.y), aa) * 0.08;
+    result += fillCoverageAt(uv + float2(0.0, -fullStep.y), aa) * 0.08;
+    return clamp(result, 0.0, 1.0);
+}
+float blurredStrokeCoverage(float2 uv, float aa, float radius,
+                            float outsideDelta, float insideDelta)
+{
+    float2 fullStep = atlasTexelSize * radius;
+    float2 halfStep = fullStep * 0.5;
+    float result = strokeCoverageAt(uv, aa, outsideDelta, insideDelta) * 0.12;
+    result += strokeCoverageAt(uv + float2( halfStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2(-halfStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2(0.0,  halfStep.y), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2(0.0, -halfStep.y), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2( halfStep.x,  halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
+    result += strokeCoverageAt(uv + float2(-halfStep.x,  halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
+    result += strokeCoverageAt(uv + float2( halfStep.x, -halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
+    result += strokeCoverageAt(uv + float2(-halfStep.x, -halfStep.y), aa, outsideDelta, insideDelta) * 0.06;
+    result += strokeCoverageAt(uv + float2( fullStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2(-fullStep.x, 0.0), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2(0.0,  fullStep.y), aa, outsideDelta, insideDelta) * 0.08;
+    result += strokeCoverageAt(uv + float2(0.0, -fullStep.y), aa, outsideDelta, insideDelta) * 0.08;
+    return clamp(result, 0.0, 1.0);
+}
 
 float4 PSText(VertDataOut v) : TARGET
 {
     float signedDistance = coverageMode != 0
-        ? sdfSpread
-        : (glyphAtlas.Sample(atlasSampler, v.uv).r - 0.5) *
-              (2.0 * sdfSpread);
-    float aa = coverageMode != 0 ? 0.5 : max(fwidth(signedDistance), 0.55);
+        ? sdfSpread : signedDistanceAt(v.uv);
+    float aa = coverageMode != 0 ? 0.5 :
+        max(fwidth(signedDistance), 0.55);
+    float blurRadius = min(max(0.0, v.animatorData.y),
+                           max(0.0, sdfSpread - 2.0));
     float fillCoverage = coverageMode != 0
         ? 1.0
-        : coverageInside(signedDistance, aa);
+        : (blurRadius > 0.01
+            ? blurredFillCoverage(v.uv, aa, blurRadius)
+            : coverageInside(signedDistance, aa));
 
     float strokeCoverage = 0.0;
     if (coverageMode == 0 && strokeEnabled != 0 && strokeWidth > 0.0001) {
         float strokeAa = strokeAntialias != 0 ? aa : 0.0001;
         /* Text-only placement contract: outer coverage expands the SDF edge,
          * inner coverage consumes the glyph interior, and mid splits exactly. */
-        strokeCoverage = clamp(
-            coverageInside(signedDistance + strokeOutside, strokeAa) -
-            coverageInside(signedDistance - strokeInside, strokeAa),
-            0.0, 1.0);
+        strokeCoverage = blurRadius > 0.01
+            ? blurredStrokeCoverage(v.uv, strokeAa, blurRadius,
+                                    v.animatorData.z, v.animatorData.w)
+            : clamp(
+                coverageInside(signedDistance + strokeOutside + v.animatorData.z, strokeAa) -
+                coverageInside(signedDistance - strokeInside - v.animatorData.w, strokeAa),
+                0.0, 1.0);
     }
 
     float4 fillMaterial = gradientColor(
@@ -201,9 +274,14 @@ float4 PSText(VertDataOut v) : TARGET
         strokeStartPos, strokeEndPos, strokeAngle,
         strokeCenter, strokeFocal, strokeScale);
 
-    if (drawPart != 0)
-        return premultiplied(strokeMaterial, strokeCoverage);
-    return premultiplied(fillMaterial, fillCoverage);
+    if (drawPart != 0) {
+        strokeMaterial = lerp(strokeMaterial, v.overrideColor,
+                              clamp(v.animatorData.x, 0.0, 1.0));
+        return premultiplied(strokeMaterial, strokeCoverage * v.opacity);
+    }
+    fillMaterial = lerp(fillMaterial, v.overrideColor,
+                        clamp(v.animatorData.x, 0.0, 1.0));
+    return premultiplied(fillMaterial, fillCoverage * v.opacity);
 }
 
 technique Draw {
@@ -286,6 +364,15 @@ struct Vertex {
     float v = 0.0f;
     float local_x = 0.0f;
     float local_y = 0.0f;
+    float opacity = 1.0f;
+    float override_r = 1.0f;
+    float override_g = 1.0f;
+    float override_b = 1.0f;
+    float override_a = 1.0f;
+    float color_mix = 0.0f;
+    float blur = 0.0f;
+    float stroke_outside_delta = 0.0f;
+    float stroke_inside_delta = 0.0f;
 };
 
 struct Material {
@@ -529,30 +616,147 @@ static bool clip_quad(Quad &quad, float clip_x0, float clip_y0,
 }
 
 static void append_quad(std::vector<Vertex> &vertices, const Quad &source,
-                        const PrepareOptions &options)
+                        const PrepareOptions &options,
+                        const TextAnimatorClusterState *animation = nullptr,
+                        float opacity_multiplier = 1.0f,
+                        bool stroke_part = false,
+                        float stroke_outside_delta = 0.0f,
+                        float stroke_inside_delta = 0.0f)
 {
     Quad quad = source;
-    if (!clip_quad(quad, options.clip_x, options.clip_y,
-                   options.clip_x + options.clip_width,
-                   options.clip_y + options.clip_height))
+    if (animation && animation->has_reveal_bounds &&
+        animation->reveal_direction != TextRevealDirection::None) {
+        const float reveal = static_cast<float>(std::clamp(
+            animation->reveal, 0.0, 1.0));
+        const float margin = 1.5f;
+        float rx0 = options.text_offset_x +
+                    static_cast<float>(animation->reveal_x0) - margin;
+        float ry0 = options.text_offset_y +
+                    static_cast<float>(animation->reveal_y0) - margin;
+        float rx1 = options.text_offset_x +
+                    static_cast<float>(animation->reveal_x1) + margin;
+        float ry1 = options.text_offset_y +
+                    static_cast<float>(animation->reveal_y1) + margin;
+        switch (animation->reveal_direction) {
+        case TextRevealDirection::Right:
+            rx0 = rx1 - (rx1 - rx0) * reveal;
+            break;
+        case TextRevealDirection::Up:
+            ry0 = ry1 - (ry1 - ry0) * reveal;
+            break;
+        case TextRevealDirection::Down:
+            ry1 = ry0 + (ry1 - ry0) * reveal;
+            break;
+        case TextRevealDirection::Left:
+            rx1 = rx0 + (rx1 - rx0) * reveal;
+            break;
+        case TextRevealDirection::None:
+            break;
+        }
+        if (!clip_quad(quad, rx0, ry0, rx1, ry1))
+            return;
+    }
+    const bool transformed = animation &&
+        (std::abs(animation->position_x) > 1e-9 ||
+         std::abs(animation->position_y) > 1e-9 ||
+         std::abs(animation->scale_x * animation->horizontal_scale - 1.0) > 1e-9 ||
+         std::abs(animation->scale_y * animation->vertical_scale - 1.0) > 1e-9 ||
+         std::abs(animation->rotation + animation->character_rotation) > 1e-9 ||
+         std::abs(animation->anchor_x) > 1e-9 ||
+         std::abs(animation->anchor_y) > 1e-9 ||
+         std::abs(animation->skew) > 1e-9);
+    if (!transformed && !clip_quad(quad, options.clip_x, options.clip_y,
+                                   options.clip_x + options.clip_width,
+                                   options.clip_y + options.clip_height))
         return;
 
     const float scale = std::clamp(options.raster_scale, 0.01f, 8.0f);
-    const Vertex a{quad.x0 * scale, quad.y0 * scale, quad.u0, quad.v0,
-                   quad.local_x0, quad.local_y0};
-    const Vertex b{quad.x1 * scale, quad.y0 * scale, quad.u1, quad.v0,
-                   quad.local_x1, quad.local_y0};
-    const Vertex c{quad.x1 * scale, quad.y1 * scale, quad.u1, quad.v1,
-                   quad.local_x1, quad.local_y1};
-    const Vertex d{quad.x0 * scale, quad.y1 * scale, quad.u0, quad.v1,
-                   quad.local_x0, quad.local_y1};
+    float final_opacity = std::clamp(opacity_multiplier, 0.0f, 1.0f);
+    if (animation) {
+        const double reveal_opacity =
+            animation->reveal_direction == TextRevealDirection::None
+                ? animation->reveal : 1.0;
+        final_opacity *= static_cast<float>(std::clamp(
+            animation->opacity * animation->visibility * reveal_opacity,
+            0.0, 1.0));
+    }
+
+    const double base_center_x = animation && animation->has_transform_origin
+        ? options.text_offset_x + animation->transform_origin_x
+        : (quad.x0 + quad.x1) * 0.5;
+    const double base_center_y = animation && animation->has_transform_origin
+        ? options.text_offset_y + animation->transform_origin_y
+        : (quad.y0 + quad.y1) * 0.5;
+    const double center_x = base_center_x +
+                            (animation ? animation->anchor_x : 0.0);
+    const double center_y = base_center_y +
+                            (animation ? animation->anchor_y : 0.0);
+    const double sx = animation ? animation->scale_x * animation->horizontal_scale : 1.0;
+    const double sy = animation ? animation->scale_y * animation->vertical_scale : 1.0;
+    const double radians = animation
+        ? (animation->rotation + animation->character_rotation) * kPi / 180.0
+        : 0.0;
+    const double cosine = std::cos(radians);
+    const double sine = std::sin(radians);
+    const double tx = animation ? animation->position_x : 0.0;
+    const double ty = animation ? animation->position_y - animation->baseline_shift : 0.0;
+    const double skew_radians = animation ? animation->skew * kPi / 180.0 : 0.0;
+    const double skew_axis_radians = animation ? animation->skew_axis * kPi / 180.0 : 0.0;
+    const double axis_cosine = std::cos(skew_axis_radians);
+    const double axis_sine = std::sin(skew_axis_radians);
+    const double shear = std::tan(std::clamp(skew_radians, -1.553343, 1.553343));
+    auto point = [&](double x, double y) {
+        double local_x = (x - center_x) * sx;
+        double local_y = (y - center_y) * sy;
+        if (std::abs(shear) > 1.0e-12) {
+            const double axis_x = local_x * axis_cosine + local_y * axis_sine;
+            const double axis_y = -local_x * axis_sine + local_y * axis_cosine;
+            const double skewed_x = axis_x + shear * axis_y;
+            local_x = skewed_x * axis_cosine - axis_y * axis_sine;
+            local_y = skewed_x * axis_sine + axis_y * axis_cosine;
+        }
+        return std::pair<float, float>{
+            static_cast<float>((center_x + local_x * cosine - local_y * sine + tx) * scale),
+            static_cast<float>((center_y + local_x * sine + local_y * cosine + ty) * scale)};
+    };
+    const auto p0 = point(quad.x0, quad.y0);
+    const auto p1 = point(quad.x1, quad.y0);
+    const auto p2 = point(quad.x1, quad.y1);
+    const auto p3 = point(quad.x0, quad.y1);
+    uint32_t override_argb = 0xFFFFFFFFu;
+    float color_mix = 0.0f;
+    float blur = 0.0f;
+    if (animation) {
+        override_argb = stroke_part ? animation->stroke_color
+                                    : animation->fill_color;
+        color_mix = static_cast<float>(std::clamp(
+            stroke_part ? animation->stroke_color_mix
+                        : animation->fill_color_mix, 0.0, 1.0));
+        blur = static_cast<float>(std::max(0.0, animation->blur));
+    }
+    const float override_r = static_cast<float>((override_argb >> 16) & 0xFF) / 255.0f;
+    const float override_g = static_cast<float>((override_argb >> 8) & 0xFF) / 255.0f;
+    const float override_b = static_cast<float>(override_argb & 0xFF) / 255.0f;
+    const float override_a = static_cast<float>((override_argb >> 24) & 0xFF) / 255.0f;
+    const Vertex a{p0.first, p0.second, quad.u0, quad.v0,
+                   quad.local_x0, quad.local_y0, final_opacity,
+                   override_r, override_g, override_b, override_a,
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+    const Vertex b{p1.first, p1.second, quad.u1, quad.v0,
+                   quad.local_x1, quad.local_y0, final_opacity,
+                   override_r, override_g, override_b, override_a,
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+    const Vertex c{p2.first, p2.second, quad.u1, quad.v1,
+                   quad.local_x1, quad.local_y1, final_opacity,
+                   override_r, override_g, override_b, override_a,
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
+    const Vertex d{p3.first, p3.second, quad.u0, quad.v1,
+                   quad.local_x0, quad.local_y1, final_opacity,
+                   override_r, override_g, override_b, override_a,
+                   color_mix, blur, stroke_outside_delta, stroke_inside_delta};
     vertices.reserve(vertices.size() + 6);
-    vertices.push_back(a);
-    vertices.push_back(b);
-    vertices.push_back(c);
-    vertices.push_back(a);
-    vertices.push_back(c);
-    vertices.push_back(d);
+    vertices.push_back(a); vertices.push_back(b); vertices.push_back(c);
+    vertices.push_back(a); vertices.push_back(c); vertices.push_back(d);
 }
 
 static void append_quad(std::vector<Vertex> &vertices,
@@ -565,7 +769,7 @@ static void append_quad(std::vector<Vertex> &vertices,
     append_quad(vertices,
                 Quad{x0, y0, x1, y1, u0, v0, u1, v1,
                      local_x0, local_y0, local_x1, local_y1},
-                options);
+                options, nullptr, 1.0f);
 }
 
 static size_t paint_run_index_at(const std::vector<TextLayoutPaintRun> &runs,
@@ -597,7 +801,7 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
         return nullptr;
     data->num = vertices.size();
     data->points = static_cast<vec3 *>(bzalloc(sizeof(vec3) * data->num));
-    data->num_tex = 2;
+    data->num_tex = 5;
     data->tvarray = static_cast<gs_tvertarray *>(
         bzalloc(sizeof(gs_tvertarray) * data->num_tex));
     if (!data->points || !data->tvarray) {
@@ -608,16 +812,34 @@ static gs_vertbuffer_t *create_vertex_buffer(const std::vector<Vertex> &vertices
     data->tvarray[0].array = bzalloc(sizeof(vec2) * data->num);
     data->tvarray[1].width = 2;
     data->tvarray[1].array = bzalloc(sizeof(vec2) * data->num);
-    if (!data->tvarray[0].array || !data->tvarray[1].array) {
+    data->tvarray[2].width = 1;
+    data->tvarray[2].array = bzalloc(sizeof(float) * data->num);
+    data->tvarray[3].width = 4;
+    data->tvarray[3].array = bzalloc(sizeof(vec4) * data->num);
+    data->tvarray[4].width = 4;
+    data->tvarray[4].array = bzalloc(sizeof(vec4) * data->num);
+    if (!data->tvarray[0].array || !data->tvarray[1].array ||
+        !data->tvarray[2].array || !data->tvarray[3].array ||
+        !data->tvarray[4].array) {
         gs_vbdata_destroy(data);
         return nullptr;
     }
     auto *uv = static_cast<vec2 *>(data->tvarray[0].array);
     auto *local = static_cast<vec2 *>(data->tvarray[1].array);
+    auto *opacity = static_cast<float *>(data->tvarray[2].array);
+    auto *override_color = static_cast<vec4 *>(data->tvarray[3].array);
+    auto *animator_data = static_cast<vec4 *>(data->tvarray[4].array);
     for (size_t i = 0; i < vertices.size(); ++i) {
         vec3_set(&data->points[i], vertices[i].x, vertices[i].y, 0.0f);
         vec2_set(&uv[i], vertices[i].u, vertices[i].v);
         vec2_set(&local[i], vertices[i].local_x, vertices[i].local_y);
+        opacity[i] = vertices[i].opacity;
+        vec4_set(&override_color[i], vertices[i].override_r,
+                 vertices[i].override_g, vertices[i].override_b,
+                 vertices[i].override_a);
+        vec4_set(&animator_data[i], vertices[i].color_mix,
+                 vertices[i].blur, vertices[i].stroke_outside_delta,
+                 vertices[i].stroke_inside_delta);
     }
     return gs_vertexbuffer_create(data, 0);
 }
@@ -936,7 +1158,9 @@ Renderer &Renderer::operator=(Renderer &&) noexcept = default;
 
 bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
                        const std::vector<TextLayoutPaintRun> &paint_runs,
-                       const PrepareOptions &options, std::string *reason)
+                       const PrepareOptions &options,
+                       const TextAnimatorEvaluation *animation,
+                       std::string *reason)
 {
     if (!impl_->backend_available) {
         if (reason)
@@ -1076,6 +1300,27 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
 
         const std::vector<TextLayoutPaintSlice> &slices =
             cluster_slices[glyph.cluster_index];
+        const TextAnimatorClusterState *cluster_animation =
+            animation && glyph.cluster_index < animation->clusters.size()
+                ? &animation->clusters[glyph.cluster_index] : nullptr;
+        TextAnimatorClusterState adjusted_animation;
+        if (cluster_animation && std::abs(cluster_animation->font_size_delta) > 1.0e-9) {
+            adjusted_animation = *cluster_animation;
+            const double base_size = std::max(1.0, static_cast<double>(run.font.pixel_size));
+            const double factor = std::max(0.01,
+                (base_size + adjusted_animation.font_size_delta) / base_size);
+            adjusted_animation.scale_x *= factor;
+            adjusted_animation.scale_y *= factor;
+            cluster_animation = &adjusted_animation;
+        }
+        if (cluster_animation) {
+            const double reveal_opacity =
+                cluster_animation->reveal_direction == TextRevealDirection::None
+                    ? cluster_animation->reveal : 1.0;
+            if (cluster_animation->opacity * cluster_animation->visibility *
+                    reveal_opacity <= 0.000001)
+                continue;
+        }
         const bool split_paint_cluster = slices.size() > 1;
         for (const TextLayoutPaintSlice &slice : slices) {
             const size_t paint_index =
@@ -1091,7 +1336,12 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
 
             Batch &fill_batch = batch_for(
                 fills, DrawPart::Fill, atlas_glyph.page, paint_index, false);
-            append_quad(fill_batch.vertices, painted_quad, options);
+            append_quad(fill_batch.vertices, painted_quad, options,
+                        cluster_animation,
+                        cluster_animation
+                            ? static_cast<float>(cluster_animation->fill_opacity)
+                            : 1.0f,
+                        false);
 
             const RichTextStroke &stroke =
                 resolved_runs[paint_index].style.stroke;
@@ -1109,7 +1359,26 @@ bool Renderer::prepare(Layer &layer, const ImmutableTextLayout &layout,
                 stroke_phase_index == 2 ? DrawPart::FrontStroke
                                         : DrawPart::BehindStroke,
                 atlas_glyph.page, paint_index, false);
-            append_quad(stroke_batch.vertices, painted_quad, options);
+            float outside_delta = 0.0f;
+            float inside_delta = 0.0f;
+            if (cluster_animation &&
+                std::abs(cluster_animation->stroke_width_delta) > 1.0e-9) {
+                const TextStrokeCoverageExtents base_extents =
+                    text_stroke_coverage_extents(stroke.width, stroke.alignment);
+                const TextStrokeCoverageExtents animated_extents =
+                    text_stroke_coverage_extents(
+                        std::max(0.0f, stroke.width + static_cast<float>(
+                            cluster_animation->stroke_width_delta)),
+                        stroke.alignment);
+                outside_delta = animated_extents.outside - base_extents.outside;
+                inside_delta = animated_extents.inside - base_extents.inside;
+            }
+            append_quad(stroke_batch.vertices, painted_quad, options,
+                        cluster_animation,
+                        cluster_animation
+                            ? static_cast<float>(cluster_animation->stroke_opacity)
+                            : 1.0f,
+                        true, outside_delta, inside_delta);
         }
     }
 
@@ -1249,6 +1518,9 @@ bool Renderer::render(Layer &layer)
                 batch.draw_part == DrawPart::Fill ? 0 : 1);
         set_float(impl_->effect, "sdfSpread",
                   static_cast<float>(kSdfSpread));
+        set_vec2(impl_->effect, "atlasTexelSize",
+                 1.0f / static_cast<float>(kAtlasSize),
+                 1.0f / static_cast<float>(kAtlasSize));
         set_vec2(impl_->effect, "materialOrigin", batch.domain.x,
                  batch.domain.y);
         set_vec2(impl_->effect, "materialSize", batch.domain.width,

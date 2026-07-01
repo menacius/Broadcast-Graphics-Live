@@ -1,4 +1,6 @@
 #include "title-rich-text.h"
+#include <regex>
+#include <sstream>
 #ifndef OBS_BGS_RICH_TEXT_STANDALONE_TEST
 #include "title-data.h"
 #endif
@@ -1179,10 +1181,45 @@ static AutoStyleMarkerHit find_next_marker_after(const std::string &text, const 
     return {text_len, 0, false};
 }
 
+static std::vector<std::pair<size_t, size_t>> regex_auto_style_ranges(
+    const RichTextAutoStyleRule &rule, const std::string &text)
+{
+    std::vector<std::pair<size_t, size_t>> ranges;
+    if (rule.regex_pattern.empty())
+        return ranges;
+    try {
+        const auto flags = std::regex::ECMAScript |
+            (rule.regex_case_sensitive ? std::regex::flag_type{} : std::regex::icase);
+        const std::regex expression(rule.regex_pattern, flags);
+        for (std::sregex_iterator it(text.begin(), text.end(), expression), end; it != end; ++it) {
+            const std::smatch &match = *it;
+            const size_t group = std::min(rule.regex_capture_group, match.size() ? match.size() - 1 : size_t{0});
+            if (!match[group].matched)
+                continue;
+            const size_t start = static_cast<size_t>(match.position(group));
+            const size_t length = static_cast<size_t>(match.length(group));
+            if (length > 0)
+                ranges.push_back({start, start + length});
+            if (rule.match_mode == "first_match")
+                break;
+        }
+    } catch (const std::regex_error &) {
+        /* Invalid user patterns fail closed and never affect rendering. */
+    } catch (const std::exception &) {
+        /* Allocation/iterator failures must not escape into Qt's event loop. */
+    } catch (...) {
+        /* Fail closed for any platform-specific regex implementation failure. */
+    }
+    return ranges;
+}
+
 static std::vector<std::pair<size_t, size_t>> auto_style_rule_ranges(const RichTextAutoStyleRule &rule, const std::string &text)
 {
     const size_t text_len = text.size();
     std::vector<std::pair<size_t, size_t>> ranges;
+
+    if (rule.condition_type == "regex")
+        return regex_auto_style_ranges(rule, text);
 
     /* Backwards compatibility for files/rules from the original start_to_char UI. */
     if (rule.condition_type == "start_to_char") {
@@ -1349,7 +1386,7 @@ RichTextDocument rich_text_document_with_auto_styles_canonical(
         out.auto_style_rules.size(), std::vector<bool>(unit_count, false));
     for (size_t ri = 0; ri < out.auto_style_rules.size(); ++ri) {
         const auto &rule = out.auto_style_rules[ri];
-        if (!rule.enabled || rule.style_preset_id.empty())
+        if (!rule.enabled || (rule.style_preset_id.empty() && rule.cached_mask == 0))
             continue;
         RichTextCharFormat fmt = rule.cached_format;
         uint32_t mask = rule.cached_mask;
@@ -1451,6 +1488,394 @@ RichTextDocument rich_text_document_with_auto_styles_canonical(
         start_unit = end_unit;
     }
     return out;
+}
+
+static std::string regex_escape_literal(const std::string &text)
+{
+    static const std::string special = R"(\.^$|()[]{}*+?)";
+    std::string escaped;
+    escaped.reserve(text.size() * 2);
+    for (const char ch : text) {
+        if (special.find(ch) != std::string::npos)
+            escaped.push_back('\\');
+        escaped.push_back(ch);
+    }
+    return escaped;
+}
+
+static uint32_t utf8_codepoint_at(const std::string &text, size_t pos, size_t *advance)
+{
+    if (advance)
+        *advance = 0;
+    if (pos >= text.size())
+        return 0;
+    const auto b0 = static_cast<unsigned char>(text[pos]);
+    if (b0 < 0x80) {
+        if (advance) *advance = 1;
+        return b0;
+    }
+    size_t count = 1;
+    uint32_t value = 0;
+    if ((b0 & 0xE0) == 0xC0) { count = 2; value = b0 & 0x1F; }
+    else if ((b0 & 0xF0) == 0xE0) { count = 3; value = b0 & 0x0F; }
+    else if ((b0 & 0xF8) == 0xF0) { count = 4; value = b0 & 0x07; }
+    else {
+        if (advance) *advance = 1;
+        return b0;
+    }
+    if (pos + count > text.size()) {
+        if (advance) *advance = 1;
+        return b0;
+    }
+    for (size_t i = 1; i < count; ++i) {
+        const auto bx = static_cast<unsigned char>(text[pos + i]);
+        if ((bx & 0xC0) != 0x80) {
+            if (advance) *advance = 1;
+            return b0;
+        }
+        value = (value << 6) | (bx & 0x3F);
+    }
+    if (advance) *advance = count;
+    return value;
+}
+
+static bool is_unicode_invisible_or_space(uint32_t cp)
+{
+    if (cp <= 0x20 || cp == 0x7F || cp == 0x85 || cp == 0xA0 || cp == 0xAD)
+        return true;
+    if (cp >= 0x2000 && cp <= 0x200F)
+        return true;
+    return cp == 0x1680 || cp == 0x2028 || cp == 0x2029 || cp == 0x202F ||
+           cp == 0x205F || cp == 0x2060 || cp == 0x3000 || cp == 0xFEFF;
+}
+
+static bool is_ascii_special(uint32_t cp)
+{
+    return cp < 0x80 && !std::isalnum(static_cast<unsigned char>(cp)) && cp != '_';
+}
+
+static std::string regex_escape_structural_literal(const std::string &text)
+{
+    std::string escaped;
+    escaped.reserve(text.size() * 4);
+    for (size_t pos = 0; pos < text.size();) {
+        size_t advance = 0;
+        const uint32_t cp = utf8_codepoint_at(text, pos, &advance);
+        if (advance == 0)
+            break;
+        switch (cp) {
+        case '\r': escaped += "\\r"; break;
+        case '\n': escaped += "\\n"; break;
+        case '\t': escaped += "\\t"; break;
+        case '\f': escaped += "\\f"; break;
+        case '\v': escaped += "\\v"; break;
+        case 0x20: escaped += "\\x20"; break;
+        default:
+            if (cp < 0x20 || cp == 0x7F) {
+                static constexpr char hex[] = "0123456789ABCDEF";
+                escaped += "\\x";
+                escaped.push_back(hex[(cp >> 4) & 0xF]);
+                escaped.push_back(hex[cp & 0xF]);
+            } else {
+                escaped += regex_escape_literal(text.substr(pos, advance));
+            }
+            break;
+        }
+        pos += advance;
+    }
+    return escaped;
+}
+
+static bool is_line_boundary_codepoint(uint32_t cp)
+{
+    return cp == '\n' || cp == '\r' || cp == 0x0B || cp == 0x0C ||
+           cp == 0x85 || cp == 0x2028 || cp == 0x2029;
+}
+
+static bool starts_at_structural_line_boundary(const std::string &text, size_t pos)
+{
+    if (pos == 0)
+        return true;
+    const size_t previous = utf8_codepoint_start_before(text, pos);
+    size_t advance = 0;
+    return is_line_boundary_codepoint(utf8_codepoint_at(text, previous, &advance));
+}
+
+static std::string learned_line_start_pattern()
+{
+    /* CRLF is kept as one logical boundary. U+0085, U+2028 and U+2029 cover
+     * next-line, Unicode line separator and Unicode paragraph separator. */
+    return "(^|\\r\\n|[\\n\\r\\v\\f]|\xC2\x85|\xE2\x80\xA8|\xE2\x80\xA9)";
+}
+
+static std::string structural_separator_after(const std::string &text, size_t pos)
+{
+    std::string separator;
+    size_t cursor = pos;
+    while (cursor < text.size()) {
+        size_t advance = 0;
+        const uint32_t cp = utf8_codepoint_at(text, cursor, &advance);
+        if (advance == 0)
+            break;
+        if (!is_unicode_invisible_or_space(cp) && !is_ascii_special(cp))
+            break;
+        /* A newline after punctuation/horizontal spacing belongs to the next
+         * structural field, not to this separator. A newline directly after
+         * the formatted run is itself the separator. */
+        if (is_line_boundary_codepoint(cp) && !separator.empty())
+            break;
+        separator.append(text, cursor, advance);
+        cursor += advance;
+        /* A line/paragraph separator is already an unambiguous boundary. */
+        if (is_line_boundary_codepoint(cp)) {
+            if (cp == '\r' && cursor < text.size() && text[cursor] == '\n') {
+                separator.push_back('\n');
+            }
+            break;
+        }
+        /* Keep a useful punctuation token plus its following invisible spacing,
+         * but do not absorb the next unrelated punctuation field. */
+        if (separator.size() >= 16)
+            break;
+    }
+    return separator;
+}
+
+static bool ascii_all_digits_or_number(const std::string &sample)
+{
+    if (sample.empty()) return false;
+    bool digit = false;
+    for (unsigned char ch : sample) {
+        if (std::isdigit(ch)) { digit = true; continue; }
+        if (ch == '.' || ch == ',' || ch == '+' || ch == '-' || ch == '%' || ch == ' ')
+            continue;
+        return false;
+    }
+    return digit;
+}
+
+static bool ascii_looks_like_time(const std::string &sample)
+{
+    try { return std::regex_match(sample, std::regex(R"(^[0-2]?[0-9]:[0-5][0-9](?::[0-5][0-9])?$)")); }
+    catch (...) { return false; }
+}
+
+static bool ascii_looks_like_date(const std::string &sample)
+{
+    try { return std::regex_match(sample, std::regex(R"(^[0-3]?[0-9][./-][0-1]?[0-9][./-](?:[0-9]{2}|[0-9]{4})$)")); }
+    catch (...) { return false; }
+}
+
+static bool ascii_looks_like_email(const std::string &sample)
+{
+    const auto at = sample.find('@');
+    return at != std::string::npos && at > 0 && sample.find('.', at) != std::string::npos;
+}
+
+static bool ascii_looks_like_url(const std::string &sample)
+{
+    return sample.rfind("http://", 0) == 0 || sample.rfind("https://", 0) == 0 ||
+           sample.rfind("www.", 0) == 0;
+}
+
+static std::string generic_pattern_for_sample(const std::string &sample, std::string *description)
+{
+    if (ascii_looks_like_time(sample)) {
+        if (description) *description = "Time";
+        return R"([0-2]?[0-9]:[0-5][0-9](?::[0-5][0-9])?)";
+    }
+    if (ascii_looks_like_date(sample)) {
+        if (description) *description = "Date";
+        return R"([0-3]?[0-9][./-][0-1]?[0-9][./-](?:[0-9]{2}|[0-9]{4}))";
+    }
+    if (ascii_looks_like_email(sample)) {
+        if (description) *description = "Email address";
+        return R"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})";
+    }
+    if (ascii_looks_like_url(sample)) {
+        if (description) *description = "Web address";
+        return R"((?:https?://|www\.)[^\s\r\n]+)";
+    }
+    if (ascii_all_digits_or_number(sample)) {
+        if (description) *description = "Number";
+        return R"([+\-]?[0-9]+(?:[.,][0-9]+)?%?)";
+    }
+    return {};
+}
+
+static std::string visible_separator_name(const std::string &separator)
+{
+    if (separator == "\n" || separator == "\r" || separator == "\r\n") return "line break";
+    if (separator == " ") return "space";
+    if (separator == "\t") return "tab";
+    std::string visible;
+    for (unsigned char ch : separator) {
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
+        visible.push_back(static_cast<char>(ch));
+    }
+    return visible.empty() ? "separator" : visible;
+}
+
+static size_t line_start_before(const std::string &text, size_t pos)
+{
+    while (pos > 0) {
+        const size_t previous = utf8_codepoint_start_before(text, pos);
+        size_t advance = 0;
+        if (is_line_boundary_codepoint(utf8_codepoint_at(text, previous, &advance)))
+            break;
+        pos = previous;
+    }
+    return pos;
+}
+
+static std::string structural_separator_before(const std::string &text, size_t pos)
+{
+    if (pos == 0) return {};
+    const size_t start = line_start_before(text, pos);
+    size_t cursor = pos;
+    while (cursor > start) {
+        const size_t previous = utf8_codepoint_start_before(text, cursor);
+        size_t advance = 0;
+        const uint32_t cp = utf8_codepoint_at(text, previous, &advance);
+        if (!is_unicode_invisible_or_space(cp) && !is_ascii_special(cp)) break;
+        cursor = previous;
+        if (pos - cursor >= 16) break;
+    }
+    return text.substr(cursor, pos - cursor);
+}
+
+static std::string learned_style_fingerprint(const RichTextAutoStyleRule &rule)
+{
+    const auto &f = rule.cached_format;
+    std::ostringstream out;
+    out << rule.cached_mask << '|' << rule.style_preset_id << '|'
+        << f.font_family << '|' << f.font_style << '|' << f.font_size << '|'
+        << f.bold << f.italic << f.underline << f.strikethrough << '|'
+        << f.tracking << '|' << f.scale_x << '|' << f.scale_y << '|'
+        << f.baseline_shift << '|' << f.fill.type << '|' << f.fill.color << '|'
+        << f.stroke.enabled << '|' << f.stroke.width << '|' << f.stroke.opacity << '|'
+        << f.stroke.fill.type << '|' << f.stroke.fill.color;
+    return out.str();
+}
+
+bool rich_text_auto_style_rules_equivalent(const RichTextAutoStyleRule &a,
+                                           const RichTextAutoStyleRule &b)
+{
+    return a.condition_type == b.condition_type &&
+           a.regex_pattern == b.regex_pattern &&
+           a.regex_capture_group == b.regex_capture_group &&
+           a.regex_case_sensitive == b.regex_case_sensitive &&
+           a.start_condition == b.start_condition &&
+           a.end_condition == b.end_condition &&
+           a.start_offset == b.start_offset && a.end_offset == b.end_offset &&
+           a.start_custom_chars == b.start_custom_chars &&
+           a.end_custom_chars == b.end_custom_chars &&
+           learned_style_fingerprint(a) == learned_style_fingerprint(b);
+}
+
+size_t rich_text_merge_auto_style_rules(std::vector<RichTextAutoStyleRule> &destination,
+                                        const std::vector<RichTextAutoStyleRule> &incoming)
+{
+    size_t added = 0;
+    for (auto candidate : incoming) {
+        const bool deduplicate = candidate.prevent_duplicates &&
+            candidate.generalization_mode != "keep_separate";
+        auto duplicate = destination.end();
+        if (deduplicate) {
+            duplicate = std::find_if(destination.begin(), destination.end(),
+                [&](const RichTextAutoStyleRule &existing) {
+                    return rich_text_auto_style_rules_equivalent(existing, candidate);
+                });
+        }
+        if (duplicate != destination.end()) {
+            /* One equivalent rule already covers every occurrence. Preserve the
+             * user's existing identity/order and promote it to reusable matching. */
+            if (candidate.allow_multiple_cases) duplicate->match_mode = "all_matches";
+            duplicate->allow_multiple_cases = duplicate->allow_multiple_cases || candidate.allow_multiple_cases;
+            continue;
+        }
+        destination.push_back(std::move(candidate));
+        ++added;
+    }
+    return added;
+}
+
+std::vector<RichTextAutoStyleRule> rich_text_infer_auto_style_rules(
+    const RichTextDocument &source)
+{
+    RichTextDocument doc = source;
+    doc.normalize();
+    std::vector<RichTextAutoStyleRule> rules;
+    size_t index = 1;
+    for (const RichTextRange &range : doc.ranges) {
+        if (range.length == 0 || range.start >= doc.plain_text.size() || range.mask == 0)
+            continue;
+        const size_t end = clamped_end(range.start, range.length, doc.plain_text.size());
+        if (end <= range.start)
+            continue;
+        const size_t sample_length = end - range.start;
+        static constexpr size_t kMaxLearnedSampleBytes = 1024 * 1024;
+        if (sample_length > kMaxLearnedSampleBytes)
+            continue;
+        const std::string sample = doc.plain_text.substr(range.start, sample_length);
+        if (sample.empty()) continue;
+
+        RichTextAutoStyleRule rule;
+        rule.rule_id = "learned_rule_" + std::to_string(index++);
+        rule.condition_type = "regex";
+        rule.match_mode = "all_matches";
+        rule.conflict_mode = "override_previous";
+        /* The inferred rule owns a complete style snapshot. This keeps learned
+         * formatting portable even when no named style preset exists. */
+        rule.cached_format = range.format;
+        rule.cached_mask = range.mask;
+        rule.style_preset_id.clear();
+
+        const bool line_start = starts_at_structural_line_boundary(doc.plain_text, range.start);
+        const std::string after = structural_separator_after(doc.plain_text, end);
+        const std::string before = structural_separator_before(doc.plain_text, range.start);
+        std::string semantic_name;
+        const std::string semantic_pattern = generic_pattern_for_sample(sample, &semantic_name);
+
+        if (line_start && !after.empty()) {
+            const std::string escaped_separator = regex_escape_structural_literal(after);
+            const std::string line_boundary =
+                "(?:\\r\\n|[\\n\\r\\v\\f]|\xC2\x85|\xE2\x80\xA8|\xE2\x80\xA9)";
+            const std::string content = semantic_pattern.empty()
+                ? "(?:(?!" + line_boundary + ").)+?"
+                : semantic_pattern;
+            rule.regex_pattern = learned_line_start_pattern() + "(" + content + ")(?=" + escaped_separator + ")";
+            rule.regex_capture_group = 2;
+            rule.display_name = "Paragraph beginning to " + visible_separator_name(after);
+        } else if (!before.empty() && !after.empty()) {
+            const std::string escaped_before = regex_escape_structural_literal(before);
+            const std::string escaped_after = regex_escape_structural_literal(after);
+            const std::string content = semantic_pattern.empty() ? "[^\\r\\n]+?" : semantic_pattern;
+            rule.regex_pattern = "(?:" + escaped_before + ")(" + content + ")(?=" + escaped_after + ")";
+            rule.regex_capture_group = 1;
+            rule.display_name = "Between " + visible_separator_name(before) + " and " + visible_separator_name(after);
+        } else if (!semantic_pattern.empty()) {
+            rule.regex_pattern = semantic_pattern;
+            rule.regex_capture_group = 0;
+            rule.display_name = semantic_name;
+        } else if (!before.empty()) {
+            const std::string escaped_before = regex_escape_structural_literal(before);
+            rule.regex_pattern = "(?:" + escaped_before + ")([^\\r\\n]+)";
+            rule.regex_capture_group = 1;
+            rule.display_name = "After " + visible_separator_name(before) + " to line end";
+        } else {
+            rule.regex_pattern = regex_escape_structural_literal(sample);
+            rule.regex_capture_group = 0;
+            rule.match_mode = "first_match";
+            rule.display_name = "Exact text: " + sample.substr(0, std::min<size_t>(sample.size(), 32));
+        }
+        rule.generalization_mode = "auto_merge";
+        rule.prevent_duplicates = true;
+        rule.allow_multiple_cases = true;
+        rule.match_mode = "all_matches";
+        rich_text_merge_auto_style_rules(rules, {rule});
+    }
+    return rules;
 }
 
 RichTextDocument rich_text_document_with_auto_styles(

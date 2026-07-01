@@ -1001,6 +1001,24 @@ static std::vector<int> blur_pass_radii(double blur, int blur_type)
     }
 }
 
+static int blur_support_radius_for_type(double blur, int blur_type)
+{
+    int support = 0;
+    for (int radius : blur_pass_radii(blur, blur_type))
+        support += std::max(0, radius);
+    return support;
+}
+
+/* Shared premultiplied-color blur backend. Text animators and the ordinary
+ * Blur effect must use this exact helper so their radius response and blur
+ * type never drift into separate implementations again. */
+static void blur_premultiplied_pixels_for_type(
+    std::vector<uint8_t> &pixels, int w, int h, double blur, int blur_type)
+{
+    for (int radius : blur_pass_radii(blur, blur_type))
+        box_blur_pixels(pixels, w, h, radius);
+}
+
 static void blur_alpha_for_type(std::vector<uint8_t> &alpha, int w, int h, double blur, int blur_type)
 {
     for (int radius : blur_pass_radii(blur, blur_type))
@@ -1234,7 +1252,8 @@ static QString display_text_for_style(const Layer &layer)
 {
     QString text = layer.type == LayerType::Clock
         ? clock_text_for_layer(layer)
-        : QString::fromStdString(layer.text_content);
+        : QString::fromStdString(effective_external_string(
+              layer, ExternalPropertyPaths::TextContent, layer.text_content));
     if (layer.text_style == 1)
         return locale_for_text_transform(text).toUpper(text);
     return text;

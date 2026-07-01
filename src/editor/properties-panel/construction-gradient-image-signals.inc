@@ -25,8 +25,14 @@
 
     char_grid->addWidget(grid_label(bgl_tr("OBSTitles.TextLabel"), text_box_), 0, 0);
     char_grid->addWidget(txt_content_, 0, 1, 1, 3);
-    add_full_width_field(char_grid, 1, "Font", cmb_font_);
-    add_full_width_field(char_grid, 2, "Style", cmb_font_style_);
+    char_grid->addWidget(btn_text_external_binding_, 0, 4, Qt::AlignTop);
+    // Font family and style are the primary Character controls. Keep them
+    // label-free and span the complete inspector width so long family/style
+    // names do not become truncated by a redundant label column.
+    cmb_font_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    cmb_font_style_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    char_grid->addWidget(cmb_font_, 1, 0, 1, 5);
+    char_grid->addWidget(cmb_font_style_, 2, 0, 1, 5);
     add_grid_field(char_grid, 3, 0, "Size", with_kf(spn_size_, btn_kf_font_size_));
     add_grid_field(char_grid, 3, 1, "Leading", spn_text_leading_);
     add_grid_field(char_grid, 4, 0, "Kerning", cmb_kerning_mode_);
@@ -38,6 +44,10 @@
     row_text_color_ = with_kf(btn_text_color_, btn_kf_text_color_);
     add_full_width_field(char_grid, 7, "Fill Color", row_text_color_);
     bgl_add_panel_section(vl, text_box_);
+
+    /* The animator editor is a normal properties-panel section. It writes the
+     * same AnimatedProperty instances exposed by the layer timeline. */
+    build_text_animator_section(inner, vl);
 
     /* ── Type Options ── */
     type_options_box_ = new QGroupBox("Type", inner);
@@ -311,36 +321,120 @@
     style_checkbox(chk_auto_style_enabled_);
     auto_layout->addWidget(chk_auto_style_enabled_);
 
-    auto *auto_help = new QLabel("Create rules that find text ranges, apply presets, and resolve conflicts before the renderer draws the final text runs.", auto_style_box_);
+    auto *auto_help = new QLabel("Automatically format names, labels, dates and other text patterns. Start by formatting an example, then let GSP learn it.", auto_style_box_);
     auto_help->setWordWrap(true);
-    auto_help->setToolTip("Auto Styling works on the whole text box and also on live text cue values. Manual inline formatting is applied last, so it can still override automatic rules.");
+    auto_help->setToolTip("Auto Styling also applies to Live Text Cue values. Manual inline formatting remains editable and is applied after automatic rules.");
     auto_layout->addWidget(auto_help);
 
-    auto *auto_form = new QFormLayout();
-    style_form(auto_form);
-    cmb_auto_default_style_ = new QComboBox(auto_style_box_);
+    auto *quick_setup_box = new QGroupBox("Quick Setup", auto_style_box_);
+    auto *quick_setup_layout = new QVBoxLayout(quick_setup_box);
+    quick_setup_layout->setContentsMargins(8, 8, 8, 8);
+    quick_setup_layout->setSpacing(5);
+    btn_auto_learn_formatting_ = new QPushButton("Learn from formatted example…", quick_setup_box);
+    btn_auto_learn_formatting_->setToolTip("Format part of the current text, then click here. GSP will create reusable rules from the visible structure, including spaces and line or paragraph breaks.");
+    style_push_button(btn_auto_learn_formatting_);
+    quick_setup_layout->addWidget(btn_auto_learn_formatting_);
+    auto *learn_hint = new QLabel("1. Format an example  2. Learn  3. Test with different text", quick_setup_box);
+    learn_hint->setWordWrap(true);
+    quick_setup_layout->addWidget(learn_hint);
+    auto_layout->addWidget(quick_setup_box);
+
+    auto *file_row = new QHBoxLayout();
+    btn_auto_rules_load_ = new QPushButton("Load Set…", auto_style_box_);
+    btn_auto_rules_save_ = new QPushButton("Save Set", auto_style_box_);
+    btn_auto_rules_save_as_ = new QPushButton("Save Set As…", auto_style_box_);
+    for (auto *button : {btn_auto_rules_load_, btn_auto_rules_save_, btn_auto_rules_save_as_}) {
+        style_push_button(button);
+        file_row->addWidget(button);
+    }
+    btn_auto_rules_load_->setToolTip("Load or import an Auto Styling rule set file. You can replace the current rules or append the loaded rules.");
+    btn_auto_rules_save_->setToolTip("Save the current complete rule set to its last file.");
+    btn_auto_rules_save_as_->setToolTip("Save the current base style and all rules as a reusable .gsp-auto-style.json file.");
+    auto_layout->addLayout(file_row);
+    lbl_auto_rules_status_ = new QLabel("Rule set: Not saved", auto_style_box_);
+    lbl_auto_rules_status_->setWordWrap(true);
+    auto_layout->addWidget(lbl_auto_rules_status_);
+
+    auto *rules_heading = new QLabel("Rules — double-click to edit", auto_style_box_);
+    auto_layout->addWidget(rules_heading);
+    lst_auto_style_rules_ = new QListWidget(auto_style_box_);
+    lst_auto_style_rules_->setMinimumHeight(150);
+    lst_auto_style_rules_->setStyleSheet(control_style);
+    lst_auto_style_rules_->setToolTip("Double-click a rule to open the full Rule Editor. Rules are evaluated from top to bottom.");
+    auto_layout->addWidget(lst_auto_style_rules_);
+    auto *main_rule_actions = new QHBoxLayout();
+    btn_auto_rules_edit_ = new QPushButton("Open Rule Editor…", auto_style_box_);
+    btn_auto_rules_clear_ = new QPushButton("Clear All Rules…", auto_style_box_);
+    btn_auto_rules_edit_->setToolTip("Open the Auto Styling Rule Editor with demo text, the complete rule list and all settings.");
+    btn_auto_rules_clear_->setToolTip("Remove every Auto Styling rule after confirmation.");
+    for (auto *button : {btn_auto_rules_edit_, btn_auto_rules_clear_}) {
+        style_push_button(button);
+        main_rule_actions->addWidget(button);
+    }
+    auto_layout->addLayout(main_rule_actions);
+
+    auto_rules_dialog_ = new QDialog(this);
+    auto_rules_dialog_->setWindowTitle("Auto Styling Rule Editor");
+    auto_rules_dialog_->setModal(true);
+    auto_rules_dialog_->resize(980, 720);
+    auto *dialog_layout = new QVBoxLayout(auto_rules_dialog_);
+    dialog_layout->setContentsMargins(12, 12, 12, 12);
+    dialog_layout->setSpacing(8);
+
+    auto *demo_box = new QGroupBox("Demo / Test", auto_rules_dialog_);
+    auto *demo_layout = new QVBoxLayout(demo_box);
+    demo_layout->setContentsMargins(8, 8, 8, 8);
+    auto *demo_hint = new QLabel("Type or paste sample text here to test the current rule set. Invisible characters and line/paragraph breaks are preserved.", demo_box);
+    demo_hint->setWordWrap(true);
+    txt_auto_rules_demo_ = new QTextEdit(demo_box);
+    txt_auto_rules_demo_->setPlaceholderText("NAME: Example text\nSECOND NAME: Another example");
+    txt_auto_rules_demo_->setMinimumHeight(115);
+    txt_auto_rules_demo_->setStyleSheet(control_style);
+    lbl_auto_rules_demo_status_ = new QLabel("No demo text", demo_box);
+    lbl_auto_rules_demo_status_->setWordWrap(true);
+    demo_layout->addWidget(demo_hint);
+    demo_layout->addWidget(txt_auto_rules_demo_);
+    demo_layout->addWidget(lbl_auto_rules_demo_status_);
+    dialog_layout->addWidget(demo_box);
+
+    auto *dialog_splitter = new QSplitter(Qt::Horizontal, auto_rules_dialog_);
+    auto *dialog_left = new QWidget(dialog_splitter);
+    auto *dialog_left_layout = new QVBoxLayout(dialog_left);
+    dialog_left_layout->setContentsMargins(0, 0, 4, 0);
+    dialog_left_layout->addWidget(new QLabel("Rules", dialog_left));
+    lst_auto_rules_dialog_ = new QListWidget(dialog_left);
+    lst_auto_rules_dialog_->setMinimumWidth(300);
+    lst_auto_rules_dialog_->setStyleSheet(control_style);
+    dialog_left_layout->addWidget(lst_auto_rules_dialog_);
+
+    auto *dialog_right = new QWidget(dialog_splitter);
+    auto *dialog_right_layout = new QVBoxLayout(dialog_right);
+    dialog_right_layout->setContentsMargins(4, 0, 0, 0);
+    auto *default_style_form = new QFormLayout();
+    style_form(default_style_form);
+    cmb_auto_default_style_ = new QComboBox(auto_rules_dialog_);
     cmb_auto_default_style_->setFixedHeight(22);
     cmb_auto_default_style_->setStyleSheet(control_style);
     cmb_auto_default_style_->setToolTip("Base preset for the entire text box. Rules are applied on top of this default style.");
-    auto_form->addRow("Base style", cmb_auto_default_style_);
-    auto_layout->addLayout(auto_form);
-    lst_auto_style_rules_ = new QListWidget(auto_style_box_);
-    lst_auto_style_rules_->setFixedHeight(132);
-    lst_auto_style_rules_->setStyleSheet(control_style);
-    lst_auto_style_rules_->setToolTip("Rules are evaluated from top to bottom. Use the arrow buttons to change priority. Later rules can override, respect or exclude earlier/later rules depending on their conflict mode.");
-    auto_layout->addWidget(lst_auto_style_rules_);
+    default_style_form->addRow("Base style", cmb_auto_default_style_);
+    dialog_right_layout->addLayout(default_style_form);
+    auto_rule_editor_box_ = new QGroupBox("Selected Rule", auto_rules_dialog_);
+    auto_rule_editor_box_->setEnabled(false);
+    auto *rule_editor_layout = new QVBoxLayout(auto_rule_editor_box_);
+    rule_editor_layout->setContentsMargins(8, 8, 8, 8);
+    rule_editor_layout->setSpacing(5);
     auto *rule_form = new QFormLayout();
     style_form(rule_form);
-    cmb_auto_rule_style_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_style_ = new QComboBox(auto_rules_dialog_);
     cmb_auto_rule_style_->setFixedHeight(22);
     cmb_auto_rule_style_->setStyleSheet(control_style);
     cmb_auto_rule_style_->setToolTip("Text style preset to apply when this rule matches.");
-    edt_auto_rule_name_ = new QLineEdit(auto_style_box_);
+    edt_auto_rule_name_ = new QLineEdit(auto_rules_dialog_);
     edt_auto_rule_name_->setPlaceholderText("Optional rule name");
     edt_auto_rule_name_->setFixedHeight(22);
     edt_auto_rule_name_->setStyleSheet(control_style);
     edt_auto_rule_name_->setToolTip("Optional friendly name shown in the rule list. Leave empty to use the preset name.");
-    chk_auto_rule_enabled_ = new BglSwitch("This rule is active", auto_style_box_);
+    chk_auto_rule_enabled_ = new BglSwitch("This rule is active", auto_rules_dialog_);
     chk_auto_rule_enabled_->setToolTip("Disable this rule without deleting it.");
     chk_auto_rule_enabled_->setChecked(true);
     style_checkbox(chk_auto_rule_enabled_);
@@ -357,8 +451,8 @@
         combo->addItem("End of paragraph", "paragraph_end");
         combo->addItem("Custom character", "custom_char");
     };
-    cmb_auto_rule_start_condition_ = new QComboBox(auto_style_box_);
-    cmb_auto_rule_end_condition_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_start_condition_ = new QComboBox(auto_rules_dialog_);
+    cmb_auto_rule_end_condition_ = new QComboBox(auto_rules_dialog_);
     fill_auto_marker_combo(cmb_auto_rule_start_condition_);
     fill_auto_marker_combo(cmb_auto_rule_end_condition_);
     cmb_auto_rule_start_condition_->setFixedHeight(22);
@@ -367,16 +461,16 @@
     cmb_auto_rule_end_condition_->setStyleSheet(control_style);
     cmb_auto_rule_start_condition_->setToolTip("Where the styled range begins. Marker rules scan the entire text box, not only the beginning.");
     cmb_auto_rule_end_condition_->setToolTip("Where the styled range ends. For marker-based rules, this is searched after each matching From marker.");
-    spn_auto_rule_start_offset_ = new QSpinBox(auto_style_box_);
-    spn_auto_rule_end_offset_ = new QSpinBox(auto_style_box_);
+    spn_auto_rule_start_offset_ = new QSpinBox(auto_rules_dialog_);
+    spn_auto_rule_end_offset_ = new QSpinBox(auto_rules_dialog_);
     for (auto *spin : {spn_auto_rule_start_offset_, spn_auto_rule_end_offset_}) {
         spin->setRange(0, 100000);
         spin->setFixedHeight(22);
         spin->setStyleSheet(control_style);
         spin->setToolTip("Offset / occurrence number. For Character index, this is the exact character position. For marker rules, 0 means the first matching marker.");
     }
-    edt_auto_rule_start_chars_ = new QLineEdit(auto_style_box_);
-    edt_auto_rule_end_chars_ = new QLineEdit(auto_style_box_);
+    edt_auto_rule_start_chars_ = new QLineEdit(auto_rules_dialog_);
+    edt_auto_rule_end_chars_ = new QLineEdit(auto_rules_dialog_);
     edt_auto_rule_start_chars_->setMaxLength(8);
     edt_auto_rule_end_chars_->setMaxLength(8);
     edt_auto_rule_start_chars_->setPlaceholderText("custom");
@@ -387,14 +481,14 @@
     edt_auto_rule_end_chars_->setStyleSheet(control_style);
     edt_auto_rule_start_chars_->setToolTip("Characters to search for when From is set to Custom character. Example: : or #.");
     edt_auto_rule_end_chars_->setToolTip("Characters to search for when To is set to Custom character. Example: , or ).");
-    auto *start_row = new QWidget(auto_style_box_);
+    auto *start_row = new QWidget(auto_rules_dialog_);
     auto *start_lay = new QHBoxLayout(start_row);
     start_lay->setContentsMargins(0, 0, 0, 0);
     start_lay->setSpacing(4);
     start_lay->addWidget(cmb_auto_rule_start_condition_, 2);
     start_lay->addWidget(spn_auto_rule_start_offset_, 1);
     start_lay->addWidget(edt_auto_rule_start_chars_, 1);
-    auto *end_row = new QWidget(auto_style_box_);
+    auto *end_row = new QWidget(auto_rules_dialog_);
     auto *end_lay = new QHBoxLayout(end_row);
     end_lay->setContentsMargins(0, 0, 0, 0);
     end_lay->setSpacing(4);
@@ -402,19 +496,19 @@
     end_lay->addWidget(spn_auto_rule_end_offset_, 1);
     end_lay->addWidget(edt_auto_rule_end_chars_, 1);
 
-    chk_auto_rule_require_stop_match_ = new BglSwitch("Require stop match", auto_style_box_);
+    chk_auto_rule_require_stop_match_ = new BglSwitch("Require stop match", auto_rules_dialog_);
     chk_auto_rule_require_stop_match_->setChecked(true);
     chk_auto_rule_require_stop_match_->setToolTip("When enabled, the rule is skipped if the Stop matching at condition is not found after the Start condition. This prevents accidental styling to the line/text end when a delimiter is missing in live text cues.");
     style_checkbox(chk_auto_rule_require_stop_match_);
-    chk_auto_rule_include_start_marker_ = new BglSwitch("Include From custom character", auto_style_box_);
+    chk_auto_rule_include_start_marker_ = new BglSwitch("Include From custom character", auto_rules_dialog_);
     chk_auto_rule_include_start_marker_->setChecked(true);
     chk_auto_rule_include_start_marker_->setToolTip("When From is Custom character, include that character in the styled range. Disable it to start styling after the marker.");
     style_checkbox(chk_auto_rule_include_start_marker_);
-    chk_auto_rule_include_end_marker_ = new BglSwitch("Include To custom character", auto_style_box_);
+    chk_auto_rule_include_end_marker_ = new BglSwitch("Include To custom character", auto_rules_dialog_);
     chk_auto_rule_include_end_marker_->setChecked(false);
     chk_auto_rule_include_end_marker_->setToolTip("When Stop matching at is Custom character, include that stop character in the styled range. Leave disabled to stop before the marker.");
     style_checkbox(chk_auto_rule_include_end_marker_);
-    auto *marker_options_row = new QWidget(auto_style_box_);
+    auto *marker_options_row = new QWidget(auto_rules_dialog_);
     auto *marker_options_lay = new QVBoxLayout(marker_options_row);
     marker_options_lay->setContentsMargins(0, 0, 0, 0);
     marker_options_lay->setSpacing(2);
@@ -422,7 +516,7 @@
     marker_options_lay->addWidget(chk_auto_rule_include_start_marker_);
     marker_options_lay->addWidget(chk_auto_rule_include_end_marker_);
 
-    cmb_auto_rule_conflict_mode_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_conflict_mode_ = new QComboBox(auto_rules_dialog_);
     cmb_auto_rule_conflict_mode_->addItem("Override previous rules", "override_previous");
     cmb_auto_rule_conflict_mode_->addItem("Respect previous rules", "respect_previous");
     cmb_auto_rule_conflict_mode_->addItem("Apply only if empty", "apply_if_empty");
@@ -431,21 +525,32 @@
     cmb_auto_rule_conflict_mode_->setFixedHeight(22);
     cmb_auto_rule_conflict_mode_->setStyleSheet(control_style);
     cmb_auto_rule_conflict_mode_->setToolTip("How this rule behaves when another rule already styled the same text. Override wins, Respect keeps previous fields, Apply only if empty affects unstyled text, Exclude blocks selected rules.");
-    cmb_auto_rule_match_mode_ = new QComboBox(auto_style_box_);
+    cmb_auto_rule_match_mode_ = new QComboBox(auto_rules_dialog_);
     cmb_auto_rule_match_mode_->addItem("All matches", "all_matches");
     cmb_auto_rule_match_mode_->addItem("First match only", "first_match");
     cmb_auto_rule_match_mode_->setFixedHeight(22);
     cmb_auto_rule_match_mode_->setStyleSheet(control_style);
     cmb_auto_rule_match_mode_->setToolTip("Apply to every matching range in the text box or only to the first one.");
-    edt_auto_rule_excludes_ = new QLineEdit(auto_style_box_);
+    cmb_auto_rule_generalization_ = new QComboBox(auto_rules_dialog_);
+    cmb_auto_rule_generalization_->addItem("Smart merge equivalent examples", "auto_merge");
+    cmb_auto_rule_generalization_->addItem("Exact structure only", "exact_only");
+    cmb_auto_rule_generalization_->addItem("Always keep separate", "keep_separate");
+    cmb_auto_rule_generalization_->setFixedHeight(22);
+    cmb_auto_rule_generalization_->setStyleSheet(control_style);
+    cmb_auto_rule_generalization_->setToolTip("Controls whether learned examples that describe the same reusable structure are folded into one rule.");
+    chk_auto_rule_prevent_duplicates_ = new QCheckBox("Skip exact duplicate rules", auto_rules_dialog_);
+    chk_auto_rule_prevent_duplicates_->setChecked(true);
+    chk_auto_rule_allow_multiple_cases_ = new QCheckBox("Apply one rule to every matching case", auto_rules_dialog_);
+    chk_auto_rule_allow_multiple_cases_->setChecked(true);
+    edt_auto_rule_excludes_ = new QLineEdit(auto_rules_dialog_);
     edt_auto_rule_excludes_->setPlaceholderText("Rule IDs to exclude, comma-separated");
     edt_auto_rule_excludes_->setFixedHeight(22);
     edt_auto_rule_excludes_->setStyleSheet(control_style);
     edt_auto_rule_excludes_->setToolTip("Comma-separated rule IDs to block where this rule matches. Example: rule_1, rule_3. Use with Conflict: Exclude selected rules.");
-    chk_auto_rule_stop_processing_ = new BglSwitch("Stop later rules on this matched text", auto_style_box_);
+    chk_auto_rule_stop_processing_ = new BglSwitch("Stop later rules on this matched text", auto_rules_dialog_);
     chk_auto_rule_stop_processing_->setToolTip("After this rule matches, later rules in the list cannot change the same characters. Useful for speaker names, labels, or protected prefixes.");
     style_checkbox(chk_auto_rule_stop_processing_);
-    spn_auto_rule_chars_ = new QSpinBox(auto_style_box_);
+    spn_auto_rule_chars_ = new QSpinBox(auto_rules_dialog_);
     spn_auto_rule_chars_->hide();
     rule_form->addRow("Rule name", edt_auto_rule_name_);
     rule_form->addRow("Apply preset", cmb_auto_rule_style_);
@@ -453,27 +558,59 @@
     rule_form->addRow("Start matching at", start_row);
     rule_form->addRow("Stop matching at", end_row);
     rule_form->addRow("Stop safety", marker_options_row);
-    rule_form->addRow("Apply to", cmb_auto_rule_match_mode_);
-    rule_form->addRow("If rules overlap", cmb_auto_rule_conflict_mode_);
-    rule_form->addRow("Exclude rules", edt_auto_rule_excludes_);
-    rule_form->addRow("Protect match", chk_auto_rule_stop_processing_);
-    auto_layout->addLayout(rule_form);
+    rule_editor_layout->addLayout(rule_form);
+    btn_auto_rule_advanced_ = new QToolButton(auto_rule_editor_box_);
+    btn_auto_rule_advanced_->setText("Advanced options");
+    btn_auto_rule_advanced_->setCheckable(true);
+    btn_auto_rule_advanced_->setChecked(false);
+    btn_auto_rule_advanced_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    btn_auto_rule_advanced_->setArrowType(Qt::RightArrow);
+    rule_editor_layout->addWidget(btn_auto_rule_advanced_);
+    auto_rule_advanced_widget_ = new QWidget(auto_rule_editor_box_);
+    auto *advanced_form = new QFormLayout(auto_rule_advanced_widget_);
+    style_form(advanced_form);
+    advanced_form->setContentsMargins(0, 0, 0, 0);
+    advanced_form->addRow("Apply to", cmb_auto_rule_match_mode_);
+    advanced_form->addRow("Learned examples", cmb_auto_rule_generalization_);
+    advanced_form->addRow("Duplicates", chk_auto_rule_prevent_duplicates_);
+    advanced_form->addRow("Reusable cases", chk_auto_rule_allow_multiple_cases_);
+    advanced_form->addRow("If rules overlap", cmb_auto_rule_conflict_mode_);
+    advanced_form->addRow("Exclude rules", edt_auto_rule_excludes_);
+    advanced_form->addRow("Protect match", chk_auto_rule_stop_processing_);
+    auto_rule_advanced_widget_->setVisible(false);
+    rule_editor_layout->addWidget(auto_rule_advanced_widget_);
+    QObject::connect(btn_auto_rule_advanced_, &QToolButton::toggled, auto_rule_advanced_widget_, &QWidget::setVisible);
+    QObject::connect(btn_auto_rule_advanced_, &QToolButton::toggled, btn_auto_rule_advanced_, [this](bool open) {
+        btn_auto_rule_advanced_->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+    });
+    dialog_right_layout->addWidget(auto_rule_editor_box_);
     auto *rule_buttons = new QHBoxLayout();
-    btn_auto_rule_add_ = new QPushButton("Add rule", auto_style_box_);
-    btn_auto_rule_update_ = new QPushButton("Save rule", auto_style_box_);
-    btn_auto_rule_delete_ = new QPushButton("Delete", auto_style_box_);
-    btn_auto_rule_up_ = new QPushButton("↑", auto_style_box_);
-    btn_auto_rule_down_ = new QPushButton("↓", auto_style_box_);
+    btn_auto_rule_add_ = new QPushButton("Add rule", auto_rules_dialog_);
+    btn_auto_rule_update_ = new QPushButton("Save rule", auto_rules_dialog_);
+    btn_auto_rule_delete_ = new QPushButton("Delete", auto_rules_dialog_);
+    btn_auto_rules_clear_dialog_ = new QPushButton("Clear All…", auto_rules_dialog_);
+    btn_auto_rule_up_ = new QPushButton("↑", auto_rules_dialog_);
+    btn_auto_rule_down_ = new QPushButton("↓", auto_rules_dialog_);
     btn_auto_rule_add_->setToolTip("Create a new rule from the editor fields below.");
     btn_auto_rule_update_->setToolTip("Save the current editor fields into the selected rule.");
     btn_auto_rule_delete_->setToolTip("Delete the selected rule.");
+    btn_auto_rules_clear_dialog_->setToolTip("Remove every Auto Styling rule after confirmation.");
     btn_auto_rule_up_->setToolTip("Move selected rule earlier. Earlier rules are evaluated first.");
     btn_auto_rule_down_->setToolTip("Move selected rule later. Later rules can override earlier ones depending on conflict mode.");
-    for (auto *b : {btn_auto_rule_add_, btn_auto_rule_update_, btn_auto_rule_delete_, btn_auto_rule_up_, btn_auto_rule_down_}) {
+    for (auto *b : {btn_auto_rule_add_, btn_auto_rule_update_, btn_auto_rule_delete_, btn_auto_rules_clear_dialog_, btn_auto_rule_up_, btn_auto_rule_down_}) {
         style_push_button(b);
         rule_buttons->addWidget(b);
     }
-    auto_layout->addLayout(rule_buttons);
+    rule_editor_layout->addLayout(rule_buttons);
+
+    dialog_splitter->addWidget(dialog_left);
+    dialog_splitter->addWidget(dialog_right);
+    dialog_splitter->setStretchFactor(0, 1);
+    dialog_splitter->setStretchFactor(1, 2);
+    dialog_layout->addWidget(dialog_splitter, 1);
+    auto *dialog_buttons = new QDialogButtonBox(QDialogButtonBox::Close, auto_rules_dialog_);
+    QObject::connect(dialog_buttons, &QDialogButtonBox::rejected, auto_rules_dialog_, &QDialog::reject);
+    dialog_layout->addWidget(dialog_buttons);
     bgl_add_panel_section(vl, auto_style_box_);
 
     /* ── Live Edit ── */

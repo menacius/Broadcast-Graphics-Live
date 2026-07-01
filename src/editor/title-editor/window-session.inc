@@ -613,46 +613,16 @@ static QRectF editor_layer_canvas_bounds_for_animation(
         << local.bottomRight() + QPointF(qbr.x * local.width(), qbr.y * local.height())
         << local.bottomLeft() + QPointF(qbl.x * local.width(), qbl.y * local.height());
 
-    /* Per-character/word text transitions are rasterized inside the text
-     * layer rather than represented by the general layer transform. Include
-     * their maximum spatial excursion in the static asset envelope. */
+    /* Text Animator displacement/scale/blur is the only text-specific
+     * animation envelope. Legacy text transitions are migrated before this
+     * editor path is reached. */
     QRectF text_transition_bounds = local_polygon.boundingRect();
-    for (const LayerTransition &transition : layer.transitions) {
-        if (!transition.enabled || transition.kind != LayerTransitionKind::Text)
-            continue;
-        if (transition.type == LayerTransitionType::TextSlide ||
-            transition.type == LayerTransitionType::TextBlurSlide) {
-            const double travel = std::max(0.0, transition.offset);
-            switch (transition.direction) {
-            case LayerTransitionDirection::Right:
-                text_transition_bounds.setRight(
-                    text_transition_bounds.right() + travel);
-                break;
-            case LayerTransitionDirection::Up:
-                text_transition_bounds.setTop(
-                    text_transition_bounds.top() - travel);
-                break;
-            case LayerTransitionDirection::Down:
-                text_transition_bounds.setBottom(
-                    text_transition_bounds.bottom() + travel);
-                break;
-            case LayerTransitionDirection::Left:
-            case LayerTransitionDirection::None:
-            default:
-                text_transition_bounds.setLeft(
-                    text_transition_bounds.left() - travel);
-                break;
-            }
-        } else if (transition.type == LayerTransitionType::TextScale) {
-            const double scale = std::max(1.0, std::abs(transition.scale_from));
-            const QSizeF expanded(text_transition_bounds.width() * scale,
-                                  text_transition_bounds.height() * scale);
-            text_transition_bounds = QRectF(
-                text_transition_bounds.center() -
-                    QPointF(expanded.width() * 0.5, expanded.height() * 0.5),
-                expanded);
-        }
-    }
+    const double animator_padding = text_animator_stack_visual_padding(
+        layer.text_animators, local.width(), local.height());
+    if (animator_padding > 0.0)
+        text_transition_bounds = text_transition_bounds.adjusted(
+            -animator_padding, -animator_padding,
+             animator_padding,  animator_padding);
     if (text_transition_bounds != local_polygon.boundingRect()) {
         local_polygon.clear();
         local_polygon << text_transition_bounds.topLeft()
@@ -1159,6 +1129,33 @@ TitleEditor::TitleEditor(QWidget *parent)
                    QMainWindow::GroupedDragging);
 
     build_ui();
+    const QPointer<TitleEditor> external_data_guard(this);
+    external_data_callback_id_ =
+        ExternalDataManager::instance().on_change(
+            [external_data_guard](const ExternalDataUpdate &update) {
+                if (!external_data_guard)
+                    return;
+                QTimer::singleShot(0, external_data_guard,
+                    [external_data_guard, update]() {
+                        if (!external_data_guard ||
+                            external_data_guard->shutting_down_ ||
+                            !external_data_guard->title_ ||
+                            !title_uses_external_update(
+                                *external_data_guard->title_, update))
+                            return;
+                        const QString next_visual_hash =
+                            CacheManager::instance().contentHashForTitle(
+                                *external_data_guard->title_);
+                        if (!external_data_guard->external_data_visual_hash_.isEmpty() &&
+                            external_data_guard->external_data_visual_hash_ ==
+                                next_visual_hash)
+                            return;
+                        external_data_guard->external_data_visual_hash_ =
+                            next_visual_hash;
+                        if (external_data_guard->canvas_)
+                            external_data_guard->canvas_->refresh_preview();
+                    });
+            });
     load_sidebar_default_colors();
     load_new_layer_defaults();
     update_sidebar_color_swatches(nullptr);
@@ -1291,6 +1288,11 @@ void TitleEditor::begin_shutdown()
     if (shutting_down_)
         return;
     shutting_down_ = true;
+    if (external_data_callback_id_ != 0) {
+        ExternalDataManager::instance().remove_change_callback(
+            external_data_callback_id_);
+        external_data_callback_id_ = 0;
+    }
     playing_ = false;
     if (canvas_) canvas_->set_playback_active(false);
 

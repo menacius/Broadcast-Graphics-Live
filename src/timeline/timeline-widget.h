@@ -65,6 +65,15 @@ public:
     void set_zoom_percent(int percent);
     int zoom_percent() const;
     void fit_timeline();
+    void set_graph_editor_enabled(bool enabled);
+    bool graph_editor_enabled() const { return graph_editor_enabled_; }
+    void set_graph_view_mode(int mode);
+    int graph_view_mode() const { return (int)graph_view_mode_; }
+    void fit_graph_to_view();
+    void fit_graph_selection();
+    void show_property_velocity_dialog(const std::string &layer_id,
+                                       const std::string &property_name,
+                                       double local_time);
     bool has_selected_keyframes() const;
     bool has_keyframe_clipboard() const;
     bool copy_keyframe_selection();
@@ -90,6 +99,8 @@ signals:
     void keyframe_easing_changed();
     void vertical_scroll_delta_requested(int delta);
     void zoom_percent_changed(int percent);
+    void graph_editor_enabled_changed(bool enabled);
+    void graph_view_mode_changed(int mode);
     void layer_selected(const std::string &layer_id);
     void layers_selected(const std::vector<std::string> &layer_ids);
     void effect_preset_dropped(const QString &file_path, const std::string &layer_id);
@@ -156,7 +167,24 @@ private:
         double start_out = 0.0;
         std::vector<KeyframeTime> keyframes;
     };
-    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, LoopStart, LoopEnd, PauseMarker };
+    enum class DragMode { None, Playhead, Keyframe, Marquee, TrimIn, TrimOut, Layer, TransitionDuration, LoopStart, LoopEnd, PauseMarker, GraphKeyframe, GraphIncomingHandle, GraphOutgoingHandle, GraphMarquee, GraphPan };
+    enum class GraphViewMode { Value = 0, Speed = 1 };
+    enum class GraphHitType { None, Keyframe, IncomingHandle, OutgoingHandle };
+    struct GraphHit {
+        GraphHitType type = GraphHitType::None;
+        KeyframeRef ref;
+        QPointF point;
+    };
+    struct TemporalDragSnapshot {
+        KeyframeRef ref;
+        double incoming_influence = 33.3333333333;
+        double outgoing_influence = 33.3333333333;
+        double incoming_speed = 0.0;
+        double outgoing_speed = 0.0;
+        double time = 0.0;
+        double value = 0.0;
+        bool linked = true;
+    };
     struct TransitionHit {
         std::shared_ptr<Layer> layer;
         LayerTransitionEdge edge = LayerTransitionEdge::In;
@@ -199,6 +227,25 @@ private:
     LayerTransition *selected_transition();
     bool layer_accepts_transition(const Layer &layer, const LayerTransition &transition) const;
 
+    QRect graph_rect() const;
+    TimelinePropertyRef active_graph_property(std::shared_ptr<Layer> *layer = nullptr) const;
+    bool graph_ref_property(const KeyframeRef &ref, TimelinePropertyRef *prop,
+                            std::shared_ptr<Layer> *layer = nullptr) const;
+    double graph_value_to_y(double value) const;
+    double graph_y_to_value(double y) const;
+    double graph_x_to_time(double x) const;
+    void paint_graph_editor(QPainter &painter, const QRect &dirty);
+    GraphHit graph_hit_test(const QPoint &pos) const;
+    bool graph_mouse_press(QMouseEvent *event);
+    bool graph_mouse_move(QMouseEvent *event);
+    bool graph_mouse_release(QMouseEvent *event);
+    void graph_context_menu(QContextMenuEvent *event);
+    void update_graph_fit(bool selection_only);
+    void fit_graph_time_range(bool selection_only);
+    void show_temporal_velocity_dialog(TimelinePropertyRef prop,
+                                       const std::vector<int> &indices);
+    std::vector<KeyframeRef> graph_edit_targets(const KeyframeRef &primary) const;
+
     std::shared_ptr<Title> title_;
     std::string sel_layer_id_;
     std::vector<std::string> selected_layer_ids_;
@@ -231,4 +278,18 @@ private:
     LayerTransitionEdge selected_transition_edge_ = LayerTransitionEdge::In;
     bool transition_clipboard_valid_ = false;
     LayerTransition transition_clipboard_;
+
+    bool graph_editor_enabled_ = false;
+    GraphViewMode graph_view_mode_ = GraphViewMode::Value;
+    double graph_value_min_ = -1.0;
+    double graph_value_max_ = 1.0;
+    bool graph_fit_pending_ = true;
+    GraphHit graph_drag_hit_;
+    std::vector<TemporalDragSnapshot> temporal_drag_snapshots_;
+    QPoint graph_drag_start_;
+    QPoint graph_marquee_current_;
+    double graph_drag_start_min_ = -1.0;
+    double graph_drag_start_max_ = 1.0;
+    int graph_drag_start_scroll_x_ = 0;
+    bool graph_drag_changed_ = false;
 };

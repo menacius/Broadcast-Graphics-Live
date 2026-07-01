@@ -82,6 +82,8 @@ const QVector<TitleLogCategory> &all_categories()
          QStringLiteral("Title/template import, append and export operations."), true},
         {QStringLiteral("Assets"), QStringLiteral("Assets"),
          QStringLiteral("Images, fonts, media and external asset loading."), true},
+        {QStringLiteral("ExternalData"), QStringLiteral("External data"),
+         QStringLiteral("Provider lifecycle, refreshes, parsing, bindings, table mapping and render-queue diagnostics."), true},
         {QStringLiteral("Preferences"), QStringLiteral("Preferences"),
          QStringLiteral("Application preference changes and configuration."), true},
         {QStringLiteral("Performance"), QStringLiteral("Performance (verbose)"),

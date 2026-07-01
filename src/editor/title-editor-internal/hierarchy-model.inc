@@ -4,7 +4,6 @@ static void set_animated_y(AnimatedVec2Property &prop, double time, double value
     next.y = value;
     set_animated_value(prop, time, next);
 }
-
 static void set_color_channels_at(Layer &layer, bool text, double time, uint32_t argb)
 {
     auto &a = text ? layer.text_color_a : layer.fill_color_a;
@@ -16,7 +15,6 @@ static void set_color_channels_at(Layer &layer, bool text, double time, uint32_t
     set_animated_value(g, time, (argb >> 8) & 0xFF);
     set_animated_value(b, time, argb & 0xFF);
 }
-
 static void set_shadow_color_channels_at(Layer &layer, double time, uint32_t argb)
 {
     set_animated_value(layer.shadow_color_a, time, (argb >> 24) & 0xFF);
@@ -24,7 +22,6 @@ static void set_shadow_color_channels_at(Layer &layer, double time, uint32_t arg
     set_animated_value(layer.shadow_color_g, time, (argb >> 8) & 0xFF);
     set_animated_value(layer.shadow_color_b, time, argb & 0xFF);
 }
-
 static void set_background_color_channels_at(Layer &layer, double time, uint32_t argb)
 {
     set_animated_value(layer.background_color_a, time, (argb >> 24) & 0xFF);
@@ -32,7 +29,6 @@ static void set_background_color_channels_at(Layer &layer, double time, uint32_t
     set_animated_value(layer.background_color_g, time, (argb >> 8) & 0xFF);
     set_animated_value(layer.background_color_b, time, argb & 0xFF);
 }
-
 static void set_background_stroke_color_channels_at(Layer &layer, double time, uint32_t argb)
 {
     set_animated_value(layer.background_stroke_color_a, time, (argb >> 24) & 0xFF);
@@ -40,7 +36,6 @@ static void set_background_stroke_color_channels_at(Layer &layer, double time, u
     set_animated_value(layer.background_stroke_color_g, time, (argb >> 8) & 0xFF);
     set_animated_value(layer.background_stroke_color_b, time, argb & 0xFF);
 }
-
 static bool keyframe_at_time(const AnimatedProperty &prop, double time)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -48,7 +43,6 @@ static bool keyframe_at_time(const AnimatedProperty &prop, double time)
         if (std::abs(kf.time - time) <= kEpsilon) return true;
     return false;
 }
-
 static bool keyframe_at_time(const AnimatedVec2Property &prop, double time)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -56,7 +50,6 @@ static bool keyframe_at_time(const AnimatedVec2Property &prop, double time)
         if (std::abs(kf.time - time) <= kEpsilon) return true;
     return false;
 }
-
 static void remove_keyframe_at(AnimatedProperty &prop, double time)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -65,7 +58,6 @@ static void remove_keyframe_at(AnimatedProperty &prop, double time)
                        [&](const Keyframe &kf) { return std::abs(kf.time - time) <= kEpsilon; }),
         prop.keyframes.end());
 }
-
 static void remove_keyframe_at(AnimatedVec2Property &prop, double time)
 {
     constexpr double kEpsilon = 1.0 / 240.0;
@@ -74,7 +66,6 @@ static void remove_keyframe_at(AnimatedVec2Property &prop, double time)
                        [&](const VectorKeyframe &kf) { return std::abs(kf.time - time) <= kEpsilon; }),
         prop.keyframes.end());
 }
-
 static void toggle_keyframe(AnimatedProperty &prop, double time, double value)
 {
     if (keyframe_at_time(prop, time))
@@ -82,7 +73,6 @@ static void toggle_keyframe(AnimatedProperty &prop, double time, double value)
     else
         add_or_replace_keyframe(prop, time, value);
 }
-
 static void toggle_keyframe(AnimatedVec2Property &prop, double time, Vec2Value value)
 {
     if (keyframe_at_time(prop, time))
@@ -90,14 +80,12 @@ static void toggle_keyframe(AnimatedVec2Property &prop, double time, Vec2Value v
     else
         add_or_replace_keyframe(prop, time, value);
 }
-
 static bool any_keyframe_at_time(std::initializer_list<const AnimatedProperty *> props, double time)
 {
     for (const auto *prop : props)
         if (prop && keyframe_at_time(*prop, time)) return true;
     return false;
 }
-
 static bool any_keyframes(std::initializer_list<const AnimatedProperty *> props)
 {
     for (const auto *prop : props)
@@ -385,18 +373,6 @@ static void draw_keyframe_marker(QPainter &painter, const QPointF &center, Easin
     painter.restore();
 }
 
-static QString easing_label(EasingType easing)
-{
-    switch (easing) {
-    case EasingType::Linear: return bgl_tr("OBSTitles.Linear");
-    case EasingType::EaseIn: return bgl_tr("OBSTitles.EaseIn");
-    case EasingType::EaseOut: return bgl_tr("OBSTitles.EaseOut");
-    case EasingType::EaseInOut: return bgl_tr("OBSTitles.EasyEase");
-    case EasingType::Bezier: return bgl_tr("OBSTitles.CustomBezier");
-    case EasingType::Hold: return bgl_tr("OBSTitles.Hold");
-    default: return bgl_tr("OBSTitles.Linear");
-    }
-}
 
 struct TimelinePropertyRef {
     AnimatedProperty *scalar = nullptr;
@@ -456,6 +432,176 @@ struct TimelinePropertyRef {
         if (AnimatedProperty *property = group_representative())
             return property->keyframes[index].easing;
         return vector ? vector->keyframes[index].easing : scalar->keyframes[index].easing;
+    }
+    TemporalInterpolationMode keyframe_temporal_mode(size_t index) const {
+        if (is_extension()) {
+            const QJsonObject key = bgs::effects::animation::track_keys(
+                *extension_effect, extension_path).at((qsizetype)index).toObject();
+            if (bgs::effects::animation::temporal_velocity_explicit(key))
+                return bgs::effects::animation::temporal_mode_from_key(key);
+            const EasingType easing = bgs::effects::animation::easing_from_key(key);
+            return easing == EasingType::Hold ? TemporalInterpolationMode::Hold
+                 : easing == EasingType::Linear ? TemporalInterpolationMode::Linear
+                 : TemporalInterpolationMode::ManualBezier;
+        }
+        if (AnimatedProperty *property = group_representative()) {
+            const Keyframe &key = property->keyframes[index];
+            if (key.temporal_velocity_explicit) return key.temporal_mode;
+            return key.easing == EasingType::Hold ? TemporalInterpolationMode::Hold
+                 : key.easing == EasingType::Linear ? TemporalInterpolationMode::Linear
+                 : TemporalInterpolationMode::ManualBezier;
+        }
+        if (vector) {
+            const VectorKeyframe &key = vector->keyframes[index];
+            if (key.temporal_velocity_explicit) return key.temporal_mode;
+            return key.easing == EasingType::Hold ? TemporalInterpolationMode::Hold
+                 : key.easing == EasingType::Linear ? TemporalInterpolationMode::Linear
+                 : TemporalInterpolationMode::ManualBezier;
+        }
+        if (scalar) {
+            const Keyframe &key = scalar->keyframes[index];
+            if (key.temporal_velocity_explicit) return key.temporal_mode;
+            return key.easing == EasingType::Hold ? TemporalInterpolationMode::Hold
+                 : key.easing == EasingType::Linear ? TemporalInterpolationMode::Linear
+                 : TemporalInterpolationMode::ManualBezier;
+        }
+        return TemporalInterpolationMode::Linear;
+    }
+    bool keyframe_temporal_tangents_linked(size_t index) const {
+        if (is_extension())
+            return bgs::effects::animation::track_keys(*extension_effect, extension_path)
+                .at((qsizetype)index).toObject()
+                .value(QStringLiteral("temporal_tangents_linked")).toBool(true);
+        if (AnimatedProperty *property = group_representative())
+            return property->keyframes[index].temporal_tangents_linked;
+        if (vector) return vector->keyframes[index].temporal_tangents_linked;
+        return scalar ? scalar->keyframes[index].temporal_tangents_linked : true;
+    }
+    double graph_value(double time) const {
+        if (is_extension()) {
+            const QJsonValue value = bgs::effects::animation::evaluate_track(
+                *extension_effect, extension_path, time, extension_fallback);
+            return value.isDouble() ? value.toDouble() : 0.0;
+        }
+        if (AnimatedProperty *property = group_representative())
+            return property->evaluate(time);
+        if (vector) return vector->path_value(time);
+        return scalar ? scalar->evaluate(time) : 0.0;
+    }
+    double graph_speed(double time) const {
+        if (is_extension()) {
+            const double h = 1e-5;
+            return (graph_value(time + h) - graph_value(time - h)) / (2.0 * h);
+        }
+        if (AnimatedProperty *property = group_representative())
+            return property->velocity(time);
+        if (vector) return vector->speed(time);
+        return scalar ? scalar->velocity(time) : 0.0;
+    }
+    double keyframe_temporal_influence(size_t index, bool incoming) const {
+        if (is_extension()) {
+            const QJsonObject key = bgs::effects::animation::track_keys(
+                *extension_effect, extension_path).at((qsizetype)index).toObject();
+            return key.value(incoming ? QStringLiteral("temporal_in_influence")
+                                      : QStringLiteral("temporal_out_influence"))
+                .toDouble(33.3333333333);
+        }
+        if (AnimatedProperty *property = group_representative()) {
+            const Keyframe &key = property->keyframes[index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_influence : key.outgoing_influence;
+            if (incoming && index > 0)
+                return property->temporal_segment(index - 1).incoming_influence * 100.0;
+            if (!incoming && index + 1 < property->keyframes.size())
+                return property->temporal_segment(index).outgoing_influence * 100.0;
+        } else if (vector) {
+            const VectorKeyframe &key = vector->keyframes[index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_influence : key.outgoing_influence;
+            if (incoming && index > 0)
+                return vector->temporal_segment(index - 1).incoming_influence * 100.0;
+            if (!incoming && index + 1 < vector->keyframes.size())
+                return vector->temporal_segment(index).outgoing_influence * 100.0;
+        } else if (scalar) {
+            const Keyframe &key = scalar->keyframes[index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_influence : key.outgoing_influence;
+        }
+        return 33.3333333333;
+    }
+    double keyframe_temporal_speed(size_t index, bool incoming) const {
+        if (is_extension()) {
+            const QJsonObject key = bgs::effects::animation::track_keys(
+                *extension_effect, extension_path).at((qsizetype)index).toObject();
+            if (bgs::effects::animation::temporal_velocity_explicit(key))
+                return key.value(incoming ? QStringLiteral("temporal_in_speed")
+                                          : QStringLiteral("temporal_out_speed")).toDouble();
+        } else if (AnimatedProperty *property = group_representative()) {
+            const Keyframe &key = property->keyframes[index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_speed : key.outgoing_speed;
+        } else if (vector) {
+            const VectorKeyframe &key = vector->keyframes[index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_speed : key.outgoing_speed;
+        } else if (scalar) {
+            const Keyframe &key = scalar->keyframes[index];
+            if (key.temporal_velocity_explicit)
+                return incoming ? key.incoming_speed : key.outgoing_speed;
+        }
+        const double time = keyframe_time(index);
+        return graph_speed(time + (incoming ? -1e-6 : 1e-6));
+    }
+    bool graph_value_editable() const {
+        if (is_extension()) {
+            const QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
+            return !keys.isEmpty() && keys.first().toObject().value(QStringLiteral("value")).isDouble();
+        }
+        return vector == nullptr && (scalar != nullptr || !scalar_group.empty());
+    }
+    void set_keyframe_graph_value(size_t index, double value)
+    {
+        if (is_extension()) {
+            QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
+            if (index >= (size_t)keys.size()) return;
+            QJsonObject key = keys.at((qsizetype)index).toObject();
+            key.insert(QStringLiteral("value"), value);
+            keys.replace((qsizetype)index, key);
+            bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
+        } else if (!scalar_group.empty()) {
+            AnimatedProperty *representative = group_representative();
+            if (!representative || index >= representative->keyframes.size()) return;
+            const double time = representative->keyframes[index].time;
+            const double delta = value - representative->keyframes[index].value;
+            for (AnimatedProperty *property : scalar_group) {
+                if (!property) continue;
+                for (Keyframe &key : property->keyframes)
+                    if (std::abs(key.time - time) < 0.0001) {
+                        key.value += delta;
+                        break;
+                    }
+            }
+        } else if (scalar && index < scalar->keyframes.size()) {
+            scalar->keyframes[index].value = value;
+        }
+    }
+    bool supports_spatial_interpolation() const {
+        return vector && vector->name == "position";
+    }
+    SpatialInterpolationMode keyframe_spatial_mode(size_t index) const {
+        return supports_spatial_interpolation() && index < vector->keyframes.size()
+            ? vector->keyframes[index].spatial_mode
+            : SpatialInterpolationMode::Linear;
+    }
+    bool keyframe_spatial_tangents_linked(size_t index) const {
+        return supports_spatial_interpolation() && index < vector->keyframes.size()
+            ? vector->keyframes[index].spatial_tangents_linked
+            : true;
+    }
+    bool keyframe_roves_across_time(size_t index) const {
+        return supports_spatial_interpolation() && index < vector->keyframes.size()
+            ? vector->keyframes[index].rove_across_time
+            : false;
     }
     Keyframe scalar_keyframe(size_t index) const {
         if (AnimatedProperty *property = group_representative())
@@ -527,7 +673,10 @@ struct TimelinePropertyRef {
             QJsonObject key = keys.at(static_cast<qsizetype>(index)).toObject();
             key.insert(QStringLiteral("time"), time);
             keys.replace(static_cast<qsizetype>(index), key);
-            bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
+            // Preserve index identity during an interactive multi-keyframe drag.
+            // The timeline/graph editor performs one explicit stable sort on release.
+            bgs::effects::animation::write_track_keys_preserve_order(
+                *extension_effect, extension_path, keys);
         } else if (!scalar_group.empty()) {
             const double old_time = keyframe_time(index);
             for (AnimatedProperty *property : scalar_group) {
@@ -539,8 +688,13 @@ struct TimelinePropertyRef {
                     }
                 }
             }
-        } else if (vector) vector->keyframes[index].time = time;
-        else if (scalar) scalar->keyframes[index].time = time;
+        } else if (vector) {
+            vector->keyframes[index].rove_across_time = false;
+            vector->keyframes[index].time = time;
+            vector->recalculate_rove_times();
+        } else if (scalar) {
+            scalar->keyframes[index].time = time;
+        }
     }
     void erase_keyframe(size_t index)
     {
@@ -559,8 +713,12 @@ struct TimelinePropertyRef {
                         }),
                     property->keyframes.end());
             }
-        } else if (vector) vector->keyframes.erase(vector->keyframes.begin() + (ptrdiff_t)index);
-        else if (scalar) scalar->keyframes.erase(scalar->keyframes.begin() + (ptrdiff_t)index);
+        } else if (vector) {
+            vector->keyframes.erase(vector->keyframes.begin() + (ptrdiff_t)index);
+            vector->recalculate_rove_times();
+        } else if (scalar) {
+            scalar->keyframes.erase(scalar->keyframes.begin() + (ptrdiff_t)index);
+        }
     }
     void clear_keyframes()
     {
@@ -587,17 +745,160 @@ struct TimelinePropertyRef {
         } else if (vector) {
             std::sort(vector->keyframes.begin(), vector->keyframes.end(),
                       [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
+            vector->recalculate_rove_times();
         } else if (scalar) {
             std::sort(scalar->keyframes.begin(), scalar->keyframes.end(),
                       [](const Keyframe &a, const Keyframe &b) { return a.time < b.time; });
         }
     }
+    void apply_spatial_mode(size_t index, SpatialInterpolationMode mode)
+    {
+        if (!supports_spatial_interpolation())
+            return;
+        vector->set_spatial_mode(index, mode);
+    }
+    void set_spatial_tangents_linked(size_t index, bool linked)
+    {
+        if (!supports_spatial_interpolation())
+            return;
+        vector->set_spatial_tangents_linked(index, linked);
+    }
+    void set_keyframe_rove_across_time(size_t index, bool enabled)
+    {
+        if (!supports_spatial_interpolation())
+            return;
+        vector->set_rove_across_time(index, enabled);
+    }
+
+    void apply_temporal_mode(size_t index, TemporalInterpolationMode mode)
+    {
+        if (is_extension()) {
+            QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
+            if (index >= (size_t)keys.size()) return;
+            QJsonObject key = keys.at((qsizetype)index).toObject();
+            const double time = key.value(QStringLiteral("time")).toDouble();
+            auto slope = [&](int a, int b) {
+                if (a < 0 || b < 0 || a >= keys.size() || b >= keys.size()) return 0.0;
+                const QJsonObject ka = keys.at(a).toObject(), kb = keys.at(b).toObject();
+                const double dt = kb.value(QStringLiteral("time")).toDouble() -
+                                  ka.value(QStringLiteral("time")).toDouble();
+                return dt > 1e-10 ? (kb.value(QStringLiteral("value")).toDouble() -
+                                     ka.value(QStringLiteral("value")).toDouble()) / dt : 0.0;
+            };
+            const double in_speed = index > 0 ? slope((int)index - 1, (int)index) :
+                                    (index + 1 < (size_t)keys.size() ? slope((int)index, (int)index + 1) : 0.0);
+            const double out_speed = index + 1 < (size_t)keys.size() ? slope((int)index, (int)index + 1) : in_speed;
+            if (!bgs::effects::animation::temporal_velocity_explicit(key)) {
+                key.insert(QStringLiteral("temporal_in_speed"), in_speed);
+                key.insert(QStringLiteral("temporal_out_speed"), out_speed);
+                key.insert(QStringLiteral("temporal_in_influence"), 33.3333333333);
+                key.insert(QStringLiteral("temporal_out_influence"), 33.3333333333);
+            }
+            bgs::effects::animation::set_key_temporal_mode(key, mode);
+            if (mode == TemporalInterpolationMode::AutoBezier) {
+                double auto_speed = in_speed;
+                if (index > 0 && index + 1 < (size_t)keys.size())
+                    auto_speed = slope((int)index - 1, (int)index + 1);
+                key.insert(QStringLiteral("temporal_in_speed"), auto_speed);
+                key.insert(QStringLiteral("temporal_out_speed"), auto_speed);
+            } else if (mode == TemporalInterpolationMode::ContinuousBezier) {
+                const double common = 0.5 * (key.value(QStringLiteral("temporal_in_speed")).toDouble(in_speed) +
+                                             key.value(QStringLiteral("temporal_out_speed")).toDouble(out_speed));
+                key.insert(QStringLiteral("temporal_in_speed"), common);
+                key.insert(QStringLiteral("temporal_out_speed"), common);
+            }
+            key.insert(QStringLiteral("time"), time);
+            keys.replace((qsizetype)index, key);
+            bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
+        } else if (!scalar_group.empty()) {
+            const double time = keyframe_time(index);
+            for (AnimatedProperty *property : scalar_group) {
+                if (!property) continue;
+                for (size_t i = 0; i < property->keyframes.size(); ++i)
+                    if (std::abs(property->keyframes[i].time - time) < 0.0001) {
+                        property->set_temporal_mode(i, mode); break;
+                    }
+            }
+        } else if (vector) vector->set_temporal_mode(index, mode);
+        else if (scalar) scalar->set_temporal_mode(index, mode);
+    }
+    void set_temporal_handle(size_t index, bool incoming, double influence,
+                             double speed, bool break_pair)
+    {
+        if (is_extension()) {
+            QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
+            if (index >= (size_t)keys.size()) return;
+            QJsonObject key = keys.at((qsizetype)index).toObject();
+            const bool was_linked = key.value(QStringLiteral("temporal_tangents_linked")).toBool(true);
+            bgs::effects::animation::set_key_temporal_mode(
+                key, TemporalInterpolationMode::ManualBezier);
+            key.insert(incoming ? QStringLiteral("temporal_in_influence")
+                                : QStringLiteral("temporal_out_influence"),
+                       std::clamp(influence, 0.0, 100.0));
+            key.insert(incoming ? QStringLiteral("temporal_in_speed")
+                                : QStringLiteral("temporal_out_speed"), speed);
+            if (break_pair)
+                key.insert(QStringLiteral("temporal_tangents_linked"), false);
+            else if (was_linked) {
+                key.insert(incoming ? QStringLiteral("temporal_out_influence")
+                                    : QStringLiteral("temporal_in_influence"),
+                           std::clamp(influence, 0.0, 100.0));
+                key.insert(incoming ? QStringLiteral("temporal_out_speed")
+                                    : QStringLiteral("temporal_in_speed"), speed);
+            }
+            keys.replace((qsizetype)index, key);
+            bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
+        } else if (!scalar_group.empty()) {
+            const double time = keyframe_time(index);
+            for (AnimatedProperty *property : scalar_group) {
+                if (!property) continue;
+                for (size_t i = 0; i < property->keyframes.size(); ++i)
+                    if (std::abs(property->keyframes[i].time - time) < 0.0001) {
+                        property->set_temporal_handle(i, incoming, influence, speed, break_pair); break;
+                    }
+            }
+        } else if (vector) vector->set_temporal_handle(index, incoming, influence, speed, break_pair);
+        else if (scalar) scalar->set_temporal_handle(index, incoming, influence, speed, break_pair);
+    }
+    void apply_easy_ease(size_t index, bool ease_in, bool ease_out)
+    {
+        if (is_extension()) {
+            apply_temporal_mode(index, TemporalInterpolationMode::ManualBezier);
+            QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
+            QJsonObject key = keys.at((qsizetype)index).toObject();
+            if (ease_in) {
+                key.insert(QStringLiteral("temporal_in_influence"), 33.3333333333);
+                key.insert(QStringLiteral("temporal_in_speed"), 0.0);
+            }
+            if (ease_out) {
+                key.insert(QStringLiteral("temporal_out_influence"), 33.3333333333);
+                key.insert(QStringLiteral("temporal_out_speed"), 0.0);
+            }
+            key.insert(QStringLiteral("temporal_tangents_linked"), ease_in && ease_out);
+            keys.replace((qsizetype)index, key);
+            bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
+        } else if (!scalar_group.empty()) {
+            const double time = keyframe_time(index);
+            for (AnimatedProperty *property : scalar_group) {
+                if (!property) continue;
+                for (size_t i = 0; i < property->keyframes.size(); ++i)
+                    if (std::abs(property->keyframes[i].time - time) < 0.0001) {
+                        property->apply_easy_ease(i, ease_in, ease_out); break;
+                    }
+            }
+        } else if (vector) vector->apply_easy_ease(index, ease_in, ease_out);
+        else if (scalar) scalar->apply_easy_ease(index, ease_in, ease_out);
+    }
+
     void apply_easing(size_t index, EasingType easing)
     {
         if (is_extension()) {
             QJsonArray keys = bgs::effects::animation::track_keys(*extension_effect, extension_path);
             QJsonObject key = keys.at(static_cast<qsizetype>(index)).toObject();
             bgs::effects::animation::set_key_easing(key, easing);
+            // Legacy presets intentionally leave explicit velocity mode.
+            key.insert(QStringLiteral("temporal_velocity_explicit"), false);
+            key.insert(QStringLiteral("temporal_tangents_linked"), true);
             keys.replace(static_cast<qsizetype>(index), key);
             bgs::effects::animation::write_track_keys(*extension_effect, extension_path, keys);
         } else if (!scalar_group.empty()) {
@@ -895,6 +1196,110 @@ static std::vector<TimelinePropertyRef> timeline_properties(Layer &layer)
     };
     for (size_t index = 0; index < layer.effects.size(); ++index)
         add_effect_props(layer.effects[index], index);
+
+    /* Text Animator tracks are ordinary AnimatedProperty instances. Expose
+     * them through the same TimelinePropertyRef adapter used by layer/effect
+     * properties so copy/paste, graph editing, temporal Bezier handles and
+     * multi-keyframe operations require no separate timeline implementation. */
+    auto encoded_text_name = [](size_t animator_index,
+                                const std::string &animator_name,
+                                const char *kind,
+                                size_t item_index,
+                                const std::string &item_name,
+                                const char *component) {
+        auto clean = [](std::string value) {
+            size_t pos = 0;
+            while ((pos = value.find("__", pos)) != std::string::npos)
+                value.replace(pos, 2, "_");
+            return value;
+        };
+        return std::string("__textanim__") + std::to_string(animator_index) +
+               "__" + clean(animator_name) + "__" + kind + "__" +
+               std::to_string(item_index) + "__" + clean(item_name) +
+               "__" + component;
+    };
+    auto add_text_scalar = [&](AnimatedProperty &property,
+                               const std::string &encoded) {
+        props.push_back({&property, nullptr, nullptr, QString(), encoded,
+                         QJsonValue(), EasingType::Linear});
+    };
+    auto add_text_group = [&](std::initializer_list<AnimatedProperty *> group,
+                              const std::string &encoded) {
+        props.push_back({nullptr, nullptr, nullptr, QString(), encoded,
+                         QJsonValue(), EasingType::Linear,
+                         std::vector<AnimatedProperty *>(group)});
+    };
+
+    for (size_t animator_index = 0;
+         animator_index < layer.text_animators.animators.size();
+         ++animator_index) {
+        TextAnimator &animator = layer.text_animators.animators[animator_index];
+        for (size_t property_index = 0;
+             property_index < animator.properties.size(); ++property_index) {
+            TextAnimatorProperty &property = animator.properties[property_index];
+            const auto name = [&](const char *component) {
+                return encoded_text_name(animator_index, animator.name,
+                                         "property", property_index,
+                                         property.name, component);
+            };
+            switch (property.type) {
+            case TextAnimatorPropertyType::Position:
+            case TextAnimatorPropertyType::AnchorPoint:
+            case TextAnimatorPropertyType::Scale:
+            case TextAnimatorPropertyType::ShadowOffset:
+            case TextAnimatorPropertyType::TextBoxPositionOffset:
+            case TextAnimatorPropertyType::TextBoxScale:
+            case TextAnimatorPropertyType::LineAlignmentOffset:
+                add_text_group({&property.value, &property.secondary}, name("xy"));
+                break;
+            case TextAnimatorPropertyType::FillColor:
+            case TextAnimatorPropertyType::StrokeColor:
+                add_text_group({&property.value, &property.secondary,
+                                &property.tertiary, &property.quaternary},
+                               name("color"));
+                break;
+            default:
+                add_text_scalar(property.value, name("value"));
+                break;
+            }
+        }
+
+        for (size_t selector_index = 0;
+             selector_index < animator.selectors.size(); ++selector_index) {
+            TextSelector &selector = animator.selectors[selector_index];
+            auto add_selector = [&](AnimatedProperty &property,
+                                    const char *component) {
+                add_text_scalar(property,
+                    encoded_text_name(animator_index, animator.name,
+                                      "selector", selector_index,
+                                      selector.name, component));
+            };
+            add_selector(selector.start, "start");
+            add_selector(selector.end, "end");
+            add_selector(selector.offset, "offset");
+            add_selector(selector.amount, "amount");
+            add_selector(selector.ease_high, "ease_high");
+            add_selector(selector.ease_low, "ease_low");
+            add_selector(selector.smoothness, "smoothness");
+            add_selector(selector.completion, "completion");
+            add_selector(selector.stagger_percent, "stagger");
+            add_selector(selector.amplitude, "amplitude");
+            add_selector(selector.frequency, "frequency");
+            add_selector(selector.phase, "phase");
+            add_selector(selector.speed, "speed");
+            add_selector(selector.falloff, "falloff");
+            add_selector(selector.minimum, "minimum");
+            add_selector(selector.maximum, "maximum");
+            add_selector(selector.custom_index, "custom_index");
+            add_selector(selector.wiggly_amount, "wiggly_amount");
+            add_selector(selector.wiggly_frequency, "wiggly_frequency");
+            add_selector(selector.correlation, "correlation");
+            add_selector(selector.temporal_phase, "temporal_phase");
+            add_selector(selector.spatial_phase, "spatial_phase");
+            add_selector(selector.minimum_influence, "minimum_influence");
+            add_selector(selector.maximum_influence, "maximum_influence");
+        }
+    }
     return props;
 }
 
@@ -903,6 +1308,25 @@ static QString property_label(const std::string &name)
     QString qname = QString::fromStdString(name);
     QString encoded_effect_slug;
     QString encoded_effect_suffix;
+    if (qname.startsWith(QStringLiteral("__textanim__"))) {
+        const QStringList parts = qname.split(QStringLiteral("__"), Qt::KeepEmptyParts);
+        if (parts.size() >= 8) {
+            const QString animator_name = parts.at(3);
+            const QString item_name = parts.at(6);
+            QString component = parts.mid(7).join(QStringLiteral("__"));
+            component.replace(QLatin1Char('_'), QLatin1Char(' '));
+            if (component == QStringLiteral("value") ||
+                component == QStringLiteral("xy") ||
+                component == QStringLiteral("color"))
+                component.clear();
+            else if (!component.isEmpty())
+                component[0] = component.at(0).toUpper();
+            return QStringLiteral("Text › %1 › %2%3")
+                .arg(animator_name, item_name,
+                     component.isEmpty() ? QString()
+                         : QStringLiteral(" › ") + component);
+        }
+    }
     if (qname.startsWith(QStringLiteral("__effect__"))) {
         const QStringList parts = qname.split(QStringLiteral("__"), Qt::KeepEmptyParts);
         if (parts.size() >= 5) {
@@ -1146,6 +1570,15 @@ static int group_descendant_object_count(const std::shared_ptr<Title> &title,
     return count;
 }
 
+/* Layer list and timeline must use one expansion predicate.  Group child
+ * visibility is a third caret state, but an open group also exposes its own
+ * animated-property rows in both panels. */
+static bool layer_keyframe_sections_expanded(const Layer &layer)
+{
+    return layer.properties_expanded ||
+        (layer.type == LayerType::Group && !layer.group_collapsed);
+}
+
 struct TimelineRow {
     std::shared_ptr<Layer> layer;
     TimelinePropertyRef prop;
@@ -1160,8 +1593,7 @@ static std::vector<TimelineRow> timeline_rows(const std::shared_ptr<Title> &titl
         auto layer = hierarchy_row.layer;
         if (!layer) continue;
         rows.push_back({layer, TimelinePropertyRef{}, false});
-        const bool show_properties = layer->properties_expanded ||
-            (layer->type == LayerType::Group && !layer->group_collapsed);
+        const bool show_properties = layer_keyframe_sections_expanded(*layer);
         if (!show_properties)
             continue;
         std::set<std::string> seen;

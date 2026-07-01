@@ -17,6 +17,12 @@
 #include "title-effect-registry.h"
 #include "extensions/effect-extension-catalog.h"
 #include "build-info.h"
+#include "external-data-settings-dialog.h"
+#include "external-data-binding-dialog.h"
+#include "external-data-table-mapping-dialog.h"
+#include "external-data.h"
+#include "external-data-provider.h"
+#include "external-data-log.h"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -45,6 +51,7 @@
 #include <QMimeData>
 #include <QTextEdit>
 #include <QMessageBox>
+#include <QMainWindow>
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -106,6 +113,7 @@
 #include <functional>
 #include <numeric>
 #include <iterator>
+#include <sstream>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -117,6 +125,7 @@
 #include "title-dock/template-library-helpers.inc"
 #include "title-dock/import-export-helpers.inc"
 #include "title-dock/dock-ui.inc"
+#include "title-dock/collapsible-titles.inc"
 #include "title-dock/dock-lifecycle.inc"
 #include "title-dock/list-selection-cues.inc"
 #include "title-dock/live-text-cache-playlist.inc"

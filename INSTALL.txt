@@ -47,7 +47,7 @@ OUTPUTS AFTER A SUCCESSFUL BUILD
      <name>_<version>_<dev-version>_<platform>.zip
 
    Current example:
-     Broadcast_Graphics_Live_v0.8.7-alpha_development-version-105_windows-x64.zip
+     Broadcast_Graphics_Live_v0.8.8-alpha_development-version-144_windows-x64.zip
 
    The ZIP contains the same plugin folder, data files and runtime DLLs that are
    copied into OBS.

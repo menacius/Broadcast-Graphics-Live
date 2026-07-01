@@ -2,6 +2,7 @@
 #include "cache-manager.h"
 #include "effect-preset-catalog.h"
 #include "transition-preset-catalog.h"
+#include "text-animator-presets.h"
 #include "title-logger.h"
 
 #include <QDragEnterEvent>
@@ -9,9 +10,29 @@
 #include <QDropEvent>
 #include <QDragLeaveEvent>
 #include <QFontMetrics>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QPainterPath>
+#include <QPolygon>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <set>
+
+namespace {
+
+/* Keep the visual grip large enough to read at common OBS UI scales and make
+ * the interactive target wider still.  The outer strip edges deliberately win
+ * over transition overlays so a transition never makes its host strip hard to
+ * trim. */
+constexpr int kLayerTrimHandleVisualWidth = 8;
+constexpr int kLayerTrimHitWidth = 12;
+constexpr int kTransitionDurationHitWidth = 9;
+
+} // namespace
 
 TimelineWidget::TimelineWidget(QWidget *parent) : QWidget(parent)
 {
@@ -37,6 +58,7 @@ void TimelineWidget::set_title(std::shared_ptr<Title> t)
         scroll_x_ = 0;
         fit_on_next_resize_ = true;
         selected_keyframes_.clear();
+        graph_fit_pending_ = true;
         transition_target_selected_ = false;
         selected_transition_layer_id_.clear();
     } else {
@@ -85,6 +107,7 @@ void TimelineWidget::set_selected_layers(const std::vector<std::string> &layer_i
         transition_target_selected_ = false;
         selected_transition_layer_id_.clear();
     }
+    graph_fit_pending_ = true;
     update();
 }
 
@@ -102,6 +125,10 @@ void TimelineWidget::set_playhead(double t)
     }
 
     const int new_x = time_to_x(playhead_);
+    /* The ruler contains labels plus the playhead time badge. Repaint it as one
+     * coherent band so a moving narrow dirty rectangle cannot clip adjacent
+     * label glyphs. The timeline body still updates only the old/new lines. */
+    update(QRect(0, 0, width(), ruler_height()));
     const QRect old_rect = playhead_dirty_rect(old_x);
     const QRect new_rect = playhead_dirty_rect(new_x);
     if (old_rect.intersects(new_rect) || old_rect.adjusted(-4, 0, 4, 0).intersects(new_rect))
@@ -268,13 +295,27 @@ bool TimelineWidget::copy_transition_selection()
 bool TimelineWidget::delete_transition_selection()
 {
     auto layer = selected_transition_layer();
-    if (!layer || layer->locked || !selected_transition())
+    const LayerTransition *selected = selected_transition();
+    if (!layer || layer->locked || !selected)
         return false;
+    const bool deleted_text_transition =
+        layer_transition_type_is_text(selected->type);
     auto &transitions = layer->transitions;
     transitions.erase(std::remove_if(transitions.begin(), transitions.end(),
                                      [&](const LayerTransition &transition) {
                                          return transition.edge == selected_transition_edge_;
                                      }), transitions.end());
+    /* Text-transition keyframes live in the managed TextAnimator generated for
+     * the descriptor.  Removing the descriptor must immediately remove that
+     * animator as part of the same edit, rather than waiting for a later editor
+     * refresh where its keyframes can remain visible/selectable. */
+    if (deleted_text_transition) {
+        synchronize_text_transition_animators(
+            layer->transitions, layer->text_animators,
+            layer->in_time, layer->out_time, nullptr, false);
+        clear_keyframe_selection();
+        prune_keyframe_selection();
+    }
     update();
     BGL_LOG_DEBUG("Transitions", QStringLiteral(
         "Deleted transition title=%1 layer=%2 edge=%3")
@@ -367,11 +408,9 @@ int TimelineWidget::time_to_x(double t) const
 
 QRect TimelineWidget::playhead_dirty_rect(int playhead_x) const
 {
-    QRect line_rect(playhead_x - 10, 0, 20, height());
-    QRect timecode_rect(playhead_x + 8, 2, 96, 18);
-    if (timecode_rect.right() > width())
-        timecode_rect.moveRight(playhead_x - 8);
-    return line_rect.united(timecode_rect).adjusted(-2, 0, 2, 0)
+    const QRect line_rect(playhead_x - 10, ruler_height(), 20,
+                          std::max(0, height() - ruler_height()));
+    return line_rect.adjusted(-2, 0, 2, 0)
         .intersected(rect());
 }
 
@@ -481,7 +520,7 @@ void TimelineWidget::select_keyframes_in_rect(const QRect &rect, bool additive)
     for (int row = 0; row < (int)rows.size(); ++row) {
         const auto &entry = rows[row];
         if (!entry.is_property || !entry.layer || !entry.prop) continue;
-        if (!entry.layer->properties_expanded || entry.layer->locked) continue;
+        if (!layer_keyframe_sections_expanded(*entry.layer) || entry.layer->locked) continue;
         int y = ruler_height() + row * row_height() - scroll_y_;
         int ky = y + row_height() / 2;
         if (ky < visible_timeline.top() || ky > visible_timeline.bottom()) continue;
@@ -863,6 +902,10 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
     const QRect dirty = ev ? ev->rect().intersected(rect()) : rect();
     if (dirty.isEmpty()) return;
     p.setClipRect(dirty);
+    if (graph_editor_enabled_) {
+        paint_graph_editor(p, dirty);
+        return;
+    }
 
     int rh = ruler_height(), rowh = row_height();
     const QPalette pal = palette();
@@ -956,6 +999,15 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
         p.setPen(border);
         p.drawLine(0, rh - 1, W, rh - 1);
 
+        /* Keep the ruler visually stable by assigning separate vertical
+         * bands to labels, ticks and the cache status strip.  Previously the
+         * cache strip was painted over the lower portion of the labels. */
+        const int cache_h = 5;
+        const int cache_y = rh - cache_h - 1;
+        const int tick_baseline = cache_y - 1;
+        const int label_top = 2;
+        const int label_height = std::max(14, tick_baseline - 12);
+
         int last_label_right = std::numeric_limits<int>::min();
         const int rounded_fps = std::max(1, (int)std::round(fps));
         for (int frame = first_tick_frame; frame <= last_visible_frame; frame += minor_frames) {
@@ -968,7 +1020,7 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
 
             const bool is_major = (frame % major_frames) == 0;
             p.setPen(is_major ? tick_major : tick_minor);
-            p.drawLine(x, rh - (is_major ? 10 : 4), x, rh);
+            p.drawLine(x, tick_baseline - (is_major ? 10 : 4), x, tick_baseline);
             if (!is_major)
                 continue;
 
@@ -983,13 +1035,12 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 continue;
 
             p.setPen(label_text);
-            p.drawText(label_left, rh - 3, ruler_text);
+            p.drawText(QRect(label_left, label_top, label_width + 4, label_height),
+                       Qt::AlignLeft | Qt::AlignVCenter, ruler_text);
             last_label_right = label_left + label_width;
         }
 
         if (title_) {
-            const int cache_y = rh - 14;
-            const int cache_h = 5;
             const int frame_w = std::max(1, (int)std::ceil(pixels_per_sec_ * frame_step));
             auto state_color = [](FrameCacheState state, bool static_frame) {
                 switch (state) {
@@ -1035,26 +1086,31 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
             int loop_x0 = time_to_x(std::clamp(title_->loop_start, 0.0, dur));
             int loop_x1 = time_to_x(std::clamp(title_->loop_end, title_->loop_start, dur));
             if (loop_x1 > loop_x0) {
-                p.fillRect(loop_x0, 18, loop_x1 - loop_x0, rh - 18, with_alpha(loop_color, 45));
+                const int marker_top = std::max(label_top + label_height, tick_baseline - 11);
+                p.fillRect(loop_x0, marker_top, loop_x1 - loop_x0,
+                           std::max(1, tick_baseline - marker_top + 1), with_alpha(loop_color, 45));
                 p.setPen(QPen(loop_color, 2));
-                p.drawLine(loop_x0, 18, loop_x0, H);
-                p.drawLine(loop_x1, 18, loop_x1, H);
+                p.drawLine(loop_x0, marker_top, loop_x0, H);
+                p.drawLine(loop_x1, marker_top, loop_x1, H);
                 p.setPen(loop_color.lightness() < 128 ? loop_color.lighter(170) : loop_color.darker(170));
-                p.drawText(loop_x0 + 4, 20, 80, 16, Qt::AlignVCenter, bgl_tr("OBSTitles.LoopIn"));
-                p.drawText(loop_x1 + 4, 20, 80, 16, Qt::AlignVCenter, bgl_tr("OBSTitles.LoopOut"));
+                p.drawText(loop_x0 + 4, label_top, 80, label_height, Qt::AlignVCenter, bgl_tr("OBSTitles.LoopIn"));
+                p.drawText(loop_x1 + 4, label_top, 80, label_height, Qt::AlignVCenter, bgl_tr("OBSTitles.LoopOut"));
             }
         }
         if (title_ && title_->playback_mode == 2) {
             int pause_x = time_to_x(std::clamp(title_->pause_time, 0.0, dur));
+            const int marker_top = std::max(label_top + label_height, tick_baseline - 11);
             p.setPen(QPen(pause_color, 2));
-            p.drawLine(pause_x, 12, pause_x, rh);
+            p.drawLine(pause_x, marker_top, pause_x, tick_baseline);
             p.setBrush(pause_color);
             p.setPen(Qt::NoPen);
             QPolygon marker;
-            marker << QPoint(pause_x - 6, 12) << QPoint(pause_x + 6, 12) << QPoint(pause_x, 22);
+            marker << QPoint(pause_x - 6, marker_top)
+                   << QPoint(pause_x + 6, marker_top)
+                   << QPoint(pause_x, std::min(tick_baseline, marker_top + 10));
             p.drawPolygon(marker);
             p.setPen(pause_color.lightness() < 128 ? pause_color.lighter(170) : pause_color.darker(170));
-            p.drawText(pause_x + 4, 22, 100, 16, Qt::AlignVCenter, bgl_tr("OBSTitles.Pause"));
+            p.drawText(pause_x + 4, label_top, 100, label_height, Qt::AlignVCenter, bgl_tr("OBSTitles.Pause"));
             p.setBrush(Qt::NoBrush);
         }
         p.restore();
@@ -1176,8 +1232,12 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 if (transition_drop_preview_layer_id_ == layer->id) {
                     LayerTransition preview;
                     preview.edge = transition_drop_preview_edge_;
-                    preview.duration = std::min(0.6, std::max(obs_frame_duration(),
-                                                             (layer->out_time - layer->in_time) * 0.35));
+                    const LayerTransition *replaced = find_layer_transition(
+                        layer->transitions, transition_drop_preview_edge_);
+                    preview.duration = replaced
+                        ? replaced->duration
+                        : std::min(0.6, std::max(obs_frame_duration(),
+                                               (layer->out_time - layer->in_time) * 0.35));
                     const QRect preview_bounds = transition_rect(*layer, preview, y);
                     p.fillRect(preview_bounds, with_alpha(highlight, 80));
                     p.setPen(QPen(highlight, 2, Qt::DashLine));
@@ -1187,8 +1247,11 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
 
                 /* Trim handles for mouse resizing of unlocked layer in/out. */
                 if (!layer->locked) {
-                    p.fillRect(x0, y + 3, 4, rowh - 6, handle_color);
-                    p.fillRect(x1 - 4, y + 3, 4, rowh - 6, handle_color);
+                    p.fillRect(x0, y + 3, kLayerTrimHandleVisualWidth,
+                               rowh - 6, handle_color);
+                    p.fillRect(x1 - kLayerTrimHandleVisualWidth, y + 3,
+                               kLayerTrimHandleVisualWidth, rowh - 6,
+                               handle_color);
                 }
 
             } else {
@@ -1219,10 +1282,11 @@ void TimelineWidget::paintEvent(QPaintEvent *ev)
                 }
             };
 
+            /* Keyframes belong exclusively to the expanded property rows.
+             * Do not draw a second aggregate state on a collapsed layer strip:
+             * the layer list and timeline now open and close as one section. */
             if (entry.is_property)
                 draw_kf(entry.prop);
-            else if (!layer->properties_expanded)
-                for (auto prop : timeline_properties(*layer)) draw_kf(prop);
         }
         p.restore();
     }
@@ -1285,19 +1349,18 @@ bool TimelineWidget::hit_keyframe(const QPoint &pos, std::shared_ptr<Layer> *hit
         return false;
     };
 
-    if (entry.is_property)
-        return entry.prop && test_prop(entry.prop);
-    if (!entry.layer->properties_expanded) {
-        for (auto prop : timeline_properties(*entry.layer)) {
-            if (test_prop(prop)) return true;
-        }
-    }
-    return false;
+    /* The hit model mirrors painting: collapsed layer strips do not expose
+     * hidden aggregate keyframes. */
+    return entry.is_property && entry.prop && test_prop(entry.prop);
 }
 
 void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
 {
     if (!title_) return;
+    if (graph_editor_enabled_) {
+        graph_context_menu(ev);
+        return;
+    }
 
     auto show_transition_menu = [&](const std::shared_ptr<Layer> &layer,
                                     LayerTransitionEdge edge) {
@@ -1360,7 +1423,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
     prune_keyframe_selection();
 
     QMenu menu(this);
-    menu.setTitle(has_hit ? bgl_tr("OBSTitles.KeyframeEasing") : bgl_tr("OBSTitles.Paste"));
+    menu.setTitle(has_hit ? bgl_tr("OBSTitles.Keyframe") : bgl_tr("OBSTitles.Paste"));
 
     QAction *copy_action = menu.addAction(bgl_tr("OBSTitles.Copy"));
     QAction *cut_action = menu.addAction(bgl_tr("OBSTitles.Cut"));
@@ -1372,95 +1435,117 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
     paste_action->setEnabled(!keyframe_clipboard_.empty());
     delete_action->setEnabled(has_selection);
 
-    struct EasingChoice {
+    struct TemporalChoice {
         QAction *action = nullptr;
         TimelinePropertyRef prop;
         std::vector<int> target_indices;
-        EasingType easing = EasingType::Linear;
+        TemporalInterpolationMode mode = TemporalInterpolationMode::Linear;
     };
-    std::vector<EasingChoice> choices;
+    std::vector<TemporalChoice> temporal_choices;
+    QAction *easy_ease_action = nullptr;
+    QAction *easy_ease_in_action = nullptr;
+    QAction *easy_ease_out_action = nullptr;
+    QAction *keyframe_velocity_action = nullptr;
+    TimelinePropertyRef temporal_action_prop;
+    std::vector<int> temporal_action_indices;
 
-    auto swatch_icon = [](EasingType easing) {
-        QPixmap swatch(16, 16);
-        swatch.fill(Qt::transparent);
-        QPainter painter(&swatch);
-        draw_keyframe_marker(painter, QPointF(8, 8), easing, 5.0,
-                             keyframe_color(easing), QColor(0x7a, 0x5a, 0x00), 1.0);
-        return QIcon(swatch);
+    struct SpatialChoice {
+        QAction *action = nullptr;
+        TimelinePropertyRef prop;
+        std::vector<int> target_indices;
+        SpatialInterpolationMode mode = SpatialInterpolationMode::Linear;
     };
-
-    auto add_easing_action = [&](QMenu *target_menu, const QString &label,
-                                 TimelinePropertyRef prop, EasingType easing,
-                                 const std::vector<int> &indices) {
-        QAction *action = target_menu->addAction(swatch_icon(easing), label);
-        action->setToolTip(easing == EasingType::Hold
-            ? bgl_tr("OBSTitles.HoldEasingTooltip")
-            : bgl_tr("OBSTitles.EasingTooltip"));
-        action->setCheckable(true);
-        action->setChecked(prop && std::all_of(indices.begin(), indices.end(), [&](int idx) {
-            return idx >= 0 && idx < (int)prop.keyframe_count() &&
-                   prop.keyframe_easing((size_t)idx) == easing;
-        }));
-        choices.push_back({action, prop, indices, easing});
-        return action;
-    };
-
-    auto add_easing_group = [&](QMenu *target_menu, TimelinePropertyRef prop, const std::vector<int> &indices) {
-        auto *group = new QActionGroup(target_menu);
-        group->setExclusive(true);
-        for (auto [label, easing] : std::initializer_list<std::pair<QString, EasingType>>{
-                 {bgl_tr("OBSTitles.Linear"), EasingType::Linear},
-                 {bgl_tr("OBSTitles.EasyEase"), EasingType::EaseInOut},
-                 {bgl_tr("OBSTitles.EaseIn"), EasingType::EaseIn},
-                 {bgl_tr("OBSTitles.EaseOut"), EasingType::EaseOut},
-                 {bgl_tr("OBSTitles.Hold"), EasingType::Hold},
-                 {bgl_tr("OBSTitles.CustomBezier"), EasingType::Bezier},
-             }) {
-            add_easing_action(target_menu, label, prop, easing, indices)->setActionGroup(group);
-        }
-    };
+    std::vector<SpatialChoice> spatial_choices;
+    QAction *break_spatial_tangents_action = nullptr;
+    QAction *join_spatial_tangents_action = nullptr;
+    QAction *rove_across_time_action = nullptr;
+    TimelinePropertyRef spatial_tangent_prop;
+    std::vector<int> spatial_tangent_indices;
 
     if (has_hit && layer && hit_prop) {
         menu.addSeparator();
-        QMenu *easing_menu = menu.addMenu(bgl_tr("OBSTitles.Easing"));
-        QAction *header = easing_menu->addAction(QString("%1 · %2")
-            .arg(QString::fromStdString(layer->name))
-            .arg(property_label(hit_prop.name())));
-        header->setEnabled(false);
-
-        const bool has_previous_segment = hit_idx > 0;
-        const bool has_next_segment = hit_idx + 1 < (int)hit_prop.keyframe_count();
-        if (!has_previous_segment && !has_next_segment) {
-            QAction *message = easing_menu->addAction(bgl_tr("OBSTitles.AddKeyframeForEasing"));
-            message->setEnabled(false);
-        } else {
-            QAction *scope = easing_menu->addAction(has_previous_segment && has_next_segment
-                ? bgl_tr("OBSTitles.EasingBothSegments")
-                : has_next_segment ? bgl_tr("OBSTitles.EasingNextSegment") : bgl_tr("OBSTitles.EasingPreviousSegment"));
-            scope->setEnabled(false);
-            easing_menu->addSeparator();
-
-            auto default_targets = [&]() {
-                std::vector<int> indices;
-                if (has_previous_segment && has_next_segment) {
-                    indices = {hit_idx - 1, hit_idx};
-                } else if (has_next_segment) {
-                    indices = {hit_idx};
-                } else {
-                    indices = {hit_idx - 1};
-                }
-                return indices;
-            };
-            add_easing_group(easing_menu, hit_prop, default_targets());
-
-            if (has_previous_segment && has_next_segment) {
-                easing_menu->addSeparator();
-                QMenu *advanced = easing_menu->addMenu(bgl_tr("OBSTitles.ApplyOneSide"));
-                QMenu *previous = advanced->addMenu(bgl_tr("OBSTitles.PreviousSegment"));
-                add_easing_group(previous, hit_prop, {hit_idx - 1});
-                QMenu *next = advanced->addMenu(bgl_tr("OBSTitles.NextSegment"));
-                add_easing_group(next, hit_prop, {hit_idx});
+        QMenu *temporal_menu = menu.addMenu(bgl_tr("OBSTitles.TemporalInterpolation"));
+        temporal_action_prop = hit_prop;
+        for (const KeyframeRef &ref : selected_keyframes_) {
+            if (ref.layer_id == layer->id && ref.prop_name == hit_prop.name() &&
+                ref.index >= 0 && ref.index < (int)hit_prop.keyframe_count())
+                temporal_action_indices.push_back(ref.index);
+        }
+        if (temporal_action_indices.empty()) temporal_action_indices.push_back(hit_idx);
+        std::sort(temporal_action_indices.begin(), temporal_action_indices.end());
+        temporal_action_indices.erase(
+            std::unique(temporal_action_indices.begin(), temporal_action_indices.end()),
+            temporal_action_indices.end());
+        auto temporal_label = [](TemporalInterpolationMode mode) {
+            switch (mode) {
+            case TemporalInterpolationMode::Linear: return bgl_tr("OBSTitles.Linear");
+            case TemporalInterpolationMode::Hold: return bgl_tr("OBSTitles.Hold");
+            case TemporalInterpolationMode::AutoBezier: return bgl_tr("OBSTitles.TemporalAutoBezier");
+            case TemporalInterpolationMode::ContinuousBezier: return bgl_tr("OBSTitles.TemporalContinuousBezier");
+            case TemporalInterpolationMode::ManualBezier: return bgl_tr("OBSTitles.TemporalManualBezier");
             }
+            return bgl_tr("OBSTitles.Linear");
+        };
+        auto *temporal_group = new QActionGroup(temporal_menu);
+        temporal_group->setExclusive(true);
+        for (TemporalInterpolationMode mode : {TemporalInterpolationMode::Linear,
+                 TemporalInterpolationMode::Hold, TemporalInterpolationMode::AutoBezier,
+                 TemporalInterpolationMode::ContinuousBezier,
+                 TemporalInterpolationMode::ManualBezier}) {
+            QAction *action = temporal_menu->addAction(temporal_label(mode));
+            action->setCheckable(true);
+            action->setActionGroup(temporal_group);
+            action->setChecked(std::all_of(
+                temporal_action_indices.begin(), temporal_action_indices.end(), [&](int index) {
+                    return hit_prop.keyframe_temporal_mode((size_t)index) == mode;
+                }));
+            temporal_choices.push_back({action, hit_prop, temporal_action_indices, mode});
+        }
+        temporal_menu->addSeparator();
+        easy_ease_action = temporal_menu->addAction(bgl_tr("OBSTitles.EasyEase"));
+        easy_ease_in_action = temporal_menu->addAction(bgl_tr("OBSTitles.EasyEaseIn"));
+        easy_ease_out_action = temporal_menu->addAction(bgl_tr("OBSTitles.EasyEaseOut"));
+        temporal_menu->addSeparator();
+        keyframe_velocity_action = temporal_menu->addAction(
+            bgl_tr("OBSTitles.KeyframeVelocity"));
+
+        if (hit_prop.supports_spatial_interpolation()) {
+            menu.addSeparator();
+            QMenu *spatial_menu = menu.addMenu(bgl_tr("OBSTitles.SpatialInterpolation"));
+            auto *spatial_group = new QActionGroup(spatial_menu);
+            spatial_group->setExclusive(true);
+            const std::vector<int> spatial_indices{hit_idx};
+            for (auto [label, mode] : std::initializer_list<
+                     std::pair<QString, SpatialInterpolationMode>>{
+                     {bgl_tr("OBSTitles.SpatialLinear"), SpatialInterpolationMode::Linear},
+                     {bgl_tr("OBSTitles.SpatialAutoBezier"), SpatialInterpolationMode::AutoBezier},
+                     {bgl_tr("OBSTitles.SpatialContinuousBezier"), SpatialInterpolationMode::ContinuousBezier},
+                     {bgl_tr("OBSTitles.SpatialManualBezier"), SpatialInterpolationMode::ManualBezier},
+                 }) {
+                QAction *action = spatial_menu->addAction(label);
+                action->setCheckable(true);
+                action->setActionGroup(spatial_group);
+                action->setChecked(hit_prop.keyframe_spatial_mode((size_t)hit_idx) == mode);
+                spatial_choices.push_back({action, hit_prop, spatial_indices, mode});
+            }
+            spatial_menu->addSeparator();
+            rove_across_time_action = spatial_menu->addAction(
+                bgl_tr("OBSTitles.RoveAcrossTime"));
+            rove_across_time_action->setCheckable(true);
+            rove_across_time_action->setChecked(
+                hit_prop.keyframe_roves_across_time((size_t)hit_idx));
+            rove_across_time_action->setEnabled(
+                hit_idx > 0 && hit_idx + 1 < (int)hit_prop.keyframe_count());
+            spatial_menu->addSeparator();
+            break_spatial_tangents_action = spatial_menu->addAction(
+                bgl_tr("OBSTitles.BreakSpatialTangents"));
+            join_spatial_tangents_action = spatial_menu->addAction(
+                bgl_tr("OBSTitles.JoinSpatialTangents"));
+            const bool linked = hit_prop.keyframe_spatial_tangents_linked((size_t)hit_idx);
+            break_spatial_tangents_action->setEnabled(linked);
+            join_spatial_tangents_action->setEnabled(!linked);
+            spatial_tangent_prop = hit_prop;
+            spatial_tangent_indices = spatial_indices;
         }
     }
 
@@ -1485,16 +1570,68 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent *ev)
         return;
     }
 
-    auto choice = std::find_if(choices.begin(), choices.end(),
-                               [&](const EasingChoice &candidate) { return candidate.action == chosen; });
-    if (choice == choices.end() || !choice->prop) return;
-
-    for (int idx : choice->target_indices) {
-        if (idx >= 0 && idx < (int)choice->prop.keyframe_count())
-            choice->prop.apply_easing((size_t)idx, choice->easing);
+    if (chosen == keyframe_velocity_action && temporal_action_prop) {
+        show_temporal_velocity_dialog(temporal_action_prop, temporal_action_indices);
+        return;
     }
-    update();
-    emit keyframe_easing_changed();
+    if ((chosen == easy_ease_action || chosen == easy_ease_in_action ||
+         chosen == easy_ease_out_action) && temporal_action_prop) {
+        const bool ease_in = chosen == easy_ease_action || chosen == easy_ease_in_action;
+        const bool ease_out = chosen == easy_ease_action || chosen == easy_ease_out_action;
+        for (int index : temporal_action_indices)
+            temporal_action_prop.apply_easy_ease((size_t)index, ease_in, ease_out);
+        update();
+        emit keyframe_easing_changed();
+        return;
+    }
+    auto temporal_choice = std::find_if(
+        temporal_choices.begin(), temporal_choices.end(),
+        [&](const TemporalChoice &candidate) { return candidate.action == chosen; });
+    if (temporal_choice != temporal_choices.end() && temporal_choice->prop) {
+        for (int index : temporal_choice->target_indices)
+            temporal_choice->prop.apply_temporal_mode((size_t)index, temporal_choice->mode);
+        update();
+        emit keyframe_easing_changed();
+        return;
+    }
+
+    auto spatial_choice = std::find_if(
+        spatial_choices.begin(), spatial_choices.end(),
+        [&](const SpatialChoice &candidate) { return candidate.action == chosen; });
+    if (spatial_choice != spatial_choices.end() && spatial_choice->prop) {
+        for (int idx : spatial_choice->target_indices) {
+            if (idx >= 0 && idx < (int)spatial_choice->prop.keyframe_count())
+                spatial_choice->prop.apply_spatial_mode((size_t)idx, spatial_choice->mode);
+        }
+        update();
+        emit keyframe_easing_changed();
+        return;
+    }
+    if (chosen == rove_across_time_action && spatial_tangent_prop) {
+        for (int idx : spatial_tangent_indices) {
+            if (idx > 0 && idx + 1 < (int)spatial_tangent_prop.keyframe_count()) {
+                const bool enabled = !spatial_tangent_prop
+                    .keyframe_roves_across_time((size_t)idx);
+                spatial_tangent_prop.set_keyframe_rove_across_time(
+                    (size_t)idx, enabled);
+            }
+        }
+        update();
+        emit keyframe_easing_changed();
+        return;
+    }
+    if ((chosen == break_spatial_tangents_action ||
+         chosen == join_spatial_tangents_action) && spatial_tangent_prop) {
+        const bool linked = chosen == join_spatial_tangents_action;
+        for (int idx : spatial_tangent_indices) {
+            if (idx >= 0 && idx < (int)spatial_tangent_prop.keyframe_count())
+                spatial_tangent_prop.set_spatial_tangents_linked((size_t)idx, linked);
+        }
+        update();
+        emit keyframe_easing_changed();
+        return;
+    }
+
 }
 
 void TimelineWidget::wheelEvent(QWheelEvent *ev)
@@ -1502,6 +1639,24 @@ void TimelineWidget::wheelEvent(QWheelEvent *ev)
     if (!title_) return;
 
     const QPoint angle = ev->angleDelta();
+    if (graph_editor_enabled_ && (ev->modifiers() & Qt::AltModifier)) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const double cursor_y = ev->position().y();
+#else
+        const double cursor_y = ev->pos().y();
+#endif
+        const int delta = angle.y() != 0 ? angle.y() : angle.x();
+        if (delta != 0) {
+            const double anchor = graph_y_to_value(cursor_y);
+            const double factor = std::pow(1.0015, -delta);
+            graph_value_min_ = anchor + (graph_value_min_ - anchor) * factor;
+            graph_value_max_ = anchor + (graph_value_max_ - anchor) * factor;
+            graph_fit_pending_ = false;
+            update();
+        }
+        ev->accept();
+        return;
+    }
     if (ev->modifiers() & Qt::ShiftModifier) {
         int delta = angle.x() != 0 ? angle.x() : angle.y();
         scroll_x_ -= delta;
@@ -1529,7 +1684,15 @@ void TimelineWidget::wheelEvent(QWheelEvent *ev)
 
     int delta = angle.y() != 0 ? -angle.y() : -angle.x();
     if (delta == 0) return;
-    emit vertical_scroll_delta_requested(delta);
+    if (graph_editor_enabled_) {
+        const double value_delta = delta * (graph_value_max_ - graph_value_min_) / 1200.0;
+        graph_value_min_ += value_delta;
+        graph_value_max_ += value_delta;
+        graph_fit_pending_ = false;
+        update();
+    } else {
+        emit vertical_scroll_delta_requested(delta);
+    }
     ev->accept();
 }
 
@@ -1543,6 +1706,7 @@ void TimelineWidget::resizeEvent(QResizeEvent *ev)
     }
     clamp_scroll();
     clamp_vertical_scroll();
+    if (graph_editor_enabled_) graph_fit_pending_ = true;
 }
 
 void TimelineWidget::keyPressEvent(QKeyEvent *ev)
@@ -1704,7 +1868,8 @@ bool TimelineWidget::transition_hit_at_pos(const QPoint &pos, TransitionHit *hit
             hit->layer = layer;
             hit->edge = transition.edge;
             hit->rect = rect;
-            hit->duration_handle = std::abs(pos.x() - handle_x) <= 7;
+            hit->duration_handle =
+                std::abs(pos.x() - handle_x) <= kTransitionDurationHitWidth;
         }
         return true;
     }
@@ -1715,6 +1880,17 @@ bool TimelineWidget::transition_drop_target_at_pos(const QPoint &pos,
                                                    std::shared_ptr<Layer> *layer_out,
                                                    LayerTransitionEdge *edge_out) const
 {
+    /* Replacing a transition should not require aiming at the small generic
+     * edge drop zone: every pixel of the existing transition is a valid target
+     * and resolves to that transition's edge. */
+    TransitionHit existing_hit;
+    if (transition_hit_at_pos(pos, &existing_hit) && existing_hit.layer &&
+        !existing_hit.layer->locked) {
+        if (layer_out) *layer_out = existing_hit.layer;
+        if (edge_out) *edge_out = existing_hit.edge;
+        return true;
+    }
+
     const auto layer = layer_strip_at_pos(pos);
     if (!layer || layer->locked)
         return false;
@@ -1883,6 +2059,39 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
     dragged_layer_strips_.clear();
     marquee_moved_ = false;
 
+    if (graph_editor_enabled_ && graph_mouse_press(ev))
+        return;
+
+    /* Outer strip trims have priority over transition overlays.  Without this
+     * early hit-test, an in/out transition consumes the same pixels as the
+     * layer edge and makes the strip effectively impossible to resize. */
+    if (ev->button() == Qt::LeftButton && ev->pos().y() >= ruler_height()) {
+        const auto rows = timeline_rows(title_);
+        const int row = (ev->pos().y() - ruler_height() + scroll_y_) /
+                        row_height();
+        if (row >= 0 && row < static_cast<int>(rows.size()) &&
+            !rows[row].is_property && rows[row].layer) {
+            const auto &layer = rows[row].layer;
+            const int x0 = time_to_x(layer->in_time);
+            const int x1 = time_to_x(layer->out_time);
+            const int in_distance = std::abs(ev->pos().x() - x0);
+            const int out_distance = std::abs(ev->pos().x() - x1);
+            if (std::min(in_distance, out_distance) <= kLayerTrimHitWidth) {
+                select_layer_from_mouse(layer->id, ev->modifiers());
+                clear_transition_selection();
+                if (!layer->locked) {
+                    const DragMode trim_mode = in_distance <= out_distance
+                        ? DragMode::TrimIn : DragMode::TrimOut;
+                    begin_layer_strip_drag(layer->id, trim_mode,
+                                           x_to_time(ev->pos().x()));
+                    setCursor(Qt::SizeHorCursor);
+                }
+                ev->accept();
+                return;
+            }
+        }
+    }
+
     TransitionHit transition_hit;
     if (ev->button() == Qt::LeftButton && transition_hit_at_pos(ev->pos(), &transition_hit)) {
         if (!transition_hit.layer) {
@@ -1982,7 +2191,6 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
         }
         int x0 = time_to_x(layer->in_time);
         int x1 = time_to_x(layer->out_time);
-        constexpr int kTrimHit = 7;
         std::shared_ptr<Layer> edge_layer;
         LayerTransitionEdge edge = LayerTransitionEdge::In;
         if (ev->button() == Qt::LeftButton &&
@@ -1993,18 +2201,12 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
                 ev->accept();
                 return;
             }
-            if (std::abs(ev->pos().x() - x0) <= kTrimHit) {
-                begin_layer_strip_drag(layer->id, DragMode::TrimIn, x_to_time(ev->pos().x()));
-                setCursor(Qt::SizeHorCursor);
-            } else if (std::abs(ev->pos().x() - x1) <= kTrimHit) {
-                begin_layer_strip_drag(layer->id, DragMode::TrimOut, x_to_time(ev->pos().x()));
-                setCursor(Qt::SizeHorCursor);
-            }
             ev->accept();
             return;
         }
-        const bool hit_strip = ev->pos().x() >= std::min(x0, x1) - kTrimHit &&
-                               ev->pos().x() <= std::max(x0, x1) + kTrimHit;
+        const bool hit_strip =
+            ev->pos().x() >= std::min(x0, x1) - kLayerTrimHitWidth &&
+            ev->pos().x() <= std::max(x0, x1) + kLayerTrimHitWidth;
         if (layer->locked && hit_strip) {
             ev->accept();
             return;
@@ -2013,13 +2215,13 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
             clear_transition_selection();
             select_layer_from_mouse(layer->id, ev->modifiers());
         }
-        if (std::abs(ev->pos().x() - x0) <= kTrimHit) {
+        if (std::abs(ev->pos().x() - x0) <= kLayerTrimHitWidth) {
             begin_layer_strip_drag(layer->id, DragMode::TrimIn, x_to_time(ev->pos().x()));
             setCursor(Qt::SizeHorCursor);
             ev->accept();
             return;
         }
-        if (std::abs(ev->pos().x() - x1) <= kTrimHit) {
+        if (std::abs(ev->pos().x() - x1) <= kLayerTrimHitWidth) {
             begin_layer_strip_drag(layer->id, DragMode::TrimOut, x_to_time(ev->pos().x()));
             setCursor(Qt::SizeHorCursor);
             ev->accept();
@@ -2060,6 +2262,8 @@ void TimelineWidget::mousePressEvent(QMouseEvent *ev)
 void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
 {
     if (!title_) return;
+    if (graph_editor_enabled_ && graph_mouse_move(ev))
+        return;
     double t = std::clamp(x_to_time(ev->pos().x()), 0.0, title_->duration);
 
     if (drag_mode_ == DragMode::Playhead) {
@@ -2107,6 +2311,14 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
                     transition->duration = drag_transition_edge_ == LayerTransitionEdge::In
                         ? t - layer->in_time : layer->out_time - t;
                     normalize_transition_durations(*layer);
+                    /* The descriptor remains the timeline authoring surface,
+                     * while the managed TextAnimator is the sole renderer.
+                     * Keep it synchronized during the drag so the canvas
+                     * previews the same duration continuously, not only after
+                     * mouse release. */
+                    synchronize_text_transition_animators(
+                        layer->transitions, layer->text_animators,
+                        layer->in_time, layer->out_time, nullptr, true);
                     update();
                 }
             }
@@ -2157,12 +2369,18 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
                                                       std::max(0.0, layer->out_time - layer->in_time)));
                 }
                 normalize_transition_durations(*layer);
+                synchronize_text_transition_animators(
+                    layer->transitions, layer->text_animators,
+                    layer->in_time, layer->out_time, nullptr, true);
             } else {
                 layer->in_time = dragged.start_in;
                 layer->out_time = std::clamp(dragged.start_out + delta,
                                              dragged.start_in + obs_frame_duration(),
                                              title_->duration);
                 normalize_transition_durations(*layer);
+                synchronize_text_transition_animators(
+                    layer->transitions, layer->text_animators,
+                    layer->in_time, layer->out_time, nullptr, true);
             }
         }
         update();
@@ -2206,6 +2424,19 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
     auto rows = timeline_rows(title_);
     int row = (ev->pos().y() - ruler_height() + scroll_y_) / row_height();
     if (row >= 0 && row < (int)rows.size() && !rows[row].is_property) {
+        if (rows[row].layer) {
+            const int x0 = time_to_x(rows[row].layer->in_time);
+            const int x1 = time_to_x(rows[row].layer->out_time);
+            if (std::min(std::abs(ev->pos().x() - x0),
+                         std::abs(ev->pos().x() - x1)) <=
+                kLayerTrimHitWidth) {
+                if (!rows[row].layer->locked)
+                    setCursor(Qt::SizeHorCursor);
+                else
+                    setCursor(Qt::ArrowCursor);
+                return;
+            }
+        }
         TransitionHit transition_hit;
         if (transition_hit_at_pos(ev->pos(), &transition_hit) && transition_hit.layer) {
             if (!transition_hit.layer->locked && transition_hit.duration_handle)
@@ -2227,7 +2458,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
         }
         int x0 = time_to_x(rows[row].layer->in_time);
         int x1 = time_to_x(rows[row].layer->out_time);
-        if (std::abs(ev->pos().x() - x0) <= 7 || std::abs(ev->pos().x() - x1) <= 7)
+        if (std::abs(ev->pos().x() - x0) <= kLayerTrimHitWidth ||
+            std::abs(ev->pos().x() - x1) <= kLayerTrimHitWidth)
             setCursor(Qt::SizeHorCursor);
         else if (ev->pos().x() >= std::min(x0, x1) && ev->pos().x() <= std::max(x0, x1))
             setCursor(Qt::OpenHandCursor);
@@ -2238,8 +2470,10 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent *ev)
     }
 }
 
-void TimelineWidget::mouseReleaseEvent(QMouseEvent *)
+void TimelineWidget::mouseReleaseEvent(QMouseEvent *ev)
 {
+    if (graph_editor_enabled_ && graph_mouse_release(ev))
+        return;
     bool changed = drag_mode_ == DragMode::Keyframe ||
                    drag_mode_ == DragMode::TrimIn ||
                    drag_mode_ == DragMode::TrimOut ||
@@ -2333,6 +2567,8 @@ void TimelineWidget::mouseDoubleClickEvent(QMouseEvent *ev)
     }
     QWidget::mouseDoubleClickEvent(ev);
 }
+
+#include "temporal-graph-editor.inc"
 
 /* ══════════════════════════════════════════════════════════════════
  *  TitlePropertiesPanel

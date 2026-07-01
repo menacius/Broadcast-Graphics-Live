@@ -1,4 +1,5 @@
 #include "system-memory.h"
+#include "external-data.h"
 #include "bgl-modern-controls.h"
 #include "title-editor-internal.h"
 #include "title-logger.h"
@@ -6,7 +7,9 @@
 #include "style-presets.h"
 #include "transition-editor-dialog.h"
 #include "transition-preset-catalog.h"
+#include "text-animator-presets.h"
 
+#include <QPointer>
 #include <QClipboard>
 #include <QScopedValueRollback>
 #include <QDesktopServices>

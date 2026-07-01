@@ -7,6 +7,9 @@
 #include "title-logger.h"
 #include "ticker-runtime.h"
 #include "asset-runtime.h"
+#include "external-data.h"
+#include "external-data-provider.h"
+#include "text-animator-presets.h"
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <util/platform.h>
@@ -44,6 +47,9 @@ constexpr size_t kMaxLayersPerTitle = 256;
 constexpr size_t kMaxKeyframesPerProperty = 2048;
 constexpr size_t kMaxLiveTextRows = 256;
 constexpr size_t kMaxLiveTextColumns = 32;
+constexpr size_t kMaxExternalDataSources = 64;
+constexpr size_t kMaxExternalDataFieldsPerSource = 256;
+constexpr size_t kMaxExternalBindingsPerLayer = 128;
 constexpr size_t kMaxNameLength = 256;
 constexpr size_t kMaxTextLength = 8192;
 constexpr size_t kMaxPathLength = 4096;
@@ -222,6 +228,446 @@ static uint32_t json_color(const json &j, const char *key, uint32_t fallback)
         return parsed >= 0 && parsed <= UINT32_MAX ? (uint32_t)parsed : fallback;
     }
     return fallback;
+}
+
+
+static json external_value_to_json(const ExternalDataValue &value)
+{
+    json result;
+    result["type"] = static_cast<int>(value.type);
+    result["is_set"] = value.is_set;
+    if (!value.is_set)
+        return result;
+    switch (value.type) {
+    case ExternalDataType::Integer:
+        result["value"] = value.integer_value;
+        break;
+    case ExternalDataType::Float:
+        result["value"] = value.float_value;
+        break;
+    case ExternalDataType::Boolean:
+        result["value"] = value.boolean_value;
+        break;
+    case ExternalDataType::Color:
+        result["value"] = value.color_value;
+        break;
+    case ExternalDataType::String:
+    case ExternalDataType::DateTime:
+    case ExternalDataType::FilePath:
+    case ExternalDataType::Url:
+    default:
+        result["value"] = value.string_value;
+        break;
+    }
+    return result;
+}
+
+static ExternalDataValue external_value_from_json(const json &j,
+                                                   ExternalDataType fallback_type)
+{
+    ExternalDataValue value;
+    value.type = static_cast<ExternalDataType>(std::clamp(
+        json_int(j, "type", static_cast<int>(fallback_type)),
+        static_cast<int>(ExternalDataType::String),
+        static_cast<int>(ExternalDataType::Url)));
+    value.is_set = json_bool(j, "is_set", j.is_object() && j.contains("value"));
+    if (!value.is_set || !j.is_object() || !j.contains("value"))
+        return value;
+    const json &stored = j["value"];
+    switch (value.type) {
+    case ExternalDataType::Integer:
+        if (stored.is_number_integer())
+            value.integer_value = stored.get<int64_t>();
+        else
+            value.is_set = false;
+        break;
+    case ExternalDataType::Float:
+        if (stored.is_number())
+            value.float_value = finite_or(stored.get<double>(), 0.0);
+        else
+            value.is_set = false;
+        break;
+    case ExternalDataType::Boolean:
+        if (stored.is_boolean())
+            value.boolean_value = stored.get<bool>();
+        else
+            value.is_set = false;
+        break;
+    case ExternalDataType::Color:
+        if (stored.is_number_unsigned()) {
+            const uint64_t parsed = stored.get<uint64_t>();
+            value.color_value = parsed <= UINT32_MAX ? static_cast<uint32_t>(parsed) : 0xFFFFFFFFu;
+        } else if (stored.is_number_integer()) {
+            const int64_t parsed = stored.get<int64_t>();
+            if (parsed >= 0 && parsed <= UINT32_MAX)
+                value.color_value = static_cast<uint32_t>(parsed);
+            else
+                value.is_set = false;
+        } else {
+            value.is_set = false;
+        }
+        break;
+    case ExternalDataType::String:
+    case ExternalDataType::DateTime:
+    case ExternalDataType::FilePath:
+    case ExternalDataType::Url:
+    default:
+        if (stored.is_string()) {
+            value.string_value = stored.get<std::string>();
+            if (value.string_value.size() > kMaxTextLength)
+                value.string_value.resize(kMaxTextLength);
+        } else {
+            value.is_set = false;
+        }
+        break;
+    }
+    return value;
+}
+
+static json external_string_map_to_json(const std::map<std::string, std::string> &values)
+{
+    json result = json::object();
+    for (const auto &entry : values) {
+        if (!entry.first.empty())
+            result[entry.first] = entry.second;
+    }
+    return result;
+}
+
+static std::map<std::string, std::string> external_string_map_from_json(
+    const json &j, size_t max_entries = 256)
+{
+    std::map<std::string, std::string> result;
+    if (!j.is_object())
+        return result;
+    size_t count = 0;
+    for (auto it = j.begin(); it != j.end() && count < max_entries; ++it) {
+        if (!it.value().is_string())
+            continue;
+        std::string key = it.key();
+        std::string value = it.value().get<std::string>();
+        if (key.size() > kMaxPathLength)
+            key.resize(kMaxPathLength);
+        if (value.size() > kMaxTextLength)
+            value.resize(kMaxTextLength);
+        if (!key.empty()) {
+            result[std::move(key)] = std::move(value);
+            ++count;
+        }
+    }
+    return result;
+}
+
+static json external_provider_to_json(const ExternalDataProviderConfig &provider)
+{
+    json result = {
+        {"type", static_cast<int>(provider.type)},
+        {"enabled", provider.enabled},
+        {"location", provider.location},
+        {"polling_interval_ms", provider.polling_interval_ms},
+        {"refresh_mode", static_cast<int>(provider.refresh_mode)},
+        {"rate_limit_ms", provider.rate_limit_ms},
+        {"keep_last_value", provider.keep_last_value},
+        {"stale_after_ms", provider.stale_after_ms},
+        {"root_path", provider.root_path},
+        {"headers", external_string_map_to_json(provider.headers)},
+        {"authentication_token", provider.authentication_token},
+        {"timeout_ms", provider.timeout_ms},
+        {"retry_count", provider.retry_count},
+        {"retry_backoff_ms", provider.retry_backoff_ms},
+        {"reconnect_initial_ms", provider.reconnect_initial_ms},
+        {"reconnect_max_ms", provider.reconnect_max_ms},
+        {"csv_first_row_headers", provider.csv_first_row_headers},
+        {"csv_row_index", provider.csv_row_index},
+        {"csv_column_mapping", external_string_map_to_json(provider.csv_column_mapping)},
+        {"text_field_path", provider.text_field_path},
+    };
+    if (!provider.manual_values.empty()) {
+        json manual = json::object();
+        for (const auto &entry : provider.manual_values) {
+            if (!entry.first.empty())
+                manual[entry.first] = external_value_to_json(entry.second);
+        }
+        result["manual_values"] = std::move(manual);
+    }
+    return result;
+}
+
+static ExternalDataProviderConfig external_provider_from_json(const json &j)
+{
+    ExternalDataProviderConfig provider;
+    if (!j.is_object())
+        return provider;
+    provider.type = static_cast<ExternalDataProviderType>(std::clamp(
+        json_int(j, "type", static_cast<int>(ExternalDataProviderType::None)),
+        static_cast<int>(ExternalDataProviderType::None),
+        static_cast<int>(ExternalDataProviderType::ManualTable)));
+    provider.enabled = json_bool(j, "enabled", true);
+    provider.location = bounded_string(j, "location", "", kMaxTextLength);
+    provider.polling_interval_ms = std::clamp(json_int(j, "polling_interval_ms", 0), 0, 86400000);
+    provider.refresh_mode = static_cast<ExternalDataRefreshMode>(std::clamp(
+        json_int(j, "refresh_mode", static_cast<int>(ExternalDataRefreshMode::RefreshContinuously)),
+        static_cast<int>(ExternalDataRefreshMode::RefreshOnCue),
+        static_cast<int>(ExternalDataRefreshMode::RefreshManually)));
+    provider.rate_limit_ms = std::clamp(json_int(j, "rate_limit_ms", 50), 0, 60000);
+    provider.keep_last_value = json_bool(j, "keep_last_value", true);
+    provider.stale_after_ms = std::clamp(json_int(j, "stale_after_ms", 0), 0, 604800000);
+    provider.root_path = bounded_string(j, "root_path", "", kMaxPathLength);
+    if (j.contains("headers"))
+        provider.headers = external_string_map_from_json(j["headers"], 128);
+    provider.authentication_token = bounded_string(j, "authentication_token", "", kMaxTextLength);
+    provider.timeout_ms = std::clamp(json_int(j, "timeout_ms", 5000), 250, 300000);
+    provider.retry_count = std::clamp(json_int(j, "retry_count", 2), 0, 20);
+    provider.retry_backoff_ms = std::clamp(json_int(j, "retry_backoff_ms", 1000), 50, 300000);
+    provider.reconnect_initial_ms = std::clamp(json_int(j, "reconnect_initial_ms", 1000), 100, 300000);
+    provider.reconnect_max_ms = std::clamp(json_int(j, "reconnect_max_ms", 30000),
+                                           provider.reconnect_initial_ms, 3600000);
+    provider.csv_first_row_headers = json_bool(j, "csv_first_row_headers", true);
+    provider.csv_row_index = std::clamp(json_int(j, "csv_row_index", 0), 0, 1000000);
+    if (j.contains("csv_column_mapping"))
+        provider.csv_column_mapping = external_string_map_from_json(j["csv_column_mapping"]);
+    provider.text_field_path = bounded_string(j, "text_field_path", "text", kMaxPathLength);
+    if (provider.text_field_path.empty())
+        provider.text_field_path = "text";
+    if (j.contains("manual_values") && j["manual_values"].is_object()) {
+        size_t count = 0;
+        for (auto it = j["manual_values"].begin();
+             it != j["manual_values"].end() && count < kMaxExternalDataFieldsPerSource;
+             ++it) {
+            std::string path = it.key();
+            if (path.size() > kMaxPathLength)
+                path.resize(kMaxPathLength);
+            if (path.empty() || !it.value().is_object())
+                continue;
+            ExternalDataValue value = external_value_from_json(
+                it.value(), ExternalDataType::String);
+            if (value.is_set) {
+                provider.manual_values[std::move(path)] = std::move(value);
+                ++count;
+            }
+        }
+    }
+    return provider;
+}
+
+static json external_formatter_to_json(const ExternalDataFormatterConfig &formatter)
+{
+    json replacements = json::array();
+    for (const auto &rule : formatter.conditional_replacements) {
+        replacements.push_back({{"match", rule.match},
+                                {"replacement", rule.replacement},
+                                {"case_sensitive", rule.case_sensitive}});
+    }
+    return json{{"prefix", formatter.prefix},
+                {"suffix", formatter.suffix},
+                {"number_format_enabled", formatter.number_format_enabled},
+                {"decimal_places", formatter.decimal_places},
+                {"thousands_separator", formatter.thousands_separator},
+                {"text_case", static_cast<int>(formatter.text_case)},
+                {"date_time_format", formatter.date_time_format},
+                {"conditional_replacements", std::move(replacements)},
+                {"empty_value_mode", static_cast<int>(formatter.empty_value_mode)},
+                {"empty_replacement", formatter.empty_replacement}};
+}
+
+static ExternalDataFormatterConfig external_formatter_from_json(const json &j)
+{
+    ExternalDataFormatterConfig formatter;
+    if (!j.is_object())
+        return formatter;
+    formatter.prefix = bounded_string(j, "prefix", "", kMaxTextLength);
+    formatter.suffix = bounded_string(j, "suffix", "", kMaxTextLength);
+    formatter.number_format_enabled = json_bool(j, "number_format_enabled", false);
+    formatter.decimal_places = std::clamp(json_int(j, "decimal_places", -1), -1, 12);
+    formatter.thousands_separator = json_bool(j, "thousands_separator", false);
+    formatter.text_case = static_cast<ExternalDataTextCase>(std::clamp(
+        json_int(j, "text_case", static_cast<int>(ExternalDataTextCase::None)),
+        static_cast<int>(ExternalDataTextCase::None),
+        static_cast<int>(ExternalDataTextCase::TitleCase)));
+    formatter.date_time_format = bounded_string(j, "date_time_format", "", kMaxTextLength);
+    formatter.empty_value_mode = static_cast<ExternalDataEmptyValueMode>(std::clamp(
+        json_int(j, "empty_value_mode", static_cast<int>(ExternalDataEmptyValueMode::KeepEmpty)),
+        static_cast<int>(ExternalDataEmptyValueMode::KeepEmpty),
+        static_cast<int>(ExternalDataEmptyValueMode::Replacement)));
+    formatter.empty_replacement = bounded_string(j, "empty_replacement", "", kMaxTextLength);
+    if (j.contains("conditional_replacements") &&
+        j["conditional_replacements"].is_array()) {
+        const size_t count = std::min<size_t>(j["conditional_replacements"].size(), 64);
+        formatter.conditional_replacements.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &item = j["conditional_replacements"][i];
+            if (!item.is_object())
+                continue;
+            ExternalDataConditionalReplacement rule;
+            rule.match = bounded_string(item, "match", "", kMaxTextLength);
+            rule.replacement = bounded_string(item, "replacement", "", kMaxTextLength);
+            rule.case_sensitive = json_bool(item, "case_sensitive", true);
+            formatter.conditional_replacements.push_back(std::move(rule));
+        }
+    }
+    return formatter;
+}
+
+static json external_binding_to_json(const ExternalPropertyBinding &binding)
+{
+    json result = {
+        {"enabled", binding.enabled},
+        {"property_path", binding.property_path},
+        {"source_id", binding.source_id},
+        {"field_path", binding.field_path},
+        {"formatter", binding.formatter},
+        {"formatter_config", external_formatter_to_json(binding.formatter_config)},
+        {"has_fallback_value", binding.has_fallback_value},
+    };
+    if (binding.has_fallback_value)
+        result["fallback_value"] = external_value_to_json(binding.fallback_value);
+    return result;
+}
+
+static ExternalPropertyBinding external_binding_from_json(const json &j)
+{
+    ExternalPropertyBinding binding;
+    binding.enabled = json_bool(j, "enabled", true);
+    binding.property_path = bounded_string(j, "property_path", "", kMaxNameLength);
+    binding.source_id = bounded_string(j, "source_id", "", kMaxNameLength);
+    binding.field_path = bounded_string(j, "field_path", "", kMaxPathLength);
+    binding.formatter = bounded_string(j, "formatter", "", kMaxTextLength);
+    if (j.contains("formatter_config"))
+        binding.formatter_config = external_formatter_from_json(j["formatter_config"]);
+    binding.has_fallback_value = json_bool(j, "has_fallback_value",
+        j.is_object() && j.contains("fallback_value"));
+    if (binding.has_fallback_value && j.contains("fallback_value"))
+        binding.fallback_value = external_value_from_json(
+            j["fallback_value"], ExternalDataType::String);
+    return binding;
+}
+
+static json live_text_external_binding_to_json(const LiveTextExternalBinding &cell)
+{
+    return json{{"row_id", cell.row_id},
+                {"layer_id", cell.layer_id},
+                {"table_binding_id", cell.table_binding_id},
+                {"binding", external_binding_to_json(cell.binding)}};
+}
+
+static LiveTextExternalBinding live_text_external_binding_from_json(const json &j)
+{
+    LiveTextExternalBinding cell;
+    if (!j.is_object())
+        return cell;
+    cell.row_id = bounded_string(j, "row_id", "", kMaxNameLength);
+    cell.layer_id = bounded_string(j, "layer_id", "", kMaxNameLength);
+    cell.table_binding_id = bounded_string(j, "table_binding_id", "", kMaxNameLength);
+    if (j.contains("binding") && j["binding"].is_object())
+        cell.binding = external_binding_from_json(j["binding"]);
+    return cell;
+}
+
+static json live_text_table_binding_to_json(const LiveTextTableBinding &mapping)
+{
+    json columns = json::array();
+    for (const auto &column : mapping.columns) {
+        columns.push_back(json{{"layer_id", column.layer_id},
+                               {"binding", external_binding_to_json(column.binding)}});
+    }
+    return json{{"enabled", mapping.enabled},
+                {"id", mapping.id},
+                {"source_id", mapping.source_id},
+                {"table_path", mapping.table_path},
+                {"update_mode", static_cast<int>(mapping.update_mode)},
+                {"row_id_field", mapping.row_id_field},
+                {"start_row", mapping.start_row},
+                {"maximum_rows", mapping.maximum_rows},
+                {"ignore_empty_rows", mapping.ignore_empty_rows},
+                {"preserve_manual_rows", mapping.preserve_manual_rows},
+                {"columns", std::move(columns)}};
+}
+
+static LiveTextTableBinding live_text_table_binding_from_json(const json &j)
+{
+    LiveTextTableBinding mapping;
+    if (!j.is_object())
+        return mapping;
+    mapping.enabled = json_bool(j, "enabled", true);
+    mapping.id = bounded_string(j, "id", "", kMaxNameLength);
+    mapping.source_id = bounded_string(j, "source_id", "", kMaxNameLength);
+    mapping.table_path = bounded_string(j, "table_path", "", kMaxPathLength);
+    mapping.update_mode = static_cast<LiveTextTableUpdateMode>(std::clamp(
+        json_int(j, "update_mode", static_cast<int>(LiveTextTableUpdateMode::SynchronizeRows)),
+        static_cast<int>(LiveTextTableUpdateMode::ReplaceRows),
+        static_cast<int>(LiveTextTableUpdateMode::SynchronizeRows)));
+    mapping.row_id_field = bounded_string(j, "row_id_field", "", kMaxPathLength);
+    mapping.start_row = std::clamp(json_int(j, "start_row", 0), 0, 1000000);
+    mapping.maximum_rows = std::clamp(json_int(j, "maximum_rows", 0), 0, 1000000);
+    mapping.ignore_empty_rows = json_bool(j, "ignore_empty_rows", true);
+    mapping.preserve_manual_rows = json_bool(j, "preserve_manual_rows", true);
+    if (j.contains("columns") && j["columns"].is_array()) {
+        const size_t count = std::min(j["columns"].size(), kMaxLiveTextColumns);
+        mapping.columns.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            const json &item = j["columns"][i];
+            if (!item.is_object())
+                continue;
+            LiveTextTableColumnBinding column;
+            column.layer_id = bounded_string(item, "layer_id", "", kMaxNameLength);
+            if (item.contains("binding") && item["binding"].is_object())
+                column.binding = external_binding_from_json(item["binding"]);
+            if (!column.layer_id.empty() && !column.binding.field_path.empty())
+                mapping.columns.push_back(std::move(column));
+        }
+    }
+    return mapping;
+}
+
+static json external_source_to_json(const ExternalDataSourceDefinition &source)
+{
+    json fields = json::array();
+    for (const auto &field : source.fields) {
+        json item = {
+            {"path", field.path},
+            {"name", field.name},
+            {"type", static_cast<int>(field.type)},
+            {"has_default_value", field.has_default_value},
+        };
+        if (field.has_default_value)
+            item["default_value"] = external_value_to_json(field.default_value);
+        fields.push_back(std::move(item));
+    }
+    return json{{"id", source.id}, {"name", source.name},
+                {"fields", std::move(fields)},
+                {"provider", external_provider_to_json(source.provider)}};
+}
+
+static ExternalDataSourceDefinition external_source_from_json(const json &j)
+{
+    ExternalDataSourceDefinition source;
+    source.id = bounded_string(j, "id", "", kMaxNameLength);
+    source.name = bounded_string(j, "name", source.id, kMaxNameLength);
+    if (j.is_object() && j.contains("provider"))
+        source.provider = external_provider_from_json(j["provider"]);
+    if (!j.is_object() || !j.contains("fields") || !j["fields"].is_array())
+        return source;
+    const size_t count = std::min(j["fields"].size(), kMaxExternalDataFieldsPerSource);
+    source.fields.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const json &fj = j["fields"][i];
+        if (!fj.is_object())
+            continue;
+        ExternalDataFieldDefinition field;
+        field.path = bounded_string(fj, "path", "", kMaxPathLength);
+        field.name = bounded_string(fj, "name", field.path, kMaxNameLength);
+        field.type = static_cast<ExternalDataType>(std::clamp(
+            json_int(fj, "type", static_cast<int>(ExternalDataType::String)),
+            static_cast<int>(ExternalDataType::String),
+            static_cast<int>(ExternalDataType::Url)));
+        field.has_default_value = json_bool(fj, "has_default_value",
+            fj.contains("default_value"));
+        if (field.has_default_value && fj.contains("default_value"))
+            field.default_value = external_value_from_json(fj["default_value"], field.type);
+        if (!field.path.empty())
+            source.fields.push_back(std::move(field));
+    }
+    return source;
 }
 
 
@@ -695,13 +1141,25 @@ void TitleDataStore::notify_change()
     touch_runtime_change();
 
     std::vector<ChangeCallback> callbacks;
+    std::vector<std::shared_ptr<Title>> title_snapshot;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         callbacks.reserve(change_cbs_.size());
         for (const auto &observer : change_cbs_)
             callbacks.push_back(observer.callback);
+        title_snapshot = titles_;
     }
 
+    std::vector<ExternalDataSourceDefinition> provider_definitions;
+    for (const auto &title : title_snapshot) {
+        if (!title)
+            continue;
+        ExternalDataManager::instance().register_title_sources(*title);
+        provider_definitions.insert(provider_definitions.end(),
+                                    title->external_data_sources.begin(),
+                                    title->external_data_sources.end());
+    }
+    ExternalDataProviderService::instance().synchronize(provider_definitions);
     for (auto &cb : callbacks) cb();
 }
 
@@ -833,6 +1291,13 @@ static json keyframe_to_json(const Keyframe &k)
         {"easing", (int)k.easing},
         {"cx1",    k.cx1}, {"cy1", k.cy1},
         {"cx2",    k.cx2}, {"cy2", k.cy2},
+        {"temporal_mode", (int)k.temporal_mode},
+        {"temporal_in_influence", k.incoming_influence},
+        {"temporal_out_influence", k.outgoing_influence},
+        {"temporal_in_speed", k.incoming_speed},
+        {"temporal_out_speed", k.outgoing_speed},
+        {"temporal_tangents_linked", k.temporal_tangents_linked},
+        {"temporal_velocity_explicit", k.temporal_velocity_explicit},
     };
 }
 
@@ -848,6 +1313,18 @@ static Keyframe keyframe_from_json(const json &j)
     k.cy1 = std::clamp(finite_or(json_double(j, "cy1", 0.0), 0.0), 0.0, 1.0);
     k.cx2 = std::clamp(finite_or(json_double(j, "cx2", 0.667), 0.667), 0.0, 1.0);
     k.cy2 = std::clamp(finite_or(json_double(j, "cy2", 1.0), 1.0), 0.0, 1.0);
+    k.temporal_mode = (TemporalInterpolationMode)std::clamp(
+        json_int(j, "temporal_mode", (int)TemporalInterpolationMode::AutoBezier),
+        (int)TemporalInterpolationMode::Linear,
+        (int)TemporalInterpolationMode::ManualBezier);
+    k.incoming_influence = std::clamp(finite_or(
+        json_double(j, "temporal_in_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
+    k.outgoing_influence = std::clamp(finite_or(
+        json_double(j, "temporal_out_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
+    k.incoming_speed = finite_or(json_double(j, "temporal_in_speed", 0.0), 0.0);
+    k.outgoing_speed = finite_or(json_double(j, "temporal_out_speed", 0.0), 0.0);
+    k.temporal_tangents_linked = json_bool(j, "temporal_tangents_linked", true);
+    k.temporal_velocity_explicit = json_bool(j, "temporal_velocity_explicit", false);
     return k;
 }
 
@@ -880,6 +1357,237 @@ static AnimatedProperty aprop_from_json(const json &j, const std::string &name)
     return p;
 }
 
+
+
+static json text_animator_property_to_json(const TextAnimatorProperty &property)
+{
+    return {{"id", property.id}, {"name", property.name},
+            {"type", (int)property.type}, {"enabled", property.enabled},
+            {"value", aprop_to_json(property.value)},
+            {"secondary", aprop_to_json(property.secondary)},
+            {"tertiary", aprop_to_json(property.tertiary)},
+            {"quaternary", aprop_to_json(property.quaternary)}};
+}
+
+static TextAnimatorProperty text_animator_property_from_json(const json &j,
+                                                             size_t ordinal)
+{
+    TextAnimatorProperty property;
+    if (!j.is_object()) return property;
+    property.type = (TextAnimatorPropertyType)std::clamp(
+        json_int(j, "type", (int)TextAnimatorPropertyType::Opacity),
+        (int)TextAnimatorPropertyType::Position,
+        (int)TextAnimatorPropertyType::ScrambleAmount);
+    property.id = bounded_string(j, "id", "", kMaxNameLength);
+    property.name = bounded_string(j, "name", "Property", kMaxNameLength);
+    if (property.id.empty())
+        property.id = make_text_animator_id("property", property.name, ordinal);
+    property.enabled = json_bool(j, "enabled", true);
+    if (j.contains("value")) property.value = aprop_from_json(j["value"], property.name + ".value");
+    if (j.contains("secondary")) property.secondary = aprop_from_json(j["secondary"], property.name + ".secondary");
+    if (j.contains("tertiary")) property.tertiary = aprop_from_json(j["tertiary"], property.name + ".tertiary");
+    if (j.contains("quaternary")) property.quaternary = aprop_from_json(j["quaternary"], property.name + ".quaternary");
+    return property;
+}
+
+static json tagged_ranges_to_json(const std::vector<std::pair<size_t, size_t>> &ranges)
+{
+    json result = json::array();
+    for (const auto &range : ranges)
+        result.push_back({{"start", range.first}, {"length", range.second}});
+    return result;
+}
+
+static json text_selector_to_json(const TextSelector &selector)
+{
+    return {{"id", selector.id}, {"name", selector.name},
+            {"type", (int)selector.type}, {"combination", (int)selector.combination},
+            {"based_on", (int)selector.based_on}, {"enabled", selector.enabled},
+            {"expanded", selector.expanded}, {"range_units", (int)selector.range_units},
+            {"range_shape", (int)selector.range_shape},
+            {"start", aprop_to_json(selector.start)}, {"end", aprop_to_json(selector.end)},
+            {"offset", aprop_to_json(selector.offset)}, {"amount", aprop_to_json(selector.amount)},
+            {"ease_high", aprop_to_json(selector.ease_high)}, {"ease_low", aprop_to_json(selector.ease_low)},
+            {"smoothness", aprop_to_json(selector.smoothness)},
+            {"completion", aprop_to_json(selector.completion)},
+            {"stagger_percent", aprop_to_json(selector.stagger_percent)},
+            {"unit_easing", (int)selector.unit_easing},
+            {"stagger_mode", (int)selector.stagger_mode},
+            {"exclude_whitespace", selector.exclude_whitespace},
+            {"randomize_order", selector.randomize_order}, {"random_seed", selector.random_seed},
+            {"invert", selector.invert}, {"procedural_mode", (int)selector.procedural_mode},
+            {"amplitude", aprop_to_json(selector.amplitude)},
+            {"frequency", aprop_to_json(selector.frequency)}, {"phase", aprop_to_json(selector.phase)},
+            {"speed", aprop_to_json(selector.speed)}, {"falloff", aprop_to_json(selector.falloff)},
+            {"minimum", aprop_to_json(selector.minimum)}, {"maximum", aprop_to_json(selector.maximum)},
+            {"custom_index", aprop_to_json(selector.custom_index)}, {"direction", (int)selector.direction},
+            {"match_mode", (int)selector.match_mode}, {"range_start", selector.range_start},
+            {"range_end", selector.range_end}, {"match_text", selector.match_text},
+            {"regular_expression", selector.regular_expression}, {"case_sensitive", selector.case_sensitive},
+            {"rich_text_run_index", selector.rich_text_run_index},
+            {"tagged_byte_ranges", tagged_ranges_to_json(selector.tagged_byte_ranges)},
+            {"wiggly_amount", aprop_to_json(selector.wiggly_amount)},
+            {"wiggly_frequency", aprop_to_json(selector.wiggly_frequency)},
+            {"correlation", aprop_to_json(selector.correlation)},
+            {"temporal_phase", aprop_to_json(selector.temporal_phase)},
+            {"spatial_phase", aprop_to_json(selector.spatial_phase)},
+            {"minimum_influence", aprop_to_json(selector.minimum_influence)},
+            {"maximum_influence", aprop_to_json(selector.maximum_influence)},
+            {"wiggly_seed", selector.wiggly_seed}, {"lock_dimensions", selector.lock_dimensions},
+            {"per_character_random", selector.per_character_random}};
+}
+
+static TextSelector text_selector_from_json(const json &j, size_t ordinal)
+{
+    TextSelector selector;
+    if (!j.is_object()) return selector;
+    selector.id = bounded_string(j, "id", "", kMaxNameLength);
+    selector.name = bounded_string(j, "name", "Selector", kMaxNameLength);
+    if (selector.id.empty()) selector.id = make_text_animator_id("selector", selector.name, ordinal);
+    selector.type = (TextSelectorType)std::clamp(json_int(j, "type", 0),
+        (int)TextSelectorType::Range, (int)TextSelectorType::Staggered);
+    selector.combination = (TextSelectorCombinationMode)std::clamp(json_int(j, "combination", 2),
+        (int)TextSelectorCombinationMode::Add, (int)TextSelectorCombinationMode::Multiply);
+    selector.based_on = (TextAnimatorUnit)std::clamp(json_int(j, "based_on", 0),
+        (int)TextAnimatorUnit::Grapheme, (int)TextAnimatorUnit::Sentence);
+    selector.enabled = json_bool(j, "enabled", true);
+    selector.expanded = json_bool(j, "expanded", true);
+    selector.range_units = (TextRangeUnits)std::clamp(json_int(j, "range_units", 0), 0, 1);
+    selector.range_shape = (TextRangeShape)std::clamp(json_int(j, "range_shape", 0), 0, 5);
+    auto load_prop = [&](const char *key, AnimatedProperty &property) {
+        if (j.contains(key)) property = aprop_from_json(j[key], key);
+    };
+    load_prop("start", selector.start); load_prop("end", selector.end);
+    load_prop("offset", selector.offset); load_prop("amount", selector.amount);
+    load_prop("ease_high", selector.ease_high); load_prop("ease_low", selector.ease_low);
+    load_prop("smoothness", selector.smoothness);
+    load_prop("completion", selector.completion);
+    load_prop("stagger_percent", selector.stagger_percent);
+    selector.unit_easing = (EasingType)std::clamp(
+        json_int(j, "unit_easing", (int)EasingType::EaseInOut),
+        (int)EasingType::Linear, (int)EasingType::Hold);
+    selector.stagger_mode = (TextStaggerMode)std::clamp(
+        json_int(j, "stagger_mode", (int)TextStaggerMode::Entrance), 0, 1);
+    selector.exclude_whitespace = json_bool(j, "exclude_whitespace", true);
+    selector.randomize_order = json_bool(j, "randomize_order", false);
+    selector.random_seed = std::clamp(json_int(j, "random_seed", 1), 0, 1000000000);
+    selector.invert = json_bool(j, "invert", false);
+    selector.procedural_mode = (TextProceduralMode)std::clamp(json_int(j, "procedural_mode", 0), 0, 10);
+    load_prop("amplitude", selector.amplitude); load_prop("frequency", selector.frequency);
+    load_prop("phase", selector.phase); load_prop("speed", selector.speed);
+    load_prop("falloff", selector.falloff); load_prop("minimum", selector.minimum);
+    load_prop("maximum", selector.maximum); load_prop("custom_index", selector.custom_index);
+    selector.direction = (TextSelectorDirection)std::clamp(json_int(j, "direction", 0), 0, 2);
+    selector.match_mode = (TextMatchMode)std::clamp(
+        json_int(j, "match_mode", (int)TextMatchMode::ExactText),
+        (int)TextMatchMode::CharacterRange,
+        (int)TextMatchMode::ChangedText);
+    selector.range_start = (size_t)std::max(0, json_int(j, "range_start", 0));
+    selector.range_end = (size_t)std::max(0, json_int(j, "range_end", 0));
+    selector.match_text = bounded_string(j, "match_text", "", kMaxTextLength);
+    selector.regular_expression = bounded_string(j, "regular_expression", "", 4096);
+    selector.case_sensitive = json_bool(j, "case_sensitive", true);
+    selector.rich_text_run_index = std::clamp(json_int(j, "rich_text_run_index", -1), -1, 65535);
+    selector.tagged_byte_ranges.clear();
+    if (j.contains("tagged_byte_ranges") && j["tagged_byte_ranges"].is_array()) {
+        const size_t count = std::min(j["tagged_byte_ranges"].size(), (size_t)4096);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &item = j["tagged_byte_ranges"][i];
+            if (!item.is_object()) continue;
+            const size_t start = (size_t)std::max(0, json_int(item, "start", 0));
+            const size_t length = (size_t)std::max(0, json_int(item, "length", 0));
+            selector.tagged_byte_ranges.emplace_back(start, length);
+        }
+    }
+    load_prop("wiggly_amount", selector.wiggly_amount);
+    load_prop("wiggly_frequency", selector.wiggly_frequency);
+    load_prop("correlation", selector.correlation);
+    load_prop("temporal_phase", selector.temporal_phase);
+    load_prop("spatial_phase", selector.spatial_phase);
+    load_prop("minimum_influence", selector.minimum_influence);
+    load_prop("maximum_influence", selector.maximum_influence);
+    selector.wiggly_seed = std::clamp(json_int(j, "wiggly_seed", 1), 0, 1000000000);
+    selector.lock_dimensions = json_bool(j, "lock_dimensions", true);
+    selector.per_character_random = json_bool(j, "per_character_random", true);
+    return selector;
+}
+
+static json text_animator_stack_to_json(const TextAnimatorStack &stack)
+{
+    json animators = json::array();
+    for (const TextAnimator &animator : stack.animators) {
+        json properties = json::array();
+        for (const auto &property : animator.properties)
+            properties.push_back(text_animator_property_to_json(property));
+        json selectors = json::array();
+        for (const auto &selector : animator.selectors)
+            selectors.push_back(text_selector_to_json(selector));
+        animators.push_back({{"id", animator.id}, {"name", animator.name},
+            {"enabled", animator.enabled}, {"expanded", animator.expanded},
+            {"blend_mode", (int)animator.blend_mode}, {"granularity", (int)animator.granularity},
+            {"transform_as_unit", animator.transform_as_unit},
+            {"change_behaviour", (int)animator.change_behaviour},
+            {"playback_role", (int)animator.playback_role},
+            {"local_time_offset", animator.local_time_offset},
+            {"preset_id", animator.preset_id},
+            {"preset_schema_version", animator.preset_schema_version},
+            {"transition_managed", animator.transition_managed},
+            {"transition_id", animator.transition_id},
+            {"transition_binding_signature", animator.transition_binding_signature},
+            {"properties", std::move(properties)}, {"selectors", std::move(selectors)}});
+    }
+    return {{"schema_version", stack.schema_version},
+            {"legacy_migration_version", stack.legacy_migration_version},
+            {"animators", std::move(animators)}};
+}
+
+static TextAnimatorStack text_animator_stack_from_json(const json &j)
+{
+    TextAnimatorStack stack;
+    if (!j.is_object()) return stack;
+    stack.schema_version = std::clamp(json_int(j, "schema_version", 1), 1, 64);
+    stack.legacy_migration_version = std::clamp(json_int(j, "legacy_migration_version", 0), 0, 64);
+    stack.animators.clear();
+    if (!j.contains("animators") || !j["animators"].is_array()) return stack;
+    const size_t animator_count = std::min(j["animators"].size(), (size_t)64);
+    for (size_t i = 0; i < animator_count; ++i) {
+        const auto &item = j["animators"][i];
+        if (!item.is_object()) continue;
+        TextAnimator animator;
+        animator.id = bounded_string(item, "id", "", kMaxNameLength);
+        animator.name = bounded_string(item, "name", "Animator", kMaxNameLength);
+        if (animator.id.empty()) animator.id = make_text_animator_id("animator", animator.name, i);
+        animator.enabled = json_bool(item, "enabled", true);
+        animator.expanded = json_bool(item, "expanded", true);
+        animator.blend_mode = (TextAnimatorBlendMode)std::clamp(json_int(item, "blend_mode", 0), 0, 2);
+        animator.granularity = (TextAnimatorUnit)std::clamp(json_int(item, "granularity", 0), 0, (int)TextAnimatorUnit::Sentence);
+        animator.transform_as_unit = json_bool(item, "transform_as_unit", false);
+        animator.change_behaviour = (TextChangeBehaviour)std::clamp(json_int(item, "change_behaviour", 6), 0, 6);
+        animator.playback_role = (TextAnimatorPlaybackRole)std::clamp(json_int(item, "playback_role", 0), 0, 3);
+        animator.local_time_offset = std::clamp(finite_or(json_double(item, "local_time_offset", 0.0), 0.0),
+                                                  -kMaxDuration, kMaxDuration);
+        animator.preset_id = bounded_string(item, "preset_id", "", kMaxNameLength);
+        animator.preset_schema_version = std::clamp(json_int(item, "preset_schema_version", 0), 0, 64);
+        animator.transition_managed = json_bool(item, "transition_managed", false);
+        animator.transition_id = bounded_string(item, "transition_id", "", kMaxNameLength);
+        animator.transition_binding_signature = item.contains("transition_binding_signature") &&
+                item["transition_binding_signature"].is_number_unsigned()
+            ? item["transition_binding_signature"].get<uint64_t>() : 0;
+        if (item.contains("properties") && item["properties"].is_array()) {
+            const size_t count = std::min(item["properties"].size(), (size_t)64);
+            for (size_t pi = 0; pi < count; ++pi)
+                animator.properties.push_back(text_animator_property_from_json(item["properties"][pi], pi));
+        }
+        if (item.contains("selectors") && item["selectors"].is_array()) {
+            const size_t count = std::min(item["selectors"].size(), (size_t)64);
+            for (size_t si = 0; si < count; ++si)
+                animator.selectors.push_back(text_selector_from_json(item["selectors"][si], si));
+        }
+        stack.animators.push_back(std::move(animator));
+    }
+    return stack;
+}
+
 static json vec2_aprop_to_json(const AnimatedVec2Property &p)
 {
     json j;
@@ -890,7 +1598,21 @@ static json vec2_aprop_to_json(const AnimatedVec2Property &p)
                       {"value", {{"x", k.value.x}, {"y", k.value.y}}},
                       {"easing", (int)k.easing},
                       {"cx1", k.cx1}, {"cy1", k.cy1},
-                      {"cx2", k.cx2}, {"cy2", k.cy2}});
+                      {"cx2", k.cx2}, {"cy2", k.cy2},
+                      {"temporal_mode", (int)k.temporal_mode},
+                      {"temporal_in_influence", k.incoming_influence},
+                      {"temporal_out_influence", k.outgoing_influence},
+                      {"temporal_in_speed", k.incoming_speed},
+                      {"temporal_out_speed", k.outgoing_speed},
+                      {"temporal_tangents_linked", k.temporal_tangents_linked},
+                      {"temporal_velocity_explicit", k.temporal_velocity_explicit},
+                      {"spatial_in_tangent", {{"x", k.incoming_tangent.x},
+                                               {"y", k.incoming_tangent.y}}},
+                      {"spatial_out_tangent", {{"x", k.outgoing_tangent.x},
+                                                {"y", k.outgoing_tangent.y}}},
+                      {"spatial_mode", (int)k.spatial_mode},
+                      {"spatial_tangents_linked", k.spatial_tangents_linked},
+                      {"rove_across_time", k.rove_across_time}});
     }
     j["keyframes"] = kf;
     return j;
@@ -926,10 +1648,46 @@ static void vec2_aprop_from_json(const json &j, AnimatedVec2Property &p)
             k.cy1 = std::clamp(finite_or(json_double(item, "cy1", 0.0), 0.0), 0.0, 1.0);
             k.cx2 = std::clamp(finite_or(json_double(item, "cx2", 0.667), 0.667), 0.0, 1.0);
             k.cy2 = std::clamp(finite_or(json_double(item, "cy2", 1.0), 1.0), 0.0, 1.0);
+            k.temporal_mode = (TemporalInterpolationMode)std::clamp(
+                json_int(item, "temporal_mode", (int)TemporalInterpolationMode::AutoBezier),
+                (int)TemporalInterpolationMode::Linear,
+                (int)TemporalInterpolationMode::ManualBezier);
+            k.incoming_influence = std::clamp(finite_or(
+                json_double(item, "temporal_in_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
+            k.outgoing_influence = std::clamp(finite_or(
+                json_double(item, "temporal_out_influence", 33.3333333333), 33.3333333333), 0.0, 100.0);
+            k.incoming_speed = finite_or(json_double(item, "temporal_in_speed", 0.0), 0.0);
+            k.outgoing_speed = finite_or(json_double(item, "temporal_out_speed", 0.0), 0.0);
+            k.temporal_tangents_linked = json_bool(item, "temporal_tangents_linked", true);
+            k.temporal_velocity_explicit = json_bool(item, "temporal_velocity_explicit", false);
+
+            auto read_spatial_tangent = [&](const char *name, Vec2Value &tangent) {
+                if (!item.contains(name) || !item[name].is_object())
+                    return;
+                tangent.x = std::clamp(
+                    finite_or(json_double(item[name], "x", 0.0), 0.0),
+                    -kMaxPropertyValue, kMaxPropertyValue);
+                tangent.y = std::clamp(
+                    finite_or(json_double(item[name], "y", 0.0), 0.0),
+                    -kMaxPropertyValue, kMaxPropertyValue);
+            };
+            read_spatial_tangent("spatial_in_tangent", k.incoming_tangent);
+            read_spatial_tangent("spatial_out_tangent", k.outgoing_tangent);
+
+            /* Missing spatial fields identify legacy files. Their historical
+             * position interpolation was straight-line and remains so. */
+            k.spatial_mode = (SpatialInterpolationMode)std::clamp(
+                json_int(item, "spatial_mode", (int)SpatialInterpolationMode::Linear),
+                (int)SpatialInterpolationMode::Linear,
+                (int)SpatialInterpolationMode::ManualBezier);
+            k.spatial_tangents_linked = json_bool(
+                item, "spatial_tangents_linked", true);
+            k.rove_across_time = json_bool(item, "rove_across_time", false);
             p.keyframes.push_back(k);
         }
         std::sort(p.keyframes.begin(), p.keyframes.end(),
                   [](const VectorKeyframe &a, const VectorKeyframe &b) { return a.time < b.time; });
+        p.recalculate_rove_times();
     }
 }
 
@@ -1167,6 +1925,12 @@ static json rich_doc_to_json(const RichTextDocument &doc)
                               {"stop_processing", rule.stop_processing},
                               {"excludes_rule_ids", rule.excludes_rule_ids},
                               {"condition_type", rule.condition_type},
+                              {"regex_pattern", rule.regex_pattern},
+                              {"regex_capture_group", rule.regex_capture_group},
+                              {"regex_case_sensitive", rule.regex_case_sensitive},
+                              {"generalization_mode", rule.generalization_mode},
+                              {"prevent_duplicates", rule.prevent_duplicates},
+                              {"allow_multiple_cases", rule.allow_multiple_cases},
                               {"start_condition", rule.start_condition},
                               {"end_condition", rule.end_condition},
                               {"start_offset", rule.start_offset},
@@ -1278,6 +2042,12 @@ static RichTextDocument rich_doc_from_json(const json &j, const Layer &layer)
             }
             if (rule.rule_id.empty()) rule.rule_id = std::to_string(i + 1);
             rule.condition_type = bounded_string(rj, "condition_type", "range_markers", kMaxNameLength);
+            rule.regex_pattern = bounded_string(rj, "regex_pattern", "", 4096);
+            rule.regex_capture_group = (size_t)std::clamp(json_int(rj, "regex_capture_group", 0), 0, 64);
+            rule.regex_case_sensitive = json_bool(rj, "regex_case_sensitive", true);
+            rule.generalization_mode = bounded_string(rj, "generalization_mode", "auto_merge", 32);
+            rule.prevent_duplicates = json_bool(rj, "prevent_duplicates", true);
+            rule.allow_multiple_cases = json_bool(rj, "allow_multiple_cases", true);
             rule.start_condition = bounded_string(rj, "start_condition", "text_start", kMaxNameLength);
             rule.end_condition = bounded_string(rj, "end_condition", "character_index", kMaxNameLength);
             rule.start_offset = (size_t)std::clamp(json_int(rj, "start_offset", 0), 0, (int)kMaxTextLength);
@@ -1347,6 +2117,12 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["blend_mode"] = (int)l.blend_mode;
     j["use_as_scene_mask"] = l.use_as_scene_mask;
     j["effect_stack_respects_masks"] = l.effect_stack_respects_masks;
+    if (!l.external_bindings.empty()) {
+        json bindings = json::array();
+        for (const auto &binding : l.external_bindings)
+            bindings.push_back(external_binding_to_json(binding));
+        j["external_bindings"] = std::move(bindings);
+    }
     json effects = json::array();
     for (const auto &effect : l.effects) {
         const std::string stable_effect_id = effect.extension_id.empty()
@@ -1543,6 +2319,7 @@ static json layer_to_json(const Layer &l, bool include_embedded_assets = true,
     j["text_content"]  = l.text_content;
     /* rich_text is the only style source of truth; do not serialize legacy HTML. */
     j["rich_text"] = rich_doc_to_json(l.rich_text);
+    j["text_animators"] = text_animator_stack_to_json(l.text_animators);
     j["clock_format"]  = l.clock_format;
     j["expose_text"]   = l.expose_text;
     j["exposed_hide_if_empty"] = l.exposed_hide_if_empty;
@@ -1912,6 +2689,18 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
     l->blend_mode = (EffectBlendMode)std::clamp(json_int(j, "blend_mode", (int)EffectBlendMode::Normal), 0, (int)EffectBlendMode::Color);
     l->use_as_scene_mask = json_bool(j, "use_as_scene_mask", false);
     l->effect_stack_respects_masks = json_bool(j, "effect_stack_respects_masks", false);
+    if (j.contains("external_bindings") && j["external_bindings"].is_array()) {
+        const size_t count = std::min(j["external_bindings"].size(),
+                                      kMaxExternalBindingsPerLayer);
+        l->external_bindings.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            ExternalPropertyBinding binding =
+                external_binding_from_json(j["external_bindings"][i]);
+            if (!binding.property_path.empty() && !binding.source_id.empty() &&
+                !binding.field_path.empty())
+                set_external_binding(*l, std::move(binding));
+        }
+    }
     if (j.contains("effects") && j["effects"].is_array()) {
         const size_t count = std::min(j["effects"].size(), (size_t)64);
         l->effects.reserve(count);
@@ -2221,6 +3010,25 @@ static std::shared_ptr<Layer> layer_from_json(const json &j, bool require_embedd
             edge_seen[edge_index] = true;
             l->transitions.push_back(std::move(transition));
             ++accepted_count;
+        }
+    }
+
+    if (j.contains("text_animators"))
+        l->text_animators = text_animator_stack_from_json(j["text_animators"]);
+    std::vector<std::string> text_animator_migration_warnings;
+    if (migrate_legacy_text_transitions(l->transitions, l->text_animators,
+                                        l->in_time, l->out_time,
+                                        &text_animator_migration_warnings)) {
+        BGL_LOG_INFO("TextAnimator", QStringLiteral(
+            "Migrated legacy text animation layer=%1 name=%2 animators=%3")
+            .arg(QString::fromStdString(l->id), QString::fromStdString(l->name))
+            .arg(static_cast<int>(l->text_animators.animators.size())));
+        for (const std::string &warning : text_animator_migration_warnings) {
+            BGL_LOG_WARNING("TextAnimator", QStringLiteral(
+                "Legacy text animation conversion warning layer=%1 name=%2 %3")
+                .arg(QString::fromStdString(l->id),
+                     QString::fromStdString(l->name),
+                     QString::fromStdString(warning)));
         }
     }
 
@@ -2860,7 +3668,25 @@ static json title_to_json(const Title &t, bool include_embedded_assets = true,
     jt["live_text_rows"] = live_rows;
     jt["live_text_row_ids"] = t.live_text_row_ids;
     jt["live_text_column_order"] = t.live_text_column_order;
+    if (!t.live_text_external_bindings.empty()) {
+        json cell_bindings = json::array();
+        for (const auto &cell : t.live_text_external_bindings)
+            cell_bindings.push_back(live_text_external_binding_to_json(cell));
+        jt["live_text_external_bindings"] = std::move(cell_bindings);
+    }
+    if (!t.live_text_table_bindings.empty()) {
+        json table_bindings = json::array();
+        for (const auto &mapping : t.live_text_table_bindings)
+            table_bindings.push_back(live_text_table_binding_to_json(mapping));
+        jt["live_text_table_bindings"] = std::move(table_bindings);
+    }
     jt["live_text_header_state"] = t.live_text_header_state;
+    if (!t.external_data_sources.empty()) {
+        json external_sources = json::array();
+        for (const auto &source : t.external_data_sources)
+            external_sources.push_back(external_source_to_json(source));
+        jt["external_data_sources"] = std::move(external_sources);
+    }
     jt["external_data_enabled"] = t.external_data_enabled;
     jt["playlist_loop"] = t.playlist_loop;
     jt["playlist_reverse"] = t.playlist_reverse;
@@ -3004,7 +3830,44 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
             t->live_text_column_order.push_back(std::move(layer_id));
         }
     }
+    if (jt.contains("live_text_external_bindings") &&
+        jt["live_text_external_bindings"].is_array()) {
+        const size_t count = std::min<size_t>(jt["live_text_external_bindings"].size(),
+                                              kMaxLiveTextRows * kMaxLiveTextColumns);
+        t->live_text_external_bindings.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            LiveTextExternalBinding cell = live_text_external_binding_from_json(
+                jt["live_text_external_bindings"][i]);
+            if (!cell.row_id.empty() && !cell.layer_id.empty() &&
+                !cell.binding.source_id.empty() && !cell.binding.field_path.empty())
+                t->live_text_external_bindings.push_back(std::move(cell));
+        }
+    }
+    if (jt.contains("live_text_table_bindings") &&
+        jt["live_text_table_bindings"].is_array()) {
+        const size_t count = std::min<size_t>(jt["live_text_table_bindings"].size(), 64);
+        t->live_text_table_bindings.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            LiveTextTableBinding mapping = live_text_table_binding_from_json(
+                jt["live_text_table_bindings"][i]);
+            if (!mapping.id.empty() && !mapping.source_id.empty() &&
+                !mapping.table_path.empty() && !mapping.columns.empty())
+                t->live_text_table_bindings.push_back(std::move(mapping));
+        }
+    }
     t->live_text_header_state = bounded_string(jt, "live_text_header_state", "", kMaxTextLength);
+    if (jt.contains("external_data_sources") &&
+        jt["external_data_sources"].is_array()) {
+        const size_t count = std::min(jt["external_data_sources"].size(),
+                                      kMaxExternalDataSources);
+        t->external_data_sources.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            ExternalDataSourceDefinition source =
+                external_source_from_json(jt["external_data_sources"][i]);
+            if (!source.id.empty())
+                t->external_data_sources.push_back(std::move(source));
+        }
+    }
     t->external_data_enabled = json_bool(jt, "external_data_enabled", false);
     t->playlist_loop = json_bool(jt, "playlist_loop", false);
     t->playlist_reverse = json_bool(jt, "playlist_reverse", false);
@@ -3051,6 +3914,18 @@ static std::shared_ptr<Title> title_from_json(const json &jt, bool regenerate_id
             auto it = layer_id_map.find(layer_id);
             if (it != layer_id_map.end())
                 layer_id = it->second;
+        }
+        for (auto &cell : t->live_text_external_bindings) {
+            auto it = layer_id_map.find(cell.layer_id);
+            if (it != layer_id_map.end())
+                cell.layer_id = it->second;
+        }
+        for (auto &mapping : t->live_text_table_bindings) {
+            for (auto &column : mapping.columns) {
+                auto it = layer_id_map.find(column.layer_id);
+                if (it != layer_id_map.end())
+                    column.layer_id = it->second;
+            }
         }
     }
 

@@ -244,6 +244,29 @@
             roundness = layer_->path_points.front().corner_radius;
         spn_shape_roundness_->setValue(roundness);
     }
+    if (btn_text_external_binding_) {
+        const auto *binding = external_binding_for_property(*layer_, ExternalPropertyPaths::TextContent);
+        QSignalBlocker block(btn_text_external_binding_);
+        btn_text_external_binding_->setChecked(binding != nullptr);
+        btn_text_external_binding_->setProperty("externalDataBound", binding != nullptr);
+        btn_text_external_binding_->setToolTip(binding
+            ? QStringLiteral("External data: %1 · %2")
+                .arg(QString::fromStdString(binding->source_id),
+                     QString::fromStdString(binding->field_path))
+            : QStringLiteral("Bind text content to external data"));
+    }
+    if (btn_image_external_binding_) {
+        const auto *binding = external_binding_for_property(*layer_, ExternalPropertyPaths::ImagePath);
+        QSignalBlocker block(btn_image_external_binding_);
+        btn_image_external_binding_->setChecked(binding != nullptr);
+        btn_image_external_binding_->setProperty("externalDataBound", binding != nullptr);
+        btn_image_external_binding_->setToolTip(binding
+            ? QStringLiteral("External data: %1 · %2")
+                .arg(QString::fromStdString(binding->source_id),
+                     QString::fromStdString(binding->field_path))
+            : QStringLiteral("Bind image path to external data"));
+    }
+
     edit_image_path_->setText(QString::fromStdString(layer_->image_path));
     set_image_preview_label(lbl_image_preview_, QString::fromStdString(layer_->image_path));
     if (cmb_image_scale_filter_) {
@@ -744,6 +767,8 @@
             : bgl_tr("OBSTitles.FontMissingWarningFormat").arg(
                   QString::fromStdString(layer_->font_family))));
 
+    if (text_animators_box_ && is_text_like)
+        refresh_text_animator_controls();
     loading_values_ = false;
 }
 

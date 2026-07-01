@@ -33,6 +33,17 @@ inline QJsonArray track_keys(const LayerEffect &effect, const QString &path)
     return tracks_object(effect).value(path).toArray();
 }
 
+inline void write_track_keys_preserve_order(LayerEffect &effect, const QString &path,
+                                           const QJsonArray &keys)
+{
+    QJsonObject tracks = tracks_object(effect);
+    if (keys.isEmpty())
+        tracks.remove(path);
+    else
+        tracks.insert(path, keys);
+    write_tracks_object(effect, tracks);
+}
+
 inline void write_track_keys(LayerEffect &effect, const QString &path, QJsonArray keys)
 {
     QList<QJsonValue> sorted;
@@ -132,6 +143,40 @@ inline void set_key_easing(QJsonObject &key, EasingType easing)
     if (!key.contains(QStringLiteral("cy2"))) key.insert(QStringLiteral("cy2"), 1.0);
 }
 
+inline TemporalInterpolationMode temporal_mode_from_key(const QJsonObject &key)
+{
+    const int encoded = key.value(QStringLiteral("temporal_mode"))
+        .toInt((int)TemporalInterpolationMode::AutoBezier);
+    return (TemporalInterpolationMode)std::clamp(
+        encoded, (int)TemporalInterpolationMode::Linear,
+        (int)TemporalInterpolationMode::ManualBezier);
+}
+
+inline bool temporal_velocity_explicit(const QJsonObject &key)
+{
+    return key.value(QStringLiteral("temporal_velocity_explicit")).toBool(false);
+}
+
+inline void set_key_temporal_mode(QJsonObject &key, TemporalInterpolationMode mode)
+{
+    key.insert(QStringLiteral("temporal_mode"), (int)mode);
+    key.insert(QStringLiteral("temporal_velocity_explicit"), true);
+    key.insert(QStringLiteral("temporal_tangents_linked"),
+               mode == TemporalInterpolationMode::AutoBezier ||
+               mode == TemporalInterpolationMode::ContinuousBezier);
+    if (!key.contains(QStringLiteral("temporal_in_influence")))
+        key.insert(QStringLiteral("temporal_in_influence"), 33.3333333333);
+    if (!key.contains(QStringLiteral("temporal_out_influence")))
+        key.insert(QStringLiteral("temporal_out_influence"), 33.3333333333);
+    if (!key.contains(QStringLiteral("temporal_in_speed")))
+        key.insert(QStringLiteral("temporal_in_speed"), 0.0);
+    if (!key.contains(QStringLiteral("temporal_out_speed")))
+        key.insert(QStringLiteral("temporal_out_speed"), 0.0);
+    set_key_easing(key, mode == TemporalInterpolationMode::Hold ? EasingType::Hold
+                         : mode == TemporalInterpolationMode::Linear ? EasingType::Linear
+                         : EasingType::Bezier);
+}
+
 inline double cubic_bezier_y(double x, double cx1, double cy1,
                              double cx2, double cy2)
 {
@@ -208,21 +253,105 @@ inline QJsonValue evaluate_track(const LayerEffect &effect, const QString &path,
 {
     const QJsonArray keys = track_keys(effect, path);
     if (keys.isEmpty()) return fallback;
+    int left_index = 0;
+    int right_index = keys.size() - 1;
     QJsonObject left = keys.first().toObject();
     QJsonObject right = keys.last().toObject();
-    for (const QJsonValue &value : keys) {
-        const QJsonObject key = value.toObject();
+    for (int index = 0; index < keys.size(); ++index) {
+        const QJsonObject key = keys.at(index).toObject();
         const double key_time = key.value(QStringLiteral("time")).toDouble();
-        if (key_time <= time) left = key;
-        if (key_time >= time) { right = key; break; }
+        if (key_time <= time) { left = key; left_index = index; }
+        if (key_time >= time) { right = key; right_index = index; break; }
     }
     const double left_time = left.value(QStringLiteral("time")).toDouble();
     const double right_time = right.value(QStringLiteral("time")).toDouble();
-    const double linear = right_time > left_time
-        ? (time - left_time) / (right_time - left_time) : 0.0;
-    return interpolate_value(left.value(QStringLiteral("value")),
-                             right.value(QStringLiteral("value")),
-                             eased_mix(linear, left));
+    if (!(right_time > left_time)) return left.value(QStringLiteral("value"));
+
+    const QJsonValue left_value = left.value(QStringLiteral("value"));
+    const QJsonValue right_value = right.value(QStringLiteral("value"));
+    const bool explicit_velocity = temporal_velocity_explicit(left) ||
+                                   temporal_velocity_explicit(right);
+    if (explicit_velocity && left_value.isDouble() && right_value.isDouble()) {
+        TemporalBezierSegment segment;
+        segment.start_time = left_time;
+        segment.end_time = right_time;
+        segment.start_value = left_value.toDouble();
+        segment.end_value = right_value.toDouble();
+        segment.hold = temporal_velocity_explicit(left)
+            ? temporal_mode_from_key(left) == TemporalInterpolationMode::Hold
+            : easing_from_key(left) == EasingType::Hold;
+        const double linear_speed = (segment.end_value - segment.start_value) /
+                                    (right_time - left_time);
+        auto numeric_slope = [&](int a, int b) {
+            if (a < 0 || b < 0 || a >= keys.size() || b >= keys.size()) return 0.0;
+            const QJsonObject ka = keys.at(a).toObject();
+            const QJsonObject kb = keys.at(b).toObject();
+            const QJsonValue va = ka.value(QStringLiteral("value"));
+            const QJsonValue vb = kb.value(QStringLiteral("value"));
+            const double dt = kb.value(QStringLiteral("time")).toDouble() -
+                              ka.value(QStringLiteral("time")).toDouble();
+            return va.isDouble() && vb.isDouble() && dt > 1e-10
+                ? (vb.toDouble() - va.toDouble()) / dt : 0.0;
+        };
+        auto automatic_speed = [&](int index) {
+            if (keys.size() < 2) return 0.0;
+            if (index <= 0) return numeric_slope(0, 1);
+            if (index + 1 >= keys.size()) return numeric_slope(index - 1, index);
+            return numeric_slope(index - 1, index + 1);
+        };
+        auto influence_for = [&](const QJsonObject &key, bool incoming) {
+            if (!temporal_velocity_explicit(key) && easing_from_key(left) == EasingType::Bezier)
+                return incoming
+                    ? 100.0 * (1.0 - left.value(QStringLiteral("cx2")).toDouble(0.667))
+                    : 100.0 * left.value(QStringLiteral("cx1")).toDouble(0.333);
+            if (!temporal_velocity_explicit(key)) return 33.3333333333;
+            const TemporalInterpolationMode mode = temporal_mode_from_key(key);
+            if (mode == TemporalInterpolationMode::Linear ||
+                mode == TemporalInterpolationMode::AutoBezier)
+                return 33.3333333333;
+            return key.value(incoming ? QStringLiteral("temporal_in_influence")
+                                      : QStringLiteral("temporal_out_influence"))
+                .toDouble(33.3333333333);
+        };
+        auto speed_for = [&](const QJsonObject &key, int index, bool incoming) {
+            if (!temporal_velocity_explicit(key)) {
+                if (easing_from_key(left) == EasingType::Bezier) {
+                    if (incoming) {
+                        const double influence = std::max(1e-9,
+                            1.0 - left.value(QStringLiteral("cx2")).toDouble(0.667));
+                        return (segment.end_value - segment.start_value) *
+                            (1.0 - left.value(QStringLiteral("cy2")).toDouble(1.0)) /
+                            (std::max(right_time - left_time, 1e-10) * influence);
+                    }
+                    const double influence = std::max(1e-9,
+                        left.value(QStringLiteral("cx1")).toDouble(0.333));
+                    return (segment.end_value - segment.start_value) *
+                        left.value(QStringLiteral("cy1")).toDouble(0.0) /
+                        (std::max(right_time - left_time, 1e-10) * influence);
+                }
+                return linear_speed;
+            }
+            switch (temporal_mode_from_key(key)) {
+            case TemporalInterpolationMode::Linear: return linear_speed;
+            case TemporalInterpolationMode::AutoBezier: return automatic_speed(index);
+            case TemporalInterpolationMode::Hold: return 0.0;
+            case TemporalInterpolationMode::ContinuousBezier:
+            case TemporalInterpolationMode::ManualBezier:
+            default:
+                return key.value(incoming ? QStringLiteral("temporal_in_speed")
+                                          : QStringLiteral("temporal_out_speed"))
+                    .toDouble(linear_speed);
+            }
+        };
+        segment.outgoing_influence = std::clamp(influence_for(left, false), 0.0, 100.0) / 100.0;
+        segment.incoming_influence = std::clamp(influence_for(right, true), 0.0, 100.0) / 100.0;
+        segment.outgoing_speed = speed_for(left, left_index, false);
+        segment.incoming_speed = speed_for(right, right_index, true);
+        return evaluate_temporal_segment(segment, time);
+    }
+
+    const double linear = (time - left_time) / (right_time - left_time);
+    return interpolate_value(left_value, right_value, eased_mix(linear, left));
 }
 
 inline bool has_keyframe_at(const LayerEffect &effect, const QString &path,
@@ -254,13 +383,9 @@ inline void add_or_replace_keyframe(LayerEffect &effect, const QString &path,
     QJsonObject key{{QStringLiteral("time"), time},
                     {QStringLiteral("value"), value}};
     if (existing >= 0) {
-        const QJsonObject old = keys.at(existing).toObject();
-        key.insert(QStringLiteral("easing"), old.value(QStringLiteral("easing")));
-        key.insert(QStringLiteral("interpolation"), old.value(QStringLiteral("interpolation")));
-        key.insert(QStringLiteral("cx1"), old.value(QStringLiteral("cx1")));
-        key.insert(QStringLiteral("cy1"), old.value(QStringLiteral("cy1")));
-        key.insert(QStringLiteral("cx2"), old.value(QStringLiteral("cx2")));
-        key.insert(QStringLiteral("cy2"), old.value(QStringLiteral("cy2")));
+        key = keys.at(existing).toObject();
+        key.insert(QStringLiteral("time"), time);
+        key.insert(QStringLiteral("value"), value);
         if (key.value(QStringLiteral("easing")).isUndefined())
             set_key_easing(key, easing);
         keys.replace(existing, key);

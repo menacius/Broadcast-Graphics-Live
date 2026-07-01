@@ -872,6 +872,11 @@ void CanvasPreview::set_title(std::shared_ptr<Title> t, bool preserve_view)
     if (title_)
         bgs::ticker_runtime::set_adaptive_pause(title_->id, false);
     title_ = t;
+    selected_position_keyframe_index_ = -1;
+    motion_path_hover_type_ = MotionPathHoverType::None;
+    motion_path_hover_keyframe_index_ = -1;
+    spatial_tangent_drag_ = SpatialTangentDragState{};
+    spatial_vertex_drag_ = SpatialVertexDragState{};
     BGL_LOG_INFO("Canvas", QStringLiteral(
         "Set canvas title=%1 preserveView=%2")
         .arg(title_ ? QString::fromStdString(title_->id) : QStringLiteral("<none>"))
@@ -1048,6 +1053,9 @@ void CanvasPreview::set_selected_layer(const std::string &lid)
     if (changed) {
         clear_path_point_selection();
         clear_corner_selection();
+        selected_position_keyframe_index_ = -1;
+        motion_path_hover_type_ = MotionPathHoverType::None;
+        motion_path_hover_keyframe_index_ = -1;
     }
     invalidate_canvas_overlay_caches();
     position_text_editor();
@@ -1063,6 +1071,9 @@ void CanvasPreview::set_selected_layers(const std::vector<std::string> &ids)
     if (changed) {
         clear_path_point_selection();
         clear_corner_selection();
+        selected_position_keyframe_index_ = -1;
+        motion_path_hover_type_ = MotionPathHoverType::None;
+        motion_path_hover_keyframe_index_ = -1;
     }
     invalidate_canvas_overlay_caches();
     position_text_editor();

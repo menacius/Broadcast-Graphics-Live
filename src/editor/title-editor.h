@@ -46,6 +46,7 @@
 #include <QPoint>
 #include <QRectF>
 #include <QColor>
+#include <QString>
 #include <memory>
 #include <string>
 #include <vector>
@@ -258,6 +259,8 @@ private:
     bool                   dirty_ = false;
     bool                   shutting_down_ = false;
     bool                   force_next_visual_update_ = false;
+    uint64_t               external_data_callback_id_ = 0;
+    QString                external_data_visual_hash_;
     QTimer                *play_timer_ = nullptr;
     QTimer                *gui_refresh_timer_ = nullptr;
     QTimer                *layout_settle_timer_ = nullptr;

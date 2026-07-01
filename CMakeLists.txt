@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(broadcast-graphics-live VERSION 0.8.7)
+project(broadcast-graphics-live VERSION 0.8.8)
 
 # Public development version shown in the About dialog and diagnostic logs.
 # Keep PROJECT_VERSION numeric for CMake/package compatibility and append the
@@ -10,7 +10,7 @@ set(OBS_BGS_VERSION "${PROJECT_VERSION}-${OBS_BGS_PRERELEASE}")
 # Manually assigned development delivery identifier. Update this once for each
 # package handed to the user. It is intentionally source-controlled and does
 # not change when the same checkout is rebuilt.
-set(OBS_BGS_DEVELOPMENT_VERSION "105")
+set(OBS_BGS_DEVELOPMENT_VERSION "144")
 
 # ── C++ standard ────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 17)
@@ -150,9 +150,6 @@ if(NOT libobs_FOUND OR NOT obs-frontend-api_FOUND)
           set_target_properties(OBS::obs-frontend-api PROPERTIES IMPORTED_LOCATION "${OBS_FRONTEND_API_LIB}")
         endif()
       endif()
-      if(EXISTS "${OBS_SDK_DIR}/cmake/Qt6")
-        set(Qt6_DIR "${OBS_SDK_DIR}/cmake/Qt6" CACHE PATH "Qt6 cmake dir from OBS" FORCE)
-      endif()
       set(libobs_FOUND TRUE)
       set(obs-frontend-api_FOUND TRUE)
       break()
@@ -174,15 +171,56 @@ if(NOT libobs_FOUND OR NOT obs-frontend-api_FOUND)
 endif()
 
 # ── Find Qt ─────────────────────────────────────────────────────────
-find_package(Qt6 COMPONENTS Core Widgets Svg QUIET)
-if(NOT Qt6_FOUND)
-  find_package(Qt5 5.15 COMPONENTS Core Widgets Svg REQUIRED)
-  set(QT_VERSION_MAJOR 5)
-else()
-  set(QT_VERSION_MAJOR 6)
+# OBS' Windows plugin dependency bundles are Qt-major-specific.  Recent
+# bundles place Qt package configs under lib/cmake rather than directly under
+# cmake/, so relying on the generic vcpkg toolchain search can incorrectly
+# report Qt6 as missing and fall through to Qt5.
+set(OBS_BGS_QT6_HINTS)
+if(OBS_SDK_DIR)
+  list(APPEND OBS_BGS_QT6_HINTS
+    "${OBS_SDK_DIR}/lib/cmake/Qt6"
+    "${OBS_SDK_DIR}/cmake/Qt6"
+    "${OBS_SDK_DIR}/share/cmake/Qt6"
+    "${OBS_SDK_DIR}/lib64/cmake/Qt6")
+
+  find_path(OBS_BGS_DISCOVERED_QT6_DIR
+    NAMES Qt6Config.cmake
+    HINTS ${OBS_BGS_QT6_HINTS}
+    NO_DEFAULT_PATH)
+  if(OBS_BGS_DISCOVERED_QT6_DIR)
+    set(Qt6_DIR "${OBS_BGS_DISCOVERED_QT6_DIR}" CACHE PATH
+        "Qt6 package directory from the OBS dependency bundle" FORCE)
+    get_filename_component(OBS_BGS_QT6_CMAKE_ROOT "${Qt6_DIR}/.." ABSOLUTE)
+    list(PREPEND CMAKE_PREFIX_PATH "${OBS_BGS_QT6_CMAKE_ROOT}")
+    message(STATUS "Found Qt6 package configuration at: ${Qt6_DIR}")
+  endif()
 endif()
 
-set(QT_LIBS Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Svg)
+# Resolve the base Qt modules first.  Keeping WebSockets in a separate lookup
+# makes a missing optional SDK component produce an accurate Qt6 diagnostic
+# instead of the misleading Qt5Config.cmake error.
+find_package(Qt6 COMPONENTS Core Widgets Svg Network QUIET)
+if(Qt6_FOUND)
+  include(cmake/BootstrapQtWebSockets.cmake)
+  obs_bgs_ensure_qt6_websockets()
+  set(QT_VERSION_MAJOR 6)
+elseif(OBS_SDK_DIR)
+  message(FATAL_ERROR
+    "The detected OBS SDK is expected to use Qt6, but Qt6Config.cmake or one "
+    "of the required Qt6 modules could not be loaded. Checked: "
+    "${OBS_BGS_QT6_HINTS}. Set Qt6_DIR to the directory containing "
+    "Qt6Config.cmake if your dependency bundle uses a different layout.")
+else()
+  find_package(Qt5 5.15 COMPONENTS Core Widgets Svg Network WebSockets REQUIRED)
+  set(QT_VERSION_MAJOR 5)
+endif()
+
+set(QT_LIBS
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Svg
+    Qt${QT_VERSION_MAJOR}::Network
+    Qt${QT_VERSION_MAJOR}::WebSockets)
 
 # ── Find Cairo + Pango ──────────────────────────────────────────────
 find_package(PkgConfig QUIET)
@@ -285,6 +323,7 @@ FetchContent_Declare(
   nlohmann_json
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
   URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
@@ -350,6 +389,9 @@ set(OBS_BGS_CORE_SOURCES
     src/core/system-memory.cpp
     src/core/ticker-runtime.cpp
     src/core/asset-runtime.cpp
+    src/core/external-data.cpp
+    src/core/external-data-log.cpp
+    src/core/external-data-provider.cpp
 )
 set(OBS_BGS_CORE_HEADERS
     src/core/build-info.h
@@ -363,6 +405,10 @@ set(OBS_BGS_CORE_HEADERS
     src/core/system-memory.h
     src/core/ticker-runtime.h
     src/core/asset-runtime.h
+    src/core/external-data-log.h
+    src/core/external-data.h
+    src/core/external-data-types.h
+    src/core/external-data-provider.h
 )
 
 set(OBS_BGS_LAYER_HEADERS
@@ -406,6 +452,7 @@ set(OBS_BGS_TIMELINE_SOURCES
 set(OBS_BGS_TIMELINE_HEADERS
     src/timeline/animation.h
     src/timeline/timeline-widget.h
+    src/timeline/temporal-graph-editor.inc
 )
 
 set(OBS_BGS_TRANSITION_SOURCES
@@ -420,11 +467,17 @@ set(OBS_BGS_TRANSITION_HEADERS
 
 set(OBS_BGS_TEXT_SOURCES
     src/text/title-rich-text.cpp
+    src/text/text-animator.cpp
+    src/text/text-animator-presets.cpp
+    src/text/text-animator-preset-io.cpp
     src/text/title-text-layout.cpp
     src/text/title-text-layout-qt.cpp
 )
 set(OBS_BGS_TEXT_HEADERS
     src/text/title-rich-text.h
+    src/text/text-animator.h
+    src/text/text-animator-presets.h
+    src/text/text-animator-preset-io.h
     src/text/title-text-layout.h
     src/text/title-text-layout-qt-font-registry.h
 )
@@ -476,6 +529,9 @@ set(OBS_BGS_OBS_HEADERS
 
 set(OBS_BGS_EDITOR_SOURCES
     src/editor/bgl-modern-controls.cpp
+    src/editor/external-data-settings-dialog.cpp
+    src/editor/external-data-binding-dialog.cpp
+    src/editor/external-data-table-mapping-dialog.cpp
     src/editor/title-hotkeys.cpp
     src/editor/timecode-spinbox.cpp
     src/editor/title-dock.cpp
@@ -488,6 +544,9 @@ set(OBS_BGS_EDITOR_SOURCES
 )
 set(OBS_BGS_EDITOR_HEADERS
     src/editor/bgl-modern-controls.h
+    src/editor/external-data-settings-dialog.h
+    src/editor/external-data-binding-dialog.h
+    src/editor/external-data-table-mapping-dialog.h
     src/editor/title-hotkeys.h
     src/editor/long-press-tool-button.h
     src/editor/open-color-palette.h
@@ -794,6 +853,179 @@ if(OBS_BGS_BUILD_TESTS)
   target_include_directories(animation_model_test PRIVATE src/timeline)
   add_test(NAME animation_model_test COMMAND animation_model_test)
 
+  add_executable(text_animator_system_test
+      tests/text_animator_system_test.cpp
+      src/timeline/animation.cpp
+      src/text/text-animator.cpp
+      src/text/text-animator-presets.cpp)
+  target_include_directories(text_animator_system_test PRIVATE
+      src src/timeline src/text src/transitions)
+  add_test(NAME text_animator_system_test COMMAND text_animator_system_test)
+
+  add_executable(text_animator_preset_io_test
+      tests/text_animator_preset_io_test.cpp
+      src/timeline/animation.cpp
+      src/text/text-animator.cpp
+      src/text/text-animator-preset-io.cpp)
+  target_include_directories(text_animator_preset_io_test PRIVATE
+      src src/timeline src/text)
+  target_link_libraries(text_animator_preset_io_test PRIVATE
+      nlohmann_json::nlohmann_json)
+  add_test(NAME text_animator_preset_io_test COMMAND text_animator_preset_io_test)
+
+  add_executable(text_animator_timeline_contract_test
+      tests/text_animator_timeline_contract_test.cpp)
+  add_test(NAME text_animator_timeline_contract_test
+      COMMAND text_animator_timeline_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/hierarchy-model.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp)
+
+  add_executable(text_animator_integration_contract_test
+      tests/text_animator_integration_contract_test.cpp)
+  add_test(NAME text_animator_integration_contract_test
+      COMMAND text_animator_integration_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-text-rendering.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/editor-events.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-masks-groups-cache.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-effects-compositor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-lifecycle-playback.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/title-gpu-text-renderer.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/transitions/transition-editor-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-layer-raster.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/layer-evaluation-layout.inc)
+
+  add_executable(text_animator_build_integration_contract_test
+      tests/text_animator_build_integration_contract_test.cpp)
+  add_test(NAME text_animator_build_integration_contract_test
+      COMMAND text_animator_build_integration_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/text-animator-controls.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-masks-groups-cache.inc)
+
+  add_executable(spatial_bezier_keyframes_contract_test
+      tests/spatial_bezier_keyframes_contract_test.cpp)
+  target_include_directories(spatial_bezier_keyframes_contract_test PRIVATE tests)
+  add_test(NAME spatial_bezier_keyframes_contract_test
+      COMMAND spatial_bezier_keyframes_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/animation.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/animation.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/hierarchy-model.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/spatial-bezier-keyframes.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/canvas-overlay-paint.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/canvas/canvas-preview/gpu-frame-rendering.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/disk-cache-storage.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/cache-policy-invalidation.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/commands-docks.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-effects-compositor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/worker-publication.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/docs/CHANGELOG.md)
+
+  add_executable(temporal_graph_editor_contract_test
+      tests/temporal_graph_editor_contract_test.cpp)
+  target_include_directories(temporal_graph_editor_contract_test PRIVATE tests)
+  add_test(NAME temporal_graph_editor_contract_test
+      COMMAND temporal_graph_editor_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/animation.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/animation.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/hierarchy-model.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/temporal-graph-editor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/commands-docks.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/effects/effect-animation-utils.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/disk-cache-storage.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/compatibility-effects-compositor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager/worker-publication.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/docs/CHANGELOG.md)
+
+  add_executable(editor_ui_revision_140_contract_test
+      tests/editor_ui_revision_140_contract_test.cpp)
+  target_include_directories(editor_ui_revision_140_contract_test PRIVATE tests)
+  add_test(NAME editor_ui_revision_140_contract_test
+      COMMAND editor_ui_revision_140_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/commands-docks.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/temporal-graph-editor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/text-layout-rendering.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/distribute-horizontal.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/distribute-vertical.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/flip-horizontal.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/flip-vertical.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-alpha.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-clipping.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/graph.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-inverted.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-luma.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-normal.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/build-info.h)
+
+  add_executable(editor_timeline_revision_141_contract_test
+      tests/editor_timeline_revision_141_contract_test.cpp)
+  target_include_directories(editor_timeline_revision_141_contract_test PRIVATE tests)
+  add_test(NAME editor_timeline_revision_141_contract_test
+      COMMAND editor_timeline_revision_141_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/editor-events.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/visibility-normal.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/no-visibility.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/visibility-matte.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/layer-lock.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/layer-unlock.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/build-info.h)
+
+  add_executable(editor_keyframe_icon_revision_142_contract_test
+      tests/editor_keyframe_icon_revision_142_contract_test.cpp)
+  target_include_directories(editor_keyframe_icon_revision_142_contract_test PRIVATE tests)
+  add_test(NAME editor_keyframe_icon_revision_142_contract_test
+      COMMAND editor_keyframe_icon_revision_142_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor-internal/hierarchy-model.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/layer-lock.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/layer-unlock.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/no-visibility.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/visibility-matte.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-source.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/matte-destination.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/build-info.h)
+
+  add_executable(editor_keyframe_graph_matte_revision_143_contract_test
+      tests/editor_keyframe_graph_matte_revision_143_contract_test.cpp)
+  target_include_directories(editor_keyframe_graph_matte_revision_143_contract_test PRIVATE tests)
+  add_test(NAME editor_keyframe_graph_matte_revision_143_contract_test
+      COMMAND editor_keyframe_graph_matte_revision_143_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/timeline-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/timeline/temporal-graph-editor.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/commands-docks.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/editor-events.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/icons/graph.svg
+      ${CMAKE_CURRENT_SOURCE_DIR}/data/locale/en-US.ini
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/build-info.h)
+
+  add_executable(editor_character_version_revision_144_contract_test
+      tests/editor_character_version_revision_144_contract_test.cpp)
+  target_include_directories(editor_character_version_revision_144_contract_test PRIVATE tests)
+  add_test(NAME editor_character_version_revision_144_contract_test
+      COMMAND editor_character_version_revision_144_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel/construction-gradient-image-signals.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/build-info.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/plugin-main.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json
+      ${CMAKE_CURRENT_SOURCE_DIR}/README.md
+      ${CMAKE_CURRENT_SOURCE_DIR}/docs/README.md
+      ${CMAKE_CURRENT_SOURCE_DIR}/docs/CHANGELOG.md)
+
   add_executable(transition_model_test
       tests/transition_model_test.cpp)
   target_include_directories(transition_model_test PRIVATE src/transitions src/timeline)
@@ -803,6 +1035,94 @@ if(OBS_BGS_BUILD_TESTS)
       tests/cache_time_contract_test.cpp)
   target_include_directories(cache_time_contract_test PRIVATE src/cache)
   add_test(NAME cache_time_contract_test COMMAND cache_time_contract_test)
+
+  add_executable(external_data_core_contract_test
+      tests/external_data_core_contract_test.cpp)
+  target_include_directories(external_data_core_contract_test PRIVATE tests)
+  add_test(NAME external_data_core_contract_test
+      COMMAND external_data_core_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-types.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-model.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-editor/window-session.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/cache/cache-manager.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(external_data_providers_contract_test
+      tests/external_data_providers_contract_test.cpp)
+  target_include_directories(external_data_providers_contract_test PRIVATE tests)
+  add_test(NAME external_data_providers_contract_test
+      COMMAND external_data_providers_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-types.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-provider.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-provider.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/external-data-settings-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/live-text-cache-playlist.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/plugin-main.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(external_data_ui_contract_test
+      tests/external_data_ui_contract_test.cpp)
+  target_include_directories(external_data_ui_contract_test PRIVATE tests)
+  add_test(NAME external_data_ui_contract_test
+      COMMAND external_data_ui_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-types.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/external-data-settings-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/external-data-binding-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/external-data-table-mapping-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/properties-panel.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/live-text-cache-playlist.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/list-selection-cues.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-hotkeys.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/layers/layer-stack-widget.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(live_text_table_mapping_contract_test
+      tests/live_text_table_mapping_contract_test.cpp)
+  target_include_directories(live_text_table_mapping_contract_test PRIVATE tests)
+  add_test(NAME live_text_table_mapping_contract_test
+      COMMAND live_text_table_mapping_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-types.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/external-data-provider.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/core/title-data.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/external-data-table-mapping-dialog.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/dock-lifecycle.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/live-text-cache-playlist.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt)
+
+  add_executable(external_data_runtime_test
+      tests/external_data_runtime_test.cpp
+      src/core/external-data.cpp
+      src/core/external-data-log.cpp)
+  target_include_directories(external_data_runtime_test PRIVATE
+      src src/core src/layers src/effects src/timeline src/text src/transitions)
+  add_test(NAME external_data_runtime_test COMMAND external_data_runtime_test)
+
+  add_executable(external_data_logging_test
+      tests/external_data_logging_test.cpp
+      src/core/external-data-log.cpp)
+  target_include_directories(external_data_logging_test PRIVATE src src/core)
+  add_test(NAME external_data_logging_test COMMAND external_data_logging_test)
+
+  add_executable(external_data_live_cue_transition_contract_test
+      tests/external_data_live_cue_transition_contract_test.cpp)
+  target_include_directories(external_data_live_cue_transition_contract_test PRIVATE tests)
+  add_test(NAME external_data_live_cue_transition_contract_test
+      COMMAND external_data_live_cue_transition_contract_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/source-runtime.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/obs/title-source/gpu-effects-transitions.inc
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/editor/title-dock/list-selection-cues.inc)
 
   add_executable(ticker_runtime_contract_test
       tests/ticker_runtime_contract_test.cpp

@@ -674,7 +674,26 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
     for (const auto &layer_ptr : session->title.layers) {
         if (!layer_ptr)
             continue;
-        const Layer &layer = *layer_ptr;
+        const Layer &source_layer = *layer_ptr;
+        Layer runtime_layer;
+        const Layer *runtime_layer_ptr = &source_layer;
+        const bool has_text_transition_descriptor = std::any_of(
+            source_layer.transitions.begin(), source_layer.transitions.end(),
+            [](const LayerTransition &transition) {
+                return layer_transition_type_is_text(transition.type);
+            });
+        if (has_text_transition_descriptor &&
+            (source_layer.type == LayerType::Text ||
+             source_layer.type == LayerType::Clock ||
+             source_layer.type == LayerType::Ticker)) {
+            runtime_layer = source_layer;
+            runtime_layer.text_animators =
+                resolved_text_transition_animator_stack(
+                    source_layer.transitions, source_layer.text_animators,
+                    source_layer.in_time, source_layer.out_time);
+            runtime_layer_ptr = &runtime_layer;
+        }
+        const Layer &layer = *runtime_layer_ptr;
         const std::string id = gpu_session_layer_id(layer);
         if (needed_ids.find(id) == needed_ids.end())
             continue;
@@ -767,7 +786,7 @@ void title_gpu_render_session_update_range(TitleGpuRenderSession *session,
         const bool dynamic_raster = layer.type == LayerType::Clock ||
             layer.type == LayerType::Ticker ||
             layer_has_non_transform_animation(base_key_layer) ||
-            active_text_layer_transition(layer, layer_time) != nullptr;
+            text_animator_stack_is_time_dependent(layer.text_animators);
         if (!model_changed && !dynamic_raster && !local_geometry_changed &&
             !entry.key.empty())
             continue;

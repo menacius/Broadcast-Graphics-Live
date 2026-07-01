@@ -613,6 +613,11 @@ void CanvasPreview::paint_canvas(QPainter &p, CanvasPaintPass pass)
 
     const SelectionOverlayGeometry &selection_overlay = selection_overlay_geometry();
 
+    if (active_tool_ == CanvasTool::Selection && selection_overlay.layers.size() == 1 &&
+        selection_overlay.layers.front().layer) {
+        draw_position_motion_path(p, *selection_overlay.layers.front().layer);
+    }
+
     auto draw_layer_box = [&](const SelectionOverlayLayerGeometry &layer_geometry, bool handles) {
         if (!layer_geometry.layer)
             return;

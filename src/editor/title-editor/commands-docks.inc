@@ -470,8 +470,8 @@
     layers_ = new LayerStack(layers_panel);
     layers_->setMinimumHeight(140);
     layers_layout->addWidget(layers_, 1);
-    layers_panel->setMinimumWidth(280);
-    layers_panel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    layers_panel->setMinimumWidth(layers_->minimumWidth());
+    layers_panel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
     lower_split->addWidget(layers_panel);
 
     auto *timeline_panel = new QWidget(lower_split);
@@ -489,6 +489,7 @@
         "QWidget{background:%1;border-top:1px solid %2;color:%3;}"
         "QPushButton{color:%4;background:%5;border:1px solid %2;border-radius:3px;padding:3px 8px;}"
         "QPushButton:hover{background:%6;}"
+        "QPushButton:checked{background:%8;color:%9;border-color:%8;}"
         "QSlider::groove:horizontal{height:4px;background:%7;border-radius:2px;}"
         "QSlider::handle:horizontal{width:12px;margin:-5px 0;background:%4;border-radius:6px;}"
         "QSlider::sub-page:horizontal{background:%8;border-radius:2px;}")
@@ -499,10 +500,26 @@
              timeline_button.name(QColor::HexRgb),
              timeline_hover.name(QColor::HexRgb),
              timeline_base.name(QColor::HexRgb),
-             timeline_highlight.name(QColor::HexRgb)));
+             timeline_highlight.name(QColor::HexRgb),
+             timeline_pal.color(QPalette::HighlightedText).name(QColor::HexRgb)));
     auto *zoom_layout = new QHBoxLayout(timeline_zoom_bar);
     zoom_layout->setContentsMargins(10, 0, 10, 0);
     zoom_layout->setSpacing(8);
+    auto *graph_editor_toggle = new QPushButton(bgl_tr("OBSTitles.GraphEditor"), timeline_zoom_bar);
+    graph_editor_toggle->setIcon(obs_icon("graph.svg"));
+    graph_editor_toggle->setIconSize(QSize(16, 16));
+    graph_editor_toggle->setCheckable(true);
+    graph_editor_toggle->setToolTip(bgl_tr("OBSTitles.GraphEditorTooltip"));
+    auto *graph_view = new QComboBox(timeline_zoom_bar);
+    graph_view->addItem(bgl_tr("OBSTitles.ValueGraph"), 0);
+    graph_view->addItem(bgl_tr("OBSTitles.SpeedGraph"), 1);
+    graph_view->setMinimumWidth(110);
+    auto *fit_graphs = new QPushButton(bgl_tr("OBSTitles.FitGraphsToView"), timeline_zoom_bar);
+    auto *fit_graph_selection = new QPushButton(bgl_tr("OBSTitles.FitGraphSelection"), timeline_zoom_bar);
+    graph_view->setVisible(false);
+    fit_graphs->setVisible(false);
+    fit_graph_selection->setVisible(false);
+
     auto *zoom_out = new QPushButton(timeline_zoom_bar);
     zoom_out->setIcon(obs_icon("zoom-out.svg"));
     zoom_out->setFixedWidth(30);
@@ -515,11 +532,36 @@
     zoom_in->setIcon(obs_icon("zoom-in.svg"));
     zoom_in->setFixedWidth(30);
     auto *fit_timeline = new QPushButton(bgl_tr("OBSTitles.FitTimeline"), timeline_zoom_bar);
+    zoom_layout->addWidget(graph_editor_toggle);
+    zoom_layout->addWidget(graph_view);
+    zoom_layout->addWidget(fit_graphs);
+    zoom_layout->addWidget(fit_graph_selection);
+    zoom_layout->addSpacing(6);
     zoom_layout->addWidget(zoom_out);
     zoom_layout->addWidget(zoom_slider);
     zoom_layout->addWidget(zoom_in);
     zoom_layout->addWidget(fit_timeline);
     zoom_layout->addStretch(1);
+    connect(graph_editor_toggle, &QPushButton::toggled, timeline_,
+            &TimelineWidget::set_graph_editor_enabled);
+    connect(timeline_, &TimelineWidget::graph_editor_enabled_changed, this,
+            [graph_editor_toggle, graph_view, fit_graphs, fit_graph_selection](bool enabled) {
+        QSignalBlocker blocker(graph_editor_toggle);
+        graph_editor_toggle->setChecked(enabled);
+        graph_view->setVisible(enabled);
+        fit_graphs->setVisible(enabled);
+        fit_graph_selection->setVisible(enabled);
+    });
+    connect(graph_view, QOverload<int>::of(&QComboBox::currentIndexChanged), timeline_,
+            &TimelineWidget::set_graph_view_mode);
+    connect(timeline_, &TimelineWidget::graph_view_mode_changed, this,
+            [graph_view](int mode) {
+        QSignalBlocker blocker(graph_view);
+        graph_view->setCurrentIndex(std::clamp(mode, 0, graph_view->count() - 1));
+    });
+    connect(fit_graphs, &QPushButton::clicked, timeline_, &TimelineWidget::fit_graph_to_view);
+    connect(fit_graph_selection, &QPushButton::clicked, timeline_,
+            &TimelineWidget::fit_graph_selection);
     connect(zoom_slider, &QSlider::valueChanged, timeline_, &TimelineWidget::set_zoom_percent);
     connect(timeline_, &TimelineWidget::zoom_percent_changed, this, [zoom_slider](int percent) {
         QSignalBlocker blocker(zoom_slider);
@@ -699,10 +741,68 @@
                     if (prop.vector) set_animated_value(*prop.vector, lt, {x, y});
                     else if (prop.scalar) set_animated_value(*prop.scalar, lt, x);
                     timeline_->update();
+                    if (layers_) layers_->set_playhead(playhead_);
                     if (canvas_) canvas_->update();
                     on_title_modified(false);
                     break;
                 }
+            });
+
+    connect(layers_, &LayerStack::property_temporal_mode_changed,
+            this, [this](const std::string &lid, const std::string &property_name, int mode_value) {
+                if (!title_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer || layer->locked) return;
+                const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                    std::max(0.0, layer->out_time - layer->in_time));
+                for (auto prop : timeline_properties(*layer)) {
+                    if (prop.name() != property_name) continue;
+                    const double tolerance = std::max(1e-6, obs_frame_duration() * 0.5 + 1e-6);
+                    for (size_t index = 0; index < prop.keyframe_count(); ++index) {
+                        if (std::abs(prop.keyframe_time(index) - lt) > tolerance) continue;
+                        const auto mode = static_cast<TemporalInterpolationMode>(std::clamp(
+                            mode_value, (int)TemporalInterpolationMode::Linear,
+                            (int)TemporalInterpolationMode::ManualBezier));
+                        prop.apply_temporal_mode(index, mode);
+                        timeline_->update();
+                        layers_->set_playhead(playhead_);
+                        on_title_modified();
+                        return;
+                    }
+                }
+            });
+
+    connect(layers_, &LayerStack::property_easy_ease_requested,
+            this, [this](const std::string &lid, const std::string &property_name,
+                         bool ease_in, bool ease_out) {
+                if (!title_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer || layer->locked) return;
+                const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                    std::max(0.0, layer->out_time - layer->in_time));
+                for (auto prop : timeline_properties(*layer)) {
+                    if (prop.name() != property_name) continue;
+                    const double tolerance = std::max(1e-6, obs_frame_duration() * 0.5 + 1e-6);
+                    for (size_t index = 0; index < prop.keyframe_count(); ++index) {
+                        if (std::abs(prop.keyframe_time(index) - lt) > tolerance) continue;
+                        prop.apply_easy_ease(index, ease_in, ease_out);
+                        timeline_->update();
+                        layers_->set_playhead(playhead_);
+                        on_title_modified();
+                        return;
+                    }
+                }
+            });
+
+    connect(layers_, &LayerStack::property_velocity_requested,
+            this, [this](const std::string &lid, const std::string &property_name) {
+                if (!title_ || !timeline_) return;
+                auto layer = title_->find_layer(lid);
+                if (!layer || layer->locked) return;
+                const double lt = std::clamp(playhead_ - layer->in_time, 0.0,
+                    std::max(0.0, layer->out_time - layer->in_time));
+                timeline_->show_property_velocity_dialog(lid, property_name, lt);
+                if (layers_) layers_->set_playhead(playhead_);
             });
 
     connect(layers_, &LayerStack::layer_expand_changed,
@@ -917,12 +1017,22 @@
             this, &TitleEditor::edit_layer_transition);
     connect(timeline_, &TimelineWidget::transition_modified,
             this, [this]() {
+                if (title_ && !sel_layer_id_.empty()) {
+                    if (auto layer = title_->find_layer(sel_layer_id_)) {
+                        synchronize_text_transition_animators(
+                            layer->transitions, layer->text_animators,
+                            layer->in_time, layer->out_time, nullptr, true);
+                    }
+                }
                 force_next_title_visual_update();
                 on_title_modified();
                 if (timeline_) timeline_->update();
             });
     connect(timeline_, &TimelineWidget::keyframe_easing_changed,
-            this, [this]() { on_title_modified(); });
+            this, [this]() {
+                if (layers_) layers_->set_playhead(playhead_);
+                on_title_modified();
+            });
 
     connect(props_, &PropertiesPanel::property_changed,
             this, [this](bool push_undo_snapshot) {

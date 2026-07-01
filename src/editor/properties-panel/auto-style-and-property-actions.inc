@@ -581,6 +581,48 @@
             this, [this, can_edit, text_edit_active, emit_change, apply_text_fill_format](double v) { if (can_edit()) { if (!text_edit_active()) layer_->gradient_focal_x = (float)v; apply_text_fill_format(); emit_change(); } });
     connect(spn_gradient_focal_y_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this, can_edit, text_edit_active, emit_change, apply_text_fill_format](double v) { if (can_edit()) { if (!text_edit_active()) layer_->gradient_focal_y = (float)v; apply_text_fill_format(); emit_change(); } });
+    connect(btn_text_external_binding_, &QToolButton::clicked, this, [this, can_edit, emit_change]() {
+        if (!can_edit() || !title_ || !layer_) return;
+        const auto *existing = external_binding_for_property(
+            *layer_, ExternalPropertyPaths::TextContent);
+        ExternalDataBindingDialog dialog(
+            title_, ExternalPropertyPaths::TextContent,
+            ExternalDataValue::string(layer_->text_content), existing, this);
+        if (dialog.exec() != QDialog::Accepted) { load_values(); return; }
+        if (dialog.remove_requested())
+            remove_external_binding(*layer_, ExternalPropertyPaths::TextContent);
+        else {
+            const ExternalPropertyBinding binding = dialog.binding();
+            pin_external_data_field(*title_, binding.source_id, binding.field_path);
+            set_external_binding(*layer_, binding);
+        }
+        TitleDataStore::instance().save();
+        TitleDataStore::instance().notify_change();
+        load_values();
+        emit_change();
+    });
+    connect(btn_image_external_binding_, &QToolButton::clicked, this, [this, can_edit, emit_change]() {
+        if (!can_edit() || !title_ || !layer_) return;
+        const auto *existing = external_binding_for_property(
+            *layer_, ExternalPropertyPaths::ImagePath);
+        ExternalDataBindingDialog dialog(
+            title_, ExternalPropertyPaths::ImagePath,
+            ExternalDataValue::string(layer_->image_path, ExternalDataType::FilePath),
+            existing, this);
+        if (dialog.exec() != QDialog::Accepted) { load_values(); return; }
+        if (dialog.remove_requested())
+            remove_external_binding(*layer_, ExternalPropertyPaths::ImagePath);
+        else {
+            const ExternalPropertyBinding binding = dialog.binding();
+            pin_external_data_field(*title_, binding.source_id, binding.field_path);
+            set_external_binding(*layer_, binding);
+        }
+        TitleDataStore::instance().save();
+        TitleDataStore::instance().notify_change();
+        load_values();
+        emit_change();
+    });
+
     connect(edit_image_path_, &QLineEdit::textChanged,
             this, [this, can_edit, emit_change, fit_image_size_to_current_image](const QString &path){
                 set_image_preview_label(lbl_image_preview_, path);

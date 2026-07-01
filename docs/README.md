@@ -1,12 +1,13 @@
 # Broadcast Graphics Live documentation
 
-This directory contains the canonical documentation for `v0.8.7-alpha`. Older one-feature notes and per-development-version reports were merged into the thematic guides below so that each subject has one maintained source of truth.
+This directory contains the canonical documentation for `v0.8.8-alpha`. Older one-feature notes and per-development-version reports were merged into the thematic guides below so that each subject has one maintained source of truth.
 
 | Document | Purpose |
 | --- | --- |
 | [USER_GUIDE.md](USER_GUIDE.md) | Installation, first launch, basic title creation, cueing, and everyday workflows. |
 | [EDITOR_WORKFLOW.md](EDITOR_WORKFLOW.md) | Layers, canvas tools, panels, timeline, grouping, parenting, mattes, assets, presets, and editor interaction. |
 | [TEXT_AND_LIVE_DATA.md](TEXT_AND_LIVE_DATA.md) | Rich text, inline editing, clocks, tickers, auto styling, exposed fields, live cues, and external data. |
+| [TEXT_ANIMATORS.md](TEXT_ANIMATORS.md) | Unified Text Animator model, selectors, keyframing, preset migration, dynamic text remapping, and cache integration. |
 | [RENDERING_AND_CACHE.md](RENDERING_AND_CACHE.md) | Editor/source rendering parity, GPU pipeline, RAM/disk cache, prerendering, invalidation, and performance behavior. |
 | [EFFECTS_AND_EXTENSIONS.md](EFFECTS_AND_EXTENSIONS.md) | Effect stack, presets, transitions, built-in effects, extension manifests, API/ABI, and compatibility rules. |
 | [ARCHITECTURE_AND_BUILD.md](ARCHITECTURE_AND_BUILD.md) | Source ownership, module boundaries, build systems, packaging, tests, audits, and contribution rules. |

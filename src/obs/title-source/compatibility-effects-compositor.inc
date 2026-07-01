@@ -745,7 +745,8 @@ static void apply_stackable_pixel_effects_to_surface(cairo_surface_t *surface, c
 
 static bool layer_has_non_transform_animation(const Layer &layer)
 {
-    return layer_has_effect_animation(layer) ||
+    return text_animator_stack_is_time_dependent(layer.text_animators) ||
+           layer_has_effect_animation(layer) ||
            layer.size.is_animated() ||
            layer.image_size.is_animated() ||
            layer.origin_prop.is_animated() ||
@@ -1082,14 +1083,14 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
         key << "|content=" << layer_render_fingerprint(layer);
     key << "|box=" << eval_box_width(layer, t) << 'x' << eval_box_height(layer, t)
         << "|origin=" << eval_origin_x(layer, t) << ',' << eval_origin_y(layer, t)
-        << "|stack=" << layer.effects.size();
+        << "|stack=" << layer.effects.size()
+        << "|textanim=" << text_animator_stack_signature(layer.text_animators);
 
     const bool transition_active =
-        (!ignore_general_transitions && evaluate_layer_general_transitions(
-            layer.transitions, layer.in_time, layer.out_time, title_time).active) ||
-        active_text_layer_transition(layer, title_time) != nullptr;
-    if (force_time_key || layer_has_non_transform_animation(layer) || layer.type == LayerType::Ticker ||
-        transition_active)
+        !ignore_general_transitions && evaluate_layer_general_transitions(
+            layer.transitions, layer.in_time, layer.out_time, title_time).active;
+    if (force_time_key || layer_has_non_transform_animation(layer) ||
+        layer.type == LayerType::Ticker || transition_active)
         key << "|time=" << (int64_t)std::llround(t * 1000.0);
 
     ShadowRenderParams shadow = evaluated_shadow_params(layer, t);
@@ -1099,9 +1100,11 @@ static std::string effect_layer_cache_key(const TitleSourceData *data, const Tit
         << shadow.long_length << ',' << shadow.long_angle << ',' << shadow.long_falloff << ','
         << (int)shadow.long_blur_type << ',' << shadow.long_blur;
 
-    if (layer.type == LayerType::Image && !layer.image_path.empty()) {
-        QFileInfo info(QString::fromStdString(layer.image_path));
-        key << "|image=" << layer.image_path << ','
+    const std::string effective_image_path = effective_external_string(
+        layer, ExternalPropertyPaths::ImagePath, layer.image_path);
+    if (layer.type == LayerType::Image && !effective_image_path.empty()) {
+        QFileInfo info(QString::fromStdString(effective_image_path));
+        key << "|image=" << effective_image_path << ','
             << (info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0) << ','
             << (info.exists() ? info.size() : -1)
             << "|imagebox=" << (int)layer.image_box_mode << ','

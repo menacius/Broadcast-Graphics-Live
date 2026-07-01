@@ -210,6 +210,20 @@ struct RichTextAutoStyleRule {
     /* Legacy fields kept for loading older files created by the first auto
      * styling implementation. New code should use the boundary fields above. */
     std::string condition_type = "range_markers";
+
+    /* Optional regular-expression matcher. condition_type == "regex" uses
+     * regex_pattern and styles either the full match or regex_capture_group.
+     * Patterns are evaluated only while rebuilding canonical text runs. */
+    std::string regex_pattern;
+    size_t regex_capture_group = 0;
+    bool regex_case_sensitive = true;
+
+    /* Learning/generalization controls. auto_merge folds equivalent inferred
+     * examples into one reusable rule; exact_only prevents structural
+     * generalization; keep_separate always creates a distinct rule. */
+    std::string generalization_mode = "auto_merge";
+    bool prevent_duplicates = true;
+    bool allow_multiple_cases = true;
     size_t start = 0;
     size_t length = 0;
 
@@ -338,6 +352,17 @@ size_t rich_text_utf8_byte_offset_from_utf16_position(
     const std::string &text, int utf16_position);
 
 using RichTextAutoStyleResolver = std::function<bool(const std::string &preset_id, RichTextCharFormat &format, uint32_t &mask)>;
+
+/* Rule-analysis helpers are part of the public rich-text model API because the
+ * properties panel uses them when learning from text and importing rule sets. */
+bool rich_text_auto_style_rules_equivalent(const RichTextAutoStyleRule &a,
+                                           const RichTextAutoStyleRule &b);
+size_t rich_text_merge_auto_style_rules(
+    std::vector<RichTextAutoStyleRule> &destination,
+    const std::vector<RichTextAutoStyleRule> &incoming);
+std::vector<RichTextAutoStyleRule> rich_text_infer_auto_style_rules(
+    const RichTextDocument &doc);
+
 RichTextDocument rich_text_document_with_auto_styles(const RichTextDocument &doc,
                                                     const RichTextAutoStyleResolver &resolver);
 RichTextDocument rich_text_document_with_auto_styles_canonical(

@@ -1075,6 +1075,8 @@ static void source_video_render(void *priv, gs_effect_t * /*effect*/)
          * waiting for an unrelated cue or edit to bump a revision. */
         if (data->consecutive_draw_failures >= 2) {
             data->seen_store_revision = std::numeric_limits<uint64_t>::max();
+            data->seen_external_data_revision =
+                std::numeric_limits<uint64_t>::max();
             data->cache_hash_revision = std::numeric_limits<uint64_t>::max();
             data->cached_content_hash.clear();
         }

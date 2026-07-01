@@ -1,71 +1,25 @@
-        QRectF visible = unit;
-        if (transition->type == LayerTransitionType::TextWipe) {
-            switch (transition->direction) {
-            case LayerTransitionDirection::Right:
-                visible.setLeft(unit.right() - unit.width() * local);
-                break;
-            case LayerTransitionDirection::Up:
-                visible.setTop(unit.bottom() - unit.height() * local);
-                break;
-            case LayerTransitionDirection::Down:
-                visible.setHeight(unit.height() * local);
-                break;
-            case LayerTransitionDirection::Left:
-            case LayerTransitionDirection::None:
-            default:
-                visible.setWidth(unit.width() * local);
-                break;
-            }
-        }
-
-        painter.save();
-        const QPointF center = unit.center();
-        painter.translate(center.x() + dx, center.y() + dy);
-        painter.scale(scale, scale);
-        painter.translate(-center.x(), -center.y());
-        // Establish the unit clip after the transition transform.  QPainter
-        // resolves a clip using the world transform active at setClipRect(), so
-        // this makes the clip travel/scale with the glyph instead of remaining
-        // at its final position and slicing horizontal slide-ins.
-        painter.setClipRect(visible.intersected(image_bounds));
-        const int current_blur_radius = blur_transition
-            ? animated_text_blur_radius(transition->blur_amount, local)
-            : 0;
-        painter.setOpacity(local);
-        if (current_blur_radius > 0) {
-            painter.drawImage(QPointF(0.0, 0.0),
-                              image_for_blur_radius(current_blur_radius));
-        } else {
-            painter.drawImage(QPointF(0.0, 0.0), source);
-        }
-        painter.restore();
-    }
-    painter.end();
-}
-
 static void render_layer_text(cairo_t *cr, const Title &title, const Layer &layer, double title_time,
                                int canvas_w, int canvas_h)
 {
     const double t = std::max(0.0, title_time - layer.in_time);
-    const LayerTransition *active_text_transition =
-        active_text_layer_transition(layer, title_time);
-    const bool use_isolated_text_transition =
-        active_text_transition && layer.type != LayerType::Ticker;
+    const bool use_unified_text_animator =
+        text_animator_stack_has_enabled_animators(layer.text_animators);
     double alpha = layer_chain_opacity(title, layer, title_time);
     double box_w = eval_box_width(layer, t);
     double box_h = eval_box_height(layer, t);
     if (box_w <= 0.0 || box_h <= 0.0) return;
 
+    QFont font = font_for_layer(layer, t);
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     const bool render_shadow = shadow_params.drop_enabled || shadow_params.long_enabled;
     int base_pad = render_shadow
         ? (int)std::ceil(std::max({std::abs(shadow_params.dx), std::abs(shadow_params.dy), shadow_params.long_length}) + shadow_params.blur * 3.0 + shadow_params.spread + 4.0)
         : 0;
-    // Text outlines extend beyond the glyph and text box. Keep enough offscreen
-    // padding so rich-text and plain-text strokes are not cropped at the layer edges.
-    base_pad = std::max(base_pad, (int)std::ceil(
-        std::max(std::max(0.0, eval_outline_width(layer, t)),
-                 max_rich_text_stroke_width(layer, t)) + 2.0));
+    // Reserve the complete painted-ink envelope, not only logical advances.
+    // This includes italic bearings, accents, swashes, strokes and the
+    // transparent interpolation gutter needed by per-unit transforms.
+    base_pad = std::max(
+        base_pad, (int)std::ceil(text_raster_ink_gutter(font, layer, t)));
     if (eval_background_enabled(layer, t))
         base_pad += (int)std::ceil(std::max({std::abs(eval_background_padding_left(layer, t)),
                                              std::abs(eval_background_padding_right(layer, t)),
@@ -77,53 +31,21 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     int pad_right = base_pad;
     int pad_top = base_pad;
     int pad_bottom = base_pad;
-    if (active_text_transition) {
-        // Blur is clamped to 64 px by the renderer; reserve only the pixels that
-        // can actually be generated, rather than the unchecked preset value.
-        const bool blur_transition =
-            active_text_transition->type == LayerTransitionType::TextBlur ||
-            active_text_transition->type == LayerTransitionType::TextBlurSlide;
-        const int blur_pad = blur_transition
-            ? std::clamp((int)std::ceil(std::max(0.0, active_text_transition->blur_amount)), 0, 64) * 3 + 3
-            : 0;
-        pad_left += blur_pad;
-        pad_right += blur_pad;
-        pad_top += blur_pad;
-        pad_bottom += blur_pad;
-
-        if (active_text_transition->type == LayerTransitionType::TextSlide ||
-            active_text_transition->type == LayerTransitionType::TextBlurSlide) {
-            // Travel beyond the canvas plus the layer size is guaranteed to be
-            // invisible. Capping at that visible envelope prevents a 10,000 px
-            // offset from creating a multi-gigabyte temporary QImage.
-            const bool horizontal = active_text_transition->direction != LayerTransitionDirection::Up &&
-                                    active_text_transition->direction != LayerTransitionDirection::Down;
-            const double visible_limit = horizontal
-                ? std::max(1.0, (double)canvas_w) + box_w
-                : std::max(1.0, (double)canvas_h) + box_h;
-            const int travel = (int)std::ceil(std::min(
-                std::abs(active_text_transition->offset), visible_limit));
-            switch (active_text_transition->direction) {
-            case LayerTransitionDirection::Right: pad_right += travel; break;
-            case LayerTransitionDirection::Up: pad_top += travel; break;
-            case LayerTransitionDirection::Down: pad_bottom += travel; break;
-            case LayerTransitionDirection::Left:
-            case LayerTransitionDirection::None:
-            default: pad_left += travel; break;
-            }
-        }
-
-        if (active_text_transition->type == LayerTransitionType::TextScale) {
-            const double maximum_scale = std::max(1.0, std::abs(active_text_transition->scale_from));
-            const int extra_x = (int)std::ceil((maximum_scale - 1.0) * box_w * 0.5);
-            const int extra_y = (int)std::ceil((maximum_scale - 1.0) * box_h * 0.5);
-            const int visible_x = std::max(1, canvas_w) + (int)std::ceil(box_w);
-            const int visible_y = std::max(1, canvas_h) + (int)std::ceil(box_h);
-            pad_left += std::min(extra_x, visible_x);
-            pad_right += std::min(extra_x, visible_x);
-            pad_top += std::min(extra_y, visible_y);
-            pad_bottom += std::min(extra_y, visible_y);
-        }
+    if (use_unified_text_animator) {
+        /* The compatibility raster needs the same visual envelope as the SDF
+         * path. Bound malicious/extreme values to the maximum surface that can
+         * still intersect the current canvas. */
+        const double requested_animator_padding =
+            text_animator_stack_visual_padding(layer.text_animators, box_w, box_h);
+        const double visible_envelope = std::max(
+            std::max(1.0, static_cast<double>(canvas_w)) + box_w,
+            std::max(1.0, static_cast<double>(canvas_h)) + box_h);
+        const int animator_padding = static_cast<int>(std::ceil(std::min(
+            std::max(0.0, requested_animator_padding), visible_envelope)));
+        pad_left += animator_padding;
+        pad_right += animator_padding;
+        pad_top += animator_padding;
+        pad_bottom += animator_padding;
     }
 
     const qint64 requested_width = std::max<qint64>(1, (qint64)std::ceil(box_w) + pad_left + pad_right);
@@ -142,7 +64,6 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
 
-    QFont font = font_for_layer(layer, t);
     painter.setFont(font);
 
     QRectF base_rect(pad_left, pad_top, box_w, box_h);
@@ -186,21 +107,27 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     // allocation-free and take the snapshot only while a rich-text transition
     // is actually active.
     QImage static_text_background;
-    // Without a text-box background the compositor can clear and reuse the
-    // existing surface, avoiding another full layer-sized allocation per
-    // transition frame. Preserve a snapshot only when there is actual static
-    // content behind the animated glyph units.
-    if (use_isolated_text_transition && eval_background_enabled(layer, t))
-        static_text_background = text_image.copy();
+    /* Keep the background and animated text on separate surfaces. Besides
+     * avoiding background rectangles travelling with glyphs in the bounded
+     * flattened fallback, this gives color-font/emoji fallback exactly the
+     * same compositing contract as the SDF path. */
+    if (use_unified_text_animator) {
+        if (eval_background_enabled(layer, t))
+            static_text_background = text_image.copy();
+        painter.end();
+        text_image.fill(Qt::transparent);
+        painter.begin(&text_image);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::TextAntialiasing, true);
+        painter.setFont(font);
+    }
 
     QRectF text_rect = text_rect_for_style(base_rect, layer);
     QString text = display_text_for_style(layer);
     painter.save();
-    const double text_outline_clip_pad =
-        std::max(std::max(0.0, eval_outline_width(layer, t)),
-                 max_rich_text_stroke_width(layer, t)) + 2.0;
-    painter.setClipRect(text_rect.adjusted(-text_outline_clip_pad, -text_outline_clip_pad,
-                                           text_outline_clip_pad, text_outline_clip_pad));
+    const double text_ink_clip_pad = text_raster_ink_gutter(font, layer, t);
+    painter.setClipRect(text_rect.adjusted(-text_ink_clip_pad, -text_ink_clip_pad,
+                                           text_ink_clip_pad, text_ink_clip_pad));
     Qt::Alignment align = Qt::AlignVCenter | Qt::AlignHCenter;
     if (layer.align_h == 0) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignLeft;
     if (layer.align_h == 2) align = (align & ~Qt::AlignHorizontal_Mask) | Qt::AlignRight;
@@ -312,8 +239,8 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
             QPainter::Antialiasing, eval_outline_antialias(layer, t));
         stroke_painter.setRenderHint(QPainter::TextAntialiasing, true);
         stroke_painter.setClipRect(text_rect.adjusted(
-            -text_outline_clip_pad, -text_outline_clip_pad,
-            text_outline_clip_pad, text_outline_clip_pad));
+            -text_ink_clip_pad, -text_ink_clip_pad,
+            text_ink_clip_pad, text_ink_clip_pad));
         stroke_painter.setPen(outline_pen);
         stroke_painter.setBrush(Qt::NoBrush);
         stroke_painter.drawPath(text_path);
@@ -358,15 +285,31 @@ static void render_layer_text(cairo_t *cr, const Title &title, const Layer &laye
     painter.restore();
     painter.end();
 
-    if (use_isolated_text_transition) {
-        if (!apply_isolated_text_layer_transition(text_image, static_text_background,
-                                                   layer, title_time, text, font, text_rect,
-                                                   t, shadow_params, render_shadow)) {
-            apply_text_layer_transition(text_image, layer, title_time, text, font, text_rect);
+    if (use_unified_text_animator) {
+        /* Always prefer the shaped isolated-unit compositor. It derives each
+         * crop from actual painted alpha and keeps a transparent resampling
+         * gutter, so glyph bearings cannot be cut by advance-based clips. The
+         * flattened compositor remains only a bounded emergency fallback for
+         * unusually large/unsupported layouts. Both consume the same
+         * TextAnimatorEvaluation and neither evaluates LayerTransition. */
+        bool applied = apply_unified_text_animator_raster(
+            text_image, static_text_background, layer, text, font, text_rect,
+            t, shadow_params, render_shadow);
+        if (!applied) {
+            applied = apply_unified_text_animator_flattened(
+                text_image, static_text_background, layer, font, text_rect, t,
+                shadow_params, render_shadow);
         }
-    } else if (active_text_transition) {
-        // Ticker text still uses the existing flattened transition path.
-        apply_text_layer_transition(text_image, layer, title_time, text, font, text_rect);
+        if (!applied && !static_text_background.isNull()) {
+            /* Fail safe: unsupported/invalid shaping must not drop the text-box
+             * background merely because its foreground was isolated for the
+             * animator adapter. */
+            QImage combined = static_text_background.copy();
+            QPainter combined_painter(&combined);
+            combined_painter.drawImage(QPointF(0.0, 0.0), text_image);
+            combined_painter.end();
+            text_image = std::move(combined);
+        }
     }
 
     auto text_surface = make_image_surface_for_qimage(text_image);
@@ -646,14 +589,16 @@ static void stroke_image_visible_outline(cairo_t *cr, const Layer &layer, const 
 
 static void render_layer_image(cairo_t *cr, const Title &title, const Layer &layer, double title_time)
 {
-    if (layer.image_path.empty()) return;
+    const std::string effective_image_path = effective_external_string(
+        layer, ExternalPropertyPaths::ImagePath, layer.image_path);
+    if (effective_image_path.empty()) return;
     const double t = std::max(0.0, title_time - layer.in_time);
     double alpha = layer_chain_opacity(title, layer, title_time);
     double w = eval_box_width(layer, t);
     double h = eval_box_height(layer, t);
     if (w <= 0.0 || h <= 0.0) return;
 
-    const QString image_path = QString::fromStdString(layer.image_path);
+    const QString image_path = QString::fromStdString(effective_image_path);
     double image_w = eval_image_width(layer, t);
     double image_h = eval_image_height(layer, t);
     if (image_w <= 0.0 || image_h <= 0.0) {
@@ -684,9 +629,9 @@ static void render_layer_image(cairo_t *cr, const Title &title, const Layer &lay
     ShadowRenderParams shadow_params = evaluated_shadow_params(layer, t);
     if (shadow_params.drop_enabled || shadow_params.long_enabled) {
         QImage mask = image_box_shadow_mask(argb, layer, w, h, image_layout);
-        QFileInfo shadow_image_info(QString::fromStdString(layer.image_path));
+        QFileInfo shadow_image_info(image_path);
         const QString shape_key = QStringLiteral("image|%1|%2x%3|%4|%5")
-            .arg(QString::fromStdString(layer.image_path)).arg(mask.width()).arg(mask.height())
+            .arg(image_path).arg(mask.width()).arg(mask.height())
             .arg(shadow_image_info.exists() ? shadow_image_info.lastModified().toMSecsSinceEpoch() : 0)
             .arg(shadow_image_info.exists() ? shadow_image_info.size() : -1);
         CachedShadowImage shadow = build_shadow_image(layer, shadow_params, shape_key, mask);
@@ -1096,8 +1041,8 @@ static void blur_surface_for_type(cairo_surface_t *surface, double blur, int blu
 
     std::vector<uint8_t> original = surface_pixels(surface);
     std::vector<uint8_t> blurred = original;
-    for (int radius : passes)
-        box_blur_pixels(blurred, width, height, radius);
+    blur_premultiplied_pixels_for_type(
+        blurred, width, height, blur, blur_type);
 
     const double mix = std::clamp(amount, 0.0, 1.0);
     if (mix < 1.0) {

@@ -75,7 +75,8 @@ check("development version is synchronized as 093 or later",
       cmake_version.group(1) == build_version.group(1) and
       int(cmake_version.group(1)) >= 93)
 check("version 093 change is documented",
-      "Development Version 105" in readme and
+      cmake_version is not None and
+      f"Development Version {cmake_version.group(1)}" in readme and
       "Development Version 093" in doc and
       "Layer-Space Effects Stack" in doc and
       "cache identities" in doc)

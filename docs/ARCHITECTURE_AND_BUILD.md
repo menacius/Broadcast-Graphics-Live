@@ -82,3 +82,11 @@ When a canonical document path changes, update audits to read the new document i
 - Preserve editor/source rendering parity.
 - Add a focused regression contract for compile fixes and model-order changes.
 - Update `docs/CHANGELOG.md` and the relevant thematic document rather than adding a new one-off markdown file.
+## External-data runtime ownership
+
+`src/core/external-data-types.h` contains the provider-neutral serialized schema and layer binding model. `src/core/external-data.cpp` owns mutable runtime source state and is the only component that accepts provider updates. `src/core/external-data-provider.cpp` owns provider lifecycles, parsing, file access, polling timers, HTTP requests, and WebSocket reconnects on one dedicated Qt worker thread. Provider code submits typed values to the manager; it never mutates `Layer` authored fields or touches GPU objects.
+
+`src/editor/external-data-settings-dialog.cpp` edits provider definitions and pending layer bindings. Runtime Connect/Refresh actions can preview a configuration, while Save is the only path that commits bindings to the title; Cancel resynchronizes the provider service from the authoritative title store.
+
+A changed value publishes a runtime-only revision, editor callback, and coalesced render-queue entry. OBS consumes pending entries from its source tick/render path and resolves effective values from a mutex-protected snapshot. Equal values are acknowledged by timestamp only and intentionally produce no callbacks or cache invalidation.
+

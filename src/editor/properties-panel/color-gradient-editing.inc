@@ -109,12 +109,6 @@
         // With the Color tab hidden, open directly on Gradient.
         tabs->setCurrentWidget(gradient_tab);
 
-        auto *pattern_tab = new QWidget(tabs);
-        auto *pattern_layout = new QVBoxLayout(pattern_tab);
-        pattern_layout->addWidget(new QLabel(bgl_tr("OBSTitles.PatternsNotImplemented"), pattern_tab));
-        tabs->addTab(pattern_tab, bgl_tr("OBSTitles.Pattern"));
-        tabs->setTabEnabled(tabs->indexOf(pattern_tab), false);
-
         auto preview_change_in_progress = std::make_shared<bool>(false);
 
         auto sync_stop_rows = [=, &syncing_selected_stop_controls]() {

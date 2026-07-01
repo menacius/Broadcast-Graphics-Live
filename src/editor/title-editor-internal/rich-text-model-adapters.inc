@@ -218,6 +218,15 @@ static RichTextDocument rich_text_document_for_editor_time(const Layer &layer,
                                                             double local_time)
 {
     RichTextDocument canonical = rich_text_document_canonical_copy(layer);
+    if (layer_has_external_binding(layer, ExternalPropertyPaths::TextContent)) {
+        const std::string display_text = effective_external_string(
+            layer, ExternalPropertyPaths::TextContent, layer.text_content);
+        const RichTextCharFormat insertion_format =
+            rich_text_effective_typing_format(canonical);
+        rich_text_document_replace_text_canonical(
+            canonical, display_text, insertion_format,
+            canonical.has_typing_format ? canonical.typing_format_mask : 0);
+    }
     RichTextEvaluatedDefaults defaults;
     defaults.font_size = std::max(
         1, static_cast<int>(std::round(eval_text_font_size(layer, local_time))));

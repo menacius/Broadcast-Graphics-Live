@@ -37,6 +37,8 @@
 class TitleEditor;
 class QString;
 class QEvent;
+class QResizeEvent;
+class QHBoxLayout;
 struct calldata;
 typedef struct calldata calldata_t;
 
@@ -53,6 +55,7 @@ public:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private slots:
     void on_add();
@@ -74,6 +77,7 @@ private slots:
     void on_import_live_text_data();
     void on_import_append_live_text_data();
     void on_export_live_text_data();
+    void on_map_external_table();
     void on_toggle_external_data_source();
     void on_show_external_data_settings();
     void on_refresh_external_data();
@@ -141,10 +145,25 @@ private:
     std::vector<int> selected_live_text_rows() const;
     void commit_live_text_cell_edit(const std::shared_ptr<Title> &title, int row, int col, const QString &text);
     void set_live_text_row_render_paused(const std::shared_ptr<Title> &title, int row, bool paused);
+    void set_titles_collapsed(bool collapsed, bool persist = true);
+    void update_titles_compact_rail();
+    void update_titles_collapse_direction();
+    void update_stored_dock_area(Qt::DockWidgetArea area);
 
     int           cache_waiting_cue_row_ = -1;
     QString       cache_waiting_title_id_;
     QWidget      *container_  = nullptr;
+    QWidget      *titles_section_ = nullptr;
+    QWidget      *titles_expanded_content_ = nullptr;
+    QWidget      *titles_compact_rail_ = nullptr;
+    QHBoxLayout  *titles_header_layout_ = nullptr;
+    QHBoxLayout  *titles_compact_layout_ = nullptr;
+    QToolButton  *btn_titles_collapse_ = nullptr;
+    QToolButton  *btn_titles_expand_ = nullptr;
+    QLabel       *titles_compact_dock_icon_ = nullptr;
+    QToolButton  *titles_compact_active_title_ = nullptr;
+    QToolButton  *titles_compact_cue_state_ = nullptr;
+    QToolButton  *titles_compact_cache_state_ = nullptr;
     QSplitter    *sections_   = nullptr;
     QListWidget  *list_       = nullptr;
     QToolButton *btn_add_    = nullptr;
@@ -184,6 +203,10 @@ private:
     bool          updating_exposed_text_ = false;
     bool          template_icon_view_ = false;
     bool          visibility_filter_active_ = false;
+    bool          titles_collapsed_ = false;
+    int           titles_expanded_width_ = 360;
+    int           titles_expanded_splitter_size_ = 240;
+    Qt::DockWidgetArea stored_dock_area_ = Qt::LeftDockWidgetArea;
     bool          obs_state_callbacks_installed_ = false;
     std::map<int, QByteArray> live_text_header_states_;
     QTimer       *live_refresh_timer_ = nullptr;
@@ -201,6 +224,7 @@ private:
     int           live_text_lines_per_row_ = 1;
     uint64_t      seen_store_revision_ = 0;
     uint64_t      change_callback_id_ = 0;
+    uint64_t      external_data_callback_id_ = 0;
 
     TitleEditor  *editor_     = nullptr;
 };

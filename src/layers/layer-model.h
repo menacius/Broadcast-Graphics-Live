@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 
+#include "external-data-types.h"
 #include "layer-effects.h"
 #include "animation.h"
 #include "title-rich-text.h"
+#include "text-animator.h"
 #include "layer-transition.h"
 
 /* ══════════════════════════════════════════════════════════════════
@@ -179,6 +181,13 @@ struct Layer {
      * for each edge; presets replace the existing transition on that edge. */
     std::vector<LayerTransition> transitions;
 
+    /* Optional provider-neutral bindings. Authored property values remain in
+     * the ordinary Layer fields; live/fallback values are resolved transiently. */
+    std::vector<ExternalPropertyBinding> external_bindings;
+    /* Runtime-only binding override used by the active Live Text Cue row. It is
+     * never serialized and takes precedence over the authored layer binding. */
+    std::vector<ExternalPropertyBinding> runtime_external_bindings;
+
     /* Timeline in/out (seconds) within parent title clip */
     double      in_time  = 0.0;
     double      out_time = 5.0;
@@ -213,6 +222,10 @@ struct Layer {
     /* ----- Text-specific ----- */
     std::string text_content  = "Title";
     RichTextDocument rich_text; /* Structured source-of-truth rich text document. */
+    /* Unified per-cluster/word/line/run Text Animator stack. Legacy text
+     * transitions are converted into this model on load and no longer execute
+     * through a preset-specific runtime renderer. */
+    TextAnimatorStack text_animators;
     std::string clock_format  = "H:i:s";  /* PHP date()-style format for clock layers */
     bool        expose_text    = false;
     bool        exposed_hide_if_empty = false;

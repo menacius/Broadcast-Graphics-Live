@@ -56,6 +56,7 @@ public:
     void set_selected_layer(const std::string &layer_id);
     void set_selected_layers(const std::vector<std::string> &layer_ids);
     void set_layer_clipboard_available(bool available);
+    void set_playhead(double timeline_time);
     QScrollBar *vertical_scroll_bar() const;
     std::vector<std::string> selected_ids() const;
 
@@ -84,6 +85,9 @@ signals:
     void delete_layer_requested(const std::string &layer_id);
     void property_keyframe_toggled(const std::string &layer_id, const std::string &property_name);
     void property_value_changed(const std::string &layer_id, const std::string &property_name, double x, double y);
+    void property_temporal_mode_changed(const std::string &layer_id, const std::string &property_name, int mode);
+    void property_easy_ease_requested(const std::string &layer_id, const std::string &property_name, bool ease_in, bool ease_out);
+    void property_velocity_requested(const std::string &layer_id, const std::string &property_name);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -105,6 +109,7 @@ private slots:
 
 private:
     void populate();
+    void update_property_rows();
     void sync_order_from_list();
     std::string selected_id() const;
 
@@ -115,6 +120,7 @@ private:
     QToolButton  *btn_move_down_ = nullptr;
     QToolButton  *btn_del_       = nullptr;
     bool          layer_clipboard_available_ = false;
+    double        playhead_ = 0.0;
 };
 
 

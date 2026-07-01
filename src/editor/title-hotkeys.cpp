@@ -4,6 +4,8 @@
 #include "cache/cache-manager.h"
 #include "image-layer-utils.h"
 #include "ticker-runtime.h"
+#include "external-data.h"
+#include "external-data-provider.h"
 #include "title-logger.h"
 #include <obs-module.h>
 #include <QSettings>
@@ -128,6 +130,14 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
                                 const std::vector<std::shared_ptr<Layer>> &exposed)
 {
     if (!title || row < 0 || row >= (int)title->live_text_rows.size()) return;
+    for (const auto &source : title->external_data_sources) {
+        if (source.provider.enabled &&
+            source.provider.refresh_mode == ExternalDataRefreshMode::RefreshOnCue) {
+            ExternalDataProviderService::instance().configure_source(source);
+            ExternalDataProviderService::instance().connect_source(source.id);
+            ExternalDataProviderService::instance().refresh_source(source.id);
+        }
+    }
     for (int col = 0; col < (int)exposed.size(); ++col) {
         auto &target = exposed[col];
         if (!target)
@@ -136,7 +146,9 @@ static void apply_live_text_row(const std::shared_ptr<Title> &title, int row,
         if (value_row < 0 || value_row >= (int)title->live_text_rows.size() ||
             col >= (int)title->live_text_rows[value_row].size())
             continue;
-        const std::string &cue_value = title->live_text_rows[value_row][col];
+        apply_live_text_runtime_binding(*title, value_row, *target);
+        const std::string cue_value = effective_live_text_cue_value(
+            *title, value_row, *target, title->live_text_rows[value_row][col]);
         target->live_cue_hidden_if_empty = target->exposed_hide_if_empty && cue_value.empty();
         if (target->type == LayerType::Image) {
             bgs::apply_exposed_image_cue_value(*target, cue_value);

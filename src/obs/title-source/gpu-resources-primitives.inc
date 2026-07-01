@@ -7,8 +7,7 @@ static bool layer_has_non_rigid_transition_during_shutter(
         const LayerTransitionVisualState state = evaluate_layer_general_transitions(
             layer.transitions, layer.in_time, layer.out_time, time);
         if ((state.active && state.blur > 0.01) ||
-            (state.active && state.wipe < 0.999999) ||
-            active_text_layer_transition(layer, time) != nullptr) {
+            (state.active && state.wipe < 0.999999)) {
             return true;
         }
     }
@@ -965,6 +964,7 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
      * GPU session look permanently clean until another cue changes runtime
      * state. */
     data->seen_store_revision = std::numeric_limits<uint64_t>::max();
+    data->seen_external_data_revision = std::numeric_limits<uint64_t>::max();
     data->playing = false;
     data->waiting_for_cue = true;
     data->active_cue_row = -1;
@@ -1066,6 +1066,7 @@ static void source_update(void *priv, obs_data_t *settings)
     }
     data->last_clock_refresh = std::chrono::steady_clock::now();
     data->seen_store_revision = std::numeric_limits<uint64_t>::max();
+    data->seen_external_data_revision = std::numeric_limits<uint64_t>::max();
     data->cache_hash_revision = std::numeric_limits<uint64_t>::max();
     data->cached_content_hash.clear();
     data->effect_layer_cache.clear();

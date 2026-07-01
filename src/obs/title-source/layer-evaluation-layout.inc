@@ -841,7 +841,10 @@ static RichTextDocument rich_text_model_for_source_time(const Layer &layer,
                                                         double local_time)
 {
     RichTextDocument canonical = rich_text_document_canonical_copy(layer);
-    if (layer.type == LayerType::Clock || layer.type == LayerType::Ticker) {
+    const bool external_text_bound =
+        layer_has_external_binding(layer, ExternalPropertyPaths::TextContent);
+    if (layer.type == LayerType::Clock || layer.type == LayerType::Ticker ||
+        external_text_bound) {
         const std::string display_text =
             display_text_for_style(layer).toStdString();
         const RichTextCharFormat insertion_format =
@@ -901,6 +904,49 @@ static double max_rich_text_stroke_width(const Layer &layer, double t)
         if (stroke.enabled)
             maximum = std::max(maximum,
                                static_cast<double>(std::max(0.0f, stroke.width)));
+    }
+    return maximum;
+}
+
+static double max_rich_text_font_height_hint(const Layer &layer, double t)
+{
+    const RichTextDocument model = rich_text_model_for_source_time(layer, t);
+    const auto format_height = [](const RichTextCharFormat &format) {
+        const double font_size =
+            static_cast<double>(std::max(1, format.font_size));
+        const double scale_y = std::max(
+            0.01, std::abs(static_cast<double>(format.scale_y)));
+        return font_size * scale_y;
+    };
+
+    double maximum = std::max(1.0, format_height(model.default_format));
+
+    /* TextLayoutPaintStyle deliberately contains paint-only state. Font size
+     * and vertical scale are shaping properties, so derive the envelope from
+     * the effective rich-text character formats at every range boundary. This
+     * keeps mixed-size/scale text safe without coupling paint runs to shaping
+     * data or relying on fields that do not exist on TextLayoutPaintStyle. */
+    std::vector<size_t> boundaries;
+    boundaries.reserve(model.ranges.size() * 2 + 1);
+    boundaries.push_back(0);
+    const size_t text_size = model.plain_text.size();
+    for (const RichTextRange &range : model.ranges) {
+        const size_t start = std::min(range.start, text_size);
+        const size_t remaining = text_size - start;
+        const size_t end = start + std::min(range.length, remaining);
+        boundaries.push_back(start);
+        boundaries.push_back(end);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
+
+    for (size_t offset : boundaries) {
+        if (offset >= text_size && text_size != 0)
+            offset = rich_text_utf8_previous_boundary(model.plain_text,
+                                                       text_size - 1);
+        maximum = std::max(maximum,
+                           format_height(rich_text_format_at(model, offset)));
     }
     return maximum;
 }

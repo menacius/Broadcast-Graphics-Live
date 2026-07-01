@@ -17,6 +17,7 @@
     QString path_;
     QString preview_tooltip_;
     bool preview_tooltip_dirty_ = true;
+    bool read_only_ = false;
 };
 
 class LiveTextCueTable : public QTableWidget {

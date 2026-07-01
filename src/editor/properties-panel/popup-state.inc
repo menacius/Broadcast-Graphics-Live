@@ -17,6 +17,64 @@ static QString auto_style_marker_label(const std::string &marker, size_t offset,
     return QStringLiteral("%1[%2]").arg(name).arg((int)offset);
 }
 
+
+static QString auto_style_visible_token(QString token)
+{
+    token.replace(QStringLiteral("\\r\\n"), QStringLiteral("line break"));
+    token.replace(QStringLiteral("\\n"), QStringLiteral("line break"));
+    token.replace(QStringLiteral("\\r"), QStringLiteral("line break"));
+    token.replace(QStringLiteral("\\t"), QStringLiteral("tab"));
+    token.replace(QStringLiteral("\\x20"), QStringLiteral("space"));
+    token.replace(QStringLiteral("\\u2028"), QStringLiteral("line break"));
+    token.replace(QStringLiteral("\\u2029"), QStringLiteral("paragraph break"));
+    token.replace(QRegularExpression(QStringLiteral("\\\\([\\[\\]{}().+*?|^$:-])")), QStringLiteral("\\1"));
+    return token.trimmed();
+}
+
+static QString auto_style_rule_descriptive_name(const RichTextAutoStyleRule &rule)
+{
+    if (!rule.display_name.empty())
+        return QString::fromStdString(rule.display_name);
+
+    if (rule.condition_type == "regex") {
+        const QString pattern = QString::fromStdString(rule.regex_pattern);
+        QString beginning = (pattern.startsWith('^') || pattern.contains(QStringLiteral("(?:^|")))
+            ? QStringLiteral("Paragraph beginning") : QStringLiteral("Regex match");
+        const int lookahead = pattern.lastIndexOf(QStringLiteral("(?="));
+        if (lookahead >= 0) {
+            const int end = pattern.indexOf(')', lookahead + 3);
+            if (end > lookahead) {
+                const QString token = auto_style_visible_token(pattern.mid(lookahead + 3, end - lookahead - 3));
+                if (!token.isEmpty())
+                    return QStringLiteral("%1 to %2").arg(beginning, token);
+            }
+        }
+        return beginning;
+    }
+
+    auto start_name = [](const RichTextAutoStyleRule &r) {
+        if (r.start_condition == "paragraph_start") return QStringLiteral("Paragraph beginning");
+        if (r.start_condition == "text_start") return QStringLiteral("Text beginning");
+        if (r.start_condition == "newline" || r.start_condition == "line_break") return QStringLiteral("Line beginning");
+        if (r.start_condition == "space") return QStringLiteral("After space");
+        if (r.start_condition == "custom_char") return QStringLiteral("After %1").arg(auto_style_visible_token(QString::fromStdString(r.start_custom_chars)));
+        if (r.start_condition == "character_index") return QStringLiteral("Character %1").arg((int)r.start_offset);
+        if (r.start_condition == "word_count") return QStringLiteral("Word %1").arg((int)r.start_offset);
+        return auto_style_marker_label(r.start_condition, r.start_offset, r.start_custom_chars);
+    };
+    auto end_name = [](const RichTextAutoStyleRule &r) {
+        if (r.end_condition == "paragraph_end") return QStringLiteral("paragraph end");
+        if (r.end_condition == "text_end") return QStringLiteral("text end");
+        if (r.end_condition == "newline" || r.end_condition == "line_break") return QStringLiteral("line break");
+        if (r.end_condition == "space") return QStringLiteral("space");
+        if (r.end_condition == "custom_char") return auto_style_visible_token(QString::fromStdString(r.end_custom_chars));
+        if (r.end_condition == "character_index" || r.end_condition == "character_count") return QStringLiteral("character %1").arg((int)(r.end_offset ? r.end_offset : r.length));
+        if (r.end_condition == "word_count") return QStringLiteral("word %1").arg((int)(r.end_offset ? r.end_offset : r.length));
+        return auto_style_marker_label(r.end_condition, r.end_offset ? r.end_offset : r.length, r.end_custom_chars);
+    };
+    return QStringLiteral("%1 to %2").arg(start_name(rule), end_name(rule));
+}
+
 static std::vector<std::string> auto_style_split_ids(const QString &text)
 {
     std::vector<std::string> ids;
@@ -787,6 +845,15 @@ PropertiesPanel::PropertiesPanel(QWidget *parent) : QScrollArea(parent)
     txt_content_->setMaximumHeight(92);
     txt_content_->setPlaceholderText(bgl_tr("OBSTitles.EnterTextPlaceholder"));
     txt_content_->setStyleSheet(control_style);
+    btn_text_external_binding_ = new QToolButton(inner);
+    btn_text_external_binding_->setText(QStringLiteral("⛓"));
+    btn_text_external_binding_->setCheckable(true);
+    btn_text_external_binding_->setAutoRaise(false);
+    btn_text_external_binding_->setFixedSize(28, 28);
+    btn_text_external_binding_->setToolTip(QStringLiteral("Bind text content to external data"));
+    btn_text_external_binding_->setStyleSheet(QStringLiteral(
+        "QToolButton{border:1px solid palette(mid);border-radius:3px;}"
+        "QToolButton:checked{border:2px solid #f0a000;background:rgba(240,160,0,40);}"));
 
     cmb_font_ = new QComboBox(inner);
     cmb_font_->setFixedHeight(22);

@@ -10,6 +10,44 @@ namespace {
 
 using LayerPtr = std::shared_ptr<Layer>;
 
+constexpr int kLayerListMargin = 4;
+constexpr int kLayerListSpacing = 4;
+constexpr int kLayerVisibilityWidth = 20;
+constexpr int kLayerLockWidth = 20;
+constexpr int kLayerExpandWidth = 18;
+constexpr int kLayerIndexWidth = 24;
+constexpr int kLayerTypeWidth = 18;
+constexpr int kLayerFxWidth = 24;
+constexpr int kLayerMatteIndicatorWidth = 20;
+constexpr int kLayerNameMinimumWidth = 180;
+constexpr int kLayerModeWidth = 110;
+constexpr int kLayerParentWidth = 150;
+constexpr int kLayerMaskWidth = 130;
+constexpr int kLayerMatteControlWidth = 20;
+
+/* Fixed columns + minimum usable layer-name area + layout gaps.  Include
+ * extra room for the vertical scrollbar so the splitter can never compress
+ * the layer list until controls paint over one another. */
+constexpr int kLayerStackMinimumWidth = 836;
+
+static TimelinePropertyRef layer_timeline_property(Layer &layer,
+                                                   const std::string &property_name)
+{
+    for (TimelinePropertyRef prop : timeline_properties(layer))
+        if (prop.name() == property_name) return prop;
+    return {};
+}
+
+static int keyframe_index_at_time(const TimelinePropertyRef &prop, double local_time)
+{
+    if (!prop) return -1;
+    const double tolerance = std::max(1e-6, obs_frame_duration() * 0.5 + 1e-6);
+    for (int index = 0; index < static_cast<int>(prop.keyframe_count()); ++index)
+        if (std::abs(prop.keyframe_time(static_cast<size_t>(index)) - local_time) <= tolerance)
+            return index;
+    return -1;
+}
+
 static bool valid_group_parent(const std::shared_ptr<Title> &title,
                                const std::string &parent_id)
 {
@@ -151,6 +189,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
     setStyleSheet(QStringLiteral("background:%1;color:%2;")
                       .arg(window.name(QColor::HexRgb),
                            text.name(QColor::HexRgb)));
+    setMinimumWidth(kLayerStackMinimumWidth);
+    setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
     auto *vl = new QVBoxLayout(this);
     vl->setContentsMargins(0, 0, 0, 0);
     vl->setSpacing(0);
@@ -163,8 +203,8 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                                                               : window.darker(104).name(QColor::HexRgb),
                                      border.name(QColor::HexRgb)));
     auto *ch = new QHBoxLayout(columns);
-    ch->setContentsMargins(4, 0, 4, 0);
-    ch->setSpacing(4);
+    ch->setContentsMargins(kLayerListMargin, 0, kLayerListMargin, 0);
+    ch->setSpacing(kLayerListSpacing);
     auto add_header = [&](const QString &txt, int w, Qt::Alignment align = Qt::AlignCenter) {
         QLabel *label = new QLabel(txt, columns);
         label->setFixedWidth(w);
@@ -185,22 +225,28 @@ LayerStack::LayerStack(QWidget *parent) : QWidget(parent)
                                 .arg(disabled_text.name(QColor::HexRgb)));
         ch->addWidget(icon);
     };
-    add_header("◉", 20);
-    add_header_icon("layer-lock.svg", 20, bgl_tr("OBSTitles.LockLayerTooltip"));
-    add_header("", 12);
-    add_header("#", 24);
-    add_header("T", 18);
-    add_header("", 24); // FX indicator column
-    add_header("", 44); // Track-matte status columns (icons only)
+    add_header_icon("visibility-normal.svg", kLayerVisibilityWidth,
+                    bgl_tr("OBSTitles.LayerVisibilityTooltip"));
+    add_header_icon("layer-lock.svg", kLayerLockWidth, bgl_tr("OBSTitles.LockLayerTooltip"));
+    add_header("", kLayerExpandWidth);
+    add_header("#", kLayerIndexWidth);
+    add_header("T", kLayerTypeWidth);
+    add_header("", kLayerFxWidth); // FX indicator column
+    /* A single role column mirrors AE's track-matte switch area.  The
+     * destination glyph is the column header; rows show source or destination
+     * according to the role of that layer. */
+    add_header_icon("matte-destination.svg", kLayerMatteIndicatorWidth,
+                    bgl_tr("OBSTitles.MatteRoleColumnTooltip"));
     QLabel *name = new QLabel(bgl_tr("OBSTitles.LayerNameHeader"), columns);
+    name->setMinimumWidth(kLayerNameMinimumWidth);
     name->setStyleSheet(QStringLiteral("color:%1;font-size:10px;font-weight:bold;")
                             .arg(disabled_text.name(QColor::HexRgb)));
     ch->addWidget(name, 1);
-    add_header(bgl_tr("OBSTitles.ModeHeader"), 110, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(bgl_tr("OBSTitles.ParentHeader"), 150, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header(bgl_tr("OBSTitles.MaskHeader"), 130, Qt::AlignLeft | Qt::AlignVCenter);
-    add_header_icon("matte-alpha.svg", 20, bgl_tr("OBSTitles.MatteAlphaLumaHeaderTooltip"));
-    add_header_icon("matte-normal.svg", 20, bgl_tr("OBSTitles.MatteNormalInvertedHeaderTooltip"));
+    add_header(bgl_tr("OBSTitles.ModeHeader"), kLayerModeWidth, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.ParentHeader"), kLayerParentWidth, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header(bgl_tr("OBSTitles.MaskHeader"), kLayerMaskWidth, Qt::AlignLeft | Qt::AlignVCenter);
+    add_header_icon("matte-alpha.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteAlphaLumaHeaderTooltip"));
+    add_header_icon("matte-normal.svg", kLayerMatteControlWidth, bgl_tr("OBSTitles.MatteNormalInvertedHeaderTooltip"));
     vl->addWidget(columns);
 
     list_ = new QListWidget(this);
@@ -344,6 +390,63 @@ QScrollBar *LayerStack::vertical_scroll_bar() const
     return list_ ? list_->verticalScrollBar() : nullptr;
 }
 
+void LayerStack::set_playhead(double timeline_time)
+{
+    playhead_ = timeline_time;
+    update_property_rows();
+}
+
+void LayerStack::update_property_rows()
+{
+    if (!title_ || !list_) return;
+    for (int row = 0; row < list_->count(); ++row) {
+        QListWidgetItem *item = list_->item(row);
+        if (!item || item->data(Qt::UserRole + 1).toString() != QStringLiteral("property"))
+            continue;
+        const std::string layer_id = item->data(Qt::UserRole).toString().toStdString();
+        const std::string property_name = item->data(Qt::UserRole + 3).toString().toStdString();
+        auto layer = title_->find_layer(layer_id);
+        if (!layer) continue;
+        TimelinePropertyRef prop = layer_timeline_property(*layer, property_name);
+        if (!prop) continue;
+        const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
+            std::max(0.0, layer->out_time - layer->in_time));
+        QWidget *row_widget = list_->itemWidget(item);
+        if (!row_widget) continue;
+        if (auto *diamond = row_widget->findChild<QToolButton *>(QStringLiteral("keyframeDiamond"))) {
+            diamond->setText(keyframe_index_at_time(prop, local_time) >= 0
+                ? QStringLiteral("◆") : QStringLiteral("◇"));
+            diamond->setEnabled(!layer->locked);
+        }
+        auto *value_x = row_widget->findChild<QDoubleSpinBox *>(QStringLiteral("keyframeValueX"));
+        auto *value_y = row_widget->findChild<QDoubleSpinBox *>(QStringLiteral("keyframeValueY"));
+        if (!value_x) continue;
+        double x = 0.0, y = 0.0;
+        if (prop.vector) {
+            const Vec2Value evaluated = prop.vector->evaluate(local_time);
+            x = evaluated.x;
+            y = evaluated.y;
+            if (property_name == "scale") { x *= 100.0; y *= 100.0; }
+        } else {
+            x = prop.graph_value(local_time);
+            if (property_name == "opacity" || property_name == "char_scale_x" ||
+                property_name == "char_scale_y") x *= 100.0;
+        }
+        value_x->setEnabled(!layer->locked);
+        if (!value_x->hasFocus()) {
+            QSignalBlocker blocker(value_x);
+            value_x->setValue(x);
+        }
+        if (value_y) {
+            value_y->setEnabled(!layer->locked);
+            if (!value_y->hasFocus()) {
+                QSignalBlocker blocker(value_y);
+                value_y->setValue(y);
+            }
+        }
+    }
+}
+
 void LayerStack::sync_order_from_list()
 {
     if (!title_) return;
@@ -429,8 +532,8 @@ void LayerStack::populate()
         row_widget->setStyleSheet(QStringLiteral("background:transparent;color:%1;")
                                       .arg(text.name(QColor::HexRgb)));
         auto *hl = new QHBoxLayout(row_widget);
-        hl->setContentsMargins(4, 0, 4, 0);
-        hl->setSpacing(4);
+        hl->setContentsMargins(kLayerListMargin, 0, kLayerListMargin, 0);
+        hl->setSpacing(kLayerListSpacing);
         const bool is_mask_object = track_matte_source_ids.find(l->id) != track_matte_source_ids.end();
 
         auto make_toggle = [&](const char *on_icon, const char *off_icon, bool checked,
@@ -440,7 +543,7 @@ void LayerStack::populate()
             btn->setChecked(checked);
             btn->setIcon(obs_icon(checked ? on_icon : off_icon));
             btn->setToolTip(tip);
-            btn->setFixedSize(20, 20);
+            btn->setFixedSize(kLayerVisibilityWidth, 20);
             btn->setIconSize(QSize(14, 14));
             btn->setAutoRaise(true);
             btn->setStyleSheet(button_style);
@@ -455,23 +558,23 @@ void LayerStack::populate()
         if (is_mask_object) {
             vis = new QToolButton(row_widget);
             vis->setCheckable(false);
-            vis->setFixedSize(20, 20);
+            vis->setFixedSize(kLayerVisibilityWidth, 20);
             vis->setIconSize(QSize(14, 14));
             vis->setAutoRaise(true);
             vis->setStyleSheet(button_style);
             auto update_matte_visibility_button = [vis](MatteVisibilityMode mode) {
                 switch (mode) {
                 case MatteVisibilityMode::HiddenInactive:
-                    vis->setIcon(obs_icon("layer-hidden.svg"));
+                    vis->setIcon(obs_icon("no-visibility.svg"));
                     vis->setToolTip(bgl_tr("OBSTitles.MatteHiddenInactiveTooltip"));
                     break;
                 case MatteVisibilityMode::VisibleAndMatte:
-                    vis->setIcon(obs_icon("layer-visible-mask.svg"));
+                    vis->setIcon(obs_icon("visibility-normal.svg"));
                     vis->setToolTip(bgl_tr("OBSTitles.MatteVisibleActiveTooltip"));
                     break;
                 case MatteVisibilityMode::MatteOnly:
                 default:
-                    vis->setIcon(obs_icon("layer-mask-object.svg"));
+                    vis->setIcon(obs_icon("visibility-matte.svg"));
                     vis->setToolTip(bgl_tr("OBSTitles.MatteOnlyTooltip"));
                     break;
                 }
@@ -488,7 +591,7 @@ void LayerStack::populate()
             });
             hl->addWidget(vis);
         } else {
-            vis = make_toggle("layer-visible.svg", "layer-hidden.svg", l->visible,
+            vis = make_toggle("visibility-normal.svg", "no-visibility.svg", l->visible,
                               bgl_tr("OBSTitles.LayerVisibilityTooltip"));
             connect(vis, &QToolButton::toggled, this, [this, id = l->id, item](bool checked) {
                 list_->setCurrentItem(item);
@@ -506,7 +609,7 @@ void LayerStack::populate()
         const bool is_asset = l->type == LayerType::Asset;
         const int group_state = !is_group ? -1
             : (!l->group_collapsed ? 2 : (l->properties_expanded ? 1 : 0));
-        const bool expanded = !is_group && l->properties_expanded;
+        const bool expanded = !is_group && layer_keyframe_sections_expanded(*l);
         QToolButton *expand = nullptr;
         if (is_asset) {
             expand = new QToolButton(row_widget);
@@ -514,7 +617,7 @@ void LayerStack::populate()
             expand->setIconSize(QSize(12, 12));
             expand->setToolTip(bgl_tr("OBSTitles.AssetLayerTooltip"));
             expand->setEnabled(false);
-            expand->setFixedSize(18, 20);
+            expand->setFixedSize(kLayerExpandWidth, 20);
             expand->setAutoRaise(true);
             expand->setStyleSheet(button_style);
         } else {
@@ -546,14 +649,14 @@ void LayerStack::populate()
         hl->addWidget(expand);
 
         QLabel *idx = new QLabel(QString::number(row + 1), row_widget);
-        idx->setFixedWidth(24);
+        idx->setFixedWidth(kLayerIndexWidth);
         idx->setAlignment(Qt::AlignCenter);
         idx->setStyleSheet(QStringLiteral("color:%1;font-weight:bold;")
                                .arg(disabled_text.name(QColor::HexRgb)));
         hl->addWidget(idx);
 
         QLabel *type = new QLabel(layer_type_short(l->type), row_widget);
-        type->setFixedWidth(18);
+        type->setFixedWidth(kLayerTypeWidth);
         type->setAlignment(Qt::AlignCenter);
         type->setStyleSheet(QStringLiteral("background:%1;border:1px solid %2;color:%3;font-weight:bold;")
                                 .arg(layer_color(*l, row).name(QColor::HexRgb),
@@ -564,23 +667,33 @@ void LayerStack::populate()
         const bool has_effect_stack = !l->effects.empty();
         const bool has_enabled_effect_stack = std::any_of(l->effects.begin(), l->effects.end(),
             [](const LayerEffect &effect) { return effect.enabled; });
+        const bool has_external_binding = std::any_of(
+            l->external_bindings.begin(), l->external_bindings.end(),
+            [](const ExternalPropertyBinding &binding) { return binding.enabled; });
         QToolButton *fx_indicator = new QToolButton(row_widget);
-        fx_indicator->setText(has_effect_stack ? bgl_tr("OBSTitles.FX") : QString());
+        fx_indicator->setText(has_effect_stack
+            ? (has_external_binding ? QStringLiteral("FX•") : bgl_tr("OBSTitles.FX"))
+            : (has_external_binding ? QStringLiteral("D") : QString()));
         fx_indicator->setCheckable(has_effect_stack);
         fx_indicator->setChecked(has_enabled_effect_stack);
-        fx_indicator->setFixedSize(24, 18);
-        fx_indicator->setToolTip(has_effect_stack
-            ? (has_enabled_effect_stack
+        fx_indicator->setFixedSize(kLayerFxWidth, 18);
+        QString layer_indicator_tip;
+        if (has_effect_stack)
+            layer_indicator_tip = has_enabled_effect_stack
                 ? bgl_tr("OBSTitles.DisableLayerEffectsTooltip")
-                : bgl_tr("OBSTitles.EnableLayerEffectsTooltip"))
-            : QString());
+                : bgl_tr("OBSTitles.EnableLayerEffectsTooltip");
+        if (has_external_binding) {
+            if (!layer_indicator_tip.isEmpty()) layer_indicator_tip += QStringLiteral("\n");
+            layer_indicator_tip += QStringLiteral("Layer has external data binding");
+        }
+        fx_indicator->setToolTip(layer_indicator_tip);
         fx_indicator->setCursor(has_effect_stack ? Qt::PointingHandCursor : Qt::ArrowCursor);
-        fx_indicator->setStyleSheet(has_effect_stack
+        fx_indicator->setStyleSheet((has_effect_stack || has_external_binding)
             ? QStringLiteral(
                   "QToolButton{background:transparent;border:1px solid %1;border-radius:2px;color:%2;font-size:9px;font-weight:bold;}"
                   "QToolButton:checked{background:%3;color:%4;}"
                   "QToolButton:hover{border-color:%3;}")
-                  .arg(border.name(QColor::HexRgb),
+                  .arg((has_external_binding ? QColor(QStringLiteral("#f0a000")) : border).name(QColor::HexRgb),
                        disabled_text.name(QColor::HexRgb),
                        highlight.name(QColor::HexRgb),
                        pal.color(QPalette::HighlightedText).name(QColor::HexRgb))
@@ -599,7 +712,7 @@ void LayerStack::populate()
 
         auto add_matte_indicator = [&](const char *icon, const QString &tip, bool active) {
             QToolButton *indicator = new QToolButton(row_widget);
-            indicator->setFixedSize(20, 20);
+            indicator->setFixedSize(kLayerMatteIndicatorWidth, 20);
             indicator->setIconSize(QSize(14, 14));
             indicator->setAutoRaise(true);
             indicator->setEnabled(false);
@@ -612,19 +725,23 @@ void LayerStack::populate()
         };
         const bool used_as_track_matte = is_mask_object;
         const bool uses_track_matte = l->mask_mode != MaskMode::None && !l->mask_source_id.empty();
-        add_matte_indicator("timeline-mask.svg",
-                            bgl_tr("OBSTitles.TrackMatteTooltip"),
-                            used_as_track_matte);
-        add_matte_indicator((l->mask_mode == MaskMode::InvertedAlpha || l->mask_mode == MaskMode::InvertedLuma ||
-                             l->mask_mode == MaskMode::InvertedClipping)
-                                ? "timeline-mask-inverted.svg" : "timeline-mask.svg",
-                            bgl_tr("OBSTitles.MaskedLayerTooltip"),
-                            uses_track_matte);
+        if (uses_track_matte) {
+            add_matte_indicator("matte-destination.svg",
+                                used_as_track_matte
+                                    ? bgl_tr("OBSTitles.MatteSourceAndDestinationTooltip")
+                                    : bgl_tr("OBSTitles.MaskedLayerTooltip"),
+                                true);
+        } else {
+            add_matte_indicator("matte-source.svg",
+                                bgl_tr("OBSTitles.TrackMatteTooltip"),
+                                used_as_track_matte);
+        }
 
         // Keep every layer-list column aligned with the header. Hierarchy indentation
         // belongs only to the flexible Name column; applying it to the row margins
         // shifts every preceding/following control for child layers.
         QWidget *name_cell = new QWidget(row_widget);
+        name_cell->setMinimumWidth(kLayerNameMinimumWidth);
         name_cell->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         auto *name_layout = new QHBoxLayout(name_cell);
         name_layout->setContentsMargins(hierarchy_depth * 18, 0, 0, 0);
@@ -650,7 +767,7 @@ void LayerStack::populate()
         hl->addWidget(name_cell, 1);
 
         QComboBox *mode = new QComboBox(row_widget);
-        mode->setFixedWidth(110);
+        mode->setFixedWidth(kLayerModeWidth);
         mode->setStyleSheet(combo_style);
         mode->setToolTip(bgl_tr("OBSTitles.LayerModesTooltip"));
         mode->addItem(obs_icon("timeline-modes.svg"), bgl_tr("OBSTitles.BlendModeNormal"), (int)EffectBlendMode::Normal);
@@ -669,7 +786,7 @@ void LayerStack::populate()
         hl->addWidget(mode);
 
         QComboBox *parent = new QComboBox(row_widget);
-        parent->setFixedWidth(150);
+        parent->setFixedWidth(kLayerParentWidth);
         parent->setStyleSheet(combo_style);
         parent->setToolTip(bgl_tr("OBSTitles.ParentLayerTooltip"));
         parent->addItem(bgl_tr("OBSTitles.None"), "");
@@ -691,7 +808,7 @@ void LayerStack::populate()
         hl->addWidget(parent);
 
         QComboBox *matte = new QComboBox(row_widget);
-        matte->setFixedWidth(130);
+        matte->setFixedWidth(kLayerMaskWidth);
         matte->setStyleSheet(combo_style);
         matte->setToolTip(bgl_tr("OBSTitles.TrackMatteTooltip"));
         matte->addItem(bgl_tr("OBSTitles.NoMask"), QString());
@@ -746,7 +863,7 @@ void LayerStack::populate()
             }
         };
         update_matte_type_button(has_matte);
-        matte_type->setFixedSize(20, 20);
+        matte_type->setFixedSize(kLayerMatteControlWidth, 20);
         matte_type->setIconSize(QSize(14, 14));
         matte_type->setAutoRaise(true);
         matte_type->setStyleSheet(button_style);
@@ -763,7 +880,7 @@ void LayerStack::populate()
             matte_invert->setIcon(QIcon());
             matte_invert->setToolTip(QString());
         }
-        matte_invert->setFixedSize(20, 20);
+        matte_invert->setFixedSize(kLayerMatteControlWidth, 20);
         matte_invert->setIconSize(QSize(14, 14));
         matte_invert->setAutoRaise(true);
         matte_invert->setStyleSheet(button_style);
@@ -828,7 +945,7 @@ void LayerStack::populate()
         /* Groups expose the same animated transform/opacity/effect rows as
          * every other layer. Their hierarchy caret controls child visibility;
          * it must not suppress the Group's own keyframe properties. */
-        if (!l->properties_expanded) continue;
+        if (!layer_keyframe_sections_expanded(*l)) continue;
 
         std::set<std::string> seen;
         for (auto prop : timeline_properties(*l)) {
@@ -841,18 +958,30 @@ void LayerStack::populate()
             prop_item->setData(Qt::UserRole, QString::fromStdString(l->id));
             prop_item->setData(Qt::UserRole + 1, "property");
             prop_item->setData(Qt::UserRole + 2, label);
+            prop_item->setData(Qt::UserRole + 3, QString::fromStdString(prop.name()));
             prop_item->setFlags((prop_item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled) &
                                 ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled | Qt::ItemIsUserCheckable));
             prop_item->setSizeHint(QSize(0, 28));
             list_->addItem(prop_item);
 
             QWidget *prop_widget = new QWidget(list_);
+            prop_widget->setObjectName(QStringLiteral("layerKeyframePropertyRow"));
+            prop_widget->setStyleSheet(QStringLiteral(
+                "QWidget#layerKeyframePropertyRow{background:transparent;color:%1;}")
+                .arg(text.name(QColor::HexRgb)));
             auto *ph = new QHBoxLayout(prop_widget);
             ph->setContentsMargins(64, 0, 4, 0);
             ph->setSpacing(4);
             QToolButton *diamond_indicator = new QToolButton(prop_widget);
-            diamond_indicator->setText(prop.keyframe_count() ? QStringLiteral("◆") : QStringLiteral("◇"));
+            diamond_indicator->setObjectName(QStringLiteral("keyframeDiamond"));
+            diamond_indicator->setProperty("layerId", QString::fromStdString(l->id));
+            diamond_indicator->setProperty("propertyName", QString::fromStdString(prop.name()));
+            const double property_local_time = std::clamp(
+                playhead_ - l->in_time, 0.0, std::max(0.0, l->out_time - l->in_time));
+            diamond_indicator->setText(keyframe_index_at_time(prop, property_local_time) >= 0
+                ? QStringLiteral("◆") : QStringLiteral("◇"));
             diamond_indicator->setFixedSize(18, 20);
+            diamond_indicator->setEnabled(!l->locked);
             diamond_indicator->setAutoRaise(true);
             diamond_indicator->setCursor(Qt::PointingHandCursor);
             diamond_indicator->setToolTip(bgl_tr("OBSTitles.ToggleKeyframe"));
@@ -865,31 +994,52 @@ void LayerStack::populate()
             prop_name->setStyleSheet(QStringLiteral("color:%1;").arg(text.name(QColor::HexRgb)));
             ph->addWidget(prop_name, 1);
 
-            if (prop.is_extension()) {
+            /* Extension and grouped colour channels keep their authoring
+             * surface in the owning effect/appearance panel.  The layer list
+             * still exposes their keyframe diamond and temporal menu, but does
+             * not show a misleading single numeric field for a multi-channel
+             * value. */
+            if (prop.is_extension() || prop.is_scalar_group()) {
                 list_->setItemWidget(prop_item, prop_widget);
                 continue;
             }
 
-            auto configure_spin = [&](QDoubleSpinBox *spin) {
+            auto configure_spin = [&](QDoubleSpinBox *spin, const char *object_name) {
+                spin->setObjectName(QString::fromLatin1(object_name));
                 spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
                 spin->setKeyboardTracking(false);
+                spin->setAlignment(Qt::AlignRight);
                 spin->setDecimals(2);
                 spin->setRange(-100000.0, 100000.0);
-                spin->setFixedWidth(72);
-                spin->setStyleSheet(QStringLiteral("QDoubleSpinBox{color:%1;background:%2;border:none;font-family:monospace;padding:1px 3px;}")
-                                        .arg(highlight.name(QColor::HexRgb), base.name(QColor::HexRgb)));
+                spin->setFixedWidth(74);
+                spin->setMinimumHeight(22);
+                spin->setStyleSheet(QStringLiteral(
+                    "QDoubleSpinBox{color:%1;background:%2;border:1px solid %3;"
+                    "border-radius:3px;padding:2px 5px;selection-background-color:%4;selection-color:%5;}"
+                    "QDoubleSpinBox:hover{border-color:%6;}"
+                    "QDoubleSpinBox:focus{border-color:%4;}"
+                    "QDoubleSpinBox:disabled{color:%7;background:%8;}")
+                    .arg(field_text.name(QColor::HexRgb),
+                         base.name(QColor::HexRgb),
+                         border.name(QColor::HexRgb),
+                         highlight.name(QColor::HexRgb),
+                         pal.color(QPalette::HighlightedText).name(QColor::HexRgb),
+                         text.name(QColor::HexRgb),
+                         disabled_text.name(QColor::HexRgb),
+                         button.name(QColor::HexRgb)));
             };
             const bool vector_prop = prop.vector != nullptr;
             QDoubleSpinBox *value_x = new QDoubleSpinBox(prop_widget);
-            configure_spin(value_x);
+            configure_spin(value_x, "keyframeValueX");
             QDoubleSpinBox *value_y = nullptr;
             double x = 0.0, y = 0.0;
             if (vector_prop) {
-                x = prop.vector->static_value.x;
-                y = prop.vector->static_value.y;
+                const Vec2Value evaluated = prop.vector->evaluate(property_local_time);
+                x = evaluated.x;
+                y = evaluated.y;
                 if (prop.name() == "scale") { x *= 100.0; y *= 100.0; }
                 value_y = new QDoubleSpinBox(prop_widget);
-                configure_spin(value_y);
+                configure_spin(value_y, "keyframeValueY");
                 value_x->setFixedWidth(58);
                 value_y->setFixedWidth(58);
                 value_x->setValue(x);
@@ -897,10 +1047,16 @@ void LayerStack::populate()
                 ph->addWidget(value_x);
                 ph->addWidget(value_y);
             } else {
-                x = prop.scalar ? prop.scalar->static_value : 0.0;
+                x = prop.graph_value(property_local_time);
                 if (prop.name() == "opacity" || prop.name() == "char_scale_x" || prop.name() == "char_scale_y") x *= 100.0;
                 value_x->setValue(x);
                 ph->addWidget(value_x);
+            }
+            value_x->setProperty("layerId", QString::fromStdString(l->id));
+            value_x->setProperty("propertyName", QString::fromStdString(prop.name()));
+            if (value_y) {
+                value_y->setProperty("layerId", QString::fromStdString(l->id));
+                value_y->setProperty("propertyName", QString::fromStdString(prop.name()));
             }
             auto emit_value = [this, id = l->id, name = prop.name(), value_x, value_y]() {
                 emit property_value_changed(id, name, value_x->value(), value_y ? value_y->value() : 0.0);
@@ -912,6 +1068,7 @@ void LayerStack::populate()
         }
     }
     list_->blockSignals(false);
+    update_property_rows();
     on_selection_changed();
 }
 
@@ -1063,6 +1220,78 @@ void LayerStack::show_layer_context_menu(const QPoint &pos)
             style_menu(btn_add_->menu());
             btn_add_->menu()->exec(list_->viewport()->mapToGlobal(pos));
         }
+        return;
+    }
+
+    if (item->data(Qt::UserRole + 1).toString() == QStringLiteral("property")) {
+        const std::string layer_id = item->data(Qt::UserRole).toString().toStdString();
+        const std::string property_name = item->data(Qt::UserRole + 3).toString().toStdString();
+        auto layer = title_->find_layer(layer_id);
+        if (!layer || layer->locked) return;
+        TimelinePropertyRef prop = layer_timeline_property(*layer, property_name);
+        if (!prop) return;
+        const double local_time = std::clamp(playhead_ - layer->in_time, 0.0,
+            std::max(0.0, layer->out_time - layer->in_time));
+        const int key_index = keyframe_index_at_time(prop, local_time);
+
+        QMenu menu(this);
+        style_menu(&menu);
+        QAction *toggle_key = menu.addAction(key_index >= 0
+            ? bgl_tr("OBSTitles.DeleteKeyframe") : bgl_tr("OBSTitles.AddKeyframe"));
+        QMenu *temporal = menu.addMenu(bgl_tr("OBSTitles.TemporalInterpolation"));
+        style_menu(temporal);
+        temporal->setEnabled(key_index >= 0);
+        std::map<QAction *, TemporalInterpolationMode> modes;
+        auto temporal_label = [](TemporalInterpolationMode mode) {
+            switch (mode) {
+            case TemporalInterpolationMode::Linear: return bgl_tr("OBSTitles.Linear");
+            case TemporalInterpolationMode::Hold: return bgl_tr("OBSTitles.Hold");
+            case TemporalInterpolationMode::AutoBezier: return bgl_tr("OBSTitles.TemporalAutoBezier");
+            case TemporalInterpolationMode::ContinuousBezier: return bgl_tr("OBSTitles.TemporalContinuousBezier");
+            case TemporalInterpolationMode::ManualBezier: return bgl_tr("OBSTitles.TemporalManualBezier");
+            }
+            return bgl_tr("OBSTitles.Linear");
+        };
+        auto *mode_group = new QActionGroup(temporal);
+        mode_group->setExclusive(true);
+        for (TemporalInterpolationMode mode : {TemporalInterpolationMode::Linear,
+                 TemporalInterpolationMode::Hold, TemporalInterpolationMode::AutoBezier,
+                 TemporalInterpolationMode::ContinuousBezier,
+                 TemporalInterpolationMode::ManualBezier}) {
+            QAction *action = temporal->addAction(temporal_label(mode));
+            action->setCheckable(true);
+            action->setActionGroup(mode_group);
+            action->setChecked(key_index >= 0 &&
+                prop.keyframe_temporal_mode(static_cast<size_t>(key_index)) == mode);
+            modes[action] = mode;
+        }
+        temporal->addSeparator();
+        QAction *easy = temporal->addAction(bgl_tr("OBSTitles.EasyEase"));
+        QAction *easy_in = temporal->addAction(bgl_tr("OBSTitles.EasyEaseIn"));
+        QAction *easy_out = temporal->addAction(bgl_tr("OBSTitles.EasyEaseOut"));
+        temporal->addSeparator();
+        QAction *velocity = temporal->addAction(bgl_tr("OBSTitles.KeyframeVelocity"));
+
+        QAction *chosen = menu.exec(list_->viewport()->mapToGlobal(pos));
+        if (!chosen) return;
+        if (chosen == toggle_key) {
+            emit property_keyframe_toggled(layer_id, property_name);
+            return;
+        }
+        const auto mode = modes.find(chosen);
+        if (mode != modes.end()) {
+            emit property_temporal_mode_changed(layer_id, property_name,
+                                                static_cast<int>(mode->second));
+            return;
+        }
+        if (chosen == easy || chosen == easy_in || chosen == easy_out) {
+            emit property_easy_ease_requested(layer_id, property_name,
+                chosen == easy || chosen == easy_in,
+                chosen == easy || chosen == easy_out);
+            return;
+        }
+        if (chosen == velocity)
+            emit property_velocity_requested(layer_id, property_name);
         return;
     }
 

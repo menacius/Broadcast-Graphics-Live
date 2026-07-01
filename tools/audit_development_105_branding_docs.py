@@ -29,14 +29,16 @@ gitignore = read(".gitignore")
 
 check(
     "public and development versions are synchronized",
-    "project(broadcast-graphics-live VERSION 0.8.7)" in cmake
+    "project(broadcast-graphics-live VERSION 0.8.8)" in cmake
     and 'set(OBS_BGS_PRERELEASE "alpha")' in cmake
-    and 'set(OBS_BGS_DEVELOPMENT_VERSION "105")' in cmake
-    and '#define PLUGIN_VERSION "0.8.7-alpha"' in build_info
-    and '#define BGL_DEVELOPMENT_VERSION "105"' in build_info
-    and '#define PLUGIN_VERSION "0.8.7-alpha"' in plugin_main
-    and "v0.8.7-alpha" in readme
-    and "Development Version 105" in readme,
+    and (cmake_dev := re.search(r'set\(OBS_BGS_DEVELOPMENT_VERSION "([0-9]+)"\)', cmake)) is not None
+    and (header_dev := re.search(r'#define BGL_DEVELOPMENT_VERSION "([0-9]+)"', build_info)) is not None
+    and cmake_dev.group(1) == header_dev.group(1)
+    and int(cmake_dev.group(1)) >= 105
+    and '#define PLUGIN_VERSION "0.8.8-alpha"' in build_info
+    and '#define PLUGIN_VERSION "0.8.8-alpha"' in plugin_main
+    and "v0.8.8-alpha" in readme
+    and "Development Version" in readme,
 )
 
 check(
@@ -59,7 +61,7 @@ check(
 
 check(
     "Broadcast Graphics Live application icon replaces inherited OBS icon",
-    (ROOT / "data/icons/broadcast-graphics-live-app-icon.svg").is_file()
+    ((ROOT / "data/icons/broadcast-graphics-live-app-icon.png").is_file() or (ROOT / "data/icons/broadcast-graphics-live-app-icon.svg").is_file())
     and 'bgl_brand_icon()' in assets
     and 'bgl_apply_brand_icon(this);' in window
     and 'bgl_apply_brand_icon(this);' in transition

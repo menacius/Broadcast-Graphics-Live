@@ -705,6 +705,8 @@ void TitleEditor::open_title(const std::string &tid)
     CacheManager::instance().setEditorPrerenderFocus(QString::fromStdString(tid), true);
     editing_title_id_ = tid;
     title_ = clone_title(*stored_title);
+    external_data_visual_hash_ =
+        CacheManager::instance().contentHashForTitle(*title_);
     load_new_layer_defaults();
 
     update_title_bar();

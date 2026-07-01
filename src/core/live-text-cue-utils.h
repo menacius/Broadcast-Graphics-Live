@@ -145,6 +145,25 @@ inline void normalize_live_text_rows(
         }
     }
     ensure_live_text_row_ids(*title);
+
+    /* new_order has already been moved into live_text_column_order above.
+     * Never validate bindings against the moved-from local vector: on the
+     * common STL implementations it is empty, which deleted every generated
+     * table-cell binding immediately before the dock rebuilt its widgets. */
+    title->live_text_external_bindings.erase(
+        std::remove_if(title->live_text_external_bindings.begin(),
+                       title->live_text_external_bindings.end(),
+            [&title](const LiveTextExternalBinding &cell) {
+                const bool row_exists = std::find(title->live_text_row_ids.begin(),
+                                                  title->live_text_row_ids.end(),
+                                                  cell.row_id) != title->live_text_row_ids.end();
+                const bool layer_exists = std::find(
+                    title->live_text_column_order.begin(),
+                    title->live_text_column_order.end(),
+                    cell.layer_id) != title->live_text_column_order.end();
+                return !row_exists || !layer_exists;
+            }),
+        title->live_text_external_bindings.end());
 }
 
 } // namespace bgs::live_text

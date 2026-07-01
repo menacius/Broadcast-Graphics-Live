@@ -196,8 +196,8 @@
     ]
   },
   "src/canvas/canvas-preview.cpp": {
-    "facade_lines": 68,
-    "original_lines": 8832,
+    "facade_lines": 72,
+    "original_lines": 9077,
     "modules": [
       {
         "file": "src/canvas/canvas-preview/preview-cache-view.inc",
@@ -214,6 +214,14 @@
           2253
         ],
         "line_count": 1106
+      },
+      {
+        "file": "src/canvas/canvas-preview/spatial-bezier-keyframes.inc",
+        "source_lines": [
+          0,
+          0
+        ],
+        "line_count": 787
       },
       {
         "file": "src/canvas/canvas-preview/transform-snap.inc",
@@ -362,6 +370,14 @@
           2800
         ],
         "line_count": 888
+      },
+      {
+        "file": "src/editor/title-dock/collapsible-titles.inc",
+        "source_lines": [
+          0,
+          0
+        ],
+        "line_count": 207
       },
       {
         "file": "src/editor/title-dock/dock-lifecycle.inc",

@@ -30,6 +30,7 @@
 #include <QPixmap>
 #include <QImage>
 #include <QJsonArray>
+#include <QTransform>
 #include <QHash>
 #include <QElapsedTimer>
 #include <memory>
@@ -254,6 +255,9 @@ private:
         PathAnchor,
         PathInHandle,
         PathOutHandle,
+        PositionVertex,
+        PositionInTangent,
+        PositionOutTangent,
         PathMarquee,
         GuideX,
         GuideY,
@@ -337,6 +341,39 @@ private:
     QPointF path_normalized_to_canvas(const Layer &layer, double x, double y) const;
     QPointF path_canvas_to_normalized(const Layer &layer, const QPointF &canvas_pt) const;
     void clear_path_point_selection();
+
+    int position_keyframe_at_playhead(const Layer &layer) const;
+    bool position_motion_path_visible(const Layer &layer) const;
+    int active_position_keyframe_index(const Layer &layer) const;
+    QPointF position_keyframe_canvas_point(const Layer &layer, int keyframe_index,
+                                           const Vec2Value &offset) const;
+    QPointF position_segment_canvas_point(const Layer &layer, size_t segment_index,
+                                          double temporal_progress) const;
+    int hit_test_position_keyframe_vertices(const Layer &layer,
+                                            const QPointF &view_pt) const;
+    DragMode hit_test_position_tangent_handles(const Layer &layer,
+                                                const QPointF &view_pt,
+                                                int *keyframe_index = nullptr) const;
+    bool hit_test_position_motion_path(const Layer &layer,
+                                       const QPointF &view_pt,
+                                       size_t *segment_index = nullptr,
+                                       double *temporal_progress = nullptr,
+                                       double hit_radius = 6.0) const;
+    void draw_position_motion_path(QPainter &p, const Layer &layer);
+    bool begin_position_tangent_drag(const QPointF &view_pt,
+                                     Qt::KeyboardModifiers modifiers);
+    bool begin_position_vertex_drag(const QPointF &view_pt);
+    bool apply_position_vertex_drag(const QPointF &view_pt,
+                                    Qt::KeyboardModifiers modifiers);
+    bool apply_position_tangent_drag(const QPointF &view_pt,
+                                     Qt::KeyboardModifiers modifiers);
+    QPointF snap_position_keyframe_canvas_point(const Layer &layer,
+                                                int keyframe_index,
+                                                const QPointF &canvas_point,
+                                                bool allow_snap);
+    bool add_position_keyframe_at_path(const QPointF &view_pt);
+    bool show_position_motion_path_context_menu(QContextMenuEvent *ev);
+    bool update_position_motion_path_hover(const QPointF &view_pt);
 
     void render_to_frame();
     void render_dirty_frame_if_due();
@@ -554,6 +591,34 @@ private:
     int path_drag_point_index_ = -1;
     bool path_alt_break_active_ = false;
     std::vector<BezierPathPoint> path_drag_start_points_;
+    struct SpatialTangentDragState {
+        bool active = false;
+        std::string layer_id;
+        int keyframe_index = -1;
+        bool incoming = false;
+        bool linked = true;
+        bool moved = false;
+    };
+    SpatialTangentDragState spatial_tangent_drag_;
+    struct SpatialVertexDragState {
+        bool active = false;
+        std::string layer_id;
+        int keyframe_index = -1;
+        double keyframe_time = 0.0;
+        Vec2Value start_value;
+        bool moved = false;
+    };
+    SpatialVertexDragState spatial_vertex_drag_;
+    enum class MotionPathHoverType {
+        None,
+        Path,
+        Vertex,
+        InTangent,
+        OutTangent,
+    };
+    int selected_position_keyframe_index_ = -1;
+    MotionPathHoverType motion_path_hover_type_ = MotionPathHoverType::None;
+    int motion_path_hover_keyframe_index_ = -1;
     bool drawing_shape_ = false;
     bool drawing_shape_changed_ = false;
     QTextEdit *inline_text_editor_ = nullptr;

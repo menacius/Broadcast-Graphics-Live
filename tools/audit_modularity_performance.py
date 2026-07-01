@@ -125,7 +125,7 @@ if not any("merge marker" in e for e in errors):
 
 development_match = re.search(
     r'set\(OBS_BGS_DEVELOPMENT_VERSION "([0-9]{3})"\)', cmake)
-if ('project(broadcast-graphics-live VERSION 0.8.7)' in cmake and
+if ('project(broadcast-graphics-live VERSION 0.8.8)' in cmake and
         'set(OBS_BGS_PRERELEASE "alpha")' in cmake and
         development_match):
     development_version = development_match.group(1)
@@ -135,7 +135,7 @@ if ('project(broadcast-graphics-live VERSION 0.8.7)' in cmake and
             f'Development Version {development_version}' in readme):
         passes.append(
             f"public/development version identity is synchronized at "
-            f"v0.8.7-alpha / {development_version}")
+            f"v0.8.8-alpha / {development_version}")
     else:
         errors.append("development version is not synchronized across CMake/build-info/README")
 else:

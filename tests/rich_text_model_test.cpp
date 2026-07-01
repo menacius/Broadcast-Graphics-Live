@@ -519,6 +519,106 @@ static void test_every_exposed_text_property_participates_in_model_masks()
                paragraph, paragraph_changed) == RichTextParagraphAll);
 }
 
+
+static void test_learned_regex_auto_style_from_manual_prefix()
+{
+    RichTextDocument doc;
+    doc.plain_text = u8"ΓΙΑΝΝΗΣ: Πρώτη δήλωση\nΜΑΡΙΑ: Δεύτερη δήλωση";
+    RichTextCharFormat speaker = doc.default_format;
+    speaker.bold = true;
+    speaker.fill.color = 0xFFFFCC00;
+    const size_t first_name_bytes = std::string(u8"ΓΙΑΝΝΗΣ").size();
+    doc.ranges.push_back({0, first_name_bytes, speaker,
+                          RichTextCharBold | RichTextCharFillColor});
+    doc.normalize();
+
+    const auto learned = rich_text_infer_auto_style_rules(doc);
+    assert(learned.size() == 1);
+    assert(learned.front().condition_type == "regex");
+    assert(learned.front().regex_capture_group == 2);
+    assert(learned.front().cached_mask ==
+           (RichTextCharBold | RichTextCharFillColor));
+
+    doc.ranges.clear();
+    doc.auto_style_enabled = true;
+    doc.auto_style_rules = learned;
+    RichTextDocument styled = rich_text_document_with_auto_styles(doc, {});
+    assert(rich_text_format_at(styled, 0).bold);
+    const size_t second_name = doc.plain_text.find(u8"ΜΑΡΙΑ");
+    assert(second_name != std::string::npos);
+    assert(rich_text_format_at(styled, second_name).bold);
+    assert(!rich_text_format_at(styled, doc.plain_text.find(u8"Πρώτη")).bold);
+}
+
+
+static RichTextDocument learned_prefix_document(const std::string &text,
+                                                 const std::string &formatted_prefix)
+{
+    RichTextDocument doc;
+    doc.plain_text = text;
+    RichTextCharFormat format = doc.default_format;
+    format.bold = true;
+    doc.ranges.push_back({0, formatted_prefix.size(), format, RichTextCharBold});
+    doc.normalize();
+    const auto learned = rich_text_infer_auto_style_rules(doc);
+    assert(learned.size() == 1);
+    doc.ranges.clear();
+    doc.auto_style_enabled = true;
+    doc.auto_style_rules = learned;
+    return rich_text_document_with_auto_styles(doc, {});
+}
+
+static void test_learned_regex_recognizes_invisible_and_structural_characters()
+{
+    {
+        const std::string text = "NAME\tVALUE\r\nOTHER\tSECOND";
+        RichTextDocument styled = learned_prefix_document(text, "NAME");
+        assert(rich_text_format_at(styled, 0).bold);
+        const size_t other = text.find("OTHER");
+        assert(other != std::string::npos);
+        assert(rich_text_format_at(styled, other).bold);
+        assert(!rich_text_format_at(styled, text.find("VALUE")).bold);
+        assert(styled.auto_style_rules.front().regex_pattern.find("\\t") != std::string::npos);
+    }
+    {
+        const std::string text = std::string("NAME") + "\xC2\xA0" + "VALUE\nOTHER" + "\xC2\xA0" + "SECOND";
+        RichTextDocument styled = learned_prefix_document(text, "NAME");
+        const size_t other = text.find("OTHER");
+        assert(other != std::string::npos);
+        assert(rich_text_format_at(styled, other).bold);
+        assert(!rich_text_format_at(styled, text.find("VALUE")).bold);
+    }
+    {
+        const std::string separator = "\xE2\x80\xA8"; // U+2028 LINE SEPARATOR
+        const std::string text = std::string("FIRST:") + separator + "SECOND:" + separator + "THIRD:";
+        RichTextDocument doc;
+        doc.plain_text = text;
+        RichTextCharFormat format = doc.default_format;
+        format.italic = true;
+        doc.ranges.push_back({0, std::string("FIRST").size(), format, RichTextCharItalic});
+        doc.normalize();
+        const auto learned = rich_text_infer_auto_style_rules(doc);
+        assert(learned.size() == 1);
+        doc.ranges.clear();
+        doc.auto_style_enabled = true;
+        doc.auto_style_rules = learned;
+        RichTextDocument styled = rich_text_document_with_auto_styles(doc, {});
+        const size_t second = text.find("SECOND");
+        const size_t third = text.find("THIRD");
+        assert(second != std::string::npos && third != std::string::npos);
+        assert(rich_text_format_at(styled, second).italic);
+        assert(rich_text_format_at(styled, third).italic);
+    }
+    {
+        const std::string text = "LABEL  VALUE\nOTHER  SECOND";
+        RichTextDocument styled = learned_prefix_document(text, "LABEL");
+        const size_t other = text.find("OTHER");
+        assert(other != std::string::npos);
+        assert(rich_text_format_at(styled, other).bold);
+        assert(styled.auto_style_rules.front().regex_pattern.find("\\x20\\x20") != std::string::npos);
+    }
+}
+
 int main()
 {
     test_mixed_styles_and_transactions();
@@ -537,6 +637,8 @@ int main()
     test_selected_inline_stroke_changes_only_selected_range();
     test_utf16_mapping_and_canonical_single_edit();
     test_every_exposed_text_property_participates_in_model_masks();
+    test_learned_regex_auto_style_from_manual_prefix();
+    test_learned_regex_recognizes_invisible_and_structural_characters();
     std::cout << "rich text v2 sparse ranges, independent H/V scale, multi-style colors, Unicode-safe edits, transactions, and paragraph selection passed\n";
     return 0;
 }

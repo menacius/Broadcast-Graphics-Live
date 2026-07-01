@@ -1,6 +1,7 @@
 #pragma once
 
 #include "title-text-layout.h"
+#include "text-animator.h"
 
 #include <graphics/graphics.h>
 
@@ -57,7 +58,9 @@ public:
 
     bool prepare(Layer &layer, const ImmutableTextLayout &layout,
                  const std::vector<TextLayoutPaintRun> &paint_runs,
-                 const PrepareOptions &options, std::string *reason = nullptr);
+                 const PrepareOptions &options,
+                 const TextAnimatorEvaluation *animation = nullptr,
+                 std::string *reason = nullptr);
 
     /* Must be called under the OBS graphics context. */
     bool render(Layer &layer);

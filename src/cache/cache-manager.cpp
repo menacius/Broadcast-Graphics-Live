@@ -8,6 +8,7 @@
 #include "title-source.h"
 #include "title-preferences.h"
 #include "title-logger.h"
+#include "external-data.h"
 #include "image-layer-utils.h"
 
 #include <QCryptographicHash>

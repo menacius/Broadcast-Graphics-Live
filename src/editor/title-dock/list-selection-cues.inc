@@ -142,7 +142,14 @@
         if (item && item->column() == 0)
             update_live_text_select_all_state();
     });
-    connect(sections_, &QSplitter::splitterMoved, this, [this](int, int) { save_dock_settings(); });
+    connect(sections_, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (!titles_collapsed_ && sections_) {
+            const QList<int> sizes = sections_->sizes();
+            if (!sizes.isEmpty() && sizes.front() > kTitlesCompactRailHeight + 8)
+                titles_expanded_splitter_size_ = sizes.front();
+        }
+        save_dock_settings();
+    });
     connect(text_table_->horizontalHeader(), &QHeaderView::sectionMoved,
             this, [this](int, int, int) { save_live_text_header_state(); });
     connect(text_table_->horizontalHeader(), &QHeaderView::sectionResized,
@@ -401,6 +408,7 @@ void TitleDock::on_selection_changed()
             : bgl_tr("OBSTitles.NoTitleSelected"));
     }
     populate_exposed_text();
+    update_titles_compact_rail();
 }
 
 void TitleDock::save_live_text_header_state()
@@ -550,6 +558,15 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
     if (col < 0 || col >= (int)title->live_text_rows[row].size()) return;
 
     auto exposed = exposed_text_layers(title);
+    const std::string edited_layer_id =
+        col >= 0 && col < static_cast<int>(exposed.size()) && exposed[col]
+            ? exposed[col]->id : std::string{};
+    if (!edited_layer_id.empty() &&
+        live_text_cue_cell_state(*title, live_text_row_id(*title, row),
+                                 edited_layer_id) ==
+            LiveTextCueCellState::ExternalTableManaged)
+        return;
+
     const bool single_value_column = col >= 0 && col < (int)exposed.size() &&
         exposed[col] && exposed[col]->exposed_single_value;
     std::vector<int> target_rows = selected_live_text_rows();
@@ -570,6 +587,11 @@ void TitleDock::commit_live_text_cell_edit(const std::shared_ptr<Title> &title,
             continue;
         auto &live_row = title->live_text_rows[target_row];
         if (col < 0 || col >= (int)live_row.size())
+            continue;
+        if (!edited_layer_id.empty() &&
+            live_text_cue_cell_state(*title, live_text_row_id(*title, target_row),
+                                     edited_layer_id) ==
+                LiveTextCueCellState::ExternalTableManaged)
             continue;
         if (live_row[col] == new_value)
             continue;
@@ -767,6 +789,30 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     auto exposed_now = exposed_text_layers(title);
     normalize_live_text_rows(title, exposed_now);
 
+    ExternalDataLog::write_lazy(
+        ExternalDataLogLevel::Info, "CueControl", [&]() {
+            std::ostringstream stream;
+            stream << "request title=" << ExternalDataLog::sanitize(title->id, 160)
+                   << " row=" << row
+                   << " rowId=" << ExternalDataLog::sanitize(live_text_row_id(*title, row), 240)
+                   << " current=" << title->current_cue_row
+                   << " pending=" << title->pending_cue_row
+                   << " playbackMode=" << title->playback_mode
+                   << " allowUncue=" << (allow_uncue ? 1 : 0)
+                   << " forceRestart=" << (force_restart ? 1 : 0)
+                   << " exposedColumns=" << exposed_now.size();
+            return stream.str();
+        });
+
+    for (const auto &source : title->external_data_sources) {
+        if (source.provider.enabled &&
+            source.provider.refresh_mode == ExternalDataRefreshMode::RefreshOnCue) {
+            ExternalDataProviderService::instance().configure_source(source);
+            ExternalDataProviderService::instance().connect_source(source.id);
+            ExternalDataProviderService::instance().refresh_source(source.id);
+        }
+    }
+
     if (exposed_now.empty()) {
         updating_exposed_text_ = true;
         cache_waiting_cue_row_ = -1;
@@ -844,6 +890,7 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
     const bool needs_outro_before_cue =
         (title->playback_mode == 1 || title->playback_mode == 2) &&
         title->current_cue_row >= 0 && title->current_cue_row != row;
+    const char *cue_decision = "no-op";
 
     title->cue_persistence_transition = false;
     title->cue_persistent_text_columns.assign(exposed_now.size(), false);
@@ -860,6 +907,7 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
         title->cue_uncue_requested = true;
         title->cue_persistence_transition = false;
         title->cue_persistent_text_columns.clear();
+        cue_decision = "uncue-outro";
     } else if (can_persist_transition) {
         for (int col = 0; col < (int)exposed_now.size(); ++col) {
             auto &target = exposed_now[col];
@@ -870,13 +918,18 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
                 next_value_row >= 0 && next_value_row < (int)title->live_text_rows.size() &&
                 col < (int)title->live_text_rows[previous_value_row].size() &&
                 col < (int)title->live_text_rows[next_value_row].size() &&
-                title->live_text_rows[previous_value_row][col] == title->live_text_rows[next_value_row][col])
+                effective_live_text_cue_value(*title, previous_value_row, *target,
+                    title->live_text_rows[previous_value_row][col]) ==
+                effective_live_text_cue_value(*title, next_value_row, *target,
+                    title->live_text_rows[next_value_row][col]))
                 title->cue_persistent_text_columns[col] = true;
         }
         title->pending_cue_row = row;
         title->cue_persistence_transition = true;
+        cue_decision = "pending-persistence-outro";
     } else if (needs_outro_before_cue) {
         title->pending_cue_row = row;
+        cue_decision = "pending-outro";
     } else if (force_restart || !is_active_cue || title->pending_cue_row >= 0) {
         for (int col = 0; col < (int)exposed_now.size(); ++col) {
             auto &target = exposed_now[col];
@@ -884,11 +937,28 @@ bool TitleDock::cue_live_text_row_for_title(const std::shared_ptr<Title> &title,
             if (value_row < 0 || value_row >= (int)title->live_text_rows.size() ||
                 col >= (int)title->live_text_rows[value_row].size())
                 continue;
-            apply_live_cue_layer_value(target, title->live_text_rows[value_row][col]);
+            apply_live_text_runtime_binding(*title, value_row, *target);
+            const std::string cue_value = effective_live_text_cue_value(
+                *title, value_row, *target, title->live_text_rows[value_row][col]);
+            apply_live_cue_layer_value(target, cue_value);
         }
         title->current_cue_row = row;
         title->pending_cue_row = -1;
+        cue_decision = "apply-immediately";
     }
+
+    ExternalDataLog::write_lazy(
+        ExternalDataLogLevel::Info, "CueControl", [&]() {
+            std::ostringstream stream;
+            stream << "decision title=" << ExternalDataLog::sanitize(title->id, 160)
+                   << " row=" << row
+                   << " decision=" << cue_decision
+                   << " current=" << title->current_cue_row
+                   << " pending=" << title->pending_cue_row
+                   << " playbackMode=" << title->playback_mode
+                   << " persistence=" << (title->cue_persistence_transition ? 1 : 0);
+            return stream.str();
+        });
 
     ++title->cue_revision;
     cache_waiting_cue_row_ = -1;

@@ -301,24 +301,6 @@ QWidget *TitleEditor::create_styles_panel()
         }
     });
 
-    auto make_placeholder_tab = [](const QString &title, const QString &description) {
-        auto *tab = new QWidget;
-        auto *layout = new QVBoxLayout(tab);
-        layout->setContentsMargins(10, 10, 10, 10);
-        layout->setSpacing(6);
-        auto *heading = new QLabel(title, tab);
-        QFont heading_font = heading->font();
-        heading_font.setBold(true);
-        heading->setFont(heading_font);
-        heading->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(qApp->palette().color(QPalette::WindowText).name(QColor::HexRgb)));
-        auto *body = new QLabel(description, tab);
-        body->setWordWrap(true);
-        body->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg((qApp->palette().color(QPalette::WindowText).lightness() < 128 ? qApp->palette().color(QPalette::WindowText).lighter(135) : qApp->palette().color(QPalette::WindowText).darker(135)).name(QColor::HexRgb)));
-        layout->addWidget(heading);
-        layout->addWidget(body);
-        layout->addStretch(1);
-        return tab;
-    };
 
     auto *assets = new obsbgs::AssetLibraryPanel(false, tabs, false);
     assets->setInsertCallback([this](const std::string &asset_id) {
@@ -332,9 +314,6 @@ QWidget *TitleEditor::create_styles_panel()
     });
     tabs->addTab(create_color_swatches_panel(), bgl_tr("OBSTitles.ColorSwatches"));
     tabs->addTab(gradient_styles, bgl_tr("OBSTitles.Gradients"));
-    tabs->addTab(make_placeholder_tab(bgl_tr("OBSTitles.PatternStyles"),
-                                      bgl_tr("OBSTitles.PatternStylesHint")),
-                 bgl_tr("OBSTitles.Patterns"));
     tabs->addTab(text_styles, bgl_tr("OBSTitles.TextStyles"));
     tabs->addTab(assets, bgl_tr("OBSTitles.Assets"));
 
