@@ -117,6 +117,14 @@ Broadcast_Graphics_Live_v0.8.8-alpha_development-version-144_windows-x64.zip
   </a>
 </p>
 
+## Support the Project
+Broadcast Graphics Live is an independent project developed through a significant amount of personal work, testing, experimentation, and ongoing maintenance.
+If you find the project useful and would like to support its continued development, you can contribute here:
+
+<a href="https://omniatv.com/en/support/">Support OmniaTV</a>
+
+Your support helps fund continued development, testing, documentation, performance work, and the time required to turn Broadcast Graphics Live into a more complete and reliable production tool.
+
 ## License
 
 Broadcast Graphics Live is distributed under the terms in [LICENSE](LICENSE). Third-party libraries and optional extension packages retain their own compatible licenses. No external application-wide Qt theme package is bundled.
