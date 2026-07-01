@@ -1,22 +1,10 @@
 # Broadcast Graphics Live
 
-<p align="center">
-  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
-</p>
+<img width="3840" height="2088" alt="image" src="https://github.com/user-attachments/assets/36e33aaf-2ee1-4102-9978-ffdcbde8ea8e" />
 
 **Broadcast Graphics Live** is a native C++/Qt graphics plugin for OBS Studio. It combines a dockable title manager, a layered motion-graphics editor, timeline animation, live text and image cueing, reusable templates, GPU-assisted rendering, and native OBS source playback without requiring browser sources or a separate titling application.
 
 **Current build:** `v0.8.8-alpha` · `Development Version 144`
-
-<p align="center"><strong>Developed by: omniatv</strong></p>
-<p align="center">
-  <a href="https://omniatv.com">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
-      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
-    </picture>
-  </a>
-</p>
 
 ## What’s new in v0.8.8-alpha
 
@@ -114,6 +102,20 @@ Public releases use semantic versions such as `v0.8.8-alpha`. Development packag
 ```text
 Broadcast_Graphics_Live_v0.8.8-alpha_development-version-144_windows-x64.zip
 ```
+
+<p align="center">
+  <img width="520" alt="Broadcast Graphics Live" src="data/icons/broadcast-graphics-live-logo.svg" />
+</p>
+
+<p align="center"><strong>Developed by: omniatv</strong></p>
+<p align="center">
+  <a href="https://omniatv.com">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="data/icons/omniainvert.svg" />
+      <img width="230" alt="OmniaTV" src="data/icons/omnianormal.svg" />
+    </picture>
+  </a>
+</p>
 
 ## License
 
